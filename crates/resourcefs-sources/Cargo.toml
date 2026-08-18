@@ -1,0 +1,16 @@
+[package]
+name = "resourcefs-sources"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Compiled Source Adapters for ResourceFS"
+
+[dependencies]
+async-trait.workspace = true
+resourcefs-core = { path = "../resourcefs-core" }
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

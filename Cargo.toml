@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/resourcefs-core"]
+members = ["crates/resourcefs-core", "crates/resourcefs-sources"]
 
 [workspace.package]
 version = "1.0.0"
@@ -13,3 +13,5 @@ repository = "https://github.com/dwalleck/resourcefs"
 async-trait = "0.1.89"
 serde = { version = "1.0.219", features = ["derive"] }
 sha2 = "0.10.9"
+tempfile = "3.22.0"
+tokio = { version = "1.47.1", features = ["fs", "io-util", "macros", "rt-multi-thread"] }
