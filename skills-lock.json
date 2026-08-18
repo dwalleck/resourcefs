@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "gilfoyle": {
+      "source": "dwalleck/gilfoyle",
+      "sourceType": "github",
+      "skillPath": "skills/gilfoyle/SKILL.md",
+      "computedHash": "5177afe89051010aae23ba2f31dbfb3f84aaeee70a94af007bf4708f17bb531f"
+    }
+  }
+}
