@@ -1,7 +1,11 @@
 use std::{borrow::Cow, fmt, sync::Arc, time::Duration};
 
-use resourcefs_core::{PathReference, SourceAdapter};
-use resourcefs_sources::{ClientRoot, FilesystemSource, RootRefresh};
+use resourcefs_core::{
+    OperationGuard, PathReference, ReadEngine, ReadRequest, SourceAdapter, TextLimits,
+};
+use resourcefs_sources::{
+    ArtifactSource, ClientRoot, CompiledSources, FilesystemSource, RootRefresh, SessionStore,
+};
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, tool::schema_for_type, wrapper::Parameters},
@@ -47,6 +51,7 @@ struct ReadInput {
 #[derive(Clone)]
 struct ResourceFsServer {
     source: FilesystemSource,
+    read_engine: ReadEngine,
     root_sync: Arc<RootSync>,
     tool_router: ToolRouter<Self>,
 }
@@ -61,8 +66,9 @@ impl fmt::Debug for ResourceFsServer {
 
 #[tool_router(router = tool_router)]
 impl ResourceFsServer {
-    fn new(source: FilesystemSource) -> Self {
+    fn new(source: FilesystemSource, read_engine: ReadEngine) -> Self {
         Self {
+            read_engine,
             source,
             root_sync: Arc::new(RootSync {
                 state: Mutex::new(RootSyncState::Unseen),
@@ -126,7 +132,11 @@ impl ResourceFsServer {
             Ok(reference) => reference,
             Err(error) => return render::failure(&input.path, &error),
         };
-        match self.source.read(&reference).await {
+        let request = ReadRequest {
+            reference,
+            limits: TextLimits::default(),
+        };
+        match self.read_engine.read(request, &OperationGuard::new()).await {
             Ok(resource) => render::success(&input.path, resource),
             Err(error) => render::failure(&input.path, &error),
         }
@@ -247,9 +257,19 @@ fn notification_supports_roots(context: &NotificationContext<RoleServer>) -> boo
 }
 
 pub(crate) async fn serve(source: FilesystemSource) -> Result<(), BoxError> {
-    let running = ResourceFsServer::new(source)
+    let session_store = SessionStore::open_default().await?;
+    let stored_session = session_store.create_session().await?;
+    let session = stored_session.path_session().clone();
+    let sources: Arc<dyn SourceAdapter> = Arc::new(CompiledSources::new(
+        source.clone(),
+        ArtifactSource::new(session.clone()),
+    ));
+    let read_engine = ReadEngine::new(sources, session);
+    let running = ResourceFsServer::new(source, read_engine)
         .serve(rmcp::transport::stdio())
         .await?;
-    running.waiting().await?;
+    let result = running.waiting().await;
+    stored_session.mark_disconnected().await?;
+    result?;
     Ok(())
 }

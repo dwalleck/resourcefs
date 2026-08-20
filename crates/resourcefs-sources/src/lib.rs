@@ -1,7 +1,11 @@
 //! Compiled ResourceFS Source Adapters.
 
+mod artifact;
+mod compiled;
 mod filesystem;
 mod session_storage;
+pub use artifact::ArtifactSource;
+pub use compiled::CompiledSources;
 
 #[cfg(feature = "test-support")]
 pub use filesystem::TestDeliveryGate;

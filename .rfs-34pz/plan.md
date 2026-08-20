@@ -13,14 +13,14 @@
 |---|---:|
 | 1. Core selector contract, workflow evidence, and tracker state | 2,293 actual |
 | 2. Streaming filesystem projection | 389 actual |
-| 3. Path Session and durable artifact storage | 800 |
-| 4. Artifact adapter and bounded read engine | 800 |
+| 3. Path Session and durable artifact storage | 1,803 actual |
+| 4. Artifact adapter and bounded read engine | 1,530 actual |
 | 5. MCP rendering and lifecycle | 600 |
-| **Sum** | **4,882** |
-| **Churn margin** | **330 (15% of the 2,200 unimplemented lines)** |
-| **Projected total** | **5,212** |
+| **Sum** | **6,615** |
+| **Churn margin** | **90 (15% of the 600 unimplemented lines)** |
+| **Projected total** | **6,705** |
 
-Committed reality replaces Slice 1 with 2,293 lines and Slice 2 with 389 lines, including their required workflow records. The 15% margin remains on the 2,200 unimplemented lines for signature migration and platform-specific lease handling. Because 5,212 exceeds the exact 4,000-line threshold, the work remains partitioned into three independently mergeable PR increments.
+Committed/staged reality replaces Slices 1–4 with 2,293, 389, 1,803, and 1,530 changed lines respectively, including their required workflow records. The 15% margin remains on the 600 unimplemented lines for the final MCP schema/rendering and lifecycle cutover. Because 6,705 exceeds the exact 4,000-line threshold, the work remains partitioned into three independently mergeable PR increments.
 
 ### PR increment: core-selector-contract
 
@@ -198,6 +198,16 @@ Slice 5, stacked on `bounded-recovery-engine`. Mergeable definition: compiled-so
 - `cargo test -p resourcefs-core --test read_engine_contract` → every boundary/intersection page stays within all limits, continuations make progress, concatenation length/SHA-256 equals the oracle projection, failed spill returns no reference, and repeated identical spill reuses identity/quota.
 - `cargo test -p resourcefs-sources --test artifact_adapter_contract --test compiled_sources_contract` → artifact root/range/raw/page bytes match backing bytes/oracle, cache paths never appear, no mutation API exists, and exactly the address-selected adapter is called.
 - `cargo test --release -p resourcefs-core --test read_engine_contract artifact_page_production_budget -- --exact` → a 64 MiB artifact page stays within 70 MiB retained state and 5 seconds; each named paging mutation breaks reconstruction and restoration returns exact equality.
+
+### Slice 4 checkpoint result — PASS (2026-08-19)
+
+- Impact analysis: `SourceAdapter::read` now returns complete authoritative `SourceResource`; the new `ReadEngine` alone owns selection paging, limit accounting, immutable spill/recovery creation, and post-source liveness. `CompiledSources` routes only on typed `ResourceAddress`, and the filesystem adapter now constructs source results without a second paging implementation.
+- Gate 1 — bounded engine contract: PASS. `cargo test -p resourcefs-core --all-features --test read_engine_contract` passed 6 cases covering exact byte/line/column boundaries, CRLF and UTF-8 cursors, ordered and duplicate ranges, byte-identical reconstruction, immutable recovery roots, root reuse without quota growth, one-byte-over failure before storage, and inline/64 MiB budgets.
+- Gate 2 — source adapters: PASS. The direct artifact and typed-registry suites passed 4 cases covering root/raw/range/page byte equality, whole-Resource Version Tags on every page, disconnect invalidation, nondisclosing malformed/foreign failures, absence of backing paths, and exactly-one address-family dispatch. The compile-fail doctest proves `ArtifactSource` has no mutation method.
+- Gate 3 — independent oracle: PASS. `.rfs-34pz/oracle_selectors.py crates/resourcefs-core/tests/fixtures/bounded_read_cases.json` returned `{"checked": 21, "status": "ok"}`; contract reconstruction independently compared selected length and SHA-256 across every returned page.
+- Gate 4 — production budgets: PASS. The exact release 64 MiB artifact-page fence completed in 0.13 seconds under the 5-second/70 MiB bounds; the all-feature inline maximum-page fence remained under 25 ms.
+- Gate 5 — named mutations: PASS. Character-count cursors, inserted inter-page newlines, selected-page hashes, a public artifact write method, selector-based registry routing, and accepting one byte above the object ceiling each turned its owning exact contract red; every mutation was restored.
+- Gate 6 — quality: PASS. Strict all-target/all-feature Clippy for core and sources, `cargo fmt --all -- --check`, the artifact doctest, and all focused recovery/adapter contracts passed after restoration.
 
 ## Slice 5: Wire strict MCP output and disconnect-safe Path Session lifecycle
 

@@ -13,7 +13,7 @@ use cap_std::{
 };
 use resourcefs_core::{
     ErrorCategory, MAX_TEXT_BYTES, MAX_TEXT_COLUMNS, MAX_TEXT_LINES, MAX_WORKSPACE_ROOTS,
-    PathReference, ProjectionSelector, ReadResource, ResourceError, SourceAdapter,
+    PathReference, ProjectionSelector, ResourceError, SourceAdapter, SourceResource,
     WorkspaceAddress, WorkspacePath, WorkspaceRoot, WorkspaceRootId, WorkspaceRootSet, select_utf8,
 };
 use sha2::{Digest, Sha256};
@@ -412,7 +412,7 @@ impl FilesystemSource {
     async fn read_contained(
         &self,
         reference: &PathReference,
-    ) -> Result<ReadResource, ResourceError> {
+    ) -> Result<SourceResource, ResourceError> {
         let (generation, view) = {
             let authority = self.inner.authority.read().await;
             match &*authority {
@@ -501,7 +501,7 @@ fn validate_read_delivery(
 
 #[async_trait]
 impl SourceAdapter for FilesystemSource {
-    async fn read(&self, reference: &PathReference) -> Result<ReadResource, ResourceError> {
+    async fn read(&self, reference: &PathReference) -> Result<SourceResource, ResourceError> {
         self.read_contained(reference).await
     }
 }
@@ -677,7 +677,7 @@ fn view_retains_root(view: &WorkspaceView, prior: &FilesystemRoot) -> bool {
 }
 
 struct CompletedRead {
-    resource: ReadResource,
+    resource: SourceResource,
     root: Arc<FilesystemRoot>,
 }
 
@@ -775,7 +775,7 @@ fn read_address(
     let mut resource = if let Some(projection) = projection {
         let selected = select_utf8(&mut file, Some(projection))?;
         let (content, version_tag, _) = selected.into_parts();
-        ReadResource::text_projection(canonical_reference, content, version_tag)?
+        SourceResource::text_projection(canonical_reference, content, version_tag)?
     } else {
         let initial_capacity = metadata.len().min(MAX_TEXT_BYTES as u64) as usize;
         let mut bytes = Vec::with_capacity(initial_capacity);
@@ -787,7 +787,7 @@ fn read_address(
             return Err(resource_limit_error(identity, "bytes", MAX_TEXT_BYTES));
         }
         let content = validate_text_content(identity, bytes)?;
-        ReadResource::text(canonical_reference, content)?
+        SourceResource::text(canonical_reference, content)?
     };
     if visibility == BackingPathVisibility::Visible {
         let backing_uri = Url::from_file_path(&final_path)
