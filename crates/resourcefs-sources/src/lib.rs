@@ -3,6 +3,11 @@
 mod artifact;
 mod compiled;
 mod filesystem;
+#[expect(
+    dead_code,
+    reason = "the private matcher is wired by the next incremental discovery adapter slices"
+)]
+mod pattern;
 mod session_storage;
 pub use artifact::ArtifactSource;
 pub use compiled::CompiledSources;

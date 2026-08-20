@@ -169,6 +169,15 @@ The checkout currently has no configured Git remote or discoverable upstream def
 - Apply the combined C1 mutation, rerun the pattern command → red with `C1` for Unicode/limit/glob rows; restore, rerun → green.
 - Apply the C3 PCRE2-first mutation, rerun `cargo test -p resourcefs-sources --test pattern_contract matcher_selection_unicode_and_work_limits -- --exact --nocapture` → red with `C3`; restore, rerun → green.
 
+### Slice 3 checkpoint result — PASS (2026-08-20)
+
+- Impact and placement: exact pins `regex = 1.13.1`, `pcre2-sys = 0.2.10`, and `globset = 0.4.20` live only in `resourcefs-sources`; forced `PCRE2_SYS_STATIC=1` makes the vendored PCRE2 build non-optional. The safe matcher stays private, and one temporary self-expiring `dead_code` expectation covers only the approved increment boundary until Slice 4 consumes it.
+- Gate 1 — external evidence: PASS. The forced bundled probe linked and ran; Rust rejected lookbehind; PCRE2 matched bytes 3–6 and returned typed `PCRE2_ERROR_MATCHLIMIT` (-47) and `PCRE2_ERROR_DEPTHLIMIT` (-53); system `pcre2test` 10.47 independently agreed. The pinned glob probe and hand-authored oracle emitted byte-identical results for all 20 cases.
+- Gate 2 — C1 matcher behavior: PASS. Rust and PCRE2 Unicode matching, fixed lookbehind, invalid-both handling, zero JIT bytes, explicit 100,000 match/1,000 depth ceilings, exact separator/escape flags, ASCII-only glob folding, and all hand-counted rows passed. Exact 65,536-byte compilation, a 64 MiB scan, and the complete glob table stayed inside their 2-second/1-second/100-millisecond assertions.
+- Gate 3 — C3 selection and typed failures: PASS. Rust `Syntax` is the sole PCRE2 fallback; a deterministic `CompiledTooBig` row returns the typed input/work limit instead. Literal and Unicode Rust patterns reported `rust_regex`; lookbehind reported `pcre2`; work exhaustion mapped typed constants rather than strings.
+- Gate 4 — named mutations: PASS. Removing `PCRE2_UCP`, the depth setter, and `literal_separator(true)` produced `C1 PCRE UCP`, `C1 glob case star_component`, and depth-exhaustion failures. PCRE2-first produced `C3 Rust first` with `Pcre2 != RustRegex`. Both owning commands returned green after restoration.
+- Gate 5 — ownership and quality: PASS. All three matcher contracts, strict sources/all-target/all-feature Clippy, workspace/all-target/all-feature checking, formatting, and language-server diagnostics passed. Every unsafe call is confined to `pattern.rs` behind RAII owners; no JIT entry point exists.
+
 ## Slice 4: Implement current-session Artifact search and glob
 
 **Claim IDs:** C8
