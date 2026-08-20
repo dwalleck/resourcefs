@@ -265,6 +265,27 @@ impl PathSession {
         self.inner.admission.lock().await.records.len()
     }
 
+    pub async fn artifact_catalog(&self) -> Result<Vec<ArtifactAddress>, ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_catalog_error());
+        }
+
+        let state = self.inner.admission.lock().await;
+        if !self.is_active() {
+            return Err(inactive_catalog_error());
+        }
+        let mut ids = state.records.iter().copied().collect::<Vec<_>>();
+        ids.sort_unstable_by_key(|id| id.get());
+        let catalog = ids
+            .into_iter()
+            .map(|id| self.address(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        if !self.is_active() {
+            return Err(inactive_catalog_error());
+        }
+        Ok(catalog)
+    }
+
     fn address(&self, id: ArtifactId) -> Result<ArtifactAddress, ResourceError> {
         ArtifactAddress::new(self.inner.token.as_str(), id.get())
     }
@@ -287,6 +308,13 @@ fn ensure_commit_live(
         ));
     }
     Ok(())
+}
+
+fn inactive_catalog_error() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::SourceUnavailable,
+        "Path Session disconnected before Artifact catalog enumeration",
+    )
 }
 
 fn session_quota_error() -> ResourceError {

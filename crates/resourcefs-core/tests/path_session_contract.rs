@@ -4,13 +4,14 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
 use resourcefs_core::{
     ArtifactAddress, ArtifactId, ErrorCategory, MAX_ARTIFACT_BYTES, MAX_SESSION_ARTIFACTS,
-    MAX_SESSION_BYTES, OperationGuard, PathSession, ResourceError, SessionStorage, SessionToken,
+    MAX_SESSION_BYTES, OperationGuard, PathReference, PathSession, ResourceError, SessionStorage,
+    SessionToken,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Barrier, Mutex, Notify};
@@ -45,6 +46,7 @@ struct FakeStorage {
     inflight_writes: AtomicUsize,
     maximum_inflight_writes: AtomicUsize,
     write_gate: Mutex<Option<Arc<WriteGate>>>,
+    fast_writes: AtomicBool,
 }
 
 impl FakeStorage {
@@ -60,6 +62,10 @@ impl FakeStorage {
 
     fn fail_next_write(&self) {
         self.fail_write.store(true, Ordering::Release);
+    }
+
+    fn skip_write_delays(&self) {
+        self.fast_writes.store(true, Ordering::Release);
     }
 
     fn observe_write_entry(&self) -> WriteEntry<'_> {
@@ -115,7 +121,7 @@ impl SessionStorage for FakeStorage {
         if let Some(gate) = self.write_gate.lock().await.take() {
             gate.entered.notify_one();
             gate.release.notified().await;
-        } else {
+        } else if !self.fast_writes.load(Ordering::Acquire) {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
         self.content.lock().await.insert(
@@ -401,4 +407,106 @@ async fn foreign_unknown_and_inactive_artifacts_are_indistinguishable() {
         .await
         .expect("disconnect marker remains idempotent after invalidation");
     assert!(second_storage.calls().await.contains(&Call::Disconnect));
+}
+
+#[tokio::test]
+async fn artifact_catalog_is_ordered_and_live() {
+    let storage = Arc::new(FakeStorage::default());
+    storage.skip_write_delays();
+    let path_session = session(7, Arc::clone(&storage));
+    let operation = OperationGuard::new();
+
+    let mut first_content = String::new();
+    for index in 1..MAX_SESSION_ARTIFACTS {
+        let content = format!("artifact-{:04}", MAX_SESSION_ARTIFACTS - index);
+        if index == 1 {
+            first_content.clone_from(&content);
+        }
+        path_session
+            .retain(&content, &operation)
+            .await
+            .expect("C15 fixture artifact");
+    }
+    let saved = path_session
+        .artifact_catalog()
+        .await
+        .expect("C15 live catalog");
+    assert_eq!(saved.len(), MAX_SESSION_ARTIFACTS - 1, "C15 saved count");
+
+    let duplicate = path_session
+        .retain(&first_content, &operation)
+        .await
+        .expect("C15 duplicate artifact");
+    assert_eq!(duplicate.object_id(), 1, "C15 duplicate identity");
+    let last = path_session
+        .retain("artifact-final", &operation)
+        .await
+        .expect("C15 final artifact");
+    assert_eq!(
+        saved.last().map(ArtifactAddress::object_id),
+        Some(last.object_id() - 1),
+        "C15 saved snapshot must exclude post-snapshot retention"
+    );
+
+    let started = Instant::now();
+    let catalog = path_session
+        .artifact_catalog()
+        .await
+        .expect("C15 ceiling catalog");
+    let elapsed = started.elapsed();
+    assert_eq!(catalog.len(), MAX_SESSION_ARTIFACTS, "C15 ceiling count");
+    assert!(
+        catalog
+            .windows(2)
+            .all(|pair| pair[0].object_id() < pair[1].object_id()),
+        "C15 catalog must be object-ID ordered"
+    );
+    assert!(
+        catalog
+            .iter()
+            .all(|address| address.session_token() == path_session.token().as_str()),
+        "C15 catalog must contain only the active session"
+    );
+    let canonical_payload_bytes = catalog
+        .iter()
+        .map(|address| {
+            PathReference::artifact(address.clone(), None)
+                .expect("C15 canonical address")
+                .requested()
+                .len()
+        })
+        .sum::<usize>();
+    assert!(
+        canonical_payload_bytes <= 256 * 1024,
+        "C15 canonical address payload exceeds 256 KiB"
+    );
+    assert!(
+        elapsed <= Duration::from_millis(250),
+        "C15 catalog exceeded 250 ms: {elapsed:?}"
+    );
+
+    let foreign_storage = Arc::new(FakeStorage::default());
+    foreign_storage.skip_write_delays();
+    let foreign = session(8, foreign_storage);
+    foreign
+        .retain("foreign", &OperationGuard::new())
+        .await
+        .expect("C15 foreign fixture artifact");
+    assert!(
+        catalog
+            .iter()
+            .all(|address| address.session_token() != foreign.token().as_str()),
+        "C15 catalog leaked another Path Session"
+    );
+
+    path_session.invalidate();
+    let error = path_session
+        .artifact_catalog()
+        .await
+        .expect_err("C15 inactive catalog");
+    assert_eq!(
+        error.category(),
+        ErrorCategory::SourceUnavailable,
+        "C15 inactive category"
+    );
 }
