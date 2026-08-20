@@ -10,6 +10,7 @@ use url::Url;
 use crate::{ErrorCategory, ResourceError};
 
 const WORKSPACE_PREFIX: &str = "rfs://workspace/";
+const ARTIFACT_PREFIX: &str = "artifact://";
 pub const MAX_PATH_REFERENCE_BYTES: usize = 64 * 1024;
 pub const MAX_WORKSPACE_ROOTS: usize = 256;
 
@@ -133,17 +134,166 @@ pub enum WorkspaceAddress {
     },
 }
 
-/// Preserved projection spelling. Execution belongs to the selector owner.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectionSelector(String);
+/// Immutable Path Session artifact identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ArtifactAddress {
+    session_token: String,
+    object_id: u64,
+}
 
-impl ProjectionSelector {
-    pub fn as_str(&self) -> &str {
-        &self.0
+impl ArtifactAddress {
+    pub fn new(session_token: impl Into<String>, object_id: u64) -> Result<Self, ResourceError> {
+        let session_token = session_token.into();
+        validate_session_token(&session_token)?;
+        if object_id == 0 {
+            return Err(invalid_reference("artifact object ID must be positive"));
+        }
+        Ok(Self {
+            session_token,
+            object_id,
+        })
+    }
+
+    pub fn session_token(&self) -> &str {
+        &self.session_token
+    }
+
+    pub const fn object_id(&self) -> u64 {
+        self.object_id
     }
 }
 
-/// Alternate interpretation when a trailing selector is syntactically valid.
+/// Parsed source identity independent of its optional projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceAddress {
+    Workspace(WorkspaceAddress),
+    Artifact(ArtifactAddress),
+}
+
+/// One validated 1-indexed line range in request order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineRange {
+    start: u64,
+    inclusive_end: Option<u64>,
+}
+
+impl LineRange {
+    const fn through_eof(start: u64) -> Self {
+        Self {
+            start,
+            inclusive_end: None,
+        }
+    }
+
+    const fn bounded(start: u64, inclusive_end: u64) -> Self {
+        Self {
+            start,
+            inclusive_end: Some(inclusive_end),
+        }
+    }
+
+    pub const fn start(self) -> u64 {
+        self.start
+    }
+
+    pub const fn inclusive_end(self) -> Option<u64> {
+        self.inclusive_end
+    }
+}
+
+/// Ordered line-selection algebra. Duplicate and overlapping ranges are retained.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineSelector {
+    raw: bool,
+    ranges: Vec<LineRange>,
+}
+
+impl LineSelector {
+    pub const fn is_raw(&self) -> bool {
+        self.raw
+    }
+
+    pub fn ranges(&self) -> &[LineRange] {
+        &self.ranges
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProjectionKind {
+    Raw,
+    Lines(LineSelector),
+    Page(u64),
+}
+
+/// Typed projection plus the caller's accepted spelling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionSelector {
+    spelling: String,
+    kind: ProjectionKind,
+}
+
+impl ProjectionSelector {
+    pub fn parse(spelling: impl Into<String>) -> Result<Self, ResourceError> {
+        let spelling = spelling.into();
+        if spelling == "raw" {
+            return Ok(Self {
+                spelling,
+                kind: ProjectionKind::Raw,
+            });
+        }
+        if let Some(offset) = spelling.strip_prefix("page:") {
+            let offset = positive_integer(offset)
+                .filter(|offset| *offset != 0)
+                .ok_or_else(|| invalid_reference("artifact page offset must be positive"))?;
+            return Ok(Self {
+                spelling,
+                kind: ProjectionKind::Page(offset),
+            });
+        }
+        let (raw, ranges) = spelling
+            .strip_prefix("raw:")
+            .map_or((false, spelling.as_str()), |ranges| (true, ranges));
+        if ranges.is_empty() {
+            return Err(invalid_reference("line selector must include a range"));
+        }
+        let ranges = ranges
+            .split(',')
+            .map(parse_line_range)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            spelling,
+            kind: ProjectionKind::Lines(LineSelector { raw, ranges }),
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.spelling
+    }
+
+    pub const fn is_raw(&self) -> bool {
+        match &self.kind {
+            ProjectionKind::Raw => true,
+            ProjectionKind::Lines(selection) => selection.is_raw(),
+            ProjectionKind::Page(_) => false,
+        }
+    }
+
+    pub const fn line_selection(&self) -> Option<&LineSelector> {
+        match &self.kind {
+            ProjectionKind::Lines(selection) => Some(selection),
+            ProjectionKind::Raw | ProjectionKind::Page(_) => None,
+        }
+    }
+
+    pub const fn page_offset(&self) -> Option<u64> {
+        match &self.kind {
+            ProjectionKind::Page(offset) => Some(*offset),
+            ProjectionKind::Raw | ProjectionKind::Lines(_) => None,
+        }
+    }
+}
+
+/// Alternate workspace interpretation when a trailing selector is syntactically valid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedWorkspaceAddress {
     base: WorkspaceAddress,
@@ -164,27 +314,50 @@ impl SelectedWorkspaceAddress {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathReference {
     requested: String,
-    literal: WorkspaceAddress,
+    address: ResourceAddress,
+    projection: Option<ProjectionSelector>,
     selector_candidate: Option<SelectedWorkspaceAddress>,
+    selector_error: Option<ResourceError>,
 }
 
 impl PathReference {
     pub fn parse(input: impl Into<String>) -> Result<Self, ResourceError> {
         let requested = input.into();
         validate_reference_input(&requested)?;
-        let literal = parse_address(&requested)?;
-        let selector_candidate = selector_split(&requested).and_then(|(base, selector)| {
-            parse_address(base)
-                .ok()
-                .map(|base| SelectedWorkspaceAddress {
-                    base,
-                    selector: ProjectionSelector(selector.to_owned()),
-                })
-        });
+        if requested.starts_with(ARTIFACT_PREFIX) {
+            let (base, projection) = projection_candidate_split(&requested).map_or_else(
+                || Ok((requested.as_str(), None)),
+                |(base, selector)| {
+                    ProjectionSelector::parse(selector).map(|selector| (base, Some(selector)))
+                },
+            )?;
+            let address = parse_artifact_address(base)?;
+            return Ok(Self {
+                requested,
+                address: ResourceAddress::Artifact(address),
+                projection,
+                selector_candidate: None,
+                selector_error: None,
+            });
+        }
+
+        let literal = parse_workspace_address(&requested)?;
+        let (selector_candidate, selector_error) =
+            projection_candidate_split(&requested).map_or((None, None), |(base, selector)| {
+                match ProjectionSelector::parse(selector).and_then(|selector| {
+                    parse_workspace_address(base)
+                        .map(|base| SelectedWorkspaceAddress { base, selector })
+                }) {
+                    Ok(candidate) => (Some(candidate), None),
+                    Err(error) => (None, Some(error)),
+                }
+            });
         Ok(Self {
             requested,
-            literal,
+            address: ResourceAddress::Workspace(literal),
+            projection: None,
             selector_candidate,
+            selector_error,
         })
     }
 
@@ -198,21 +371,54 @@ impl PathReference {
         requested.push_str(&path.render());
         Self {
             requested,
-            literal: WorkspaceAddress::Canonical { root, path },
+            address: ResourceAddress::Workspace(WorkspaceAddress::Canonical { root, path }),
+            projection: None,
             selector_candidate: None,
+            selector_error: None,
         }
+    }
+
+    pub fn artifact(
+        address: ArtifactAddress,
+        projection: Option<ProjectionSelector>,
+    ) -> Result<Self, ResourceError> {
+        let mut requested = format!(
+            "{ARTIFACT_PREFIX}{}-{}",
+            address.session_token(),
+            address.object_id()
+        );
+        if let Some(selector) = projection.as_ref() {
+            requested.push(':');
+            requested.push_str(selector.as_str());
+        }
+        Self::parse(requested)
     }
 
     pub fn requested(&self) -> &str {
         &self.requested
     }
 
-    pub fn literal(&self) -> &WorkspaceAddress {
-        &self.literal
+    pub const fn address(&self) -> &ResourceAddress {
+        &self.address
+    }
+
+    pub fn workspace_address(&self) -> Option<&WorkspaceAddress> {
+        match &self.address {
+            ResourceAddress::Workspace(address) => Some(address),
+            ResourceAddress::Artifact(_) => None,
+        }
+    }
+
+    pub const fn projection(&self) -> Option<&ProjectionSelector> {
+        self.projection.as_ref()
     }
 
     pub fn selector_candidate(&self) -> Option<&SelectedWorkspaceAddress> {
         self.selector_candidate.as_ref()
+    }
+
+    pub const fn selector_error(&self) -> Option<&ResourceError> {
+        self.selector_error.as_ref()
     }
 }
 
@@ -355,7 +561,7 @@ fn validate_reference_input(input: &str) -> Result<(), ResourceError> {
     Ok(())
 }
 
-fn parse_address(input: &str) -> Result<WorkspaceAddress, ResourceError> {
+fn parse_workspace_address(input: &str) -> Result<WorkspaceAddress, ResourceError> {
     let delimiter_input = input.strip_prefix("\\\\?\\").unwrap_or(input);
     if delimiter_input.contains('?') || delimiter_input.contains('#') {
         return Err(invalid_reference(
@@ -562,36 +768,84 @@ fn encode_component(component: &str, output: &mut String) {
     }
 }
 
-fn selector_split(input: &str) -> Option<(&str, &str)> {
-    if let Some(index) = input.rfind(":raw") {
-        let selector = &input[index + 1..];
-        if valid_selector(selector) {
-            return Some((&input[..index], selector));
+fn parse_artifact_address(input: &str) -> Result<ArtifactAddress, ResourceError> {
+    let body = input
+        .strip_prefix(ARTIFACT_PREFIX)
+        .ok_or_else(|| invalid_reference("malformed artifact reference"))?;
+    if body.len() < 34 {
+        return Err(invalid_reference("malformed artifact reference"));
+    }
+    let (session_token, object) = body.split_at(32);
+    validate_session_token(session_token)?;
+    let object = object
+        .strip_prefix('-')
+        .ok_or_else(|| invalid_reference("artifact reference must separate token and object ID"))?;
+    if object.len() > 1 && object.starts_with('0') {
+        return Err(invalid_reference(
+            "artifact object ID must use canonical decimal",
+        ));
+    }
+    let object_id = positive_integer(object)
+        .ok_or_else(|| invalid_reference("artifact object ID must be positive"))?;
+    ArtifactAddress::new(session_token, object_id)
+}
+
+fn validate_session_token(token: &str) -> Result<(), ResourceError> {
+    if token.len() != 32
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(invalid_reference(
+            "artifact session token must be 128-bit lowercase hexadecimal",
+        ));
+    }
+    Ok(())
+}
+
+fn projection_candidate_split(input: &str) -> Option<(&str, &str)> {
+    for marker in [":raw", ":page:"] {
+        if let Some(index) = input.rfind(marker) {
+            return Some((&input[..index], &input[index + 1..]));
         }
     }
     let (base, selector) = input.rsplit_once(':')?;
-    valid_selector(selector).then_some((base, selector))
+    selector
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_digit)
+        .then_some((base, selector))
 }
 
-fn valid_selector(selector: &str) -> bool {
-    if selector == "raw" {
-        return true;
-    }
-    let ranges = selector.strip_prefix("raw:").unwrap_or(selector);
-    !ranges.is_empty() && ranges.split(',').all(valid_range)
-}
-
-fn valid_range(range: &str) -> bool {
+fn parse_line_range(range: &str) -> Result<LineRange, ResourceError> {
     if let Some((start, count)) = range.split_once('+') {
-        return positive_integer(start).is_some() && positive_integer(count).is_some();
+        let start = positive_integer(start)
+            .ok_or_else(|| invalid_reference("line selector start must be positive"))?;
+        let count = positive_integer(count)
+            .ok_or_else(|| invalid_reference("line selector count must be positive"))?;
+        let inclusive_end = start
+            .checked_add(count - 1)
+            .ok_or_else(|| invalid_reference("line selector range overflows"))?;
+        return Ok(LineRange::bounded(start, inclusive_end));
     }
     if let Some((start, end)) = range.split_once('-') {
-        let Some(start) = positive_integer(start) else {
-            return false;
-        };
-        return end.is_empty() || positive_integer(end).is_some_and(|end| end >= start);
+        let start = positive_integer(start)
+            .ok_or_else(|| invalid_reference("line selector start must be positive"))?;
+        if end.is_empty() {
+            return Ok(LineRange::through_eof(start));
+        }
+        let end = positive_integer(end)
+            .ok_or_else(|| invalid_reference("line selector end must be positive"))?;
+        if end < start {
+            return Err(invalid_reference(
+                "line selector end must not precede its start",
+            ));
+        }
+        return Ok(LineRange::bounded(start, end));
     }
-    positive_integer(range).is_some()
+    let start = positive_integer(range)
+        .ok_or_else(|| invalid_reference("line selector start must be positive"))?;
+    Ok(LineRange::through_eof(start))
 }
 
 fn positive_integer(value: &str) -> Option<u64> {

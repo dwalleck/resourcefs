@@ -1,4 +1,4 @@
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 use sha2::{Digest, Sha256};
 
@@ -10,6 +10,14 @@ impl VersionTag {
     pub fn from_content(content: &[u8]) -> Self {
         let digest = Sha256::digest(content);
         Self(format!("sha256:{digest:x}"))
+    }
+    pub(crate) fn from_sha256_digest(digest: [u8; 32]) -> Self {
+        let mut tag = String::with_capacity("sha256:".len() + digest.len() * 2);
+        tag.push_str("sha256:");
+        for byte in digest {
+            write!(tag, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        Self(tag)
     }
 
     pub fn as_str(&self) -> &str {

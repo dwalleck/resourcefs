@@ -654,21 +654,31 @@ fn read_from_view(
     reference: &PathReference,
     visibility: BackingPathVisibility,
 ) -> Result<CompletedRead, ResourceError> {
-    match read_address(view, reference.literal(), visibility) {
-        Err(error)
-            if error.category() == ErrorCategory::NotFound
-                && reference.selector_candidate().is_some() =>
-        {
-            Err(ResourceError::new(
+    let address = reference.workspace_address().ok_or_else(|| {
+        ResourceError::new(
+            ErrorCategory::UnsupportedProjection,
+            "filesystem Source Adapter cannot read non-workspace Resources",
+        )
+    })?;
+    let result = read_address(view, address, visibility);
+    if result
+        .as_ref()
+        .is_err_and(|error| error.category() == ErrorCategory::NotFound)
+    {
+        if let Some(error) = reference.selector_error() {
+            return Err(error.clone());
+        }
+        if reference.selector_candidate().is_some() {
+            return Err(ResourceError::new(
                 ErrorCategory::UnsupportedProjection,
                 format!(
                     "Resource '{}' has a selector that is not supported yet",
                     reference.requested()
                 ),
-            ))
+            ));
         }
-        result => result,
     }
+    result
 }
 
 struct ResolvedAddress {

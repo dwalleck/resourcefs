@@ -1,11 +1,14 @@
 use url::Url;
 
-use crate::{ErrorCategory, PathReference, ResourceError, VersionTag, WorkspaceAddress};
+use crate::{
+    ErrorCategory, PathReference, ResourceAddress, ResourceError, VersionTag, WorkspaceAddress,
+};
 
 pub const BEHAVIOR_CONTRACT_VERSION: &str = "1.0.0";
 pub const MAX_TEXT_BYTES: usize = 48 * 1024;
 pub const MAX_TEXT_LINES: usize = 3_000;
 pub const MAX_TEXT_COLUMNS: usize = 512;
+pub const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 pub const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
 
 /// Complete source-neutral result of reading one UTF-8 Resource.
@@ -22,7 +25,10 @@ pub struct ReadResource {
 
 impl ReadResource {
     pub fn text(reference: PathReference, content: String) -> Result<Self, ResourceError> {
-        if !matches!(reference.literal(), WorkspaceAddress::Canonical { .. }) {
+        if !matches!(
+            reference.address(),
+            ResourceAddress::Workspace(WorkspaceAddress::Canonical { .. })
+        ) {
             return Err(ResourceError::new(
                 ErrorCategory::InvalidReference,
                 "ReadResource identity must be a canonical workspace reference",

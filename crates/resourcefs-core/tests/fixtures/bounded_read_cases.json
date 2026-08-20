@@ -1,0 +1,20 @@
+{
+  "cases": [
+    {"name":"empty-raw","content":"","selector":"raw","expected":""},
+    {"name":"single-means-through-eof","content":"alpha\r\nbeta\nlast","selector":"1","expected":"alpha\r\nbeta\nlast"},
+    {"name":"inclusive-one-line","content":"alpha\r\nbeta\nlast","selector":"2-2","expected":"beta\n"},
+    {"name":"open-ended","content":"alpha\r\nbeta\nlast","selector":"3-","expected":"last"},
+    {"name":"counted","content":"alpha\r\nbeta\nlast","selector":"1+2","expected":"alpha\r\nbeta\n"},
+    {"name":"ordered-duplicates","content":"alpha\r\nbeta\nlast","selector":"3,1-1,3","expected":"lastalpha\r\nlast"},
+    {"name":"raw-ranges","content":"alpha\r\nbeta\nlast","selector":"raw:2-","expected":"beta\nlast"},
+    {"name":"end-clips","content":"alpha\r\nbeta\nlast","selector":"2-99","expected":"beta\nlast"},
+    {"name":"unicode-scalars","content":"éclair\n雪だるま\n🙂","selector":"2+2","expected":"雪だるま\n🙂"},
+    {"name":"final-terminator-no-empty-line","content":"a\nb\n","selector":"2","expected":"b\n"}
+  ],
+  "errors": [
+    {"name":"empty-start-past-eof","content":"","selector":"1","category":"invalid_reference"},
+    {"name":"terminated-start-past-eof","content":"a\nb\n","selector":"3","category":"invalid_reference"},
+    {"name":"one-invalid-start-is-atomic","content":"a\nb\n","selector":"1-1,3","category":"invalid_reference"}
+  ],
+  "invalidSelectors": ["0", "1-0", "2-1", "1+0", "1,,2", "raw:", "raw:0", "page:0"]
+}

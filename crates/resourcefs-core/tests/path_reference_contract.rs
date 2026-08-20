@@ -70,7 +70,8 @@ fn golden_workspace_references() {
                 let reference = parsed.unwrap_or_else(|error| {
                     panic!("expected {:?} to parse, got {error}", row.input)
                 });
-                let (kind, value, root) = address_observation(reference.literal());
+                let (kind, value, root) =
+                    address_observation(reference.workspace_address().expect("workspace address"));
                 assert_eq!(Some(kind), row.expected.address_kind.as_deref(), "{row:?}");
                 assert_eq!(
                     Some(value.as_str()),
@@ -104,7 +105,7 @@ fn reference_byte_limit_is_exact() {
     let at_limit = "a".repeat(MAX_PATH_REFERENCE_BYTES);
     let reference = PathReference::parse(at_limit.clone()).expect("64 KiB must parse");
     assert_eq!(
-        address_observation(reference.literal()),
+        address_observation(reference.workspace_address().expect("workspace address")),
         ("relative", at_limit, None)
     );
 
@@ -124,7 +125,7 @@ fn canonical_construction_percent_encodes_ambiguous_component_characters() {
         "rfs://workspace/workspace/notes/résumé %25 %231%3A2"
     );
     assert!(matches!(
-        reference.literal(),
+        reference.workspace_address().expect("workspace address"),
         WorkspaceAddress::Canonical { .. }
     ));
     assert_eq!(PathReference::parse(reference.requested()), Ok(reference));
@@ -172,7 +173,7 @@ fn parses_production_shaped_reference_within_budget() {
     let elapsed = started.elapsed();
 
     assert_eq!(
-        address_observation(reference.literal()),
+        address_observation(reference.workspace_address().expect("workspace address")),
         ("relative", file_name, None)
     );
     assert!(
