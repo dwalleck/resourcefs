@@ -11,6 +11,7 @@ description = "Source-neutral Behavior Contract for ResourceFS"
 async-trait.workspace = true
 serde.workspace = true
 sha2.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 serde_json = "1.0.143"

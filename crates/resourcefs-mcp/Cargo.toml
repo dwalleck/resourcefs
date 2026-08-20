@@ -14,6 +14,9 @@ name = "resourcefs_mcp"
 name = "resourcefs"
 path = "src/main.rs"
 
+[features]
+test-support = ["resourcefs-sources/test-support"]
+
 [dependencies]
 clap.workspace = true
 resourcefs-core = { path = "../resourcefs-core" }
@@ -27,3 +30,4 @@ tokio.workspace = true
 [dev-dependencies]
 cargo_metadata = "0.23.0"
 tempfile.workspace = true
+url.workspace = true

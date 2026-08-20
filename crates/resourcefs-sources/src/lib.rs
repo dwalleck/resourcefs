@@ -2,4 +2,7 @@
 
 mod filesystem;
 
-pub use filesystem::FilesystemSource;
+pub use filesystem::{
+    BackingPathVisibility, ClientRoot, FilesystemSource, LaunchRoot, LaunchRootSource,
+    RootAcquisition, RootRefresh, RootRefreshOutcome,
+};

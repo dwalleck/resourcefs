@@ -1,4 +1,6 @@
-use crate::{PathReference, VersionTag};
+use url::Url;
+
+use crate::{ErrorCategory, PathReference, ResourceError, VersionTag, WorkspaceAddress};
 
 pub const BEHAVIOR_CONTRACT_VERSION: &str = "1.0.0";
 pub const MAX_TEXT_BYTES: usize = 48 * 1024;
@@ -14,20 +16,28 @@ pub struct ReadResource {
     version_tag: VersionTag,
     mutable: bool,
     bounded: bool,
+    backing_file_uri: Option<String>,
     content: String,
 }
 
 impl ReadResource {
-    pub fn text(reference: PathReference, content: String) -> Self {
+    pub fn text(reference: PathReference, content: String) -> Result<Self, ResourceError> {
+        if !matches!(reference.literal(), WorkspaceAddress::Canonical { .. }) {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "ReadResource identity must be a canonical workspace reference",
+            ));
+        }
         let version_tag = VersionTag::from_content(content.as_bytes());
-        Self {
-            canonical_reference: reference.canonical().to_owned(),
+        Ok(Self {
+            canonical_reference: reference.requested().to_owned(),
             content_type: TEXT_CONTENT_TYPE,
             version_tag,
             mutable: false,
             bounded: false,
+            backing_file_uri: None,
             content,
-        }
+        })
     }
 
     pub fn canonical_reference(&self) -> &str {
@@ -48,6 +58,35 @@ impl ReadResource {
 
     pub const fn is_bounded(&self) -> bool {
         self.bounded
+    }
+
+    pub fn with_backing_file_uri(
+        mut self,
+        backing_file_uri: impl Into<String>,
+    ) -> Result<Self, ResourceError> {
+        let backing_file_uri = backing_file_uri.into();
+        let parsed = Url::parse(&backing_file_uri).map_err(|_| {
+            ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "backing-file metadata must be a valid local file URI",
+            )
+        })?;
+        if parsed.scheme() != "file"
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || parsed.to_file_path().is_err()
+        {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "backing-file metadata must be a valid local file URI",
+            ));
+        }
+        self.backing_file_uri = Some(parsed.into());
+        Ok(self)
+    }
+
+    pub fn backing_file_uri(&self) -> Option<&str> {
+        self.backing_file_uri.as_deref()
     }
 
     pub fn content(&self) -> &str {

@@ -1,0 +1,21 @@
+[package]
+name = "resourcefs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+resourcefs-core = { path = "../crates/resourcefs-core" }
+
+[[bin]]
+name = "path_reference"
+path = "fuzz_targets/path_reference.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

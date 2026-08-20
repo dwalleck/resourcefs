@@ -1,15 +1,15 @@
 use std::time::{Duration, Instant};
 
 use resourcefs_core::{
-    BEHAVIOR_CONTRACT_VERSION, PathReference, ReadResource, RootName, VersionTag,
+    BEHAVIOR_CONTRACT_VERSION, ErrorCategory, PathReference, ReadResource, VersionTag,
+    WorkspacePath, WorkspaceRootId,
 };
 
 fn reference(path: &str) -> PathReference {
-    PathReference::parse(
-        path,
-        &RootName::new("workspace").expect("fixture root name should be valid"),
+    PathReference::canonical(
+        WorkspaceRootId::new("workspace").expect("fixture root id should be valid"),
+        WorkspacePath::new(path).expect("fixture path should be valid"),
     )
-    .expect("fixture path should be valid")
 }
 
 #[test]
@@ -26,8 +26,10 @@ fn matches_published_sha256_vectors() {
 
 #[test]
 fn ignores_path_and_metadata() {
-    let left = ReadResource::text(reference("left.txt"), "same bytes".to_owned());
-    let right = ReadResource::text(reference("nested/right.txt"), "same bytes".to_owned());
+    let left = ReadResource::text(reference("left.txt"), "same bytes".to_owned())
+        .expect("canonical reference");
+    let right = ReadResource::text(reference("nested/right.txt"), "same bytes".to_owned())
+        .expect("canonical reference");
 
     assert_eq!(left.version_tag(), right.version_tag());
     assert_ne!(left.canonical_reference(), right.canonical_reference());
@@ -42,7 +44,8 @@ fn changes_when_content_changes() {
 
 #[test]
 fn exposes_stable_read_contract_fields() {
-    let resource = ReadResource::text(reference("empty.txt"), String::new());
+    let resource =
+        ReadResource::text(reference("empty.txt"), String::new()).expect("canonical reference");
 
     assert_eq!(BEHAVIOR_CONTRACT_VERSION, "1.0.0");
     assert_eq!(
@@ -53,6 +56,26 @@ fn exposes_stable_read_contract_fields() {
     assert_eq!(resource.content(), "");
     assert!(!resource.is_mutable());
     assert!(!resource.is_bounded());
+}
+
+#[test]
+fn backing_file_uri_is_absent_unless_explicitly_attached() {
+    let hidden =
+        ReadResource::text(reference("visible.txt"), "content".to_owned()).expect("read resource");
+    assert_eq!(hidden.backing_file_uri(), None);
+
+    let visible = hidden
+        .with_backing_file_uri("file:///workspace/visible.txt")
+        .expect("local backing URI");
+    assert_eq!(
+        visible.backing_file_uri(),
+        Some("file:///workspace/visible.txt")
+    );
+
+    let invalid = visible
+        .with_backing_file_uri("https://example.com/visible.txt")
+        .expect_err("non-file backing URI must fail");
+    assert_eq!(invalid.category(), ErrorCategory::InvalidReference);
 }
 
 #[test]

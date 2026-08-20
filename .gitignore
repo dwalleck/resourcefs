@@ -1,3 +1,7 @@
 /target/
 **/*.rs.bk
 .DS_Store
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/target/
+/fuzz/Cargo.lock

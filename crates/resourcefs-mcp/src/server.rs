@@ -1,18 +1,21 @@
-use std::{borrow::Cow, fmt, sync::Arc};
+use std::{borrow::Cow, fmt, sync::Arc, time::Duration};
 
-use resourcefs_core::{PathReference, RootName, SourceAdapter};
+use resourcefs_core::{PathReference, SourceAdapter};
+use resourcefs_sources::{ClientRoot, FilesystemSource, RootRefresh};
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, tool::schema_for_type, wrapper::Parameters},
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, Implementation, ListToolsResult,
-        PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ClientResult, Implementation,
+        ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo,
+        ServerRequest, Tool,
     },
-    service::{RequestContext, RoleServer},
+    service::{NotificationContext, PeerRequestOptions, RequestContext, RoleServer},
     tool, tool_router,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tokio::sync::Mutex;
 
 use crate::{
     BoxError,
@@ -22,6 +25,19 @@ use crate::{
 const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] =
     &[ProtocolVersion::V_2026_07_28, ProtocolVersion::V_2025_11_25];
 
+#[derive(Debug)]
+enum RootSyncState {
+    Unseen,
+    Idle,
+    Pending(RootRefresh),
+}
+
+#[derive(Debug)]
+struct RootSync {
+    state: Mutex<RootSyncState>,
+    acquisition: Mutex<()>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ReadInput {
@@ -30,8 +46,8 @@ struct ReadInput {
 
 #[derive(Clone)]
 struct ResourceFsServer {
-    source: Arc<dyn SourceAdapter>,
-    primary_root: RootName,
+    source: FilesystemSource,
+    root_sync: Arc<RootSync>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -39,18 +55,61 @@ impl fmt::Debug for ResourceFsServer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ResourceFsServer")
-            .field("primary_root", &self.primary_root)
             .finish_non_exhaustive()
     }
 }
 
 #[tool_router(router = tool_router)]
 impl ResourceFsServer {
-    fn new(source: Arc<dyn SourceAdapter>, primary_root: RootName) -> Self {
+    fn new(source: FilesystemSource) -> Self {
         Self {
             source,
-            primary_root,
+            root_sync: Arc::new(RootSync {
+                state: Mutex::new(RootSyncState::Unseen),
+                acquisition: Mutex::new(()),
+            }),
             tool_router: Self::tool_router(),
+        }
+    }
+
+    async fn mark_client_roots_pending(&self, supersede_existing: bool) {
+        let mut state = self.root_sync.state.lock().await;
+        if !supersede_existing && !matches!(*state, RootSyncState::Unseen) {
+            return;
+        }
+        let refresh = self.source.begin_client_root_refresh().await;
+        *state = RootSyncState::Pending(refresh);
+    }
+
+    async fn take_pending_root_refresh(&self) -> Option<RootRefresh> {
+        let mut state = self.root_sync.state.lock().await;
+        let refresh = match *state {
+            RootSyncState::Unseen => self.source.begin_client_root_refresh().await,
+            RootSyncState::Pending(refresh) => refresh,
+            RootSyncState::Idle => return None,
+        };
+        *state = RootSyncState::Idle;
+        Some(refresh)
+    }
+
+    async fn refresh_client_roots(&self, context: &RequestContext<RoleServer>) {
+        if !request_supports_roots(context) {
+            return;
+        }
+        let _acquisition = self.root_sync.acquisition.lock().await;
+        while let Some(refresh) = self.take_pending_root_refresh().await {
+            let acquisition = self.source.start_client_root_acquisition(refresh);
+            match request_client_roots(context, acquisition.remaining()).await {
+                Ok(roots) => {
+                    let _ = self
+                        .source
+                        .complete_client_root_refresh(acquisition, roots)
+                        .await;
+                }
+                Err(()) => {
+                    self.source.fail_client_root_refresh(acquisition).await;
+                }
+            }
         }
     }
 
@@ -63,7 +122,7 @@ impl ResourceFsServer {
         &self,
         Parameters(input): Parameters<ReadInput>,
     ) -> Result<CallToolResult, String> {
-        let reference = match PathReference::parse(&input.path, &self.primary_root) {
+        let reference = match PathReference::parse(&input.path) {
             Ok(reference) => reference,
             Err(error) => return render::failure(&input.path, &error),
         };
@@ -74,12 +133,41 @@ impl ResourceFsServer {
     }
 }
 
+#[allow(deprecated)]
+async fn request_client_roots(
+    context: &RequestContext<RoleServer>,
+    timeout: Duration,
+) -> Result<Vec<ClientRoot>, ()> {
+    let request = ServerRequest::ListRootsRequest(rmcp::model::ListRootsRequest {
+        method: Default::default(),
+        extensions: Default::default(),
+    });
+    let handle = context
+        .peer
+        .send_cancellable_request(request, PeerRequestOptions::with_timeout(timeout))
+        .await
+        .map_err(|_| ())?;
+    let result = handle.await_response().await.map_err(|_| ())?;
+    let ClientResult::ListRootsResult(result) = result else {
+        return Err(());
+    };
+    Ok(result
+        .roots
+        .into_iter()
+        .map(|root| ClientRoot {
+            uri: root.uri,
+            name: root.name,
+        })
+        .collect())
+}
+
 impl ServerHandler for ResourceFsServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
+        self.refresh_client_roots(&context).await;
         if request.name != "rfs_read" {
             return Err(McpError::invalid_params("tool not found", None));
         }
@@ -102,8 +190,9 @@ impl ServerHandler for ResourceFsServer {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
+        self.refresh_client_roots(&context).await;
         Ok(ListToolsResult {
             tools: self.tool_router.list_all(),
             ..Default::default()
@@ -113,6 +202,18 @@ impl ServerHandler for ResourceFsServer {
     fn get_tool(&self, name: &str) -> Option<Tool> {
         self.tool_router.get(name).cloned()
     }
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        if notification_supports_roots(&context) {
+            self.mark_client_roots_pending(false).await;
+        }
+    }
+
+    async fn on_roots_list_changed(&self, context: NotificationContext<RoleServer>) {
+        if notification_supports_roots(&context) {
+            self.mark_client_roots_pending(true).await;
+        }
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2026_07_28)
@@ -130,11 +231,23 @@ impl ServerHandler for ResourceFsServer {
     }
 }
 
-pub(crate) async fn serve(
-    source: Arc<dyn SourceAdapter>,
-    primary_root: RootName,
-) -> Result<(), BoxError> {
-    let running = ResourceFsServer::new(source, primary_root)
+#[allow(deprecated)]
+fn request_supports_roots(context: &RequestContext<RoleServer>) -> bool {
+    context
+        .client_capabilities()
+        .is_some_and(|capabilities| capabilities.roots.is_some())
+}
+
+#[allow(deprecated)]
+fn notification_supports_roots(context: &NotificationContext<RoleServer>) -> bool {
+    context
+        .peer
+        .peer_info()
+        .is_some_and(|info| info.capabilities.roots.is_some())
+}
+
+pub(crate) async fn serve(source: FilesystemSource) -> Result<(), BoxError> {
+    let running = ResourceFsServer::new(source)
         .serve(rmcp::transport::stdio())
         .await?;
     running.waiting().await?;

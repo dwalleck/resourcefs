@@ -1,8 +1,8 @@
-use std::{error::Error, fmt, path::PathBuf, str::FromStr, sync::Arc};
+use std::{path::PathBuf, str::FromStr};
 
 use clap::{Args, Parser, Subcommand};
-use resourcefs_core::{RootName, SourceAdapter};
-use resourcefs_sources::FilesystemSource;
+use resourcefs_core::WorkspaceRootId;
+use resourcefs_sources::{BackingPathVisibility, FilesystemSource, LaunchRoot, LaunchRootSource};
 
 use crate::{BoxError, server};
 
@@ -25,18 +25,18 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct ServeArgs {
-    /// Declare the one launch Workspace Root as NAME=PATH.
-    #[arg(long = "root", required = true, value_name = "NAME=PATH")]
+    /// Declare one or more launch Workspace Roots as ID=PATH.
+    #[arg(long = "root", required = true, value_name = "ID=PATH")]
     roots: Vec<RootArgument>,
 
-    /// Name the launch root used for relative Path References.
-    #[arg(long, value_name = "NAME")]
-    primary_root: RootNameArgument,
+    /// Select the launch root used for relative Path References.
+    #[arg(long, value_name = "ID")]
+    primary_root: Option<RootIdArgument>,
 }
 
 #[derive(Debug, Clone)]
 struct RootArgument {
-    name: RootName,
+    id: WorkspaceRootId,
     path: PathBuf,
 }
 
@@ -44,43 +44,41 @@ impl FromStr for RootArgument {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (name, path) = value
+        let (id, path) = value
             .split_once('=')
-            .ok_or_else(|| "Workspace Root must use NAME=PATH syntax".to_owned())?;
-        let name = RootName::new(name.to_owned()).map_err(|error| error.to_string())?;
+            .ok_or_else(|| "Workspace Root must use ID=PATH syntax".to_owned())?;
+        let id = WorkspaceRootId::new(id.to_owned()).map_err(|error| error.to_string())?;
         if path.is_empty() {
             return Err("Workspace Root backing path must not be empty".to_owned());
         }
         Ok(Self {
-            name,
+            id,
             path: PathBuf::from(path),
         })
     }
 }
 
 #[derive(Debug, Clone)]
-struct RootNameArgument(RootName);
+struct RootIdArgument(WorkspaceRootId);
 
-impl FromStr for RootNameArgument {
+impl FromStr for RootIdArgument {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        RootName::new(value.to_owned())
+        WorkspaceRootId::new(value.to_owned())
             .map(Self)
             .map_err(|error| error.to_string())
     }
 }
 
-#[derive(Debug)]
-struct CliError(String);
-
-impl fmt::Display for CliError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+impl From<RootArgument> for LaunchRoot {
+    fn from(root: RootArgument) -> Self {
+        Self {
+            id: root.id,
+            path: root.path,
+        }
     }
 }
-
-impl Error for CliError {}
 
 pub async fn run_cli() -> Result<(), BoxError> {
     let cli = Cli::parse();
@@ -90,22 +88,15 @@ pub async fn run_cli() -> Result<(), BoxError> {
 }
 
 async fn serve(arguments: ServeArgs) -> Result<(), BoxError> {
-    let [root] = <[RootArgument; 1]>::try_from(arguments.roots).map_err(|roots: Vec<_>| {
-        CliError(format!(
-            "exactly one launch Workspace Root is required; received {}",
-            roots.len()
-        ))
-    })?;
-    if root.name != arguments.primary_root.0 {
-        return Err(CliError(format!(
-            "Primary Workspace Root '{}' does not match configured root '{}'",
-            arguments.primary_root.0, root.name
-        ))
-        .into());
-    }
-
-    let root_name = root.name;
-    let source = FilesystemSource::new(root_name.clone(), root.path).await?;
-    let source: Arc<dyn SourceAdapter> = Arc::new(source);
-    server::serve(source, root_name).await
+    let roots = arguments.roots.into_iter().map(LaunchRoot::from).collect();
+    let primary_selector = arguments
+        .primary_root
+        .map(|primary| primary.0.as_str().to_owned());
+    let source = FilesystemSource::new(
+        LaunchRootSource::Cli(roots),
+        primary_selector,
+        BackingPathVisibility::Hidden,
+    )
+    .await?;
+    server::serve(source).await
 }

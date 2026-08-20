@@ -1,85 +1,195 @@
-use std::time::{Duration, Instant};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
-use resourcefs_core::{ErrorCategory, PathReference, RootName};
+use resourcefs_core::{
+    ErrorCategory, MAX_PATH_REFERENCE_BYTES, PathReference, WorkspaceAddress, WorkspacePath,
+    WorkspaceRoot, WorkspaceRootId, WorkspaceRootSet,
+};
+use serde::Deserialize;
 
-fn root() -> RootName {
-    RootName::new("workspace").expect("fixture root name should be valid")
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CorpusRow {
+    kind: String,
+    input: String,
+    platform: String,
+    expected: Expected,
 }
 
-#[test]
-fn accepts_relative_and_canonical_workspace_references() {
-    let relative = PathReference::parse("src/hello.txt", &root()).expect("relative reference");
-    assert_eq!(relative.root().as_str(), "workspace");
-    assert_eq!(relative.relative_path().to_string_lossy(), "src/hello.txt");
-    assert_eq!(
-        relative.canonical(),
-        "rfs://workspace/workspace/src/hello.txt"
-    );
-
-    let canonical = PathReference::parse("rfs://workspace/workspace/src/hello.txt", &root())
-        .expect("canonical reference");
-    assert_eq!(canonical, relative);
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Expected {
+    status: String,
+    address_kind: Option<String>,
+    value: Option<String>,
+    root: Option<String>,
+    selector: Option<String>,
+    category: Option<String>,
 }
 
-#[test]
-fn preserves_unicode_spaces_and_does_not_trim() {
-    let reference = PathReference::parse("notes/ résumé final.txt ", &root())
-        .expect("unicode reference should be valid");
-    assert_eq!(
-        reference.relative_path().to_string_lossy(),
-        "notes/ résumé final.txt "
-    );
+fn corpus() -> Vec<CorpusRow> {
+    serde_json::from_str(include_str!(
+        "../../../tests/fixtures/workspace_references.json"
+    ))
+    .expect("workspace reference corpus must be valid JSON")
 }
 
-#[test]
-fn rejects_parent_traversal() {
-    let error = PathReference::parse("../secret", &root()).expect_err("traversal must fail");
-    assert_eq!(error.category(), ErrorCategory::PermissionDenied);
+fn applies_to_host(platform: &str) -> bool {
+    platform == "all" || platform == "windows" && cfg!(windows) || platform == "posix" && cfg!(unix)
 }
 
-#[test]
-fn rejects_invalid_and_foreign_references() {
-    for input in [
-        "",
-        ".",
-        "rfs://workspace",
-        "rfs://workspace/other/file.txt",
-        "https://example.com/file.txt",
-        "/etc/passwd",
-        "C:\\Windows\\system.ini",
-        "\\\\server\\share\\file.txt",
-    ] {
-        let error = PathReference::parse(input, &root()).expect_err("reference should be rejected");
-        assert_eq!(
-            error.category(),
-            ErrorCategory::InvalidReference,
-            "unexpected category for {input:?}"
-        );
+fn address_observation(address: &WorkspaceAddress) -> (&'static str, String, Option<&str>) {
+    match address {
+        WorkspaceAddress::Relative(path) => (
+            "relative",
+            path.as_path().to_string_lossy().into_owned(),
+            None,
+        ),
+        WorkspaceAddress::Absolute(path) => ("absolute", path.to_string_lossy().into_owned(), None),
+        WorkspaceAddress::FileUri(uri) => ("fileUri", uri.as_str().to_owned(), None),
+        WorkspaceAddress::Canonical { root, path } => (
+            "canonical",
+            path.as_path().to_string_lossy().into_owned(),
+            Some(root.as_str()),
+        ),
     }
 }
 
 #[test]
-fn validates_root_names() {
-    assert_eq!(
-        RootName::new("workspace-1.0").expect("valid").as_str(),
-        "workspace-1.0"
-    );
-    for invalid in ["", "a/b", "a:b", "a?b", "a#b", "a=b"] {
-        let error = RootName::new(invalid).expect_err("root name should fail");
-        assert_eq!(error.category(), ErrorCategory::InvalidReference);
+fn golden_workspace_references() {
+    for row in corpus()
+        .into_iter()
+        .filter(|row| applies_to_host(&row.platform))
+    {
+        assert_eq!(row.kind, "parse", "unsupported corpus kind in {row:?}");
+        let parsed = PathReference::parse(row.input.clone());
+        match row.expected.status.as_str() {
+            "ok" => {
+                let reference = parsed.unwrap_or_else(|error| {
+                    panic!("expected {:?} to parse, got {error}", row.input)
+                });
+                let (kind, value, root) = address_observation(reference.literal());
+                assert_eq!(Some(kind), row.expected.address_kind.as_deref(), "{row:?}");
+                assert_eq!(
+                    Some(value.as_str()),
+                    row.expected.value.as_deref(),
+                    "{row:?}"
+                );
+                assert_eq!(root, row.expected.root.as_deref(), "{row:?}");
+                assert_eq!(
+                    reference
+                        .selector_candidate()
+                        .map(|selected| selected.selector().as_str()),
+                    row.expected.selector.as_deref(),
+                    "{row:?}",
+                );
+            }
+            "error" => {
+                let error = parsed.unwrap_err();
+                assert_eq!(
+                    error.category().as_str(),
+                    row.expected.category.as_deref().expect("error category"),
+                    "{row:?}",
+                );
+            }
+            status => panic!("unknown corpus status {status:?}"),
+        }
     }
+}
+
+#[test]
+fn reference_byte_limit_is_exact() {
+    let at_limit = "a".repeat(MAX_PATH_REFERENCE_BYTES);
+    let reference = PathReference::parse(at_limit.clone()).expect("64 KiB must parse");
+    assert_eq!(
+        address_observation(reference.literal()),
+        ("relative", at_limit, None)
+    );
+
+    let over_limit = "a".repeat(MAX_PATH_REFERENCE_BYTES + 1);
+    let error = PathReference::parse(over_limit).expect_err("one byte over must fail");
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+}
+
+#[test]
+fn canonical_construction_percent_encodes_ambiguous_component_characters() {
+    let root = WorkspaceRootId::new("workspace").expect("valid root id");
+    let path = WorkspacePath::new(Path::new("notes/résumé % #1:2")).expect("valid path");
+    let reference = PathReference::canonical(root, path);
+
+    assert_eq!(
+        reference.requested(),
+        "rfs://workspace/workspace/notes/résumé %25 %231%3A2"
+    );
+    assert!(matches!(
+        reference.literal(),
+        WorkspaceAddress::Canonical { .. }
+    ));
+    assert_eq!(PathReference::parse(reference.requested()), Ok(reference));
+}
+
+#[test]
+fn root_sets_are_order_independent_and_primary_selection_is_exact() {
+    let alpha = WorkspaceRoot::new(
+        WorkspaceRootId::new("alpha").expect("id"),
+        "file:///workspace/alpha",
+        Some("chosen".to_owned()),
+    )
+    .expect("root");
+    let beta = WorkspaceRoot::new(
+        WorkspaceRootId::new("beta").expect("id"),
+        "file:///workspace/beta",
+        Some("other".to_owned()),
+    )
+    .expect("root");
+
+    let first =
+        WorkspaceRootSet::new(vec![alpha.clone(), beta.clone()], Some("chosen")).expect("root set");
+    let reordered = WorkspaceRootSet::new(vec![beta, alpha], Some("chosen")).expect("root set");
+
+    assert_eq!(first.primary().map(WorkspaceRootId::as_str), Some("alpha"));
+    assert!(first.equivalent_to(&reordered));
+}
+
+#[test]
+fn workspace_root_rejects_invalid_selector_name() {
+    let error = WorkspaceRoot::new(
+        WorkspaceRootId::new("client-root").expect("root id"),
+        "file:///workspace/client",
+        Some("bad/name".to_owned()),
+    )
+    .expect_err("selector name must use Workspace Root ID grammar");
+    assert_eq!(error.category(), ErrorCategory::InvalidReference);
 }
 
 #[test]
 fn parses_production_shaped_reference_within_budget() {
     let file_name = format!("{} file.txt", "é".repeat(2_000));
     let started = Instant::now();
-    let reference = PathReference::parse(&file_name, &root()).expect("long unicode path");
+    let reference = PathReference::parse(file_name.clone()).expect("long unicode path");
     let elapsed = started.elapsed();
 
-    assert_eq!(reference.relative_path().to_string_lossy(), file_name);
+    assert_eq!(
+        address_observation(reference.literal()),
+        ("relative", file_name, None)
+    );
     assert!(
         elapsed <= Duration::from_millis(5),
         "4 KiB reference parsing took {elapsed:?}"
+    );
+}
+
+#[test]
+fn maximum_reference_parses_within_boundary_budget() {
+    let input = "a".repeat(MAX_PATH_REFERENCE_BYTES);
+    let started = Instant::now();
+    PathReference::parse(input).expect("maximum reference must parse");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed <= Duration::from_millis(50),
+        "64 KiB reference parsing took {elapsed:?}"
     );
 }

@@ -14,6 +14,8 @@ pub(crate) struct ReadToolOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     canonical_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    backing_file_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     content_type: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     version_tag: Option<String>,
@@ -60,6 +62,7 @@ pub(crate) fn success(
         contract_version: BEHAVIOR_CONTRACT_VERSION,
         requested_path: requested_path.to_owned(),
         canonical_reference: Some(resource.canonical_reference().to_owned()),
+        backing_file_uri: resource.backing_file_uri().map(str::to_owned),
         content_type: Some(resource.content_type()),
         version_tag: Some(resource.version_tag().to_string()),
         mutable: Some(resource.is_mutable()),
@@ -94,6 +97,7 @@ pub(crate) fn failure(
         contract_version: BEHAVIOR_CONTRACT_VERSION,
         requested_path: requested_path.to_owned(),
         canonical_reference: None,
+        backing_file_uri: None,
         content_type: None,
         version_tag: None,
         mutable: None,
@@ -111,4 +115,49 @@ pub(crate) fn failure(
     let mut result = CallToolResult::error(vec![ContentBlock::text(text)]);
     result.structured_content = Some(structured);
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use resourcefs_core::{PathReference, ReadResource, WorkspacePath, WorkspaceRootId};
+
+    use super::success;
+
+    fn resource() -> ReadResource {
+        let reference = PathReference::canonical(
+            WorkspaceRootId::new("workspace").expect("static root ID"),
+            WorkspacePath::new("visible.txt").expect("static workspace path"),
+        );
+        ReadResource::text(reference, "content".to_owned()).expect("read resource")
+    }
+
+    #[test]
+    fn renders_backing_file_uri_only_when_present() {
+        let hidden = success("visible.txt", resource()).expect("hidden result");
+        assert!(
+            hidden
+                .structured_content
+                .as_ref()
+                .expect("structured hidden result")
+                .get("backingFileUri")
+                .is_none()
+        );
+
+        let visible_resource = resource()
+            .with_backing_file_uri("file:///workspace/visible.txt")
+            .expect("local backing URI");
+        let visible = success("visible.txt", visible_resource).expect("visible result");
+        let structured = visible
+            .structured_content
+            .as_ref()
+            .expect("structured visible result");
+        assert_eq!(
+            structured["canonicalReference"],
+            "rfs://workspace/workspace/visible.txt"
+        );
+        assert_eq!(
+            structured["backingFileUri"],
+            "file:///workspace/visible.txt"
+        );
+    }
 }
