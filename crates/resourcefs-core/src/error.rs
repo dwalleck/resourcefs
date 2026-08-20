@@ -14,6 +14,8 @@ pub enum ErrorCategory {
     SourceUnavailable,
     UnsupportedProjection,
     AmbiguousReference,
+    InvalidPattern,
+    Cancelled,
 }
 
 impl ErrorCategory {
@@ -27,6 +29,8 @@ impl ErrorCategory {
             Self::SourceUnavailable => "source_unavailable",
             Self::UnsupportedProjection => "unsupported_projection",
             Self::AmbiguousReference => "ambiguous_reference",
+            Self::InvalidPattern => "invalid_pattern",
+            Self::Cancelled => "cancelled",
         }
     }
 }

@@ -1,5 +1,6 @@
 //! Source-neutral ResourceFS Behavior Contract.
 
+mod discovery;
 mod error;
 mod read;
 mod reference;
@@ -9,6 +10,14 @@ mod session;
 mod source;
 mod version;
 
+#[cfg(feature = "test-support")]
+pub use discovery::DiscoveryRetainGate;
+pub use discovery::{
+    DiscoveryAdapter, DiscoveryDiagnostic, DiscoveryEngine, GlobEntry, GlobKind, GlobLimits,
+    GlobOptions, GlobRequest, GlobResult, GlobTarget, MAX_DISCOVERY_PATTERN_BYTES,
+    MAX_DISCOVERY_RESULTS, SearchEngine, SearchGroup, SearchLimits, SearchLine, SearchOptions,
+    SearchRecord, SearchRequest, SearchResult, SearchSourceResult, SearchTarget, SourceGlobResult,
+};
 pub use error::{ErrorCategory, ResourceError};
 pub use read::{ReadEngine, ReadRequest, TextLimits};
 pub use reference::{

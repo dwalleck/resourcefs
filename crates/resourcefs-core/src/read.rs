@@ -158,7 +158,7 @@ fn validate_limit(name: &str, value: usize, maximum: usize) -> Result<usize, Res
     Ok(value)
 }
 
-fn page_prefix_len(content: &str, limits: TextLimits) -> Result<usize, ResourceError> {
+pub(crate) fn page_prefix_len(content: &str, limits: TextLimits) -> Result<usize, ResourceError> {
     if content.is_empty() {
         return Ok(0);
     }
@@ -217,11 +217,13 @@ fn page_prefix_len(content: &str, limits: TextLimits) -> Result<usize, ResourceE
     Ok(offset)
 }
 
-fn canonical_artifact_reference(address: &ArtifactAddress) -> Result<String, ResourceError> {
+pub(crate) fn canonical_artifact_reference(
+    address: &ArtifactAddress,
+) -> Result<String, ResourceError> {
     PathReference::artifact(address.clone(), None).map(|reference| reference.requested().to_owned())
 }
 
-fn artifact_line_continuation(
+pub(crate) fn artifact_line_continuation(
     address: &ArtifactAddress,
     next_line: u64,
 ) -> Result<String, ResourceError> {
@@ -230,7 +232,7 @@ fn artifact_line_continuation(
         .map(|reference| reference.requested().to_owned())
 }
 
-fn artifact_page_continuation(
+pub(crate) fn artifact_page_continuation(
     address: &ArtifactAddress,
     offset: usize,
 ) -> Result<String, ResourceError> {

@@ -125,6 +125,17 @@ The checkout currently has no configured Git remote or discoverable upstream def
 - `cargo test -p resourcefs-core --features test-support --test path_session_contract` → existing object/session quota atomicity remains green; 64 MiB+1 publishes no object and evicts nothing.
 - Apply each C2/C9/C10/C13 named mutation separately and rerun its exact owning command → red with that claim ID; restore after each and rerun → green.
 
+### Slice 2 checkpoint result — PASS (2026-08-20)
+
+- Impact analysis: `ErrorCategory` had 120 language-server references across core, source adapters, MCP rendering, and contracts; adding `invalid_pattern` and `cancelled` preserved every existing caller and the full workspace/all-target/all-feature check. The new `DiscoveryAdapter` is separate from the unchanged read seam, and its only current production consumer remains the planned compiled-source slice.
+- Helper decision: reused `TextLimits`, Path Session admission/deduplication, canonical `PathReference` validation, and the existing Artifact recovery/line-continuation builders. Core adds no matching, traversal, MCP, or source dependency. Canonical one-line records escape control separators losslessly, making record skip, text bounds, diagnostics, and Artifact selectors share one deterministic document.
+- Gate 1 — affected contracts: PASS. All 5 discovery contracts and all 8 Path Session contracts passed; exact 65,536-byte input and every exact lower limit reached the fake adapter, while empty/one-over inputs did not.
+- Gate 2 — C9 boundaries and oracle: PASS. Unsorted duplicate records/diagnostics normalized to the hand-authored bytewise document; skip and result/byte/line/column boundaries returned the expected record ranges; 1,001 records spilled completely; exact 64 MiB recovered and 64 MiB + 1 returned `limit_exceeded` without changing storage.
+- Gate 3 — C10 lifecycle: PASS. Deterministic gates covered cancellation during adapter execution, cancellation immediately before retention, and session invalidation. Outcomes were `cancelled`, `cancelled`, and `source_unavailable` respectively, with zero published artifacts.
+- Gate 4 — C13 production budget and independent oracle: PASS. The release 100,000-candidate/20,000-duplicate-row fixture normalized to 10,000 unique records, returned 100 inline, stayed inside the 2-second/256 MiB assertions, and its recovered SHA-256 matched the independent arithmetic stream.
+- Gate 5 — named mutations: PASS. Removing the pattern ceiling incremented the adapter counter from 1 to 2 (C2); truncating before recovery changed 1,001 total records to 1,000 (C9); removing the immediate pre-retain liveness check changed `cancelled` to `source_unavailable` (C10); retaining only the inline prefix changed the independent recovery digest (C13). Each exact fence returned green after restoration.
+- Gate 6 — quality: PASS. Strict core/all-target/all-feature Clippy, workspace/all-target/all-feature checking, formatting, and language-server diagnostics passed; only expected inactive-code hints remain for the feature-gated deterministic retain fixture.
+
 ## Slice 3: Add statically pinned Rust-regex, PCRE2, and glob matching
 
 **Claim IDs:** C1, C3
