@@ -12,15 +12,15 @@
 | Slice | Diff estimate |
 |---|---:|
 | 1. Core selector contract, workflow evidence, and tracker state | 2,293 actual |
-| 2. Streaming filesystem projection | 383 actual |
+| 2. Streaming filesystem projection | 389 actual |
 | 3. Path Session and durable artifact storage | 800 |
 | 4. Artifact adapter and bounded read engine | 800 |
 | 5. MCP rendering and lifecycle | 600 |
-| **Sum** | **4,876** |
+| **Sum** | **4,882** |
 | **Churn margin** | **330 (15% of the 2,200 unimplemented lines)** |
-| **Projected total** | **5,206** |
+| **Projected total** | **5,212** |
 
-Committed/staged reality replaces Slice 1 with 2,293 lines and Slice 2 with 383 lines, including their required workflow records. The 15% margin remains on the 2,200 unimplemented lines for signature migration and platform-specific lease handling. Because 5,206 exceeds the exact 4,000-line threshold, the work remains partitioned into three independently mergeable PR increments.
+Committed reality replaces Slice 1 with 2,293 lines and Slice 2 with 389 lines, including their required workflow records. The 15% margin remains on the 2,200 unimplemented lines for signature migration and platform-specific lease handling. Because 5,212 exceeds the exact 4,000-line threshold, the work remains partitioned into three independently mergeable PR increments.
 
 ### PR increment: core-selector-contract
 
@@ -102,7 +102,7 @@ Slice 5, stacked on `bounded-recovery-engine`. Mergeable definition: compiled-so
 
 **Estimate:** 1 day.
 
-**Diff estimate:** 383 changed lines actual: 329 executable/test changes plus 54 workflow-plan lines.
+**Diff estimate:** 389 changed lines actual: 329 executable/test changes plus 60 workflow-plan lines.
 
 **PR increment:** bounded-recovery-engine.
 
@@ -156,6 +156,17 @@ Slice 5, stacked on `bounded-recovery-engine`. Mergeable definition: compiled-so
 - `cargo test -p resourcefs-sources --test session_storage_contract` → failure injection leaves directory hashes/quota unchanged, cleanup outcomes match TTL/lease table, and no live lease is removed.
 - `python .rfs-34pz/probe_session_lease.py` → native Linux and Windows/Wine observations still show contention while owner lives and acquisition after owner death; the published macOS compile/API oracle remains true.
 - Under each named mutation, `cargo test -p resourcefs-core --test path_session_contract` or `cargo test -p resourcefs-sources --test session_storage_contract` → owning case fails; after restoration the same command agrees with the independent model/directory snapshot.
+
+### Slice 3 checkpoint result — PASS (2026-08-19)
+
+- Impact analysis: the new `SessionStorage` trait remains dependency-inverted in `resourcefs-core`; `PathSession` owns token authority, admission, deduplication, quota, and liveness while `DiskSessionStorage` owns cache paths, atomic files, platform leases, timestamps, and cleanup. No existing exported signature changed in this slice.
+- Gate 1 — core contract: PASS. `cargo test -p resourcefs-core --all-features --test path_session_contract` passed 6 cases covering strict tokens/IDs, forced digest collision byte comparison, byte-identical reuse, exact concurrent quota, object/record ceilings before storage I/O, cancellation, and indistinguishable foreign/unknown/inactive lookup.
+- Gate 2 — durable storage contract: PASS. `cargo test -p resourcefs-sources --all-features --test session_storage_contract` passed 6 cases covering every injected open/write/sync/persist/remove failure, unchanged directory SHA-256 snapshots and prior objects, heartbeat, exact TTL boundary, markerless live lease ordering, symlink/malformed entry containment, abnormal abandonment, and a 64 MiB durable write.
+- Gate 3 — independent oracle: PASS. `.rfs-34pz/oracle_session.py` independently produced IDs `[1,2,1]` for a forced-collision alpha/beta/alpha sequence, 9 charged bytes and 2 stores, IDs `[1,2,3,4]` at the exact 268,435,456-byte quota, uniform `not_found` lookup outcomes, and the TTL-1/exact/TTL+1 plus locked table.
+- Gate 4 — production budgets: PASS. The exact release 64 MiB durable-admission fence completed in 0.16 seconds under the 5-second bound; the exact release heartbeat fence completed in under the test runner's 0.01-second resolution under the 100 ms bound.
+- Gate 5 — lease/platform evidence: PASS. `.rfs-34pz/probe_session_lease.py` again observed live-owner contention and post-kill acquisition on native Linux and Windows/Wine; macOS lock API cross-compilation remained true. All-feature source/session code cross-checked for `x86_64-pc-windows-gnu` and `x86_64-apple-darwin`.
+- Gate 6 — named mutations: PASS. Charging identical content twice, token-only lookup, releasing admission before write, publishing before sync, and checking age before lease each turned its owning exact contract red; the `age > TTL` fence is the exact-boundary cleanup assertion. Every mutation was restored.
+- Gate 7 — quality: PASS. `cargo fmt --all -- --check` and strict all-target/all-feature Clippy for core and sources passed; the session/storage contracts returned green after restoration.
 
 ## Slice 4: Route immutable artifacts through one bounded read engine
 
@@ -236,6 +247,6 @@ Slice 5, stacked on `bounded-recovery-engine`. Mergeable definition: compiled-so
 - [x] Every slice has all thirteen mandatory fields; no conditional field is omitted.
 - [x] Every claim has a fence in its implementing slice and every fence has its approved named mutation.
 - [x] Every new loop states asymptotic cost, production scale, resulting bound, maximum accepted cost, and rationale; every always-on phase has a wall budget.
-- [x] Arithmetic is 4,876 + 330 = 5,206; the exact >4,000 rule produces three independently mergeable increments, and every slice names one.
+- [x] Arithmetic is 4,882 + 330 = 5,212; the exact >4,000 rule produces three independently mergeable increments, and every slice names one.
 - [x] Every deferral phrase is classified and every intended-future item cites a verified tracker ID.
 - [x] No slice is declared complete; `checkpointed-build` exclusively judges completion.

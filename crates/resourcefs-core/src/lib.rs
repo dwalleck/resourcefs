@@ -4,6 +4,7 @@ mod error;
 mod reference;
 mod resource;
 mod selector;
+mod session;
 mod source;
 mod version;
 
@@ -18,5 +19,9 @@ pub use resource::{
     MAX_TEXT_LINES, ReadResource, TEXT_CONTENT_TYPE,
 };
 pub use selector::{SelectedText, select_utf8};
+pub use session::{
+    ArtifactId, MAX_SESSION_ARTIFACTS, MAX_SESSION_BYTES, OperationGuard, PathSession,
+    SessionStorage, SessionToken,
+};
 pub use source::SourceAdapter;
 pub use version::VersionTag;
