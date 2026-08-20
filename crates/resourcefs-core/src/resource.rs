@@ -25,6 +25,16 @@ pub struct ReadResource {
 
 impl ReadResource {
     pub fn text(reference: PathReference, content: String) -> Result<Self, ResourceError> {
+        let version_tag = VersionTag::from_content(content.as_bytes());
+        Self::text_projection(reference, content, version_tag)
+    }
+
+    /// Build a selected text projection carrying the authoritative whole-Resource Version Tag.
+    pub fn text_projection(
+        reference: PathReference,
+        content: String,
+        version_tag: VersionTag,
+    ) -> Result<Self, ResourceError> {
         if !matches!(
             reference.address(),
             ResourceAddress::Workspace(WorkspaceAddress::Canonical { .. })
@@ -34,7 +44,6 @@ impl ReadResource {
                 "ReadResource identity must be a canonical workspace reference",
             ));
         }
-        let version_tag = VersionTag::from_content(content.as_bytes());
         Ok(Self {
             canonical_reference: reference.requested().to_owned(),
             content_type: TEXT_CONTENT_TYPE,

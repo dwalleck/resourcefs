@@ -36,6 +36,24 @@ fn ignores_path_and_metadata() {
 }
 
 #[test]
+fn selected_projection_preserves_authoritative_whole_resource_tag() {
+    let whole_resource_tag = VersionTag::from_content(b"alpha\nbeta\n");
+    let selected = ReadResource::text_projection(
+        reference("selected.txt"),
+        "beta\n".to_owned(),
+        whole_resource_tag.clone(),
+    )
+    .expect("selected projection");
+
+    assert_eq!(selected.content(), "beta\n");
+    assert_eq!(selected.version_tag(), &whole_resource_tag);
+    assert_ne!(
+        selected.version_tag(),
+        &VersionTag::from_content(selected.content().as_bytes())
+    );
+}
+
+#[test]
 fn changes_when_content_changes() {
     let original = VersionTag::from_content(b"same bytes");
     let changed = VersionTag::from_content(b"same byteS");

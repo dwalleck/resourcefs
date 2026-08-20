@@ -29,6 +29,10 @@ impl SelectedText {
     pub const fn source_bytes(&self) -> u64 {
         self.source_bytes
     }
+
+    pub fn into_parts(self) -> (String, VersionTag, u64) {
+        (self.content, self.version_tag, self.source_bytes)
+    }
 }
 
 /// Select exact UTF-8 line spans while hashing and validating the complete seekable source.

@@ -11,28 +11,28 @@
 
 | Slice | Diff estimate |
 |---|---:|
-| 1. Core selector contract, workflow evidence, and tracker state | 2,223 actual |
-| 2. Streaming filesystem projection | 450 |
+| 1. Core selector contract, workflow evidence, and tracker state | 2,293 actual |
+| 2. Streaming filesystem projection | 383 actual |
 | 3. Path Session and durable artifact storage | 800 |
 | 4. Artifact adapter and bounded read engine | 800 |
 | 5. MCP rendering and lifecycle | 600 |
-| **Sum** | **4,873** |
-| **Churn margin** | **398 (15% of the 2,650 unimplemented lines, rounded up)** |
-| **Projected total** | **5,271** |
+| **Sum** | **4,876** |
+| **Churn margin** | **330 (15% of the 2,200 unimplemented lines)** |
+| **Projected total** | **5,206** |
 
-The initial projection omitted 1,325 lines of required workflow evidence/tracker state and underestimated Slice 1 executable changes by 198 lines. Reality replaces that estimate with the staged 2,223-line measurement. The 15% margin remains on unimplemented signature migration and platform-specific lease handling. Because 5,271 exceeds the exact 4,000-line threshold, the work is partitioned into three independently mergeable PR increments.
+Committed/staged reality replaces Slice 1 with 2,293 lines and Slice 2 with 383 lines, including their required workflow records. The 15% margin remains on the 2,200 unimplemented lines for signature migration and platform-specific lease handling. Because 5,206 exceeds the exact 4,000-line threshold, the work remains partitioned into three independently mergeable PR increments.
 
-### PR increment: core-text-projection
+### PR increment: core-selector-contract
 
-Slices 1–2. Mergeable definition: typed workspace/artifact selector grammar and exact bounded-memory selection are complete; the filesystem adapter executes workspace selectors, hashes the complete source, retains literal-first/root-generation authority, and preserves existing MCP behavior for inline-sized reads. Direct core/source fences and the independent selector/file oracle verify it without Path Session storage.
+Slice 1. Mergeable definition: typed workspace/artifact selector grammar and exact bounded-memory selection are complete and directly fenced, while every compiled Source Adapter keeps its prior output behavior and filesystem selector candidates remain unsupported. No unbounded selected output reaches MCP.
 
-### PR increment: session-storage
+### PR increment: bounded-recovery-engine
 
-Slice 3, stacked on `core-text-projection`. Mergeable definition: Path Session identity, quota, deduplication, atomic retained backing, lease/tombstone state, and TTL cleanup are complete and directly tested; no MCP caller is wired until the next increment.
+Slices 2–4, stacked on `core-selector-contract`. Mergeable definition: filesystem selection, Path Session identity/quota/durable storage, Artifact Source Adapter, and common bounding/recovery engine land together; direct core/source fences prove every selected result is bounded before any MCP caller is wired.
 
 ### PR increment: recovery-mcp
 
-Slices 4–5, stacked on `session-storage`. Mergeable definition: Artifact Source Adapter, common bounding/recovery engine, compiled-source routing, strict MCP schemas/rendering, and disconnect/cancellation fencing produce the complete issue behavior and compiled-process acceptance.
+Slice 5, stacked on `bounded-recovery-engine`. Mergeable definition: compiled-source routing, strict MCP schemas/rendering, and disconnect/cancellation fencing expose the complete issue behavior and compiled-process acceptance.
 
 ## Slice 1: Define exact typed selectors and bounded selection in core
 
@@ -56,9 +56,9 @@ Slices 4–5, stacked on `session-storage`. Mergeable definition: Artifact Sourc
 
 **Estimate:** 1.5 days.
 
-**Diff estimate:** 2,223 changed lines actual: 898 executable/test changes plus 1,325 required workflow evidence and tracker lines.
+**Diff estimate:** 2,293 changed lines actual: 960 executable/test changes plus 1,333 required workflow evidence and tracker lines.
 
-**PR increment:** core-text-projection.
+**PR increment:** core-selector-contract.
 
 **Commands and expected results:**
 - `cargo metadata --no-deps --format-version 1 | jq -e '([.packages[] | select(.name == "resourcefs-core") | .dependencies[].name] | all(. != "resourcefs-sources" and . != "resourcefs-mcp"))'` → `true`; adding a core→sources dependency changes it to false.
@@ -94,22 +94,36 @@ Slices 4–5, stacked on `session-storage`. Mergeable definition: Artifact Sourc
 
 **Named mutation:** Restore `.take(MAX_TEXT_BYTES + 1)` on source input or remove the final generation validation. The respective large-range/stale-delivery fence must turn red, then green after restoration.
 
-**Complexity/production scale:** O(source bytes + selected bytes), one sequential source pass, maximum 256 MiB stress source and 64 MiB selected output. Maximum accepted cost: at most 70 MiB retained heap attributable to projection plus fixed I/O buffers; rationale is that source size must not determine memory.
+**Complexity/production scale:** O(source bytes + selected bytes): two sequential validation/hash scans plus selected seekable span reads, maximum 256 MiB stress source and 64 MiB selected output. Maximum accepted cost: at most 70 MiB retained heap attributable to projection plus fixed I/O buffers; rationale is that source size must not determine memory and ordinary mid-read source changes must not pair stale selected bytes with a new Version Tag.
 
-**Wall budget/phase:** Always-on local-filesystem read phase: at most 10 seconds for the 256 MiB release stress fixture; rationale is one sequential read/hash/select pass on supported desktop filesystems.
+**Wall budget/phase:** Always-on local-filesystem read phase: at most 10 seconds for the 256 MiB release stress fixture; rationale is bounded local sequential I/O with no network work.
 
-**Files:** `crates/resourcefs-sources/src/filesystem.rs`, `crates/resourcefs-sources/tests/filesystem_adapter_contract.rs`.
+**Files:** `crates/resourcefs-core/src/resource.rs`, `crates/resourcefs-core/src/selector.rs`, `crates/resourcefs-core/tests/selector_golden_contract.rs`, `crates/resourcefs-core/tests/version_tag_contract.rs`, `crates/resourcefs-sources/src/filesystem.rs`, `crates/resourcefs-sources/src/lib.rs`, `crates/resourcefs-sources/tests/filesystem_adapter_contract.rs`.
 
 **Estimate:** 1 day.
 
-**Diff estimate:** 450 changed lines: 220 implementation, 230 tests/fixture generator.
+**Diff estimate:** 383 changed lines actual: 329 executable/test changes plus 54 workflow-plan lines.
 
-**PR increment:** core-text-projection.
+**PR increment:** bounded-recovery-engine.
 
 **Commands and expected results:**
-- `cargo test -p resourcefs-sources --test filesystem_adapter_contract` → narrow large-source selection equals direct fixture bytes, Version Tag equals independent whole-file hash, and a root-generation race returns no stale result.
+- `cargo test -p resourcefs-sources --all-features --test filesystem_adapter_contract` → narrow large-source selection equals direct fixture bytes, Version Tag equals independent whole-file hash, and a root-generation race returns no stale result.
 - `cargo test --release -p resourcefs-sources --test filesystem_adapter_contract filesystem_streams_narrow_large_range -- --exact` → 256 MiB fixture completes within 10 seconds and its retained projection capacity stays within 70 MiB; restoring the old complete-file cap makes it fail, restoration makes it pass.
-- `cargo test -p resourcefs-sources --test filesystem_adapter_contract stale_stream_delivery_is_rejected -- --exact` → removing final generation validation makes stale content observable and the test red; restoration makes it pass.
+- `cargo test -p resourcefs-sources --all-features --test filesystem_adapter_contract stale_stream_delivery_is_rejected -- --exact` → removing final generation validation makes stale content observable and the test red; restoration makes it pass.
+
+### Slice 2 checkpoint result — PASS (2026-08-19)
+
+- Impact analysis: `SourceAdapter::read` had four language-server references (filesystem implementation, MCP server, direct source test, trait declaration) and kept its signature. `ReadResource::text` had seven references and remains the authoritative-complete-content constructor; the new tested `text_projection` constructor carries a whole-Resource Version Tag without copying the selected `String`.
+- Helper decision: reused the core `select_utf8` engine, existing capability-open/final-path containment, `validate_read_delivery`, `ReadResource`, and `VersionTag`; no second selector/hash/path/error implementation was added. The dormant process-global environment gate was replaced with a feature-gated, per-source, one-shot test gate so parallel integration tests cannot block unrelated Sources.
+- Symmetry audit: relative, canonical, absolute, and local-file workspace addresses all enter the same literal-first `read_address` path. Only literal `not_found` activates the parsed base plus selector; malformed candidates keep `invalid_reference`, workspace page candidates return `unsupported_projection`, and a concurrent authority change returns `source_unavailable` with no content.
+- Gate 1 — affected tests: PASS. Core selector/version suites passed 16 tests; the all-feature filesystem adapter suite passed 24 tests; workspace all-target checking, strict Clippy, formatting, diagnostics, Rust 1.88, Windows GNU, and macOS cross-target checks passed.
+- Gate 2 — PENDING falsifier C6: PASS. A narrow line from an exact 256 MiB source returned exact LF/CRLF/Unicode bytes and the authoritative whole-source tag; the deterministic delivery gate rejected a result after root replacement.
+- Gate 3 — stress fixture: PASS. The sparse 256 MiB UTF-8 source retained only the 18-byte target plus fixed selector buffers; a complete read still failed at the pre-existing 48 KiB inline source limit.
+- Gate 4 — independent oracle: PASS. Python `hashlib` independently computed `sha256:7340d5b10ba225d1a0dd49203cbdae47afc05a4937227033b728f881b32d4f5e` for the deterministic 268,435,456-byte fixture; Rust returned that exact tag and the directly specified target bytes.
+- Gate 5 — production budget: PASS. The restored release fence completed the full 256 MiB fixture/oracle/selection test in 0.49 seconds against the 10-second limit; selected content was below the 70 MiB bound and no source-sized allocation exists in the projection branch.
+- Gate 6 — regression fences: PASS. Core ownership/version contracts, all 24 direct filesystem adapter contracts, the complete workspace check, and cross-target builds were green.
+- Gate 7 — named mutations: PASS. Restoring the full-source 48 KiB cap made `filesystem_streams_narrow_large_range` red; removing final `validate_read_delivery` made stale `"beta\n"` content observable and `stale_stream_delivery_is_rejected` red.
+- Gate 8 — restored fences: PASS. Both mutations were restored; the exact release large-source fence and exact all-feature stale-delivery fence returned green.
 
 ## Slice 3: Add linearizable Path Session admission and lease-safe durable storage
 
@@ -135,7 +149,7 @@ Slices 4–5, stacked on `session-storage`. Mergeable definition: Artifact Sourc
 
 **Diff estimate:** 800 changed lines: 430 implementation, 330 tests, 40 manifests.
 
-**PR increment:** session-storage.
+**PR increment:** bounded-recovery-engine.
 
 **Commands and expected results:**
 - `cargo test -p resourcefs-core --test path_session_contract` → concurrent admission matches the sequential model; equal content reuses identity, distinct content charges once, quota never exceeds 256 MiB, foreign/inactive IDs are `not_found`, and one-byte-over content makes no store call.
@@ -167,7 +181,7 @@ Slices 4–5, stacked on `session-storage`. Mergeable definition: Artifact Sourc
 
 **Diff estimate:** 800 changed lines: 420 implementation, 380 tests.
 
-**PR increment:** recovery-mcp.
+**PR increment:** bounded-recovery-engine.
 
 **Commands and expected results:**
 - `cargo test -p resourcefs-core --test read_engine_contract` → every boundary/intersection page stays within all limits, continuations make progress, concatenation length/SHA-256 equals the oracle projection, failed spill returns no reference, and repeated identical spill reuses identity/quota.
@@ -222,6 +236,6 @@ Slices 4–5, stacked on `session-storage`. Mergeable definition: Artifact Sourc
 - [x] Every slice has all thirteen mandatory fields; no conditional field is omitted.
 - [x] Every claim has a fence in its implementing slice and every fence has its approved named mutation.
 - [x] Every new loop states asymptotic cost, production scale, resulting bound, maximum accepted cost, and rationale; every always-on phase has a wall budget.
-- [x] Arithmetic is 4,873 + 398 = 5,271; the exact >4,000 rule produces three independently mergeable increments, and every slice names one.
+- [x] Arithmetic is 4,876 + 330 = 5,206; the exact >4,000 rule produces three independently mergeable increments, and every slice names one.
 - [x] Every deferral phrase is classified and every intended-future item cites a verified tracker ID.
 - [x] No slice is declared complete; `checkpointed-build` exclusively judges completion.

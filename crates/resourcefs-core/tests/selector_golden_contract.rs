@@ -73,6 +73,16 @@ fn selector_golden_contract() {
 }
 
 #[test]
+fn selected_text_transfers_owned_projection_without_copying() {
+    let selected = select_utf8(Cursor::new(b"alpha\nbeta\n"), None).expect("complete selection");
+    let (content, version_tag, source_bytes) = selected.into_parts();
+
+    assert_eq!(content, "alpha\nbeta\n");
+    assert_eq!(version_tag, VersionTag::from_content(b"alpha\nbeta\n"));
+    assert_eq!(source_bytes, 11);
+}
+
+#[test]
 fn malformed_selectors_are_rejected() {
     for spelling in fixture().invalid_selectors {
         let error =

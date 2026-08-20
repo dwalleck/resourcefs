@@ -13,10 +13,12 @@ use cap_std::{
 };
 use resourcefs_core::{
     ErrorCategory, MAX_TEXT_BYTES, MAX_TEXT_COLUMNS, MAX_TEXT_LINES, MAX_WORKSPACE_ROOTS,
-    PathReference, ReadResource, ResourceError, SourceAdapter, WorkspaceAddress, WorkspacePath,
-    WorkspaceRoot, WorkspaceRootId, WorkspaceRootSet,
+    PathReference, ProjectionSelector, ReadResource, ResourceError, SourceAdapter,
+    WorkspaceAddress, WorkspacePath, WorkspaceRoot, WorkspaceRootId, WorkspaceRootSet, select_utf8,
 };
 use sha2::{Digest, Sha256};
+#[cfg(feature = "test-support")]
+use tokio::sync::Notify;
 use tokio::{
     sync::{Mutex, RwLock},
     time::Instant,
@@ -137,6 +139,31 @@ pub enum RootRefreshOutcome {
     Superseded,
 }
 
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone)]
+pub struct TestDeliveryGate {
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[cfg(feature = "test-support")]
+impl TestDeliveryGate {
+    pub async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone)]
+struct ArmedDeliveryGate {
+    identity: String,
+    control: TestDeliveryGate,
+}
+
 #[derive(Debug)]
 struct FilesystemSourceInner {
     launch_view: Arc<WorkspaceView>,
@@ -144,6 +171,8 @@ struct FilesystemSourceInner {
     visibility: BackingPathVisibility,
     authority: RwLock<AuthorityState>,
     identity_history: Mutex<HashMap<WorkspaceRootId, String>>,
+    #[cfg(feature = "test-support")]
+    delivery_gate: RwLock<Option<ArmedDeliveryGate>>,
 }
 
 /// Read-only Source Adapter for one connection-owned, atomically replaceable root set.
@@ -182,8 +211,23 @@ impl FilesystemSource {
                     view: launch_view,
                 }),
                 identity_history: Mutex::new(identity_history),
+                #[cfg(feature = "test-support")]
+                delivery_gate: RwLock::new(None),
             }),
         })
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn arm_test_delivery_gate(&self, identity: impl Into<String>) -> TestDeliveryGate {
+        let control = TestDeliveryGate {
+            entered: Arc::new(Notify::new()),
+            release: Arc::new(Notify::new()),
+        };
+        *self.inner.delivery_gate.write().await = Some(ArmedDeliveryGate {
+            identity: identity.into(),
+            control: control.clone(),
+        });
+        control
     }
 
     pub async fn begin_client_root_refresh(&self) -> RootRefresh {
@@ -398,11 +442,40 @@ impl FilesystemSource {
                         format!("filesystem read task failed: {error}"),
                     )
                 })??;
-        wait_for_test_delivery_release().await?;
+        self.wait_for_test_delivery_release(completed.resource.canonical_reference())
+            .await?;
 
         let authority = self.inner.authority.read().await;
         validate_read_delivery(&authority, generation, &completed.root)?;
         Ok(completed.resource)
+    }
+
+    #[cfg(feature = "test-support")]
+    async fn wait_for_test_delivery_release(&self, identity: &str) -> Result<(), ResourceError> {
+        let gate = {
+            let mut armed = self.inner.delivery_gate.write().await;
+            if armed
+                .as_ref()
+                .is_some_and(|candidate| candidate.identity == identity)
+            {
+                armed.take()
+            } else {
+                None
+            }
+        };
+        let Some(gate) = gate else {
+            return Ok(());
+        };
+        gate.control.entered.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), gate.control.release.notified())
+            .await
+            .map_err(|_| authority_unavailable("test delivery gate exceeded 10 seconds"))?;
+        Ok(())
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    async fn wait_for_test_delivery_release(&self, _identity: &str) -> Result<(), ResourceError> {
+        Ok(())
     }
 }
 
@@ -417,54 +490,13 @@ fn validate_read_delivery(
             view,
             ..
         } if *current_generation == generation || view_retains_root(view, root) => Ok(()),
-        AuthorityState::Active { .. } => Err(ResourceError::new(
-            ErrorCategory::InvalidReference,
-            "Resource belongs to a removed Workspace Root generation",
+        AuthorityState::Active { .. } => Err(authority_unavailable(
+            "Workspace Root authority changed while reading",
         )),
         AuthorityState::Refreshing { .. } | AuthorityState::Disabled { .. } => Err(
             authority_unavailable("Workspace Root authority changed while reading"),
         ),
     }
-}
-
-#[cfg(feature = "test-support")]
-async fn wait_for_test_delivery_release() -> Result<(), ResourceError> {
-    let Some(directory) = std::env::var_os("RESOURCEFS_TEST_DELIVERY_GATE") else {
-        return Ok(());
-    };
-    let directory = PathBuf::from(directory);
-    tokio::fs::write(directory.join("entered"), b"entered")
-        .await
-        .map_err(|error| {
-            authority_unavailable(&format!(
-                "test delivery gate could not publish entry ({:?})",
-                error.kind()
-            ))
-        })?;
-    let wait = async {
-        loop {
-            match tokio::fs::metadata(directory.join("release")).await {
-                Ok(_) => return Ok(()),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                Err(error) => {
-                    return Err(authority_unavailable(&format!(
-                        "test delivery gate could not inspect release ({:?})",
-                        error.kind()
-                    )));
-                }
-            }
-        }
-    };
-    tokio::time::timeout(Duration::from_secs(10), wait)
-        .await
-        .map_err(|_| authority_unavailable("test delivery gate exceeded 10 seconds"))?
-}
-
-#[cfg(not(feature = "test-support"))]
-async fn wait_for_test_delivery_release() -> Result<(), ResourceError> {
-    Ok(())
 }
 
 #[async_trait]
@@ -660,23 +692,23 @@ fn read_from_view(
             "filesystem Source Adapter cannot read non-workspace Resources",
         )
     })?;
-    let result = read_address(view, address, visibility);
-    if result
+    let result = read_address(view, address, None, visibility);
+    if !result
         .as_ref()
         .is_err_and(|error| error.category() == ErrorCategory::NotFound)
     {
-        if let Some(error) = reference.selector_error() {
-            return Err(error.clone());
-        }
-        if reference.selector_candidate().is_some() {
-            return Err(ResourceError::new(
-                ErrorCategory::UnsupportedProjection,
-                format!(
-                    "Resource '{}' has a selector that is not supported yet",
-                    reference.requested()
-                ),
-            ));
-        }
+        return result;
+    }
+    if let Some(error) = reference.selector_error() {
+        return Err(error.clone());
+    }
+    if let Some(candidate) = reference.selector_candidate() {
+        return read_address(
+            view,
+            candidate.base(),
+            Some(candidate.selector()),
+            visibility,
+        );
     }
     result
 }
@@ -695,6 +727,7 @@ struct MatchingRoots {
 fn read_address(
     view: &WorkspaceView,
     address: &WorkspaceAddress,
+    projection: Option<&ProjectionSelector>,
     visibility: BackingPathVisibility,
 ) -> Result<CompletedRead, ResourceError> {
     let resolved = resolve_address(view, address)?;
@@ -737,20 +770,25 @@ fn read_address(
             }
         }
     }
-    let initial_capacity = metadata.len().min(MAX_TEXT_BYTES as u64) as usize;
-    let mut bytes = Vec::with_capacity(initial_capacity);
-    (&mut file)
-        .take(MAX_TEXT_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| resource_io_error(identity, "read", error))?;
-    if bytes.len() > MAX_TEXT_BYTES {
-        return Err(resource_limit_error(identity, "bytes", MAX_TEXT_BYTES));
-    }
-
-    let content = validate_text_content(identity, bytes)?;
     let canonical_reference =
         PathReference::canonical(resolved.root.metadata.id().clone(), relative_path);
-    let mut resource = ReadResource::text(canonical_reference, content)?;
+    let mut resource = if let Some(projection) = projection {
+        let selected = select_utf8(&mut file, Some(projection))?;
+        let (content, version_tag, _) = selected.into_parts();
+        ReadResource::text_projection(canonical_reference, content, version_tag)?
+    } else {
+        let initial_capacity = metadata.len().min(MAX_TEXT_BYTES as u64) as usize;
+        let mut bytes = Vec::with_capacity(initial_capacity);
+        (&mut file)
+            .take(MAX_TEXT_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| resource_io_error(identity, "read", error))?;
+        if bytes.len() > MAX_TEXT_BYTES {
+            return Err(resource_limit_error(identity, "bytes", MAX_TEXT_BYTES));
+        }
+        let content = validate_text_content(identity, bytes)?;
+        ReadResource::text(canonical_reference, content)?
+    };
     if visibility == BackingPathVisibility::Visible {
         let backing_uri = Url::from_file_path(&final_path)
             .map_err(|()| {

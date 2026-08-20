@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::{Seek, SeekFrom, Write},
     time::{Duration, Instant},
 };
 
@@ -252,6 +253,97 @@ async fn reads_maximum_sized_file_within_budget() {
         elapsed <= Duration::from_millis(100),
         "maximum-sized read took {elapsed:?}"
     );
+}
+
+#[tokio::test]
+async fn filesystem_streams_narrow_large_range() {
+    const SOURCE_BYTES: u64 = 256 * 1024 * 1024;
+    const TARGET: &str = "unique target π\r\n";
+    const EXPECTED_TAG: &str =
+        "sha256:7340d5b10ba225d1a0dd49203cbdae47afc05a4937227033b728f881b32d4f5e";
+
+    let (_temporary, root) = create_root();
+    let path = root.join("large.txt");
+    let mut file = fs::File::create(&path).expect("large source fixture");
+    file.set_len(SOURCE_BYTES - TARGET.len() as u64 - 1)
+        .expect("sparse source prefix");
+    file.seek(SeekFrom::End(0)).expect("source end");
+    file.write_all(b"\n").expect("first line terminator");
+    file.write_all(TARGET.as_bytes())
+        .expect("unique final line");
+    drop(file);
+    assert_eq!(
+        fs::metadata(&path).expect("large source metadata").len(),
+        SOURCE_BYTES
+    );
+    let expected_tag = EXPECTED_TAG;
+    let source = single_source(&root).await.expect("filesystem source");
+
+    let full_error = source
+        .read(&reference("large.txt"))
+        .await
+        .expect_err("complete large source exceeds the inline source limit");
+    assert_eq!(full_error.category(), ErrorCategory::LimitExceeded);
+
+    let started = Instant::now();
+    let selected = source
+        .read(&reference("large.txt:2"))
+        .await
+        .expect("narrow selection from large source");
+    let elapsed = started.elapsed();
+    assert_eq!(selected.content(), TARGET);
+    assert_eq!(selected.version_tag().as_str(), expected_tag);
+    assert!(selected.content().len() <= 70 * 1024 * 1024);
+    if !cfg!(debug_assertions) {
+        assert!(
+            elapsed <= Duration::from_secs(10),
+            "256 MiB selection took {elapsed:?}"
+        );
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_stream_delivery_is_rejected() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let original = temporary.path().join("original");
+    let replacement = temporary.path().join("replacement");
+    fs::create_dir(&original).expect("original root");
+    fs::create_dir(&replacement).expect("replacement root");
+    fs::write(original.join("stale-stream-delivery.txt"), "alpha\nbeta\n")
+        .expect("stale read fixture");
+    let source = launch_source(
+        vec![launch_root("workspace", &original)],
+        None,
+        BackingPathVisibility::Hidden,
+    )
+    .await
+    .expect("filesystem source");
+    let gate = source
+        .arm_test_delivery_gate("rfs://workspace/workspace/stale-stream-delivery.txt")
+        .await;
+    let reader = source.clone();
+    let pending =
+        tokio::spawn(async move { reader.read(&reference("stale-stream-delivery.txt:2")).await });
+    tokio::time::timeout(Duration::from_secs(10), gate.wait_until_entered())
+        .await
+        .expect("read reaches delivery gate");
+
+    let refresh = source.begin_client_root_refresh().await;
+    source
+        .complete_client_root_refresh(
+            source.start_client_root_acquisition(refresh),
+            vec![client_root(&replacement, "replacement")],
+        )
+        .await
+        .expect("replace root authority");
+    gate.release();
+
+    let error = pending
+        .await
+        .expect("read task")
+        .expect_err("stale selected content must not be delivered");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
 }
 
 fn launch_root(id: &str, path: &std::path::Path) -> LaunchRoot {
@@ -698,7 +790,7 @@ async fn failed_and_superseded_refreshes_fail_closed() {
 #[tokio::test]
 async fn literal_paths_precede_selectors() {
     let (_temporary, root) = create_root();
-    fs::write(root.join("notes"), "selector base").expect("base fixture");
+    fs::write(root.join("notes"), "first\nsecond\n").expect("base fixture");
     fs::write(root.join("notes:2"), "literal").expect("literal fixture");
     fs::write(root.join("notes%3A2"), "single pass").expect("percent fixture");
     let source = launch_source(
@@ -729,8 +821,12 @@ async fn literal_paths_precede_selectors() {
     let projection = source
         .read(&reference("notes:2"))
         .await
-        .expect_err("selector execution belongs to a later issue");
-    assert_eq!(projection.category(), ErrorCategory::UnsupportedProjection);
+        .expect("selector executes after the literal candidate is absent");
+    assert_eq!(projection.content(), "second\n");
+    assert_eq!(
+        projection.version_tag(),
+        &resourcefs_core::VersionTag::from_content(b"first\nsecond\n")
+    );
 }
 
 #[tokio::test]
