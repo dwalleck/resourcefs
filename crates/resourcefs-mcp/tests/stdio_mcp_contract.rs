@@ -2,7 +2,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -39,6 +39,9 @@ impl WorkspaceFixture {
         fs::write(root.join("empty.txt"), "").expect("empty fixture");
         fs::write(root.join("unicode space.txt"), "héllo from space\n").expect("Unicode fixture");
         fs::write(root.join("maximum.txt"), maximum_text()).expect("maximum fixture");
+        fs::write(root.join("wide.txt"), format!("{}\n", "x".repeat(1_024)))
+            .expect("overlong-line fixture");
+        fs::write(root.join("unicode.txt"), "é".repeat(10)).expect("Unicode scalar fixture");
         fs::write(root.join("binary.bin"), [0xff, 0xfe]).expect("binary fixture");
         fs::create_dir(root.join("directory")).expect("directory fixture");
 
@@ -81,22 +84,69 @@ impl McpProcess {
     }
 
     fn start_with_roots(roots: &[(&str, &Path)], primary: Option<&str>) -> Self {
-        Self::start_config(roots, primary, None)
+        Self::start_config(roots, primary, None, None, None, None)
     }
 
     #[cfg(feature = "test-support")]
-    fn start_with_delivery_gate(
+    fn start_gated(
         roots: &[(&str, &Path)],
         primary: Option<&str>,
         gate: &Path,
+        identity: &str,
     ) -> Self {
-        Self::start_config(roots, primary, Some(gate))
+        Self::start_config(roots, primary, Some(gate), Some(identity), None, None)
+    }
+
+    #[cfg(feature = "test-support")]
+    fn start_gated_with_session_root(
+        roots: &[(&str, &Path)],
+        primary: Option<&str>,
+        gate: &Path,
+        identity: &str,
+        session_root: &Path,
+    ) -> Self {
+        Self::start_config(
+            roots,
+            primary,
+            Some(gate),
+            Some(identity),
+            Some(session_root),
+            None,
+        )
+    }
+
+    fn start_with_session_root(
+        roots: &[(&str, &Path)],
+        primary: Option<&str>,
+        session_root: &Path,
+    ) -> Self {
+        Self::start_config(roots, primary, None, None, Some(session_root), None)
+    }
+
+    #[cfg(feature = "test-support")]
+    fn start_with_storage_failure(
+        roots: &[(&str, &Path)],
+        primary: Option<&str>,
+        session_root: &Path,
+        failure: &str,
+    ) -> Self {
+        Self::start_config(
+            roots,
+            primary,
+            None,
+            None,
+            Some(session_root),
+            Some(failure),
+        )
     }
 
     fn start_config(
         roots: &[(&str, &Path)],
         primary: Option<&str>,
         delivery_gate: Option<&Path>,
+        delivery_identity: Option<&str>,
+        session_root: Option<&Path>,
+        storage_failure: Option<&str>,
     ) -> Self {
         let mut arguments = vec!["serve".to_owned()];
         for (id, path) in roots {
@@ -115,6 +165,15 @@ impl McpProcess {
             .stderr(Stdio::piped());
         if let Some(delivery_gate) = delivery_gate {
             command.env("RESOURCEFS_TEST_DELIVERY_GATE", delivery_gate);
+        }
+        if let Some(delivery_identity) = delivery_identity {
+            command.env("RESOURCEFS_TEST_DELIVERY_IDENTITY", delivery_identity);
+        }
+        if let Some(session_root) = session_root {
+            command.env("RESOURCEFS_TEST_SESSION_ROOT", session_root);
+        }
+        if let Some(storage_failure) = storage_failure {
+            command.env("RESOURCEFS_TEST_STORAGE_FAILURE", storage_failure);
         }
         let mut child = command.spawn().expect("start resourcefs");
         let stdin = child.stdin.take().expect("child stdin");
@@ -161,46 +220,64 @@ impl McpProcess {
     }
 
     fn receive_response(&mut self, id: u64, reply_to_roots: bool) -> Value {
-        loop {
-            let response = self.read_message();
-            assert_eq!(response["jsonrpc"], "2.0");
-            if response.get("method") == Some(&Value::String("roots/list".to_owned())) {
-                self.root_list_calls += 1;
-                if reply_to_roots {
-                    let reply = json!({
-                        "jsonrpc": "2.0",
-                        "id": response["id"],
-                        "result": {"roots": self.client_roots},
-                    });
-                    self.write_message(&reply);
+        receive_response_fields(
+            ResponseFields {
+                stdin: &mut self.stdin,
+                stdout: &mut self.stdout,
+                client_roots: &mut self.client_roots,
+                root_list_calls: &mut self.root_list_calls,
+                cancelled_root_requests: &mut self.cancelled_root_requests,
+            },
+            None,
+            id,
+            reply_to_roots,
+        )
+    }
+
+    #[cfg(feature = "test-support")]
+    fn receive_response_until(&mut self, id: u64, ignored_id: u64, timeout: Duration) -> Value {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread::scope(|scope| {
+            let McpProcess {
+                child,
+                stdin,
+                stdout,
+                client_roots,
+                root_list_calls,
+                cancelled_root_requests,
+                ..
+            } = self;
+            scope.spawn(move || {
+                let response = receive_response_fields(
+                    ResponseFields {
+                        stdin,
+                        stdout,
+                        client_roots,
+                        root_list_calls,
+                        cancelled_root_requests,
+                    },
+                    Some(ignored_id),
+                    id,
+                    true,
+                );
+                let _ = sender.send(response);
+            });
+            match receiver.recv_timeout(timeout) {
+                Ok(response) => response,
+                Err(_) => {
+                    let _ = child.kill();
+                    panic!("resourcefs did not respond within {timeout:?} to request {id}");
                 }
-                continue;
             }
-            if response.get("method") == Some(&Value::String("notifications/cancelled".to_owned()))
-            {
-                self.cancelled_root_requests += 1;
-                continue;
-            }
-            assert_eq!(response["id"], id);
-            return response;
-        }
+        })
     }
 
     fn read_message(&mut self) -> Value {
-        let mut line = String::new();
-        let bytes = self.stdout.read_line(&mut line).expect("read response");
-        assert_ne!(bytes, 0, "resourcefs closed stdout before responding");
-        let response: Value = serde_json::from_str(&line)
-            .unwrap_or_else(|error| panic!("stdout was not JSON-RPC: {error}: {line:?}"));
-        assert_eq!(response["jsonrpc"], "2.0");
-        response
+        read_message_from(&mut self.stdout)
     }
 
     fn write_message(&mut self, message: &Value) {
-        let stdin = self.stdin.as_mut().expect("open child stdin");
-        serde_json::to_writer(&mut *stdin, message).expect("serialize message");
-        writeln!(stdin).expect("write message delimiter");
-        stdin.flush().expect("flush message");
+        write_message_to(&mut self.stdin, message);
     }
 
     fn notify_initialized(&mut self) {
@@ -250,15 +327,85 @@ impl McpProcess {
     }
 
     fn call_read(&mut self, path: &str) -> Value {
+        self.call_read_arguments(json!({"path": path}))
+    }
+
+    fn call_read_arguments(&mut self, arguments: Value) -> Value {
         let response = self.request(
             "tools/call",
-            json!({"name": "rfs_read", "arguments": {"path": path}}),
+            json!({"name": "rfs_read", "arguments": arguments}),
         );
         assert!(
             response.get("error").is_none(),
             "tool call failed: {response}"
         );
         response["result"].clone()
+    }
+
+    #[cfg(feature = "test-support")]
+    fn notify_cancelled(&mut self, request_id: u64) {
+        self.write_message(&json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": {"requestId": request_id},
+        }));
+    }
+
+    #[cfg(feature = "test-support")]
+    fn wait_for_path(&self, marker: &Path, description: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !marker.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {description} at {}",
+                marker.display()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    fn wait_for_path_absent(&self, marker: &Path, description: &str, window: Duration) {
+        let deadline = Instant::now() + window;
+        while Instant::now() < deadline {
+            assert!(
+                !marker.exists(),
+                "{description} appeared at {}",
+                marker.display()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    fn wait_for_session_marker(&self, session_root: &Path, marker: &str) -> PathBuf {
+        let session = session_directory(session_root);
+        self.wait_for_path(&session.join(marker), &format!("session {marker} marker"));
+        session
+    }
+
+    #[cfg(feature = "test-support")]
+    fn wait_for_exit(&mut self, timeout: Duration) -> std::process::ExitStatus {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = self.child.try_wait().expect("poll child") {
+                return status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "resourcefs did not exit within {timeout:?}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    fn drain_remaining_stdout(&mut self) -> String {
+        let mut remaining = String::new();
+        self.stdout
+            .read_to_string(&mut remaining)
+            .expect("drain remaining stdout");
+        remaining
     }
 
     fn finish(&mut self) -> String {
@@ -293,6 +440,138 @@ impl McpProcess {
             .expect("read child stderr");
         assert!(status.success(), "resourcefs exited {status}: {stderr}");
         stderr
+    }
+}
+
+fn read_message_from(stdout: &mut BufReader<ChildStdout>) -> Value {
+    let mut line = String::new();
+    let bytes = stdout.read_line(&mut line).expect("read response");
+    assert_ne!(bytes, 0, "resourcefs closed stdout before responding");
+    let response: Value = serde_json::from_str(&line)
+        .unwrap_or_else(|error| panic!("stdout was not JSON-RPC: {error}: {line:?}"));
+    assert_eq!(response["jsonrpc"], "2.0");
+    response
+}
+
+fn write_message_to(stdin: &mut Option<ChildStdin>, message: &Value) {
+    let stdin = stdin.as_mut().expect("open child stdin");
+    serde_json::to_writer(&mut *stdin, message).expect("serialize message");
+    writeln!(stdin).expect("write message delimiter");
+    stdin.flush().expect("flush message");
+}
+
+struct ResponseFields<'a> {
+    stdin: &'a mut Option<ChildStdin>,
+    stdout: &'a mut BufReader<ChildStdout>,
+    client_roots: &'a mut Vec<Value>,
+    root_list_calls: &'a mut usize,
+    cancelled_root_requests: &'a mut usize,
+}
+
+fn receive_response_fields(
+    fields: ResponseFields<'_>,
+    ignored_id: Option<u64>,
+    id: u64,
+    reply_to_roots: bool,
+) -> Value {
+    let ResponseFields {
+        stdin,
+        stdout,
+        client_roots,
+        root_list_calls,
+        cancelled_root_requests,
+    } = fields;
+    loop {
+        let response = read_message_from(stdout);
+        assert_eq!(response["jsonrpc"], "2.0");
+        if response.get("method") == Some(&Value::String("roots/list".to_owned())) {
+            *root_list_calls += 1;
+            if reply_to_roots {
+                let reply = json!({
+                    "jsonrpc": "2.0",
+                    "id": response["id"],
+                    "result": {"roots": client_roots},
+                });
+                write_message_to(stdin, &reply);
+            }
+            continue;
+        }
+        if response.get("method") == Some(&Value::String("notifications/cancelled".to_owned())) {
+            *cancelled_root_requests += 1;
+            continue;
+        }
+        if response["id"].as_u64().is_some_and(|response_id| {
+            ignored_id.is_some_and(|ignored_id| response_id == ignored_id)
+        }) {
+            if let Some(result) = response.get("result") {
+                assert_eq!(
+                    result["isError"], true,
+                    "cancelled request returned a success result: {response}"
+                );
+            }
+            continue;
+        }
+        assert_eq!(response["id"], id);
+        return response;
+    }
+}
+
+#[cfg(feature = "test-support")]
+fn session_directory(session_root: &Path) -> PathBuf {
+    let sessions = session_root.join("sessions");
+    let mut directories: Vec<PathBuf> = fs::read_dir(&sessions)
+        .expect("sessions directory")
+        .map(|entry| entry.expect("session entry").path())
+        .filter(|path| path.is_dir())
+        .collect();
+    assert_eq!(
+        directories.len(),
+        1,
+        "expected exactly one Path Session under {}",
+        sessions.display()
+    );
+    directories.remove(0)
+}
+
+#[cfg(feature = "test-support")]
+fn assert_objects_empty(session_dir: &Path) {
+    let entries: Vec<PathBuf> = fs::read_dir(session_dir.join("objects"))
+        .expect("objects directory")
+        .map(|entry| entry.expect("object entry").path())
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "Path Session must not publish artifact objects: {entries:?}"
+    );
+}
+
+#[cfg(feature = "test-support")]
+fn assert_no_success_response(drained: &str, read_id: u64) {
+    for line in drained.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let message: Value = serde_json::from_str(line)
+            .unwrap_or_else(|error| panic!("drained stdout was not JSON-RPC: {error}: {line:?}"));
+        if message.get("id") != Some(&Value::Number(read_id.into())) {
+            continue;
+        }
+        if let Some(result) = message.get("result") {
+            assert_eq!(
+                result["isError"], true,
+                "a disconnected session must never deliver a success result: {message}"
+            );
+            assert_eq!(result["structuredContent"]["ok"], false);
+        }
+    }
+}
+
+fn accepts_type(schema: &Value, expected: &str) -> bool {
+    match schema.get("type") {
+        Some(Value::String(actual)) => actual == expected,
+        Some(Value::Array(types)) => types.iter().any(|actual| *actual == expected),
+        _ => false,
     }
 }
 
@@ -356,14 +635,53 @@ fn lists_object_root_read_tool_only() {
     let tools = response["result"]["tools"].as_array().expect("tools array");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0]["name"], "rfs_read");
-    assert_eq!(tools[0]["inputSchema"]["type"], "object");
-    assert_eq!(tools[0]["inputSchema"]["additionalProperties"], false);
-    assert_eq!(tools[0]["outputSchema"]["type"], "object");
-    assert_eq!(tools[0]["outputSchema"]["additionalProperties"], false);
+
+    let input = &tools[0]["inputSchema"];
+    assert_eq!(input["type"], "object");
+    assert_eq!(input["additionalProperties"], false);
+    assert_eq!(input["required"], json!(["path"]), "only path is required");
+    let limits_property = &input["properties"]["limits"];
     assert_eq!(
-        tools[0]["outputSchema"]["$defs"]["ReadErrorOutput"]["additionalProperties"],
+        limits_property["$ref"], "#/$defs/ReadLimitsInput",
+        "limits must reference its strict object schema: {limits_property}"
+    );
+    let limits = &input["$defs"]["ReadLimitsInput"];
+    assert_eq!(
+        limits["type"], "object",
+        "limits must be an object: {limits}"
+    );
+    assert_eq!(
+        limits["additionalProperties"], false,
+        "limits must reject unknown members: {limits}"
+    );
+    for (member, minimum, maximum) in [
+        ("bytes", 1, 49_152),
+        ("lines", 1, 3_000),
+        ("columns", 1, 512),
+    ] {
+        let schema = &limits["properties"][member];
+        assert!(
+            accepts_type(schema, "integer"),
+            "limits.{member} must be an integer schema: {schema}"
+        );
+        assert_eq!(schema["minimum"], minimum, "limits.{member} minimum");
+        assert_eq!(schema["maximum"], maximum, "limits.{member} maximum");
+    }
+
+    let output = &tools[0]["outputSchema"];
+    assert_eq!(output["type"], "object");
+    assert_eq!(output["additionalProperties"], false);
+    assert_eq!(
+        output["$defs"]["ReadErrorOutput"]["additionalProperties"],
         false
     );
+    for member in ["recoveryReference", "continuationReference"] {
+        assert!(
+            accepts_type(&output["properties"][member], "string"),
+            "output schema must expose {member} as a string: {}",
+            output["properties"][member]
+        );
+    }
     process.finish();
 }
 
@@ -403,7 +721,16 @@ fn renders_complete_success_and_errors() {
                     .expect("canonical reference"),
                 structured["versionTag"].as_str().expect("Version Tag"),
                 structured["content"].as_str().expect("structured content")
-            )
+            ),
+            "complete success must render the header, metadata-free body, and exact content"
+        );
+        assert!(
+            !text.contains("Recovery Reference:"),
+            "unbounded text must not carry a Recovery Reference line: {text:?}"
+        );
+        assert!(
+            !text.contains("Continuation Reference:"),
+            "unbounded text must not carry a continuation line: {text:?}"
         );
 
         let canonical = process.call_read("rfs://workspace/workspace/fixture.txt");
@@ -450,8 +777,85 @@ fn renders_complete_success_and_errors() {
         assert_tool_error(&process.call_read("escape.txt"), "permission_denied");
 
         let over_limit = process.call_read("over-limit.txt");
-        assert_tool_error(&over_limit, "limit_exceeded");
-        assert!(over_limit["structuredContent"].get("content").is_none());
+        assert_eq!(
+            over_limit["isError"], false,
+            "one byte over the ceiling must spill instead of failing: {over_limit}"
+        );
+        let over_structured = &over_limit["structuredContent"];
+        assert_eq!(
+            over_structured["content"],
+            maximum_text(),
+            "the first page must hold the exact maximum 49,152-byte page"
+        );
+        assert_eq!(over_structured["bounded"], true);
+        let recovery = over_structured["recoveryReference"]
+            .as_str()
+            .expect("spill Recovery Reference")
+            .to_owned();
+        let continuation = over_structured["continuationReference"]
+            .as_str()
+            .expect("spill continuation")
+            .to_owned();
+        assert!(recovery.starts_with("artifact://"));
+        assert!(continuation.starts_with("artifact://"));
+        let over_text = over_limit["content"][0]["text"]
+            .as_str()
+            .expect("over-limit TextContent");
+        assert!(!over_text.is_empty());
+        assert_eq!(
+            over_text,
+            format!(
+                "[{}#{}]\nRecovery Reference: {recovery}\nContinuation Reference: {continuation}\n{}",
+                over_structured["canonicalReference"]
+                    .as_str()
+                    .expect("bounded canonical reference"),
+                over_structured["versionTag"]
+                    .as_str()
+                    .expect("bounded Version Tag"),
+                maximum_text(),
+            ),
+            "bounded text must render the header, both references, and the exact page content"
+        );
+
+        let final_page = process.call_read(&continuation);
+        assert_eq!(
+            final_page["isError"], false,
+            "following the continuation failed: {final_page}"
+        );
+        let final_structured = &final_page["structuredContent"];
+        assert_eq!(
+            final_structured["content"], "x",
+            "the continuation must address the final unterminated line"
+        );
+        assert_eq!(
+            final_structured["bounded"], false,
+            "the final page must be complete"
+        );
+        assert_eq!(
+            final_structured["recoveryReference"], recovery,
+            "the recovery root must stay stable across pages"
+        );
+        assert!(
+            final_structured.get("continuationReference").is_none(),
+            "the final page must not carry a continuation"
+        );
+        let final_text = final_page["content"][0]["text"]
+            .as_str()
+            .expect("final page TextContent");
+        assert_eq!(
+            final_text,
+            format!(
+                "[{}#{}]\nRecovery Reference: {recovery}\n{}",
+                final_structured["canonicalReference"]
+                    .as_str()
+                    .expect("final canonical reference"),
+                final_structured["versionTag"]
+                    .as_str()
+                    .expect("final Version Tag"),
+                "x",
+            ),
+            "the final page must render the header, the stable Recovery Reference, and no continuation"
+        );
 
         let malformed = process.request("tools/call", json!({"name": "rfs_read", "arguments": {}}));
         assert_eq!(malformed["error"]["code"], -32602);
@@ -666,7 +1070,7 @@ fn removed_inflight_result_fails_after_root_generation_changes() {
     fs::write(removed.join("gated.txt"), "removed content").expect("gated fixture");
     fs::write(retained.join("gated.txt"), "retained content").expect("retained fixture");
 
-    let mut process = McpProcess::start_with_delivery_gate(&[("launch", &removed)], None, &gate);
+    let mut process = McpProcess::start_gated(&[("launch", &removed)], None, &gate, "*");
     process.initialize_with_roots(VERSION_2026, vec![mcp_root(&removed, "workspace")]);
     let list = process.request("tools/list", json!({}));
     assert!(
@@ -703,6 +1107,452 @@ fn removed_inflight_result_fails_after_root_generation_changes() {
         "tool call failed: {response}"
     );
     assert_tool_error(&response["result"], "invalid_reference");
+    process.finish();
+}
+
+fn displayed_shape(content: &str) -> (usize, usize) {
+    if content.is_empty() {
+        return (0, 0);
+    }
+    let mut lines = 0_usize;
+    let mut maximum_columns = 0_usize;
+    for segment in content.split_inclusive('\n') {
+        lines += 1;
+        let body = segment.strip_suffix('\n').unwrap_or(segment);
+        let body = body.strip_suffix('\r').unwrap_or(body);
+        maximum_columns = maximum_columns.max(body.chars().count());
+    }
+    (lines, maximum_columns)
+}
+
+fn assert_page_within_limits(content: &str, limits: &Value) {
+    if let Some(bytes) = limits.get("bytes").and_then(Value::as_u64) {
+        assert!(
+            content.len() as u64 <= bytes,
+            "page has {} bytes, over the {bytes}-byte limit",
+            content.len()
+        );
+    }
+    if let Some(lines) = limits.get("lines").and_then(Value::as_u64) {
+        let (line_count, _) = displayed_shape(content);
+        assert!(
+            line_count as u64 <= lines,
+            "page has {line_count} lines, over the {lines}-line limit"
+        );
+    }
+    if let Some(columns) = limits.get("columns").and_then(Value::as_u64) {
+        let (_, maximum_columns) = displayed_shape(content);
+        assert!(
+            maximum_columns as u64 <= columns,
+            "page has a {maximum_columns}-column line, over the {columns}-column limit"
+        );
+    }
+}
+
+fn reconstruct_with_limits(process: &mut McpProcess, path: &str, limits: Value, expected: &str) {
+    let mut arguments = json!({"path": path, "limits": limits});
+    let mut reconstructed = String::new();
+    let mut recovery: Option<String> = None;
+    let mut previous_continuation: Option<String> = None;
+    let mut pages = 0_usize;
+    loop {
+        let result = process.call_read_arguments(arguments.clone());
+        assert_eq!(
+            result["isError"], false,
+            "bounded page read failed: {result}"
+        );
+        let structured = &result["structuredContent"];
+        let content = structured["content"].as_str().expect("page content");
+        assert_page_within_limits(content, &arguments["limits"]);
+        if structured["bounded"] == true {
+            assert!(!content.is_empty(), "bounded pages must make progress");
+        }
+        if let Some(root) = recovery.as_ref() {
+            assert_eq!(
+                structured["recoveryReference"].as_str().expect("recovery"),
+                root,
+                "the recovery root must stay stable across pages"
+            );
+        } else {
+            recovery = Some(
+                structured["recoveryReference"]
+                    .as_str()
+                    .expect("spill Recovery Reference")
+                    .to_owned(),
+            );
+        }
+        let continuation = structured.get("continuationReference");
+        assert_eq!(
+            continuation.is_some(),
+            structured["bounded"] == true,
+            "a continuation must be present exactly while bounded"
+        );
+        let text = result["content"][0]["text"].as_str().expect("TextContent");
+        reconstructed.push_str(content);
+        pages += 1;
+        assert!(pages < 100, "continuation chain did not terminate");
+
+        let Some(next) = continuation else {
+            assert_eq!(structured["bounded"], false);
+            assert!(
+                text.contains(recovery.as_deref().expect("recovery")),
+                "final page TextContent must contain the Recovery Reference"
+            );
+            break;
+        };
+        let next = next.as_str().expect("continuation string");
+        assert_ne!(
+            Some(next),
+            previous_continuation.as_deref(),
+            "the continuation must progress"
+        );
+        assert!(
+            text.contains(next),
+            "TextContent must contain the continuation reference"
+        );
+        assert!(
+            text.contains(recovery.as_deref().expect("recovery")),
+            "bounded page TextContent must contain the Recovery Reference"
+        );
+        previous_continuation = Some(next.to_owned());
+        arguments["path"] = Value::String(next.to_owned());
+    }
+    assert_eq!(
+        reconstructed, expected,
+        "concatenated pages must reconstruct the exact fixture bytes"
+    );
+}
+
+#[test]
+fn stdio_bounded_read_reconstructs_fixture() {
+    let fixture = WorkspaceFixture::new();
+    let temporary = TempDir::new().expect("temporary directory");
+    let session_root = temporary.path().join("cache");
+    fs::create_dir(&session_root).expect("session root");
+    let mut process = McpProcess::start_with_session_root(
+        &[("workspace", &fixture.root)],
+        Some("workspace"),
+        &session_root,
+    );
+    process.initialize(VERSION_2026);
+
+    reconstruct_with_limits(
+        &mut process,
+        "maximum.txt",
+        json!({"bytes": 8_192}),
+        &maximum_text(),
+    );
+    reconstruct_with_limits(
+        &mut process,
+        "maximum.txt",
+        json!({"lines": 10}),
+        &maximum_text(),
+    );
+    let wide = format!("{}\n", "x".repeat(1_024));
+    reconstruct_with_limits(&mut process, "wide.txt", json!({"columns": 256}), &wide);
+    reconstruct_with_limits(
+        &mut process,
+        "unicode.txt",
+        json!({"bytes": 7}),
+        &"é".repeat(10),
+    );
+    process.finish();
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn stdio_rejects_non_lower_limits() {
+    let fixture = WorkspaceFixture::new();
+    let temporary = TempDir::new().expect("temporary directory");
+    let gate = temporary.path().join("gate");
+    let session_root = temporary.path().join("cache");
+    fs::create_dir(&gate).expect("gate directory");
+    fs::create_dir(&session_root).expect("session root");
+    let identity = "rfs://workspace/workspace/fixture.txt";
+    let mut process = McpProcess::start_gated_with_session_root(
+        &[("workspace", &fixture.root)],
+        Some("workspace"),
+        &gate,
+        identity,
+        &session_root,
+    );
+    process.initialize(VERSION_2026);
+
+    let invalid_limits: Vec<Value> = vec![
+        json!(null),
+        json!(5),
+        json!([]),
+        json!("tight"),
+        json!({"bytes": 0}),
+        json!({"bytes": -1}),
+        json!({"bytes": 1.5}),
+        json!({"bytes": 49_153}),
+        json!({"bytes": null}),
+        json!({"bytes": "10"}),
+        json!({"bytes": true}),
+        json!({"lines": 0}),
+        json!({"lines": 3_001}),
+        json!({"lines": -3}),
+        json!({"columns": 0}),
+        json!({"columns": 513}),
+        json!({"unknown": 7}),
+        json!({"bytes": 5, "lines": 0}),
+    ];
+    for limits in &invalid_limits {
+        let response = process.request(
+            "tools/call",
+            json!({"name": "rfs_read", "arguments": {"path": "fixture.txt", "limits": limits}}),
+        );
+        assert_eq!(
+            response["error"]["code"], -32602,
+            "limits shape {limits} must be invalid params: {response}"
+        );
+        assert!(
+            response.get("result").is_none(),
+            "invalid limits {limits} produced a result"
+        );
+    }
+    process.wait_for_path_absent(
+        &gate.join("entered"),
+        "delivery gate entry",
+        Duration::from_millis(200),
+    );
+
+    let proof_id = process.send_request(
+        "tools/call",
+        json!({"name": "rfs_read", "arguments": {"path": "fixture.txt"}}),
+    );
+    process.wait_for_path(&gate.join("entered"), "delivery gate entry");
+    fs::write(gate.join("release"), "release").expect("release delivery gate");
+    let proof = process.receive_response(proof_id, true);
+    assert!(
+        proof.get("error").is_none(),
+        "gate-proof read failed: {proof}"
+    );
+    assert_eq!(
+        proof["result"]["structuredContent"]["content"], "fixture text\n",
+        "a valid call must reach the source once the gate is released"
+    );
+
+    let exact = process.call_read_arguments(json!({
+        "path": "fixture.txt",
+        "limits": {"bytes": 49_152, "lines": 3_000, "columns": 512},
+    }));
+    assert_eq!(exact["isError"], false);
+    assert_eq!(exact["structuredContent"]["bounded"], false);
+    assert_eq!(exact["structuredContent"]["content"], "fixture text\n");
+
+    let empty_object = process.call_read_arguments(json!({
+        "path": "fixture.txt",
+        "limits": {},
+    }));
+    assert_eq!(
+        empty_object["structuredContent"]["content"],
+        "fixture text\n"
+    );
+
+    let bounded = process.call_read_arguments(json!({
+        "path": "fixture.txt",
+        "limits": {"bytes": 5},
+    }));
+    assert_eq!(bounded["structuredContent"]["bounded"], true);
+    assert_eq!(bounded["structuredContent"]["content"], "fixtu");
+    let continuation = bounded["structuredContent"]["continuationReference"]
+        .as_str()
+        .expect("bounded continuation")
+        .to_owned();
+    assert!(
+        bounded["content"][0]["text"]
+            .as_str()
+            .expect("bounded TextContent")
+            .contains(&continuation)
+    );
+    let middle = process.call_read_arguments(json!({
+        "path": continuation,
+        "limits": {"bytes": 5},
+    }));
+    assert_eq!(middle["structuredContent"]["bounded"], true);
+    assert_eq!(middle["structuredContent"]["content"], "re te");
+    let final_continuation = middle["structuredContent"]["continuationReference"]
+        .as_str()
+        .expect("middle continuation")
+        .to_owned();
+    let final_page = process.call_read_arguments(json!({
+        "path": final_continuation,
+        "limits": {"bytes": 5},
+    }));
+    assert_eq!(final_page["isError"], false);
+    assert_eq!(final_page["structuredContent"]["bounded"], false);
+    assert_eq!(final_page["structuredContent"]["content"], "xt\n");
+
+    process.finish();
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn stdio_storage_write_failure_is_complete_source_unavailable() {
+    let fixture = WorkspaceFixture::new();
+    let temporary = TempDir::new().expect("temporary directory");
+    let session_root = temporary.path().join("cache");
+    fs::create_dir(&session_root).expect("session root");
+    let mut process = McpProcess::start_with_storage_failure(
+        &[("workspace", &fixture.root)],
+        Some("workspace"),
+        &session_root,
+        "write",
+    );
+    process.initialize(VERSION_2026);
+
+    let result = process.call_read("over-limit.txt");
+    assert_tool_error(&result, "source_unavailable");
+    let structured = &result["structuredContent"];
+    assert!(
+        structured.get("content").is_none(),
+        "a failed spill must not return page content"
+    );
+    assert!(
+        structured.get("recoveryReference").is_none(),
+        "a failed spill must not return a Recovery Reference"
+    );
+    assert!(
+        structured.get("continuationReference").is_none(),
+        "a failed spill must not return a continuation"
+    );
+    let session_dir = session_directory(&session_root);
+    assert_objects_empty(&session_dir);
+    process.finish();
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn stdio_disconnect_marker_failure_is_observable() {
+    let fixture = WorkspaceFixture::new();
+    let temporary = TempDir::new().expect("temporary directory");
+    let session_root = temporary.path().join("cache");
+    fs::create_dir(&session_root).expect("session root");
+    let mut process = McpProcess::start_with_storage_failure(
+        &[("workspace", &fixture.root)],
+        Some("workspace"),
+        &session_root,
+        "disconnect",
+    );
+    process.initialize(VERSION_2026);
+    let session_dir = session_directory(&session_root);
+
+    process.stdin.take();
+    let status = process.wait_for_exit(Duration::from_secs(10));
+    assert!(
+        !status.success(),
+        "disconnect marker failure must fail the server process"
+    );
+    assert!(
+        !session_dir.join("disconnected").exists(),
+        "failed marker persistence must not claim a clean disconnect"
+    );
+    assert_objects_empty(&session_dir);
+    assert!(
+        process.drain_remaining_stdout().trim().is_empty(),
+        "disconnect failure emitted unexpected protocol output"
+    );
+    let mut stderr = String::new();
+    process
+        .child
+        .stderr
+        .take()
+        .expect("child stderr")
+        .read_to_string(&mut stderr)
+        .expect("read child stderr");
+    assert!(
+        stderr.contains("mark session disconnected"),
+        "disconnect failure was not observable on stderr: {stderr}"
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn stdio_request_cancel_keeps_session_active_without_artifact() {
+    let fixture = WorkspaceFixture::new();
+    let temporary = TempDir::new().expect("temporary directory");
+    let gate = temporary.path().join("gate");
+    let session_root = temporary.path().join("cache");
+    fs::create_dir(&gate).expect("gate directory");
+    fs::create_dir(&session_root).expect("session root");
+    let identity = "rfs://workspace/workspace/over-limit.txt";
+    let mut process = McpProcess::start_gated_with_session_root(
+        &[("workspace", &fixture.root)],
+        Some("workspace"),
+        &gate,
+        identity,
+        &session_root,
+    );
+    process.initialize(VERSION_2026);
+
+    let read_id = process.send_request(
+        "tools/call",
+        json!({"name": "rfs_read", "arguments": {"path": "over-limit.txt"}}),
+    );
+    process.wait_for_path(&gate.join("entered"), "delivery gate entry");
+    process.notify_cancelled(read_id);
+    thread::sleep(Duration::from_millis(20));
+    fs::write(gate.join("release"), "release").expect("release delivery gate");
+
+    let follow_up_id = process.send_request(
+        "tools/call",
+        json!({"name": "rfs_read", "arguments": {"path": "fixture.txt"}}),
+    );
+    let follow_up = process.receive_response_until(follow_up_id, read_id, Duration::from_secs(10));
+    assert!(
+        follow_up.get("error").is_none(),
+        "follow-up read failed: {follow_up}"
+    );
+    let follow_up = &follow_up["result"];
+    assert_eq!(
+        follow_up["structuredContent"]["content"], "fixture text\n",
+        "cancelling one request must not disconnect the Path Session"
+    );
+    thread::sleep(Duration::from_millis(100));
+    assert_objects_empty(&session_directory(&session_root));
+    process.finish();
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn stdio_eof_disconnects_before_release_and_leaves_no_object() {
+    let fixture = WorkspaceFixture::new();
+    let temporary = TempDir::new().expect("temporary directory");
+    let gate = temporary.path().join("gate");
+    let session_root = temporary.path().join("cache");
+    fs::create_dir(&gate).expect("gate directory");
+    fs::create_dir(&session_root).expect("session root");
+    let identity = "rfs://workspace/workspace/over-limit.txt";
+    let mut process = McpProcess::start_gated_with_session_root(
+        &[("workspace", &fixture.root)],
+        Some("workspace"),
+        &gate,
+        identity,
+        &session_root,
+    );
+    process.initialize(VERSION_2026);
+
+    let read_id = process.send_request(
+        "tools/call",
+        json!({"name": "rfs_read", "arguments": {"path": "over-limit.txt"}}),
+    );
+    process.wait_for_path(&gate.join("entered"), "delivery gate entry");
+    drop(process.stdin.take());
+
+    let session_dir = process.wait_for_session_marker(&session_root, "disconnected");
+    assert!(
+        !gate.join("release").exists(),
+        "the disconnected marker must appear while the gated read is still in flight"
+    );
+    assert_objects_empty(&session_dir);
+
+    fs::write(gate.join("release"), "release").expect("release delivery gate");
+    let status = process.wait_for_exit(Duration::from_secs(10));
+    assert!(status.success(), "resourcefs exited {status}");
+    let drained = process.drain_remaining_stdout();
+    assert_no_success_response(&drained, read_id);
     process.finish();
 }
 

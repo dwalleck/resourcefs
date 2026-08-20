@@ -26,6 +26,8 @@ pub(crate) struct ReadToolOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    continuation_reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<ReadErrorOutput>,
@@ -42,11 +44,15 @@ pub(crate) fn success(
     requested_path: &str,
     resource: ReadResource,
 ) -> Result<CallToolResult, String> {
+    let recovery_reference = resource.recovery_reference().map(str::to_owned);
+    let continuation_reference = resource.continuation_reference().map(str::to_owned);
     let mut text = String::with_capacity(
         resource.canonical_reference().len()
             + resource.version_tag().as_str().len()
             + resource.content().len()
-            + 4,
+            + recovery_reference.as_ref().map_or(0, String::len)
+            + continuation_reference.as_ref().map_or(0, String::len)
+            + 48,
     );
     writeln!(
         text,
@@ -55,8 +61,16 @@ pub(crate) fn success(
         resource.version_tag()
     )
     .expect("writing a read header to String cannot fail");
-    text.push_str(resource.content());
 
+    if let Some(reference) = recovery_reference.as_deref() {
+        writeln!(text, "Recovery Reference: {reference}")
+            .expect("writing a Recovery Reference to String cannot fail");
+    }
+    if let Some(reference) = continuation_reference.as_deref() {
+        writeln!(text, "Continuation Reference: {reference}")
+            .expect("writing a continuation reference to String cannot fail");
+    }
+    text.push_str(resource.content());
     let output = ReadToolOutput {
         ok: true,
         contract_version: BEHAVIOR_CONTRACT_VERSION,
@@ -67,7 +81,8 @@ pub(crate) fn success(
         version_tag: Some(resource.version_tag().to_string()),
         mutable: Some(resource.is_mutable()),
         bounded: Some(resource.is_bounded()),
-        recovery_reference: None,
+        recovery_reference,
+        continuation_reference,
         content: Some(resource.content().to_owned()),
         error: None,
     };
@@ -103,6 +118,7 @@ pub(crate) fn failure(
         mutable: None,
         bounded: None,
         recovery_reference: None,
+        continuation_reference: None,
         content: None,
         error: Some(ReadErrorOutput {
             category: error.category().as_str().to_owned(),
@@ -119,7 +135,10 @@ pub(crate) fn failure(
 
 #[cfg(test)]
 mod tests {
-    use resourcefs_core::{PathReference, ReadResource, WorkspacePath, WorkspaceRootId};
+    use resourcefs_core::{
+        MAX_TEXT_BYTES, PathReference, ReadResource, WorkspacePath, WorkspaceRootId,
+    };
+    use std::time::{Duration, Instant};
 
     use super::success;
 
@@ -159,5 +178,34 @@ mod tests {
             structured["backingFileUri"],
             "file:///workspace/visible.txt"
         );
+    }
+
+    #[test]
+    fn maximum_page_render_stays_within_budget() {
+        let reference = PathReference::canonical(
+            WorkspaceRootId::new("workspace").expect("static root ID"),
+            WorkspacePath::new("maximum.txt").expect("static workspace path"),
+        );
+        let resource = ReadResource::text(reference, "x".repeat(MAX_TEXT_BYTES))
+            .expect("maximum page resource");
+
+        let started = Instant::now();
+        let result = success("maximum.txt", resource).expect("maximum page result");
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|output| output["content"].as_str())
+                .map(str::len),
+            Some(MAX_TEXT_BYTES)
+        );
+        if !cfg!(debug_assertions) {
+            assert!(
+                elapsed <= Duration::from_millis(25),
+                "maximum-page render took {elapsed:?}"
+            );
+        }
     }
 }

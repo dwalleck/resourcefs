@@ -218,6 +218,7 @@ pub enum StorageFailurePoint {
     Sync,
     Persist,
     Remove,
+    Disconnect,
 }
 
 #[cfg(not(feature = "test-support"))]
@@ -228,8 +229,10 @@ enum StorageFailurePoint {
     Sync,
     Persist,
     Remove,
+    Disconnect,
 }
 
+#[cfg(feature = "test-support")]
 impl StorageFailurePoint {
     const fn operation(self) -> &'static str {
         match self {
@@ -238,6 +241,7 @@ impl StorageFailurePoint {
             Self::Sync => "sync object",
             Self::Persist => "persist object",
             Self::Remove => "remove object",
+            Self::Disconnect => "mark session disconnected",
         }
     }
 }
@@ -334,8 +338,8 @@ impl SessionStorage for DiskSessionStorage {
             .map_err(|error| storage_io_error("remove object", error))?;
         sync_directory(self.objects_dir.clone()).await
     }
-
     async fn mark_disconnected(&self) -> Result<(), ResourceError> {
+        self.inject(StorageFailurePoint::Disconnect).await?;
         let marker = self.session_dir.join(DISCONNECTED_MARKER);
         tokio::task::spawn_blocking(move || write_marker_sync(&marker, b"disconnected\n"))
             .await

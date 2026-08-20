@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::{self, Read},
+    io,
     path::{Component, Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -12,9 +12,9 @@ use cap_std::{
     fs::{Dir, File},
 };
 use resourcefs_core::{
-    ErrorCategory, MAX_TEXT_BYTES, MAX_TEXT_COLUMNS, MAX_TEXT_LINES, MAX_WORKSPACE_ROOTS,
-    PathReference, ProjectionSelector, ResourceError, SourceAdapter, SourceResource,
-    WorkspaceAddress, WorkspacePath, WorkspaceRoot, WorkspaceRootId, WorkspaceRootSet, select_utf8,
+    ErrorCategory, MAX_WORKSPACE_ROOTS, PathReference, ProjectionSelector, ResourceError,
+    SourceAdapter, SourceResource, WorkspaceAddress, WorkspacePath, WorkspaceRoot, WorkspaceRootId,
+    WorkspaceRootSet, select_utf8,
 };
 use sha2::{Digest, Sha256};
 #[cfg(feature = "test-support")]
@@ -454,10 +454,9 @@ impl FilesystemSource {
     async fn wait_for_test_delivery_release(&self, identity: &str) -> Result<(), ResourceError> {
         let gate = {
             let mut armed = self.inner.delivery_gate.write().await;
-            if armed
-                .as_ref()
-                .is_some_and(|candidate| candidate.identity == identity)
-            {
+            if armed.as_ref().is_some_and(|candidate| {
+                candidate.identity == "*" || candidate.identity == identity
+            }) {
                 armed.take()
             } else {
                 None
@@ -490,7 +489,8 @@ fn validate_read_delivery(
             view,
             ..
         } if *current_generation == generation || view_retains_root(view, root) => Ok(()),
-        AuthorityState::Active { .. } => Err(authority_unavailable(
+        AuthorityState::Active { .. } => Err(ResourceError::new(
+            ErrorCategory::InvalidReference,
             "Workspace Root authority changed while reading",
         )),
         AuthorityState::Refreshing { .. } | AuthorityState::Disabled { .. } => Err(
@@ -772,23 +772,9 @@ fn read_address(
     }
     let canonical_reference =
         PathReference::canonical(resolved.root.metadata.id().clone(), relative_path);
-    let mut resource = if let Some(projection) = projection {
-        let selected = select_utf8(&mut file, Some(projection))?;
-        let (content, version_tag, _) = selected.into_parts();
-        SourceResource::text_projection(canonical_reference, content, version_tag)?
-    } else {
-        let initial_capacity = metadata.len().min(MAX_TEXT_BYTES as u64) as usize;
-        let mut bytes = Vec::with_capacity(initial_capacity);
-        (&mut file)
-            .take(MAX_TEXT_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| resource_io_error(identity, "read", error))?;
-        if bytes.len() > MAX_TEXT_BYTES {
-            return Err(resource_limit_error(identity, "bytes", MAX_TEXT_BYTES));
-        }
-        let content = validate_text_content(identity, bytes)?;
-        SourceResource::text(canonical_reference, content)?
-    };
+    let selected = select_utf8(&mut file, projection)?;
+    let (content, version_tag, _) = selected.into_parts();
+    let mut resource = SourceResource::text_projection(canonical_reference, content, version_tag)?;
     if visibility == BackingPathVisibility::Visible {
         let backing_uri = Url::from_file_path(&final_path)
             .map_err(|()| {
@@ -1039,28 +1025,6 @@ fn strip_beneath(target: &Path, root: &Path) -> Option<PathBuf> {
     Some(relative)
 }
 
-fn validate_text_content(identity: &str, bytes: Vec<u8>) -> Result<String, ResourceError> {
-    let content = String::from_utf8(bytes).map_err(|_| {
-        ResourceError::new(
-            ErrorCategory::UnsupportedProjection,
-            format!("Resource '{identity}' is not valid UTF-8 text"),
-        )
-    })?;
-    let mut lines = 0_usize;
-    let mut maximum_columns = 0_usize;
-    for line in content.lines() {
-        lines += 1;
-        maximum_columns = maximum_columns.max(line.chars().count());
-    }
-    if lines > MAX_TEXT_LINES {
-        return Err(resource_limit_error(identity, "lines", MAX_TEXT_LINES));
-    }
-    if maximum_columns > MAX_TEXT_COLUMNS {
-        return Err(resource_limit_error(identity, "columns", MAX_TEXT_COLUMNS));
-    }
-    Ok(content)
-}
-
 #[cfg(all(unix, not(target_os = "macos")))]
 fn final_directory_path(directory: &Dir) -> io::Result<PathBuf> {
     use std::os::fd::AsRawFd;
@@ -1222,13 +1186,6 @@ fn resource_io_error(identity: &str, operation: &str, error: io::Error) -> Resou
 
 fn limit_error(message: &str) -> ResourceError {
     ResourceError::new(ErrorCategory::LimitExceeded, message)
-}
-
-fn resource_limit_error(identity: &str, dimension: &str, limit: usize) -> ResourceError {
-    ResourceError::new(
-        ErrorCategory::LimitExceeded,
-        format!("Resource '{identity}' exceeds the hard {dimension} limit of {limit}"),
-    )
 }
 
 #[cfg(test)]

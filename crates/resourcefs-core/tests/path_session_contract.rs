@@ -294,7 +294,7 @@ async fn object_and_record_ceilings_fail_before_storage_io() {
 }
 
 #[tokio::test]
-async fn storage_failure_and_cancelled_commit_publish_nothing() {
+async fn storage_failure_publishes_nothing() {
     let storage = Arc::new(FakeStorage::default());
     let session = session(4, Arc::clone(&storage));
     storage.fail_next_write();
@@ -305,7 +305,19 @@ async fn storage_failure_and_cancelled_commit_publish_nothing() {
     assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
     assert_eq!(session.used_bytes().await, 0);
     assert_eq!(session.artifact_count().await, 0);
+    assert!(
+        !storage
+            .calls()
+            .await
+            .contains(&Call::Remove(ArtifactId::new(1).expect("ID"))),
+        "an unpublished object must not be cleaned up"
+    );
+}
 
+#[tokio::test]
+async fn request_cancel_prevents_commit() {
+    let storage = Arc::new(FakeStorage::default());
+    let session = session(5, Arc::clone(&storage));
     let gate = storage.arm_write_gate().await;
     let operation = OperationGuard::new();
     let pending_session = session.clone();
@@ -315,22 +327,37 @@ async fn storage_failure_and_cancelled_commit_publish_nothing() {
             .retain("cancelled", &pending_operation)
             .await
     });
+
+    // Write: the commit reaches durable storage and parks on the gate.
     gate.entered.notified().await;
+    let id = ArtifactId::new(1).expect("first artifact ID");
+    assert_eq!(
+        storage.calls().await,
+        vec![Call::Write(id, "cancelled".len())],
+        "the commit must write exactly once before the gate"
+    );
+
+    // Cancel: the operation is invalidated before the gated write is released.
     operation.cancel();
     assert!(!operation.is_active());
+
+    // Release: the storage write completes, then the commit fence removes the object.
     gate.release.notify_one();
     let error = pending
         .await
         .expect("retain task")
         .expect_err("cancelled commit");
     assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
-    assert_eq!(session.used_bytes().await, 0);
-    assert_eq!(session.artifact_count().await, 0);
-    assert!(
-        storage
-            .calls()
-            .await
-            .contains(&Call::Remove(ArtifactId::new(2).expect("ID")))
+    assert_eq!(
+        storage.calls().await,
+        vec![Call::Write(id, "cancelled".len()), Call::Remove(id)],
+        "the event order must be Write before Remove with no other storage calls"
+    );
+    assert_eq!(session.used_bytes().await, 0, "no quota may be charged");
+    assert_eq!(
+        session.artifact_count().await,
+        0,
+        "no record may be published"
     );
 }
 

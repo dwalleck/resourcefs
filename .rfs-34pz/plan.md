@@ -15,12 +15,12 @@
 | 2. Streaming filesystem projection | 389 actual |
 | 3. Path Session and durable artifact storage | 1,803 actual |
 | 4. Artifact adapter and bounded read engine | 1,530 actual |
-| 5. MCP rendering and lifecycle | 600 |
-| **Sum** | **6,615** |
-| **Churn margin** | **90 (15% of the 600 unimplemented lines)** |
-| **Projected total** | **6,705** |
+| 5. MCP rendering and lifecycle | 1,696 actual |
+| **Sum** | **7,711** |
+| **Churn margin** | **0 (implementation complete)** |
+| **Actual total** | **7,711** |
 
-Committed/staged reality replaces Slices 1–4 with 2,293, 389, 1,803, and 1,530 changed lines respectively, including their required workflow records. The 15% margin remains on the 600 unimplemented lines for the final MCP schema/rendering and lifecycle cutover. Because 6,705 exceeds the exact 4,000-line threshold, the work remains partitioned into three independently mergeable PR increments.
+Committed/staged reality replaces all five slices with 2,293, 389, 1,803, 1,530, and 1,696 changed lines respectively, including their required workflow records. Because 7,711 exceeds the exact 4,000-line threshold, the work remains partitioned into three independently mergeable PR increments.
 
 ### PR increment: core-selector-contract
 
@@ -242,6 +242,17 @@ Slice 5, stacked on `bounded-recovery-engine`. Mergeable definition: compiled-so
 - `cargo test -p resourcefs-core --test path_session_contract request_cancel_prevents_commit -- --exact` → gated event order matches the oracle and no artifact/quota remains; removing the final liveness check makes it red, restoration makes it pass.
 - `cargo run --quiet -p resourcefs-mcp --bin resourcefs -- --root tests/fixtures/workspace` driven by the stdio contract client → real process reads, spills, follows recovery/continuation, and returns byte-identical content with protocol stdout free of diagnostics.
 
+### Slice 5 checkpoint result — PASS (2026-08-20)
+
+- Impact analysis: `rfs_read` now validates a strict optional lower-limit object before root/source I/O, routes complete source projections through the common `ReadEngine`, renders recovery and continuation references in both output forms, and owns one persisted heartbeat-backed Path Session whose EOF/drop path invalidates synchronously before durable disconnect recording.
+- Gate 1 — direct contracts: PASS. The 2-case `text_limits_contract`, 7-case `path_session_contract`, 25-case filesystem adapter suite, and 6-case session-storage suite cover the complete field-presence matrix, exact ceilings, cancellation cleanup order, complete selected source projections through the 64 MiB object boundary, stale-root rejection, and atomic storage failures.
+- Gate 2 — compiled MCP seam: PASS. All 17 real-stdio cases passed, covering both required protocol revisions, object-root schemas, exact success/empty/error text, first/middle/final recovery pages, byte/line/column and UTF-8 reconstruction, 18 malformed/non-lower limit shapes rejected as MCP invalid params before a gated source read, storage failure, request cancellation with a live follow-up, EOF before gated release, and observable disconnect-marker failure.
+- Gate 3 — lifecycle ordering: PASS. The compiled EOF case observed the durable `disconnected` marker while the spill-candidate read remained gated and found no object before or after release; the cancellation case retained connection authority for a follow-up read and published no artifact. `DisconnectState` uses one cancellation-safe `OnceCell` result for concurrent receive/close/finalization callers, and the always-on heartbeat is joined on every service terminal path.
+- Gate 4 — independent premises: PASS. `.rfs-34pz/oracle_selectors.py` independently accepted all 21 selector rows. `.rfs-34pz/probe_rmcp_disconnect.py` reconfirmed rmcp 3.1.3 returns `Closed` after 5,002 ms before the gated handler completes and cancels its request context afterward; the ResourceFS transport fence supplies the earlier session invalidation.
+- Gate 5 — production bounds: PASS. The maximum-page renderer stayed under its 25 ms fence with fixed page-scale allocations; the 256 MiB narrow-range filesystem stress case returned exact bytes without collecting the source; complete unselected projections cap at 64 MiB plus one sentinel byte; heartbeat and invalidation perform constant work outside artifact admission.
+- Gate 6 — named mutations: PASS. Clamping one-over limits, omitting continuation from TextContent, clearing empty-success TextContent, accepting an empty-array limits shape, and removing the post-write commit guard each turned its owning exact contract red; restoration returned every focused and workspace contract to green.
+- Gate 7 — quality and review: PASS. `cargo test --workspace --all-targets --all-features` passed 96 tests in 16 suites; `cargo fmt --all -- --check` and strict workspace/all-target/all-feature Clippy passed. Final review reported no P0–P2 correctness or security findings.
+
 ## Tracker taxonomy
 
 - Strict profile-configurable lower ceilings/TTL are intended future work carried by verified issue `rfs-r9m6` and its rfs-34pz tracker note.
@@ -257,6 +268,6 @@ Slice 5, stacked on `bounded-recovery-engine`. Mergeable definition: compiled-so
 - [x] Every slice has all thirteen mandatory fields; no conditional field is omitted.
 - [x] Every claim has a fence in its implementing slice and every fence has its approved named mutation.
 - [x] Every new loop states asymptotic cost, production scale, resulting bound, maximum accepted cost, and rationale; every always-on phase has a wall budget.
-- [x] Arithmetic is 4,882 + 330 = 5,212; the exact >4,000 rule produces three independently mergeable increments, and every slice names one.
+- [x] Arithmetic is 7,711 + 0 = 7,711; the exact >4,000 rule produces three independently mergeable increments, and every slice names one.
 - [x] Every deferral phrase is classified and every intended-future item cites a verified tracker ID.
 - [x] No slice is declared complete; `checkpointed-build` exclusively judges completion.

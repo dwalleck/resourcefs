@@ -5,8 +5,8 @@ use std::{
 };
 
 use resourcefs_core::{
-    ErrorCategory, MAX_TEXT_BYTES, MAX_WORKSPACE_ROOTS, PathReference, SourceAdapter,
-    WorkspaceRootId,
+    ErrorCategory, MAX_ARTIFACT_BYTES, MAX_TEXT_BYTES, MAX_WORKSPACE_ROOTS, PathReference,
+    SourceAdapter, WorkspaceRootId,
 };
 use resourcefs_sources::{
     BackingPathVisibility, ClientRoot, FilesystemSource, LaunchRoot, LaunchRootSource,
@@ -202,36 +202,50 @@ fn exact_byte_limit_content() -> Vec<u8> {
     content
 }
 
-async fn assert_limit_exceeded(source: &FilesystemSource, path: &str) {
-    let error = source
-        .read(&reference(path))
-        .await
-        .expect_err("one-over fixture should fail");
-    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
-}
-
 #[tokio::test]
-async fn enforces_hard_read_limits() {
+async fn returns_complete_projection_above_inline_page_limits() {
     let (_temporary, root) = create_root();
     let exact = exact_byte_limit_content();
     fs::write(root.join("exact.txt"), &exact).expect("exact-byte fixture");
 
     let mut bytes_over = exact.clone();
     bytes_over.push(b'x');
-    fs::write(root.join("bytes-over.txt"), bytes_over).expect("byte-over fixture");
-    fs::write(root.join("lines-over.txt"), "x\n".repeat(3_001)).expect("line-over fixture");
-    fs::write(root.join("columns-over.txt"), "x".repeat(513)).expect("column-over fixture");
+    fs::write(root.join("bytes-over.txt"), &bytes_over).expect("byte-over fixture");
+    let lines_over = "x\n".repeat(3_001);
+    fs::write(root.join("lines-over.txt"), &lines_over).expect("line-over fixture");
+    let columns_over = "x".repeat(513);
+    fs::write(root.join("columns-over.txt"), &columns_over).expect("column-over fixture");
 
     let source = single_source(&root).await.expect("filesystem source");
-    let exact_resource = source
-        .read(&reference("exact.txt"))
-        .await
-        .expect("exact limit should pass");
-    assert_eq!(exact_resource.content().as_bytes(), exact);
+    for (path, expected) in [
+        ("exact.txt", exact.as_slice()),
+        ("bytes-over.txt", bytes_over.as_slice()),
+        ("lines-over.txt", lines_over.as_bytes()),
+        ("columns-over.txt", columns_over.as_bytes()),
+    ] {
+        let resource = source
+            .read(&reference(path))
+            .await
+            .expect("Source Adapter returns complete projection");
+        assert_eq!(resource.content().as_bytes(), expected);
+    }
+}
 
-    assert_limit_exceeded(&source, "bytes-over.txt").await;
-    assert_limit_exceeded(&source, "lines-over.txt").await;
-    assert_limit_exceeded(&source, "columns-over.txt").await;
+#[tokio::test]
+async fn rejects_projection_one_byte_over_artifact_ceiling() {
+    let (_temporary, root) = create_root();
+    let path = root.join("object-over.txt");
+    let file = fs::File::create(&path).expect("object-over fixture");
+    file.set_len((MAX_ARTIFACT_BYTES + 1) as u64)
+        .expect("sparse object-over fixture");
+    drop(file);
+
+    let source = single_source(&root).await.expect("filesystem source");
+    let error = source
+        .read(&reference("object-over.txt"))
+        .await
+        .expect_err("one byte over object ceiling");
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
 }
 
 #[tokio::test]
@@ -343,7 +357,7 @@ async fn stale_stream_delivery_is_rejected() {
         .await
         .expect("read task")
         .expect_err("stale selected content must not be delivered");
-    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    assert_eq!(error.category(), ErrorCategory::InvalidReference);
 }
 
 fn launch_root(id: &str, path: &std::path::Path) -> LaunchRoot {
