@@ -22,13 +22,13 @@ Empirical — required behavior is structurally cross-cutting and depends on unv
 
 | Artifact | Owner | Status |
 |---|---|---|
-| route.md | change-workflow | this file |
-| spec.md | interrogated-spec | required — T4 has unresolved observable behavior |
-| evidence.md, probe.* | prove-it-prototype | required — Empirical route from T1 |
-| design.md | falsifiable-design | required — Empirical route |
-| plan.md | budgeted-plan | required — Empirical route |
+| route.md | change-workflow | PASS — terminal criterion recorded below |
+| spec.md | interrogated-spec | PASS — approved observable contract |
+| evidence.md, probe.* | prove-it-prototype | PASS — P1–P4; P5–P6 are owned N/A |
+| design.md | falsifiable-design | PASS — approved C1–C18 claim matrix |
+| plan.md | budgeted-plan / checkpointed-build | PASS — six checkpointed slices and final integration |
 
-Oracle checkpoint in `checkpointed-build`: required — Empirical route
+Oracle checkpoint in `checkpointed-build`: PASS — final probes/oracles agree and every C1–C18 fence is green.
 
 ## Downstream sequence
 
@@ -37,3 +37,7 @@ interrogated-spec → prove-it-prototype → falsifiable-design → budgeted-pla
 ## Terminal criterion
 
 Empirical — `prove-it-prototype` records PASS for every empirical premise, every later artifact satisfies its owning stage's completion criterion, and `checkpointed-build` records no FAIL.
+
+## Completion
+
+PASS (2026-08-20) — the empirical premises remain PASS, every required artifact satisfies its owning stage, all six checkpointed slices and the final assembled integration record no FAIL, the full Rust workspace and strict Clippy are green, and a real stdio MCP session exercised read/search/glob successfully.

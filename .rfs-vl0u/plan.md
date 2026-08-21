@@ -311,5 +311,13 @@ The checkout currently has no configured Git remote or discoverable upstream def
 - PASS — every claim's named permanent fence and named mutation land in its owning slice; no fence uses an approved-risk N/A.
 - PASS — every introduced loop states asymptotic cost, production-scale input, resulting bound, maximum accepted cost, and rationale; every always-on phase has a wall budget.
 - PASS — 7,410 + 1,482 = 8,892 applies the exact review-size rule and partitions into four independently mergeable increments.
-- PASS — no new intended-work item is introduced. Product exclusions and issue-backed adapter/release work remain classified in approved `design.md`; the missing review remote is a current execution prerequisite, not product work.
-- PASS — no slice is declared complete; checkpointed-build owns completion.
+- PASS — no new intended-work item is introduced. Product exclusions and issue-backed adapter/release work remain classified in approved `design.md`.
+- PASS — all six slices completed through `checkpointed-build`; every checkpoint records PASS or a plan-backed N/A and no checkpoint records FAIL.
+
+## Final integration check — PASS (2026-08-20)
+
+- The assembled workspace passed `cargo fmt --all --check`, all-target/all-feature workspace checking, 141 tests across 19 suites, and strict all-target/all-feature workspace Clippy.
+- The final evidence rerun matched every external oracle: PCRE2 lookbehind span, Unicode case behavior, and typed `-47`/`-53` limits agreed; all 11 ignore decisions agreed and the escaping-link premise was independently reconfirmed; all 20 glob cases were byte-equivalent.
+- The assembled implementation passed every C1–C18 regression fence in the workspace suite. Every named mutation was observed red and restored green in its owning checkpoint.
+- A real `target/debug/resourcefs serve` stdio session negotiated MCP `2026-07-28`, listed exactly `rfs_read`, `rfs_search`, and `rfs_glob`, read a Workspace file containing the marker, returned one grouped search record, returned one glob record, emitted no stderr, and exited cleanly on EOF.
+- Final verdict: PASS — every applicable oracle, falsifier, regression fence, quality gate, and issue acceptance path is green; no deferred implementation work and no FAIL remain.
