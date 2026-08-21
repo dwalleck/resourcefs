@@ -1,8 +1,16 @@
-use std::{borrow::Cow, fmt, sync::Arc, time::Duration};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, hash_map::Entry},
+    fmt,
+    future::Future,
+    sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard},
+    time::Duration,
+};
 
 use resourcefs_core::{
+    DiscoveryEngine, ErrorCategory, GlobLimits, GlobOptions, GlobRequest, GlobTarget,
     OperationGuard, PathReference, PathSession, ReadEngine, ReadRequest, ResourceError,
-    SourceAdapter, TextLimits,
+    SearchLimits, SearchOptions, SearchRequest, SearchTarget, TextLimits,
 };
 #[cfg(feature = "test-support")]
 use resourcefs_sources::StorageFailurePoint;
@@ -14,9 +22,9 @@ use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, tool::schema_for_type, wrapper::Parameters},
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ClientResult, Implementation,
-        ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo,
-        ServerRequest, Tool,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ClientNotification, ClientRequest,
+        ClientResult, Implementation, JsonRpcMessage, ListToolsResult, PaginatedRequestParams,
+        ProtocolVersion, RequestId, ServerCapabilities, ServerInfo, ServerRequest, Tool,
     },
     service::{
         NotificationContext, PeerRequestOptions, RequestContext, RoleServer, RxJsonRpcMessage,
@@ -26,12 +34,15 @@ use rmcp::{
     transport::Transport,
 };
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, de::Error as _};
+use serde::{
+    Deserialize, Deserializer,
+    de::{DeserializeOwned, Error as _},
+};
 use tokio::sync::{Mutex, OnceCell, watch};
 
 use crate::{
     BoxError,
-    render::{self, ReadToolOutput},
+    render::{self, GlobToolOutput, ReadToolOutput, SearchToolOutput},
 };
 
 const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] =
@@ -72,15 +83,31 @@ where
     usize::deserialize(deserializer).map(Some)
 }
 
-fn deserialize_read_limits<'de, D>(deserializer: D) -> Result<ReadLimitsInput, D::Error>
+fn deserialize_object_limits<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
+    T: DeserializeOwned,
 {
     let value = serde_json::Value::deserialize(deserializer)?;
     if !value.is_object() {
         return Err(D::Error::custom("limits must be an object"));
     }
     serde_json::from_value(value).map_err(D::Error::custom)
+}
+
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_false() -> bool {
+    false
 }
 
 impl ReadLimitsInput {
@@ -93,8 +120,85 @@ impl ReadLimitsInput {
 #[serde(deny_unknown_fields)]
 struct ReadInput {
     path: String,
-    #[serde(default, deserialize_with = "deserialize_read_limits")]
+    #[serde(default, deserialize_with = "deserialize_object_limits")]
     limits: ReadLimitsInput,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SearchLimitsInput {
+    #[serde(default, deserialize_with = "deserialize_optional_limit")]
+    #[schemars(with = "usize", range(min = 1, max = 1_000))]
+    max_results: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_optional_limit")]
+    #[schemars(with = "usize", range(min = 1, max = 49_152))]
+    max_bytes: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_optional_limit")]
+    #[schemars(with = "usize", range(min = 1, max = 3_000))]
+    max_lines: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_optional_limit")]
+    #[schemars(with = "usize", range(min = 1, max = 512))]
+    max_columns: Option<usize>,
+}
+
+impl SearchLimitsInput {
+    fn into_search_limits(self) -> Result<SearchLimits, ResourceError> {
+        SearchLimits::new(
+            self.max_results,
+            self.max_bytes,
+            self.max_lines,
+            self.max_columns,
+        )
+    }
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct GlobLimitsInput {
+    #[serde(default, deserialize_with = "deserialize_optional_limit")]
+    #[schemars(with = "usize", range(min = 1, max = 1_000))]
+    max_results: Option<usize>,
+}
+
+impl GlobLimitsInput {
+    fn into_glob_limits(self) -> Result<GlobLimits, ResourceError> {
+        GlobLimits::new(self.max_results)
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SearchInput {
+    pattern: String,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    #[schemars(with = "String")]
+    path: Option<String>,
+    #[serde(default = "default_true")]
+    case_sensitive: bool,
+    #[serde(default = "default_true")]
+    gitignore: bool,
+    #[serde(default = "default_false")]
+    hidden: bool,
+    #[serde(default)]
+    skip: usize,
+    #[serde(default, deserialize_with = "deserialize_object_limits")]
+    limits: SearchLimitsInput,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct GlobInput {
+    path: String,
+    #[serde(default = "default_true")]
+    case_sensitive: bool,
+    #[serde(default = "default_true")]
+    gitignore: bool,
+    #[serde(default = "default_false")]
+    hidden: bool,
+    #[serde(default)]
+    skip: usize,
+    #[serde(default, deserialize_with = "deserialize_object_limits")]
+    limits: GlobLimitsInput,
 }
 
 struct DisconnectState {
@@ -130,14 +234,104 @@ impl DisconnectState {
     }
 }
 
+/// Keeps ResourceFS cancellation response semantics independent of rmcp's
+/// request-token handling. rmcp removes a cancelled request from its response
+/// pool before the handler finishes, which would discard the complete
+/// `cancelled` tool result required by the Behavior Contract.
+#[derive(Debug)]
+struct RequestCancellationEntry {
+    sender: watch::Sender<bool>,
+    requests: usize,
+}
+
+#[derive(Debug, Default)]
+struct RequestCancellations {
+    active: StdMutex<HashMap<RequestId, RequestCancellationEntry>>,
+}
+
+impl RequestCancellations {
+    fn active(&self) -> StdMutexGuard<'_, HashMap<RequestId, RequestCancellationEntry>> {
+        match self.active.lock() {
+            Ok(active) => active,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn begin(&self, id: RequestId) {
+        match self.active().entry(id) {
+            Entry::Vacant(entry) => {
+                entry.insert(RequestCancellationEntry {
+                    sender: watch::channel(false).0,
+                    requests: 1,
+                });
+            }
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().requests = entry.get().requests.saturating_add(1);
+            }
+        }
+    }
+
+    fn receiver(&self, id: &RequestId) -> Option<watch::Receiver<bool>> {
+        self.active().get(id).map(|entry| entry.sender.subscribe())
+    }
+
+    fn cancel(&self, id: &RequestId) -> bool {
+        let sender = self.active().get(id).map(|entry| entry.sender.clone());
+        if let Some(sender) = sender {
+            sender.send_replace(true);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn finish(&self, id: &RequestId) {
+        let mut active = self.active();
+        let Entry::Occupied(mut entry) = active.entry(id.clone()) else {
+            return;
+        };
+        if entry.get().requests > 1 {
+            entry.get_mut().requests -= 1;
+        } else {
+            entry.remove();
+        }
+    }
+}
+
+struct RequestCancellationLease {
+    cancellations: Arc<RequestCancellations>,
+    id: RequestId,
+}
+
+impl RequestCancellationLease {
+    fn new(cancellations: Arc<RequestCancellations>, id: RequestId) -> Self {
+        Self { cancellations, id }
+    }
+}
+
+impl Drop for RequestCancellationLease {
+    fn drop(&mut self) {
+        self.cancellations.finish(&self.id);
+    }
+}
+
 struct DisconnectTransport<T> {
     inner: T,
     disconnect: Arc<DisconnectState>,
+    cancellations: Arc<RequestCancellations>,
 }
 
 impl<T> DisconnectTransport<T> {
-    fn new(inner: T, disconnect: Arc<DisconnectState>) -> Self {
-        Self { inner, disconnect }
+    fn new(
+        inner: T,
+        disconnect: Arc<DisconnectState>,
+        cancellations: Arc<RequestCancellations>,
+    ) -> Self {
+        Self {
+            inner,
+            disconnect,
+            cancellations,
+        }
     }
 }
 
@@ -161,14 +355,41 @@ where
     }
 
     fn receive(&mut self) -> impl Future<Output = Option<RxJsonRpcMessage<RoleServer>>> + Send {
-        let receive = self.inner.receive();
         let disconnect = Arc::clone(&self.disconnect);
+        let cancellations = Arc::clone(&self.cancellations);
         async move {
-            let message = receive.await;
-            if message.is_none() {
-                disconnect.disconnect().await;
+            loop {
+                let Some(message) = self.inner.receive().await else {
+                    disconnect.disconnect().await;
+                    return None;
+                };
+                match &message {
+                    JsonRpcMessage::Request(request)
+                        if matches!(&request.request, ClientRequest::CallToolRequest(_)) =>
+                    {
+                        cancellations.begin(request.id.clone());
+                    }
+                    JsonRpcMessage::Notification(notification) => {
+                        if let ClientNotification::CancelledNotification(cancelled) =
+                            &notification.notification
+                        {
+                            // Only consume cancellation for an inbound tool
+                            // request. Server-initiated requests such as
+                            // roots/list must still reach rmcp's responder pool.
+                            if cancelled
+                                .params
+                                .request_id
+                                .as_ref()
+                                .is_some_and(|request_id| cancellations.cancel(request_id))
+                            {
+                                continue;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                return Some(message);
             }
-            message
         }
     }
 
@@ -186,7 +407,9 @@ where
 struct ResourceFsServer {
     source: FilesystemSource,
     read_engine: ReadEngine,
+    discovery_engine: DiscoveryEngine,
     root_sync: Arc<RootSync>,
+    cancellations: Arc<RequestCancellations>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -200,14 +423,21 @@ impl fmt::Debug for ResourceFsServer {
 
 #[tool_router(router = tool_router)]
 impl ResourceFsServer {
-    fn new(source: FilesystemSource, read_engine: ReadEngine) -> Self {
+    fn new(
+        source: FilesystemSource,
+        read_engine: ReadEngine,
+        discovery_engine: DiscoveryEngine,
+        cancellations: Arc<RequestCancellations>,
+    ) -> Self {
         Self {
             read_engine,
+            discovery_engine,
             source,
             root_sync: Arc::new(RootSync {
                 state: Mutex::new(RootSyncState::Unseen),
                 acquisition: Mutex::new(()),
             }),
+            cancellations,
             tool_router: Self::tool_router(),
         }
     }
@@ -233,24 +463,49 @@ impl ResourceFsServer {
     }
 
     async fn refresh_client_roots(&self, context: &RequestContext<RoleServer>) {
+        let refreshed = self
+            .refresh_client_roots_with_cancellation(context, std::future::pending())
+            .await;
+        debug_assert!(refreshed, "pending cancellation future cannot fire");
+    }
+
+    async fn refresh_client_roots_with_cancellation<C>(
+        &self,
+        context: &RequestContext<RoleServer>,
+        cancelled: C,
+    ) -> bool
+    where
+        C: Future<Output = ()>,
+    {
         if !request_supports_roots(context) {
-            return;
+            return true;
         }
-        let _acquisition = self.root_sync.acquisition.lock().await;
+        tokio::pin!(cancelled);
+        let _acquisition = tokio::select! {
+            biased;
+            _ = &mut cancelled => return false,
+            acquisition = self.root_sync.acquisition.lock() => acquisition,
+        };
         while let Some(refresh) = self.take_pending_root_refresh().await {
             let acquisition = self.source.start_client_root_acquisition(refresh);
-            match request_client_roots(context, acquisition.remaining()).await {
+            match request_client_roots(context, acquisition.remaining(), cancelled.as_mut()).await {
                 Ok(roots) => {
                     let _ = self
                         .source
                         .complete_client_root_refresh(acquisition, roots)
                         .await;
                 }
-                Err(()) => {
+                Err(ClientRootsRequestError::Cancelled) => {
+                    self.source.fail_client_root_refresh(acquisition).await;
+                    self.mark_client_roots_pending(true).await;
+                    return false;
+                }
+                Err(ClientRootsRequestError::Failed) => {
                     self.source.fail_client_root_refresh(acquisition).await;
                 }
             }
         }
+        true
     }
 
     #[tool(
@@ -266,45 +521,390 @@ impl ResourceFsServer {
             .limits
             .into_text_limits()
             .map_err(|error| error.to_string())?;
-        self.execute_read(input.path, limits, &OperationGuard::new())
+        self.execute_read(&input.path, limits, &OperationGuard::new())
             .await
+    }
+
+    #[tool(
+        name = "rfs_search",
+        description = "Search Workspace files and Artifact Resources for matching lines. Omit path to search the Primary Workspace Root recursively; one optional exact Workspace file/directory or Artifact path limits the scan to that target and its descendants, and a concrete target is attempted exactly as named. Defaults: caseSensitive=true, gitignore=true, hidden=false, skip=0; caseSensitive=false selects Unicode-aware case-insensitive matching, gitignore=false includes ignored entries, hidden=true includes hidden entries. The pattern is matched literally when it has no metacharacters, otherwise with Rust regex first and PCRE2 when Rust rejects the syntax; a pattern both engines reject is an invalid_pattern tool error, and a pattern over 65,536 UTF-8 bytes is limit_exceeded. Optional limits may only lower the 1,000-record, 49,152-byte, 3,000-line, and 512-column ceilings. Follow continuationReference for the next page; recoveryReference names the complete immutable result. Returns complete non-empty text and equivalent structured content; operational failures are tool errors with stable categories.",
+        output_schema = schema_for_type::<SearchToolOutput>()
+    )]
+    async fn search(
+        &self,
+        Parameters(input): Parameters<SearchInput>,
+    ) -> Result<CallToolResult, String> {
+        let limits = input
+            .limits
+            .into_search_limits()
+            .map_err(|error| error.to_string())?;
+        let options = SearchOptions::new(input.case_sensitive, input.gitignore, input.hidden);
+        let target = match &input.path {
+            Some(path) => match PathReference::parse(path) {
+                Ok(reference) => SearchTarget::resource(reference),
+                Err(error) => return render::search_failure(path, &error),
+            },
+            None => SearchTarget::primary(),
+        };
+        let request = match SearchRequest::new(target, input.pattern, options, input.skip, limits) {
+            Ok(request) => request,
+            Err(error) => {
+                return render::search_failure(input.path.as_deref().unwrap_or(""), &error);
+            }
+        };
+        let operation = OperationGuard::new();
+        self.execute_search(request, input.path.as_deref(), &operation)
+            .await
+    }
+
+    #[tool(
+        name = "rfs_glob",
+        description = "Enumerate Workspace files and directories and Artifact Resources matching a glob. path is one required glob pattern using canonical / separators: * ? and character classes match within one component, ** crosses directories, {a,b} alternates, and backslash escapes on every platform. Defaults: caseSensitive=true, gitignore=true, hidden=false, skip=0; caseSensitive=false selects ASCII-only case-insensitive matching, gitignore=false includes ignored entries, hidden=true includes hidden entries. An empty or invalid glob is an invalid_pattern tool error, and a pattern over 65,536 UTF-8 bytes is limit_exceeded. Optional limits may only lower the 1,000-entry ceiling. Follow continuationReference for the next page; recoveryReference names the complete immutable result. Returns complete non-empty text and equivalent structured content; operational failures are tool errors with stable categories.",
+        output_schema = schema_for_type::<GlobToolOutput>()
+    )]
+    async fn glob(
+        &self,
+        Parameters(input): Parameters<GlobInput>,
+    ) -> Result<CallToolResult, String> {
+        let limits = input
+            .limits
+            .into_glob_limits()
+            .map_err(|error| error.to_string())?;
+        let options = GlobOptions::new(input.case_sensitive, input.gitignore, input.hidden);
+        let target = match GlobTarget::new(input.path.clone()) {
+            Ok(target) => target,
+            Err(error) => return render::glob_failure(&input.path, &error),
+        };
+        let request = GlobRequest::new(target, options, input.skip, limits);
+        let operation = OperationGuard::new();
+        self.execute_glob(request, &input.path, &operation).await
     }
 
     async fn execute_read(
         &self,
-        path: String,
+        path: &str,
         limits: TextLimits,
         operation: &OperationGuard,
     ) -> Result<CallToolResult, String> {
-        let reference = match PathReference::parse(&path) {
+        let reference = match PathReference::parse(path) {
             Ok(reference) => reference,
-            Err(error) => return render::failure(&path, &error),
+            Err(error) => return render::failure(path, &error),
         };
         let request = ReadRequest { reference, limits };
         match self.read_engine.read(request, operation).await {
-            Ok(resource) => render::success(&path, resource),
-            Err(error) => render::failure(&path, &error),
+            Ok(resource) => render::success(path, resource),
+            Err(error) => render::failure(path, &error),
         }
+    }
+
+    async fn execute_search(
+        &self,
+        request: SearchRequest,
+        requested_path: Option<&str>,
+        operation: &OperationGuard,
+    ) -> Result<CallToolResult, String> {
+        match self.discovery_engine.search(request, operation).await {
+            Ok(result) => render::search_success(result),
+            Err(error) => render::search_failure(requested_path.unwrap_or(""), &error),
+        }
+    }
+
+    async fn execute_glob(
+        &self,
+        request: GlobRequest,
+        requested_path: &str,
+        operation: &OperationGuard,
+    ) -> Result<CallToolResult, String> {
+        match self.discovery_engine.glob(request, operation).await {
+            Ok(result) => render::glob_success(result),
+            Err(error) => render::glob_failure(requested_path, &error),
+        }
+    }
+
+    async fn dispatch_read(
+        &self,
+        request: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+        cancellation: watch::Receiver<bool>,
+    ) -> Result<CallToolResponse, McpError> {
+        let input: ReadInput = deserialize_input(request).map_err(|error| {
+            McpError::invalid_params(format!("invalid rfs_read arguments: {error}"), None)
+        })?;
+        let limits = input.limits.into_text_limits().map_err(|error| {
+            McpError::invalid_params(format!("invalid rfs_read arguments: {error}"), None)
+        })?;
+        let operation = OperationGuard::new();
+        let cancelled_result = || render::failure(&input.path, &cancelled_read_error());
+        if !self
+            .refresh_client_roots_with_cancellation(
+                context,
+                cancellation_received(cancellation.clone()),
+            )
+            .await
+        {
+            operation.cancel();
+            return cancelled_result()
+                .map(CallToolResponse::from)
+                .map_err(|error| McpError::internal_error(error, None));
+        }
+        let pending = self.execute_read(&input.path, limits, &operation);
+        let result = run_under_cancellation(
+            &operation,
+            cancellation_received(cancellation),
+            pending,
+            cancelled_result,
+        )
+        .await
+        .map_err(|error| McpError::internal_error(error, None))?;
+        Ok(result.into())
+    }
+
+    async fn dispatch_search(
+        &self,
+        request: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+        cancellation: watch::Receiver<bool>,
+    ) -> Result<CallToolResponse, McpError> {
+        let SearchInput {
+            pattern,
+            path,
+            case_sensitive,
+            gitignore,
+            hidden,
+            skip,
+            limits,
+        } = deserialize_input(request).map_err(|error| {
+            McpError::invalid_params(format!("invalid rfs_search arguments: {error}"), None)
+        })?;
+        let limits = limits.into_search_limits().map_err(|error| {
+            McpError::invalid_params(format!("invalid rfs_search arguments: {error}"), None)
+        })?;
+        let options = SearchOptions::new(case_sensitive, gitignore, hidden);
+        let requested_path = path.as_deref().unwrap_or("");
+        let target = match path.as_deref() {
+            Some(path) => match PathReference::parse(path) {
+                Ok(reference) => SearchTarget::resource(reference),
+                Err(error) => return search_tool_failure(requested_path, &error),
+            },
+            None => SearchTarget::primary(),
+        };
+        let request = match SearchRequest::new(target, pattern, options, skip, limits) {
+            Ok(request) => request,
+            Err(error) => return search_tool_failure(requested_path, &error),
+        };
+        let operation = OperationGuard::new();
+        let cancelled_result =
+            || render::search_failure(requested_path, &cancelled_discovery_error());
+        if !self
+            .refresh_client_roots_with_cancellation(
+                context,
+                cancellation_received(cancellation.clone()),
+            )
+            .await
+        {
+            operation.cancel();
+            return cancelled_result()
+                .map(CallToolResponse::from)
+                .map_err(|error| McpError::internal_error(error, None));
+        }
+        let pending = self.execute_search(request, path.as_deref(), &operation);
+        let result = run_under_cancellation(
+            &operation,
+            cancellation_received(cancellation),
+            pending,
+            cancelled_result,
+        )
+        .await
+        .map_err(|error| McpError::internal_error(error, None))?;
+        Ok(result.into())
+    }
+
+    async fn dispatch_glob(
+        &self,
+        request: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+        cancellation: watch::Receiver<bool>,
+    ) -> Result<CallToolResponse, McpError> {
+        let GlobInput {
+            path,
+            case_sensitive,
+            gitignore,
+            hidden,
+            skip,
+            limits,
+        } = deserialize_input(request).map_err(|error| {
+            McpError::invalid_params(format!("invalid rfs_glob arguments: {error}"), None)
+        })?;
+        let limits = limits.into_glob_limits().map_err(|error| {
+            McpError::invalid_params(format!("invalid rfs_glob arguments: {error}"), None)
+        })?;
+        let options = GlobOptions::new(case_sensitive, gitignore, hidden);
+        let target = match GlobTarget::new(path.clone()) {
+            Ok(target) => target,
+            Err(error) => return glob_tool_failure(&path, &error),
+        };
+        let request = GlobRequest::new(target, options, skip, limits);
+        let operation = OperationGuard::new();
+        let cancelled_result = || render::glob_failure(&path, &cancelled_discovery_error());
+        if !self
+            .refresh_client_roots_with_cancellation(
+                context,
+                cancellation_received(cancellation.clone()),
+            )
+            .await
+        {
+            operation.cancel();
+            return cancelled_result()
+                .map(CallToolResponse::from)
+                .map_err(|error| McpError::internal_error(error, None));
+        }
+        let pending = self.execute_glob(request, &path, &operation);
+        let result = run_under_cancellation(
+            &operation,
+            cancellation_received(cancellation),
+            pending,
+            cancelled_result,
+        )
+        .await
+        .map_err(|error| McpError::internal_error(error, None))?;
+        Ok(result.into())
     }
 }
 
+async fn cancellation_received(mut cancellation: watch::Receiver<bool>) {
+    if cancellation.wait_for(|cancelled| *cancelled).await.is_err() {
+        // A closed uncancelled channel means the request already reached another
+        // terminal path; it must not be reclassified as client cancellation.
+        std::future::pending::<()>().await;
+    }
+}
+
+fn deserialize_input<T>(request: CallToolRequestParams) -> Result<T, serde_json::Error>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_value(serde_json::Value::Object(
+        request.arguments.unwrap_or_default(),
+    ))
+}
+
+/// One biased cancellation race shared by every tool: when the transport's
+/// per-request cancellation signal fires, the operation guard is cancelled and
+/// the already-rendered cancelled tool error is returned without awaiting the
+/// blocking worker. The worker future is dropped, so a retained artifact cannot
+/// be published after cancellation.
+async fn run_under_cancellation<T, F, C>(
+    operation: &OperationGuard,
+    cancelled: C,
+    pending: F,
+    cancelled_result: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>>,
+    C: Future<Output = ()>,
+{
+    tokio::pin!(pending);
+    tokio::select! {
+        biased;
+        _ = cancelled => {
+            operation.cancel();
+            cancelled_result()
+        }
+        result = &mut pending => result,
+    }
+}
+
+/// Mirrors the error `ReadEngine` reports at its next liveness checkpoint after
+/// cancellation, preserving the established read cancellation category.
+fn cancelled_read_error() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::SourceUnavailable,
+        "Path Session is no longer active",
+    )
+}
+
+/// Mirrors the core discovery `cancelled()` operational error exactly.
+fn cancelled_discovery_error() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::Cancelled,
+        "discovery operation was cancelled",
+    )
+}
+
+fn search_tool_failure(
+    requested_path: &str,
+    error: &ResourceError,
+) -> Result<CallToolResponse, McpError> {
+    render::search_failure(requested_path, error)
+        .map(CallToolResponse::from)
+        .map_err(|render_error| McpError::internal_error(render_error, None))
+}
+
+fn glob_tool_failure(
+    requested_path: &str,
+    error: &ResourceError,
+) -> Result<CallToolResponse, McpError> {
+    render::glob_failure(requested_path, error)
+        .map(CallToolResponse::from)
+        .map_err(|render_error| McpError::internal_error(render_error, None))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientRootsRequestError {
+    Cancelled,
+    Failed,
+}
+
 #[allow(deprecated)]
-async fn request_client_roots(
+async fn request_client_roots<C>(
     context: &RequestContext<RoleServer>,
     timeout: Duration,
-) -> Result<Vec<ClientRoot>, ()> {
+    cancelled: C,
+) -> Result<Vec<ClientRoot>, ClientRootsRequestError>
+where
+    C: Future<Output = ()>,
+{
     let request = ServerRequest::ListRootsRequest(rmcp::model::ListRootsRequest {
         method: Default::default(),
         extensions: Default::default(),
     });
-    let handle = context
-        .peer
-        .send_cancellable_request(request, PeerRequestOptions::with_timeout(timeout))
-        .await
-        .map_err(|_| ())?;
-    let result = handle.await_response().await.map_err(|_| ())?;
+    tokio::pin!(cancelled);
+    let mut handle = tokio::select! {
+        biased;
+        _ = &mut cancelled => return Err(ClientRootsRequestError::Cancelled),
+        handle = context
+            .peer
+            .send_cancellable_request(request, PeerRequestOptions::no_options()) => {
+                handle.map_err(|_| ClientRootsRequestError::Failed)?
+            }
+    };
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    let result = tokio::select! {
+        biased;
+        _ = &mut cancelled => {
+            if let Err(error) = handle
+                .cancel(Some("parent ResourceFS request was cancelled".to_owned()))
+                .await
+            {
+                eprintln!("resourcefs: failed to cancel roots/list request: {error}");
+            }
+            return Err(ClientRootsRequestError::Cancelled);
+        }
+        response = &mut handle.rx => {
+            response
+                .map_err(|_| ClientRootsRequestError::Failed)?
+                .map_err(|_| ClientRootsRequestError::Failed)?
+        }
+        _ = &mut deadline => {
+            if let Err(error) = handle.cancel(Some("request timeout".to_owned())).await {
+                eprintln!("resourcefs: failed to time out roots/list request: {error}");
+            }
+            return Err(ClientRootsRequestError::Failed);
+        }
+    };
     let ClientResult::ListRootsResult(result) = result else {
-        return Err(());
+        return Err(ClientRootsRequestError::Failed);
     };
     Ok(result
         .roots
@@ -322,37 +922,23 @@ impl ServerHandler for ResourceFsServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        if request.name != "rfs_read" {
-            return Err(McpError::invalid_params("tool not found", None));
-        }
         // `ToolRouter::call` converts `Parameters` deserialization failures into
         // tool-result errors. ResourceFS classifies input-schema failures as MCP
-        // invalid-params errors, so validate the complete shape before root/source I/O.
-        let input: ReadInput = serde_json::from_value(serde_json::Value::Object(
-            request.arguments.unwrap_or_default(),
-        ))
-        .map_err(|error| {
-            McpError::invalid_params(format!("invalid rfs_read arguments: {error}"), None)
+        // invalid-params errors, so each known tool deserializes only its own
+        // deny-unknown schema and validates its complete shape before root/source
+        // I/O; unknown tool names never reach root refresh or source I/O.
+        let cancellation = self.cancellations.receiver(&context.id).ok_or_else(|| {
+            McpError::internal_error("request cancellation state unavailable", None)
         })?;
-        let limits = input.limits.into_text_limits().map_err(|error| {
-            McpError::invalid_params(format!("invalid rfs_read arguments: {error}"), None)
-        })?;
-        self.refresh_client_roots(&context).await;
-
-        let operation = OperationGuard::new();
-        let cancellation = context.ct.clone();
-        let pending = self.execute_read(input.path, limits, &operation);
-        tokio::pin!(pending);
-        let result = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => {
-                operation.cancel();
-                pending.await
-            }
-            result = &mut pending => result,
+        let _cancellation_lease =
+            RequestCancellationLease::new(Arc::clone(&self.cancellations), context.id.clone());
+        let name = request.name.clone();
+        match name.as_ref() {
+            "rfs_read" => self.dispatch_read(request, &context, cancellation).await,
+            "rfs_search" => self.dispatch_search(request, &context, cancellation).await,
+            "rfs_glob" => self.dispatch_glob(request, &context, cancellation).await,
+            _ => Err(McpError::invalid_params("tool not found", None)),
         }
-        .map_err(|error| McpError::internal_error(error, None))?;
-        Ok(result.into())
     }
 
     async fn list_tools(
@@ -518,15 +1104,20 @@ pub(crate) async fn serve(source: FilesystemSource) -> Result<(), BoxError> {
     let mut heartbeat = tokio::spawn(heartbeat_session(stored_session.clone(), heartbeat_stop));
     let session = stored_session.path_session().clone();
     let disconnect = Arc::new(DisconnectState::new(session.clone()));
-    let sources: Arc<dyn SourceAdapter> = Arc::new(CompiledSources::new(
+    let compiled_sources = Arc::new(CompiledSources::new(
         source.clone(),
         ArtifactSource::new(session.clone()),
     ));
-    let read_engine = ReadEngine::new(sources, session);
+    let read_sources = Arc::clone(&compiled_sources);
+    let discovery_sources = Arc::clone(&compiled_sources);
+    let read_engine = ReadEngine::new(read_sources, session.clone());
+    let discovery_engine = DiscoveryEngine::new(discovery_sources, session);
     let (stdin, stdout) = rmcp::transport::stdio();
     let stdio = rmcp::transport::async_rw::AsyncRwTransport::<RoleServer, _, _>::new(stdin, stdout);
-    let transport = DisconnectTransport::new(stdio, Arc::clone(&disconnect));
-    let running = match ResourceFsServer::new(source, read_engine)
+    let cancellations = Arc::new(RequestCancellations::default());
+    let transport =
+        DisconnectTransport::new(stdio, Arc::clone(&disconnect), Arc::clone(&cancellations));
+    let running = match ResourceFsServer::new(source, read_engine, discovery_engine, cancellations)
         .serve(transport)
         .await
     {

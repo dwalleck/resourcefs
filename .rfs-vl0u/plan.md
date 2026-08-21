@@ -253,6 +253,14 @@ The checkout currently has no configured Git remote or discoverable upstream def
 - Run the filesystem contract command on native Linux, macOS, and Windows → C4/C7/C14 platform rows execute (not skip) and return identical canonical slash identities without outside bytes.
 - Apply each C4/C5/C6/C7/C14 named mutation separately and rerun its exact named fence → red with that claim ID; restore after each and rerun → green.
 
+### Slice 5 checkpoint result — PASS on native Linux (2026-08-20)
+
+- Implemented capability-contained Workspace search/glob, exact-target filter boundaries, final-identity link deduplication/cycle handling, contained `.gitignore` semantics, deterministic line/diagnostic/glob ordering, current-root delivery fencing, and typed Workspace/Artifact dispatch.
+- Hardened the native walker after focused security review: bounded newline reads, exact 64 MiB encoded-result accounting, 256 MiB scan/10,000-PCRE2-subject/100,000-record ceilings, a 32 MiB retained traversal-state budget, and handle-free pending frames. The 4,000-directory Linux fence observed bounded process descriptors, all expected entries, and no diagnostics.
+- Direct contract result: 59 tests passed across seven `resourcefs-sources` suites; strict all-target/all-feature Clippy, formatting, 46 `resourcefs-core` tests, the architecture contract, and workspace all-target/all-feature checking passed before Slice 6 MCP edits began.
+- Named C4/C5/C6/C7/C14 mutations each failed their owning fence and returned green after restoration. Focused correctness and security reviewers found no remaining concrete defect after the final exact-directory, memory, and pending-handle fixes.
+- Native Linux symlink/final-handle rows execute without skips. Native macOS and Windows execution remains part of the final protected CI matrix; those runners are unavailable on this workstation and no platform behavior was declared observed here.
+
 ## Slice 6: Expose complete discovery tools through MCP with cancellation and root refresh
 
 **Claim IDs:** C11, C12, C16, C17, C18
@@ -287,6 +295,14 @@ The checkout currently has no configured Git remote or discoverable upstream def
 - `cargo test -p resourcefs-mcp --all-features --test stdio_mcp_contract cancelled_discovery_returns_promptly_without_late_artifact -- --exact --nocapture` → C17 both tools return `cancelled` within 250 ms, a subsequent call succeeds, and storage remains unchanged after gate release.
 - `cargo test -p resourcefs-mcp --all-features --test stdio_mcp_contract root_change_fences_discovery -- --exact --nocapture` → C18 removed-root in-flight discovery is a tool error and the new root is authoritative.
 - Apply each C11/C12/C16/C17/C18 named mutation separately and rerun its exact owning command → red with that claim ID; restore after each and rerun → green.
+
+### Slice 6 checkpoint result — PASS on native Linux (2026-08-20)
+
+- Implemented strict object-root schemas and compiled dispatch for exactly `rfs_read`, `rfs_search`, and `rfs_glob`; search/glob results and failures now expose complete non-empty text plus equivalent structured objects, limits, diagnostics, and recovery metadata.
+- Added a transport-owned cancellation registry because rmcp 3.1.3 removes cancelled request IDs before handler responses are delivered. ResourceFS consumes cancellation only for inbound tool requests, returns typed `cancelled` results within 250 ms, forwards unrelated notifications to rmcp, explicitly cancels abandoned `roots/list` requests, requeues interrupted root acquisition, and releases each registration before the response can make a request ID reusable.
+- Hardened the final review findings: optional search `path` is advertised as non-null when present, cancellation registrations are non-clobbering and reference-counted for duplicate IDs, registration cleanup is handler-scoped, and client-root cancellation no longer leaves authority disabled or an outbound responder live.
+- C11/C12/C16/C17/C18 exact fences passed. Each named mutation failed its owning fence and returned green after restoration. The final MCP checkpoint passed 2 architecture contracts, 21 compiled-process stdio contracts, 13 renderer contracts, formatting, and strict all-target/all-feature MCP Clippy.
+- Native Linux compiled-process coverage executed without skips. Cross-platform source behavior remains covered by the Slice 5 protected CI matrix; Slice 6 adds no platform-specific MCP branch.
 
 ## Self-review
 

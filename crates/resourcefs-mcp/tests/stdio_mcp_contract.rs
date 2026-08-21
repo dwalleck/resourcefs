@@ -627,62 +627,335 @@ fn negotiates_required_revisions() {
 }
 
 #[test]
-fn lists_object_root_read_tool_only() {
+fn lists_and_calls_discovery_tools() {
     let fixture = WorkspaceFixture::new();
     let mut process = McpProcess::start(&fixture.root);
     process.initialize(VERSION_2026);
     let response = process.request("tools/list", json!({}));
     let tools = response["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["name"], "rfs_read");
+    let mut names = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("tool name"))
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    assert_eq!(names, ["rfs_glob", "rfs_read", "rfs_search"]);
 
-    let input = &tools[0]["inputSchema"];
-    assert_eq!(input["type"], "object");
-    assert_eq!(input["additionalProperties"], false);
-    assert_eq!(input["required"], json!(["path"]), "only path is required");
-    let limits_property = &input["properties"]["limits"];
-    assert_eq!(
-        limits_property["$ref"], "#/$defs/ReadLimitsInput",
-        "limits must reference its strict object schema: {limits_property}"
-    );
-    let limits = &input["$defs"]["ReadLimitsInput"];
-    assert_eq!(
-        limits["type"], "object",
-        "limits must be an object: {limits}"
-    );
-    assert_eq!(
-        limits["additionalProperties"], false,
-        "limits must reject unknown members: {limits}"
-    );
-    for (member, minimum, maximum) in [
-        ("bytes", 1, 49_152),
-        ("lines", 1, 3_000),
-        ("columns", 1, 512),
+    let tool = |name: &str| {
+        tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name} schema"))
+    };
+    let read = tool("rfs_read");
+    let search = tool("rfs_search");
+    let glob = tool("rfs_glob");
+    for (name, schema, required) in [
+        ("rfs_read", &read["inputSchema"], json!(["path"])),
+        ("rfs_search", &search["inputSchema"], json!(["pattern"])),
+        ("rfs_glob", &glob["inputSchema"], json!(["path"])),
     ] {
-        let schema = &limits["properties"][member];
-        assert!(
-            accepts_type(schema, "integer"),
-            "limits.{member} must be an integer schema: {schema}"
+        assert_eq!(schema["type"], "object", "{name} input root");
+        assert_eq!(schema["additionalProperties"], false, "{name} strict input");
+        assert_eq!(schema["required"], required, "{name} required fields");
+    }
+    let search_path = &search["inputSchema"]["properties"]["path"];
+    assert!(
+        accepts_type(search_path, "string") && !accepts_type(search_path, "null"),
+        "rfs_search optional path must reject explicit null: {search_path}"
+    );
+
+    let assert_limits =
+        |name: &str, schema: &Value, definition: &str, fields: &[(&str, u64, u64)]| {
+            assert_eq!(
+                schema["properties"]["limits"]["$ref"],
+                format!("#/$defs/{definition}"),
+                "{name} limits reference"
+            );
+            let limits = &schema["$defs"][definition];
+            assert_eq!(limits["type"], "object", "{name} limits root");
+            assert_eq!(
+                limits["additionalProperties"], false,
+                "{name} strict limits"
+            );
+            for (member, minimum, maximum) in fields {
+                let property = &limits["properties"][member];
+                assert!(
+                    accepts_type(property, "integer"),
+                    "{name} limits.{member} integer schema: {property}"
+                );
+                assert_eq!(property["minimum"], *minimum, "{name} limits.{member} min");
+                assert_eq!(property["maximum"], *maximum, "{name} limits.{member} max");
+            }
+        };
+    assert_limits(
+        "rfs_read",
+        &read["inputSchema"],
+        "ReadLimitsInput",
+        &[
+            ("bytes", 1, 49_152),
+            ("lines", 1, 3_000),
+            ("columns", 1, 512),
+        ],
+    );
+    assert_limits(
+        "rfs_search",
+        &search["inputSchema"],
+        "SearchLimitsInput",
+        &[
+            ("maxResults", 1, 1_000),
+            ("maxBytes", 1, 49_152),
+            ("maxLines", 1, 3_000),
+            ("maxColumns", 1, 512),
+        ],
+    );
+    assert_limits(
+        "rfs_glob",
+        &glob["inputSchema"],
+        "GlobLimitsInput",
+        &[("maxResults", 1, 1_000)],
+    );
+    for (name, schema) in [
+        ("rfs_read", &read["outputSchema"]),
+        ("rfs_search", &search["outputSchema"]),
+        ("rfs_glob", &glob["outputSchema"]),
+    ] {
+        assert_eq!(schema["type"], "object", "{name} output root");
+        assert_eq!(
+            schema["additionalProperties"], false,
+            "{name} output strict"
         );
-        assert_eq!(schema["minimum"], minimum, "limits.{member} minimum");
-        assert_eq!(schema["maximum"], maximum, "limits.{member} maximum");
+        for member in ["recoveryReference", "continuationReference"] {
+            assert!(
+                accepts_type(&schema["properties"][member], "string"),
+                "{name} output must expose {member}: {}",
+                schema["properties"][member]
+            );
+        }
     }
 
-    let output = &tools[0]["outputSchema"];
-    assert_eq!(output["type"], "object");
-    assert_eq!(output["additionalProperties"], false);
-    assert_eq!(
-        output["$defs"]["ReadErrorOutput"]["additionalProperties"],
-        false
+    let search_response = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_search",
+            "arguments": {"path": "fixture.txt", "pattern": "fixture"}
+        }),
     );
-    for member in ["recoveryReference", "continuationReference"] {
-        assert!(
-            accepts_type(&output["properties"][member], "string"),
-            "output schema must expose {member} as a string: {}",
-            output["properties"][member]
-        );
-    }
+    assert!(search_response.get("error").is_none(), "{search_response}");
+    let search_result = &search_response["result"];
+    assert_eq!(search_result["isError"], false);
+    assert_eq!(search_result["structuredContent"]["ok"], true);
+    assert_eq!(search_result["structuredContent"]["engine"], "rust_regex");
+    assert_eq!(
+        search_result["structuredContent"]["groups"][0]["reference"],
+        "rfs://workspace/workspace/fixture.txt"
+    );
+    assert_eq!(
+        search_result["structuredContent"]["groups"][0]["lines"][0],
+        json!({"line": 1, "text": "fixture text"})
+    );
+    assert!(
+        search_result["content"][0]["text"]
+            .as_str()
+            .expect("search TextContent")
+            .contains("fixture text")
+    );
+
+    let glob_response = process.request(
+        "tools/call",
+        json!({"name": "rfs_glob", "arguments": {"path": "fixture.txt"}}),
+    );
+    assert!(glob_response.get("error").is_none(), "{glob_response}");
+    let glob_result = &glob_response["result"];
+    assert_eq!(glob_result["isError"], false);
+    assert_eq!(glob_result["structuredContent"]["ok"], true);
+    assert_eq!(
+        glob_result["structuredContent"]["entries"][0],
+        json!({
+            "reference": "rfs://workspace/workspace/fixture.txt",
+            "kind": "file"
+        })
+    );
+    assert!(
+        glob_result["content"][0]["text"]
+            .as_str()
+            .expect("glob TextContent")
+            .contains("rfs://workspace/workspace/fixture.txt")
+    );
+
+    let unknown = process.request(
+        "tools/call",
+        json!({"name": "rfs_missing", "arguments": {}}),
+    );
+    assert_eq!(unknown["error"]["code"], -32602);
     process.finish();
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn discovery_argument_matrix_precedes_io() {
+    let fixture = WorkspaceFixture::new();
+    let cases = [
+        (
+            "rfs_search",
+            vec![
+                json!({}),
+                json!({"pattern": null}),
+                json!({"pattern": 7}),
+                json!({"pattern": "fixture", "unknown": true}),
+                json!({"pattern": "fixture", "path": null}),
+                json!({"pattern": "fixture", "caseSensitive": null}),
+                json!({"pattern": "fixture", "gitignore": null}),
+                json!({"pattern": "fixture", "hidden": null}),
+                json!({"pattern": "fixture", "skip": null}),
+                json!({"pattern": "fixture", "skip": -1}),
+                json!({"pattern": "fixture", "limits": null}),
+                json!({"pattern": "fixture", "limits": []}),
+                json!({"pattern": "fixture", "limits": {"unknown": 1}}),
+                json!({"pattern": "fixture", "limits": {"maxResults": null}}),
+                json!({"pattern": "fixture", "limits": {"maxResults": 0}}),
+                json!({"pattern": "fixture", "limits": {"maxResults": 1_001}}),
+                json!({"pattern": "fixture", "limits": {"maxBytes": 49_153}}),
+                json!({"pattern": "fixture", "limits": {"maxLines": 3_001}}),
+                json!({"pattern": "fixture", "limits": {"maxColumns": 513}}),
+            ],
+            vec![
+                (json!({"pattern": ""}), "invalid_pattern"),
+                (json!({"pattern": "("}), "invalid_pattern"),
+                (json!({"pattern": "x".repeat(65_537)}), "limit_exceeded"),
+            ],
+            json!({
+                "pattern": "x".repeat(65_536),
+                "caseSensitive": true,
+                "gitignore": true,
+                "hidden": false,
+                "skip": 0,
+                "limits": {
+                    "maxResults": 1_000,
+                    "maxBytes": 49_152,
+                    "maxLines": 3_000,
+                    "maxColumns": 512
+                }
+            }),
+            json!({"path": "fixture.txt", "pattern": "fixture"}),
+        ),
+        (
+            "rfs_glob",
+            vec![
+                json!({}),
+                json!({"path": null}),
+                json!({"path": 7}),
+                json!({"path": "*.txt", "unknown": true}),
+                json!({"path": "*.txt", "caseSensitive": null}),
+                json!({"path": "*.txt", "gitignore": null}),
+                json!({"path": "*.txt", "hidden": null}),
+                json!({"path": "*.txt", "skip": null}),
+                json!({"path": "*.txt", "skip": -1}),
+                json!({"path": "*.txt", "limits": null}),
+                json!({"path": "*.txt", "limits": []}),
+                json!({"path": "*.txt", "limits": {"unknown": 1}}),
+                json!({"path": "*.txt", "limits": {"maxResults": null}}),
+                json!({"path": "*.txt", "limits": {"maxResults": 0}}),
+                json!({"path": "*.txt", "limits": {"maxResults": 1_001}}),
+            ],
+            vec![
+                (json!({"path": ""}), "invalid_pattern"),
+                (json!({"path": "\\"}), "invalid_pattern"),
+            ],
+            json!({
+                "path": "*.txt",
+                "caseSensitive": true,
+                "gitignore": true,
+                "hidden": false,
+                "skip": 0,
+                "limits": {"maxResults": 1_000}
+            }),
+            json!({"path": "fixture.txt"}),
+        ),
+    ];
+
+    for (tool, invalid_shapes, operational_errors, boundary, defaults) in cases {
+        let temporary = TempDir::new().expect("C16 gate directory");
+        let gate = temporary.path().join("gate");
+        fs::create_dir(&gate).expect("C16 gate");
+        let mut process = McpProcess::start_gated(
+            &[("workspace", &fixture.root)],
+            Some("workspace"),
+            &gate,
+            "*",
+        );
+        process.initialize(VERSION_2026);
+        let invalid_gate = gate.clone();
+        let (stop_watcher, watcher_stop) = std::sync::mpsc::channel();
+        let invalid_io_watcher = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if watcher_stop.try_recv().is_ok() {
+                    return false;
+                }
+                if invalid_gate.join("entered").exists() {
+                    fs::write(invalid_gate.join("release"), "release")
+                        .expect("C16 release unexpectedly reached gate");
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            false
+        });
+
+        for arguments in invalid_shapes {
+            let response =
+                process.request("tools/call", json!({"name": tool, "arguments": arguments}));
+            assert_eq!(
+                response["error"]["code"], -32602,
+                "{tool} schema failure was not MCP invalid_params: {response}"
+            );
+        }
+        stop_watcher.send(()).expect("C16 stop invalid-I/O watcher");
+        assert!(
+            !invalid_io_watcher.join().expect("C16 invalid-I/O watcher"),
+            "{tool} invalid schema input reached source I/O"
+        );
+        for (arguments, category) in operational_errors {
+            let response =
+                process.request("tools/call", json!({"name": tool, "arguments": arguments}));
+            assert!(
+                response.get("error").is_none(),
+                "{tool} operational validation became a protocol error: {response}"
+            );
+            assert_tool_error(&response["result"], category);
+        }
+        process.wait_for_path_absent(
+            &gate.join("entered"),
+            &format!("{tool} invalid input I/O gate"),
+            Duration::from_millis(200),
+        );
+
+        let boundary_id =
+            process.send_request("tools/call", json!({"name": tool, "arguments": boundary}));
+        process.wait_for_path(&gate.join("entered"), &format!("{tool} boundary I/O"));
+        fs::write(gate.join("release"), "release").expect("C16 release gate");
+        let boundary_response = process.receive_response(boundary_id, true);
+        assert!(
+            boundary_response.get("error").is_none(),
+            "{tool} exact boundary protocol failure: {boundary_response}"
+        );
+        assert_eq!(
+            boundary_response["result"]["structuredContent"]["ok"], true,
+            "{tool} exact boundary result"
+        );
+
+        let default_response =
+            process.request("tools/call", json!({"name": tool, "arguments": defaults}));
+        assert!(
+            default_response.get("error").is_none(),
+            "{tool} default call failed: {default_response}"
+        );
+        assert_eq!(
+            default_response["result"]["structuredContent"]["totalRecords"], 1,
+            "{tool} defaults hand table"
+        );
+        process.finish();
+    }
 }
 
 #[test]
@@ -1110,6 +1383,83 @@ fn removed_inflight_result_fails_after_root_generation_changes() {
     process.finish();
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn root_change_fences_discovery() {
+    let temporary = TempDir::new().expect("C18 temporary directory");
+    let removed = temporary.path().join("removed-discovery");
+    let retained = temporary.path().join("retained-discovery");
+    let launch = temporary.path().join("launch-discovery");
+    fs::create_dir(&removed).expect("C18 removed root");
+    fs::create_dir(&retained).expect("C18 retained root");
+    fs::create_dir(&launch).expect("C18 launch root");
+    fs::write(removed.join("gated.txt"), "removed needle\n").expect("C18 removed fixture");
+    fs::write(retained.join("gated.txt"), "retained needle\n").expect("C18 retained fixture");
+
+    for (tool, arguments) in [
+        ("rfs_search", json!({"pattern": "needle"})),
+        ("rfs_glob", json!({"path": "*.txt"})),
+    ] {
+        let gate = temporary.path().join(format!("{tool}-root-gate"));
+        fs::create_dir(&gate).expect("C18 delivery gate");
+        let mut process = McpProcess::start_gated(&[("launch", &launch)], None, &gate, "*");
+        process.initialize_with_roots(VERSION_2026, vec![mcp_root(&removed, "workspace")]);
+
+        let request_id =
+            process.send_request("tools/call", json!({"name": tool, "arguments": arguments}));
+        let roots_request = process.read_message();
+        assert_eq!(
+            roots_request["method"], "roots/list",
+            "C18 {tool} did not acquire client roots before source I/O: {roots_request}"
+        );
+        process.root_list_calls += 1;
+        process.write_message(&json!({
+            "jsonrpc": "2.0",
+            "id": roots_request["id"],
+            "result": {"roots": process.client_roots},
+        }));
+        process.wait_for_path(&gate.join("entered"), &format!("{tool} delivery gate"));
+        process.change_client_roots(vec![mcp_root(&retained, "workspace")]);
+        let refresh_id = process.send_request("tools/list", json!({}));
+        let refreshed = process.receive_response(refresh_id, true);
+        assert!(
+            refreshed.get("error").is_none(),
+            "{tool} changed root refresh failed: {refreshed}"
+        );
+        fs::write(gate.join("release"), "release").expect("C18 release delivery gate");
+
+        let response = process.receive_response(request_id, true);
+        assert!(
+            response.get("error").is_none(),
+            "{tool} call failed at the protocol layer: {response}"
+        );
+        assert_tool_error(&response["result"], "invalid_reference");
+
+        let follow_up = process.request(
+            "tools/call",
+            json!({
+                "name": tool,
+                "arguments": if tool == "rfs_search" {
+                    json!({"pattern": "retained"})
+                } else {
+                    json!({"path": "*.txt"})
+                }
+            }),
+        );
+        assert_eq!(
+            follow_up["result"]["structuredContent"]["totalRecords"], 1,
+            "{tool} did not use the refreshed authoritative root"
+        );
+        assert!(
+            follow_up["result"]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("gated.txt")),
+            "{tool} follow-up did not return the retained fixture"
+        );
+        process.finish();
+    }
+}
+
 fn displayed_shape(content: &str) -> (usize, usize) {
     if content.is_empty() {
         return (0, 0);
@@ -1513,6 +1863,154 @@ fn stdio_request_cancel_keeps_session_active_without_artifact() {
     thread::sleep(Duration::from_millis(100));
     assert_objects_empty(&session_directory(&session_root));
     process.finish();
+}
+#[cfg(feature = "test-support")]
+#[test]
+fn discovery_cancellation_preempts_client_root_acquisition() {
+    let temporary = TempDir::new().expect("C17 root-acquisition temporary directory");
+    let launch = temporary.path().join("launch");
+    let client = temporary.path().join("client");
+    fs::create_dir(&launch).expect("C17 launch root");
+    fs::create_dir(&client).expect("C17 client root");
+    fs::write(client.join("fixture.txt"), "needle\n").expect("C17 client fixture");
+
+    for (tool, arguments) in [
+        ("rfs_search", json!({"pattern": "needle"})),
+        ("rfs_glob", json!({"path": "*.txt"})),
+    ] {
+        let mut process = McpProcess::start_with_roots(&[("launch", &launch)], None);
+        process.initialize_with_roots(VERSION_2026, vec![mcp_root(&client, "workspace")]);
+        let request_id = process.send_request(
+            "tools/call",
+            json!({"name": tool, "arguments": arguments.clone()}),
+        );
+        let roots_request = process.read_message();
+        assert_eq!(
+            roots_request["method"], "roots/list",
+            "C17 {tool} did not enter client-root acquisition"
+        );
+        process.root_list_calls += 1;
+
+        let started = Instant::now();
+        process.notify_cancelled(request_id);
+        let response = process.receive_response(request_id, true);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed <= Duration::from_millis(250),
+            "{tool} root-acquisition cancellation exceeded 250 ms: {elapsed:?}"
+        );
+        assert!(
+            response.get("error").is_none(),
+            "{tool} root-acquisition cancellation became a protocol error: {response}"
+        );
+        assert_tool_error(&response["result"], "cancelled");
+        assert_eq!(
+            process.cancelled_root_requests, 1,
+            "{tool} leaked the abandoned roots/list request"
+        );
+
+        let follow_up =
+            process.request("tools/call", json!({"name": tool, "arguments": arguments}));
+        assert_eq!(
+            follow_up["result"]["structuredContent"]["totalRecords"], 1,
+            "{tool} did not recover root acquisition after cancellation: {follow_up}"
+        );
+        assert_eq!(
+            process.root_list_calls, 2,
+            "{tool} did not retry root acquisition after cancellation"
+        );
+        process.finish();
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn cancelled_discovery_returns_promptly_without_late_artifact() {
+    let temporary = TempDir::new().expect("C17 temporary directory");
+    let root = temporary.path().join("workspace");
+    fs::create_dir(&root).expect("C17 workspace");
+    for index in 0..1_100 {
+        fs::write(root.join(format!("f{index:04}.txt")), "needle\n")
+            .expect("C17 discovery fixture");
+    }
+
+    for (tool, arguments, follow_up) in [
+        (
+            "rfs_search",
+            json!({"pattern": "needle"}),
+            json!({"path": "f0000.txt", "pattern": "needle"}),
+        ),
+        (
+            "rfs_glob",
+            json!({"path": "*.txt"}),
+            json!({"path": "f0000.txt"}),
+        ),
+    ] {
+        let gate = temporary.path().join(format!("{tool}-gate"));
+        let session_root = temporary.path().join(format!("{tool}-cache"));
+        fs::create_dir(&gate).expect("C17 gate");
+        fs::create_dir(&session_root).expect("C17 session root");
+        let mut process = McpProcess::start_gated_with_session_root(
+            &[("workspace", &root)],
+            Some("workspace"),
+            &gate,
+            "*",
+            &session_root,
+        );
+        process.initialize(VERSION_2026);
+
+        let request_id =
+            process.send_request("tools/call", json!({"name": tool, "arguments": arguments}));
+        process.wait_for_path(&gate.join("entered"), &format!("{tool} delivery gate"));
+        let cancellation_gate = gate.clone();
+        let (stop_watchdog, watchdog_stop) = std::sync::mpsc::channel();
+        let cancellation_watchdog = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_millis(300);
+            while Instant::now() < deadline {
+                if watchdog_stop.try_recv().is_ok() {
+                    return false;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            fs::write(cancellation_gate.join("release"), "release").expect("C17 watchdog release");
+            true
+        });
+        let started = Instant::now();
+        process.notify_cancelled(request_id);
+        let response = process.receive_response(request_id, true);
+        let _ = stop_watchdog.send(());
+        assert!(
+            !cancellation_watchdog
+                .join()
+                .expect("C17 cancellation watchdog"),
+            "{tool} did not return before the gated operation was released"
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed <= Duration::from_millis(250),
+            "{tool} cancellation exceeded 250 ms: {elapsed:?}"
+        );
+        assert!(
+            response.get("error").is_none(),
+            "{tool} cancellation became a protocol error: {response}"
+        );
+        assert_tool_error(&response["result"], "cancelled");
+
+        fs::write(gate.join("release"), "release").expect("C17 release delivery gate");
+        let follow_up_response =
+            process.request("tools/call", json!({"name": tool, "arguments": follow_up}));
+        assert!(
+            follow_up_response.get("error").is_none(),
+            "{tool} follow-up failed: {follow_up_response}"
+        );
+        assert_eq!(
+            follow_up_response["result"]["structuredContent"]["totalRecords"], 1,
+            "{tool} cancellation damaged the Path Session"
+        );
+        thread::sleep(Duration::from_millis(100));
+        assert_objects_empty(&session_directory(&session_root));
+        process.finish();
+    }
 }
 
 #[cfg(feature = "test-support")]
