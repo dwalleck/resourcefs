@@ -38,9 +38,16 @@ impl SearchTarget {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobSource {
+    Workspace,
+    Artifact,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobTarget {
     pattern: String,
+    source: GlobSource,
 }
 
 impl GlobTarget {
@@ -57,11 +64,20 @@ impl GlobTarget {
                 ),
             ));
         }
-        Ok(Self { pattern })
+        let source = if pattern.starts_with(crate::reference::ARTIFACT_PREFIX) {
+            GlobSource::Artifact
+        } else {
+            GlobSource::Workspace
+        };
+        Ok(Self { pattern, source })
     }
 
     pub fn pattern(&self) -> &str {
         &self.pattern
+    }
+
+    pub const fn source(&self) -> GlobSource {
+        self.source
     }
 }
 

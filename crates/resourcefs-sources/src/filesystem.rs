@@ -1,6 +1,6 @@
 use std::{
-    collections::HashMap,
-    io,
+    collections::{HashMap, HashSet},
+    io::{self, BufRead, BufReader},
     path::{Component, Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -11,10 +11,16 @@ use cap_std::{
     ambient_authority,
     fs::{Dir, File},
 };
+use ignore::{
+    Match,
+    gitignore::{Gitignore, GitignoreBuilder},
+};
 use resourcefs_core::{
-    ErrorCategory, MAX_WORKSPACE_ROOTS, PathReference, ProjectionSelector, ResourceError,
-    SourceAdapter, SourceResource, WorkspaceAddress, WorkspacePath, WorkspaceRoot, WorkspaceRootId,
-    WorkspaceRootSet, select_utf8,
+    DiscoveryAdapter, DiscoveryDiagnostic, ErrorCategory, GlobEntry, GlobKind, GlobOptions,
+    GlobSource, GlobTarget, LineSelector, MAX_ARTIFACT_BYTES, MAX_WORKSPACE_ROOTS, OperationGuard,
+    PathReference, ProjectionSelector, ResourceError, SearchEngine, SearchOptions, SearchRecord,
+    SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult, SourceResource,
+    WorkspaceAddress, WorkspacePath, WorkspaceRoot, WorkspaceRootId, WorkspaceRootSet, select_utf8,
 };
 use sha2::{Digest, Sha256};
 #[cfg(feature = "test-support")]
@@ -25,7 +31,225 @@ use tokio::{
 };
 use url::Url;
 
+use crate::pattern::{GlobMatcher, SearchMatcher};
+
 const ROOT_CONSTRUCTION_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_WORKSPACE_DISCOVERY_ENTRIES: usize = 100_000;
+const MAX_WORKSPACE_DISCOVERY_RECORDS: usize = 100_000;
+const MAX_WORKSPACE_DISCOVERY_SCAN_BYTES: usize = 256 * 1024 * 1024;
+const MAX_WORKSPACE_PCRE2_SUBJECTS: usize = 10_000;
+const MAX_WORKSPACE_DISCOVERY_STATE_BYTES: usize = 32 * 1024 * 1024;
+const RETAINED_COLLECTION_ENTRY_BYTES: usize = 32;
+
+#[derive(Default)]
+struct WorkspaceDiscoveryBudget {
+    entries: usize,
+    diagnostics: usize,
+    exhausted: bool,
+    records: usize,
+    result_bytes: usize,
+    scanned_bytes: usize,
+    state_bytes: usize,
+    pcre2_subjects: usize,
+}
+
+impl WorkspaceDiscoveryBudget {
+    fn charge_entry(&mut self) -> Result<(), ResourceError> {
+        self.entries = self
+            .entries
+            .checked_add(1)
+            .ok_or_else(|| limit_error("Workspace discovery entry count is not representable"))?;
+        if self.entries > MAX_WORKSPACE_DISCOVERY_ENTRIES {
+            return self.exhaust("Workspace discovery exceeds the 100,000-entry traversal ceiling");
+        }
+        Ok(())
+    }
+
+    fn charge_scan(&mut self, bytes: usize) -> Result<(), ResourceError> {
+        self.scanned_bytes = self.scanned_bytes.checked_add(bytes).ok_or_else(|| {
+            limit_error("Workspace discovery scanned byte count is not representable")
+        })?;
+        if self.scanned_bytes > MAX_WORKSPACE_DISCOVERY_SCAN_BYTES {
+            return self.exhaust("Workspace discovery exceeds the 256 MiB cumulative scan ceiling");
+        }
+        Ok(())
+    }
+
+    fn charge_match(&mut self, engine: SearchEngine) -> Result<(), ResourceError> {
+        if engine != SearchEngine::Pcre2 {
+            return Ok(());
+        }
+        self.pcre2_subjects = self
+            .pcre2_subjects
+            .checked_add(1)
+            .ok_or_else(|| limit_error("Workspace PCRE2 subject count is not representable"))?;
+        if self.pcre2_subjects > MAX_WORKSPACE_PCRE2_SUBJECTS {
+            return self.exhaust(
+                "Workspace search exceeds the 10,000-subject cumulative PCRE2 work ceiling",
+            );
+        }
+        Ok(())
+    }
+
+    fn charge_state(&mut self, bytes: usize) -> Result<(), ResourceError> {
+        self.state_bytes = self.state_bytes.checked_add(bytes).ok_or_else(|| {
+            limit_error("Workspace discovery state byte count is not representable")
+        })?;
+        if self.state_bytes > MAX_WORKSPACE_DISCOVERY_STATE_BYTES {
+            return self.exhaust(
+                "Workspace discovery exceeds the 32 MiB retained traversal-state ceiling",
+            );
+        }
+        Ok(())
+    }
+
+    fn release_state(&mut self, bytes: usize) {
+        self.state_bytes = self
+            .state_bytes
+            .checked_sub(bytes)
+            .expect("Workspace discovery state charges are balanced");
+    }
+
+    fn charge_search_record(
+        &mut self,
+        reference: &PathReference,
+        line: u64,
+        text: &str,
+    ) -> Result<(), ResourceError> {
+        let escaped = text
+            .bytes()
+            .filter(|byte| matches!(byte, b'\\' | b'\t' | b'\r' | b'\n'))
+            .count();
+        let line_digits = if line == 0 {
+            1
+        } else {
+            line.ilog10() as usize + 1
+        };
+        let additional = reference
+            .requested()
+            .len()
+            .checked_add(line_digits)
+            .and_then(|bytes| bytes.checked_add(text.len()))
+            .and_then(|bytes| bytes.checked_add(escaped))
+            .and_then(|bytes| bytes.checked_add(3))
+            .ok_or_else(|| {
+                limit_error("Workspace search result byte count is not representable")
+            })?;
+        self.charge_result(additional, "Workspace search")
+    }
+
+    fn charge_glob_entry(
+        &mut self,
+        reference: &PathReference,
+        kind: GlobKind,
+    ) -> Result<(), ResourceError> {
+        let suffix = usize::from(kind == GlobKind::Directory);
+        let additional = reference
+            .requested()
+            .len()
+            .checked_add(suffix + 1)
+            .ok_or_else(|| limit_error("Workspace glob result byte count is not representable"))?;
+        self.charge_result(additional, "Workspace glob")
+    }
+
+    fn charge_diagnostic(&mut self, diagnostic: &DiscoveryDiagnostic) -> Result<(), ResourceError> {
+        self.diagnostics = self.diagnostics.checked_add(1).ok_or_else(|| {
+            limit_error("Workspace discovery diagnostic count is not representable")
+        })?;
+        if self.diagnostics > MAX_WORKSPACE_DISCOVERY_RECORDS {
+            return self
+                .exhaust("Workspace discovery exceeds the 100,000-diagnostic result ceiling");
+        }
+        let message = diagnostic.message();
+        let escaped = message
+            .bytes()
+            .filter(|byte| matches!(byte, b'\\' | b'\t' | b'\r' | b'\n'))
+            .count();
+        let additional = diagnostic
+            .reference()
+            .map_or(1, str::len)
+            .checked_add(diagnostic.category().as_str().len())
+            .and_then(|bytes| bytes.checked_add(message.len()))
+            .and_then(|bytes| bytes.checked_add(escaped))
+            .and_then(|bytes| bytes.checked_add(4))
+            .ok_or_else(|| limit_error("Workspace diagnostic byte count is not representable"))?;
+        self.charge_result_bytes(additional, "Workspace discovery")
+    }
+
+    fn charge_result(&mut self, bytes: usize, operation: &str) -> Result<(), ResourceError> {
+        self.records = self
+            .records
+            .checked_add(1)
+            .ok_or_else(|| limit_error(format!("{operation} result count is not representable")))?;
+        if self.records > MAX_WORKSPACE_DISCOVERY_RECORDS {
+            return self.exhaust(format!(
+                "{operation} exceeds the 100,000-record result ceiling"
+            ));
+        }
+        self.charge_result_bytes(bytes, operation)
+    }
+
+    fn charge_result_bytes(&mut self, bytes: usize, operation: &str) -> Result<(), ResourceError> {
+        self.result_bytes = self.result_bytes.checked_add(bytes).ok_or_else(|| {
+            limit_error(format!(
+                "{operation} result byte count is not representable"
+            ))
+        })?;
+
+        if self.result_bytes > MAX_ARTIFACT_BYTES {
+            return self.exhaust(format!(
+                "{operation} complete result exceeds the 64 MiB Resource ceiling"
+            ));
+        }
+        Ok(())
+    }
+    const fn is_exhausted(&self) -> bool {
+        self.exhausted
+    }
+
+    fn exhaust(&mut self, message: impl Into<String>) -> Result<(), ResourceError> {
+        self.exhausted = true;
+        Err(limit_error(message))
+    }
+}
+
+fn retained_path_state_bytes(path: &Path, value_bytes: usize) -> Result<usize, ResourceError> {
+    path.as_os_str()
+        .as_encoded_bytes()
+        .len()
+        .checked_add(size_of::<PathBuf>())
+        .and_then(|bytes| bytes.checked_add(value_bytes))
+        .and_then(|bytes| bytes.checked_add(RETAINED_COLLECTION_ENTRY_BYTES))
+        .ok_or_else(|| limit_error("Workspace retained path size is not representable"))
+}
+
+fn retained_string_state_bytes(value: &str) -> Result<usize, ResourceError> {
+    value
+        .len()
+        .checked_add(size_of::<String>())
+        .and_then(|bytes| bytes.checked_add(RETAINED_COLLECTION_ENTRY_BYTES))
+        .ok_or_else(|| limit_error("Workspace retained string size is not representable"))
+}
+
+fn retained_names_state_bytes(
+    names: &[std::ffi::OsString],
+    capacity: usize,
+) -> Result<usize, ResourceError> {
+    names.iter().try_fold(
+        capacity
+            .checked_mul(size_of::<std::ffi::OsString>())
+            .ok_or_else(|| {
+                limit_error("Workspace directory name state size is not representable")
+            })?,
+        |total, name| {
+            total
+                .checked_add(name.as_encoded_bytes().len())
+                .ok_or_else(|| {
+                    limit_error("Workspace directory name state size is not representable")
+                })
+        },
+    )
+}
 
 #[derive(Debug, Clone)]
 pub struct LaunchRoot {
@@ -409,28 +633,26 @@ impl FilesystemSource {
         }
     }
 
+    async fn active_view(&self) -> Result<(u64, Arc<WorkspaceView>), ResourceError> {
+        let authority = self.inner.authority.read().await;
+        match &*authority {
+            AuthorityState::Active {
+                generation, view, ..
+            } => Ok((*generation, Arc::clone(view))),
+            AuthorityState::Refreshing { .. } => Err(authority_unavailable(
+                "Workspace Root authority is refreshing",
+            )),
+            AuthorityState::Disabled { .. } => Err(authority_unavailable(
+                "Workspace Root authority is disabled",
+            )),
+        }
+    }
+
     async fn read_contained(
         &self,
         reference: &PathReference,
     ) -> Result<SourceResource, ResourceError> {
-        let (generation, view) = {
-            let authority = self.inner.authority.read().await;
-            match &*authority {
-                AuthorityState::Active {
-                    generation, view, ..
-                } => (*generation, Arc::clone(view)),
-                AuthorityState::Refreshing { .. } => {
-                    return Err(authority_unavailable(
-                        "Workspace Root authority is refreshing",
-                    ));
-                }
-                AuthorityState::Disabled { .. } => {
-                    return Err(authority_unavailable(
-                        "Workspace Root authority is disabled",
-                    ));
-                }
-            }
-        };
+        let (generation, view) = self.active_view().await?;
         let reference = reference.clone();
         let visibility = self.inner.visibility;
         let completed =
@@ -506,6 +728,1369 @@ impl SourceAdapter for FilesystemSource {
     }
 }
 
+#[async_trait]
+impl DiscoveryAdapter for FilesystemSource {
+    async fn search(
+        &self,
+        target: &SearchTarget,
+        pattern: &str,
+        options: SearchOptions,
+        operation: &OperationGuard,
+    ) -> Result<SearchSourceResult, ResourceError> {
+        ensure_workspace_discovery_live(operation)?;
+        let (generation, view) = self.active_view().await?;
+        let target = target.clone();
+        let pattern = pattern.to_owned();
+        let worker_operation = operation.clone();
+        let completed = tokio::task::spawn_blocking(move || {
+            search_workspace(&view, &target, &pattern, options, &worker_operation)
+        })
+        .await
+        .map_err(workspace_discovery_worker_error)??;
+        self.wait_for_test_delivery_release(&completed.delivery_identity)
+            .await?;
+        ensure_workspace_discovery_live(operation)?;
+        let authority = self.inner.authority.read().await;
+        validate_read_delivery(&authority, generation, &completed.root)?;
+        Ok(completed.result)
+    }
+
+    async fn glob(
+        &self,
+        target: &GlobTarget,
+        options: GlobOptions,
+        operation: &OperationGuard,
+    ) -> Result<SourceGlobResult, ResourceError> {
+        if target.source() != GlobSource::Workspace {
+            return Err(ResourceError::new(
+                ErrorCategory::UnsupportedProjection,
+                "filesystem Source Adapter requires a Workspace glob",
+            ));
+        }
+        ensure_workspace_discovery_live(operation)?;
+        let (generation, view) = self.active_view().await?;
+        let target = target.clone();
+        let worker_operation = operation.clone();
+        let completed = tokio::task::spawn_blocking(move || {
+            glob_workspace(&view, &target, options, &worker_operation)
+        })
+        .await
+        .map_err(workspace_discovery_worker_error)??;
+        self.wait_for_test_delivery_release(&completed.delivery_identity)
+            .await?;
+        ensure_workspace_discovery_live(operation)?;
+        let authority = self.inner.authority.read().await;
+        validate_read_delivery(&authority, generation, &completed.root)?;
+        Ok(completed.result)
+    }
+}
+
+struct CompletedWorkspaceDiscovery<T> {
+    result: T,
+    root: Arc<FilesystemRoot>,
+    delivery_identity: String,
+}
+
+struct WorkspaceScope {
+    root: Arc<FilesystemRoot>,
+    entry: OpenedWorkspaceEntry,
+    projection: Option<ProjectionSelector>,
+}
+
+enum OpenedWorkspaceEntry {
+    File {
+        file: File,
+        path: PathBuf,
+        reference: PathReference,
+    },
+    Directory {
+        directory: Dir,
+        path: PathBuf,
+        reference: Option<PathReference>,
+    },
+}
+
+impl OpenedWorkspaceEntry {
+    fn path(&self) -> &Path {
+        match self {
+            Self::File { path, .. } | Self::Directory { path, .. } => path,
+        }
+    }
+
+    fn reference(&self) -> Option<&PathReference> {
+        match self {
+            Self::File { reference, .. } => Some(reference),
+            Self::Directory { reference, .. } => reference.as_ref(),
+        }
+    }
+
+    const fn kind(&self) -> GlobKind {
+        match self {
+            Self::File { .. } => GlobKind::File,
+            Self::Directory { .. } => GlobKind::Directory,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct IgnoreStack {
+    matcher: Gitignore,
+    parent: Option<Arc<Self>>,
+}
+
+#[derive(Clone, Copy)]
+struct DiscoveryControls {
+    gitignore: bool,
+    hidden: bool,
+}
+
+struct IgnoreContext<'a> {
+    controls: DiscoveryControls,
+    diagnostics: &'a mut Vec<DiscoveryDiagnostic>,
+    operation: &'a OperationGuard,
+    budget: &'a mut WorkspaceDiscoveryBudget,
+}
+
+#[derive(Clone)]
+enum InitialIgnoreStack {
+    Filtered,
+    Ready(Option<Arc<IgnoreStack>>),
+}
+
+struct WalkFrame {
+    directory: Option<Dir>,
+    path: PathBuf,
+    ignores: Option<Arc<IgnoreStack>>,
+    pending_state_bytes: usize,
+}
+
+fn search_workspace(
+    view: &WorkspaceView,
+    target: &SearchTarget,
+    pattern: &str,
+    options: SearchOptions,
+    operation: &OperationGuard,
+) -> Result<CompletedWorkspaceDiscovery<SearchSourceResult>, ResourceError> {
+    ensure_workspace_discovery_live(operation)?;
+    let mut matcher = SearchMatcher::compile(pattern, options.case_sensitive())?;
+    let engine = matcher.engine();
+    let WorkspaceScope {
+        root,
+        entry,
+        projection,
+    } = open_search_scope(view, target)?;
+    let delivery_identity = entry.reference().map_or_else(
+        || workspace_root_identity(&root),
+        |reference| reference.requested().to_owned(),
+    );
+
+    let mut records = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut budget = WorkspaceDiscoveryBudget::default();
+    match entry {
+        OpenedWorkspaceEntry::File {
+            mut file,
+            reference,
+            ..
+        } => {
+            records.extend(search_open_file(
+                &mut file,
+                &reference,
+                projection.as_ref(),
+                &mut matcher,
+                operation,
+                &mut budget,
+            )?);
+        }
+        OpenedWorkspaceEntry::Directory {
+            directory, path, ..
+        } => {
+            if projection.is_some() {
+                return Err(ResourceError::new(
+                    ErrorCategory::UnsupportedProjection,
+                    "filesystem search selectors require one text file",
+                ));
+            }
+            let controls = DiscoveryControls {
+                gitignore: options.gitignore(),
+                hidden: options.hidden(),
+            };
+            let ignores = {
+                let mut context = IgnoreContext {
+                    controls,
+                    diagnostics: &mut diagnostics,
+                    operation,
+                    budget: &mut budget,
+                };
+                let InitialIgnoreStack::Ready(ignores) =
+                    initial_ignore_stack(&root, &path, GlobKind::Directory, true, &mut context)?
+                else {
+                    unreachable!("an exact directory search bypasses filters");
+                };
+                ignores
+            };
+            walk_workspace(
+                &root,
+                WalkFrame {
+                    directory: Some(directory),
+                    path,
+                    ignores,
+                    pending_state_bytes: 0,
+                },
+                controls,
+                operation,
+                &mut diagnostics,
+                &mut budget,
+                |reference, kind, file, diagnostics, budget| {
+                    if kind != GlobKind::File {
+                        return Ok(());
+                    }
+                    let file = file.expect("file kind carries an open file");
+                    match search_open_file(file, reference, None, &mut matcher, operation, budget) {
+                        Ok(found) => records.extend(found),
+                        Err(error) if error.category() == ErrorCategory::Cancelled => {
+                            return Err(error);
+                        }
+                        Err(error) if budget.is_exhausted() => return Err(error),
+                        Err(error) => {
+                            push_workspace_diagnostic(
+                                diagnostics,
+                                diagnostic(reference, &error),
+                                budget,
+                            )?;
+                        }
+                    }
+                    Ok(())
+                },
+            )?;
+        }
+    }
+    ensure_workspace_discovery_live(operation)?;
+    Ok(CompletedWorkspaceDiscovery {
+        result: SearchSourceResult::new(engine, records, diagnostics),
+        root,
+        delivery_identity,
+    })
+}
+
+fn glob_workspace(
+    view: &WorkspaceView,
+    target: &GlobTarget,
+    options: GlobOptions,
+    operation: &OperationGuard,
+) -> Result<CompletedWorkspaceDiscovery<SourceGlobResult>, ResourceError> {
+    ensure_workspace_discovery_live(operation)?;
+    let WorkspaceGlobScope {
+        root,
+        path,
+        match_pattern,
+    } = workspace_glob_scope(view, target.pattern(), options.case_sensitive())?;
+    let matcher = GlobMatcher::compile(&match_pattern, options.case_sensitive())?;
+    let entry = match open_workspace_entry(&root, &path) {
+        Ok(entry) => entry,
+        Err(error)
+            if !path.as_os_str().is_empty() && error.category() == ErrorCategory::NotFound =>
+        {
+            return Ok(CompletedWorkspaceDiscovery {
+                result: SourceGlobResult::new(Vec::new(), Vec::new()),
+                delivery_identity: workspace_root_identity(&root),
+                root,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let delivery_identity = entry.reference().map_or_else(
+        || workspace_root_identity(&root),
+        |reference| reference.requested().to_owned(),
+    );
+    let controls = DiscoveryControls {
+        gitignore: options.gitignore(),
+        hidden: options.hidden(),
+    };
+    let mut diagnostics = Vec::new();
+    let mut budget = WorkspaceDiscoveryBudget::default();
+    let entry_kind = entry.kind();
+    let ignores = {
+        let mut context = IgnoreContext {
+            controls,
+            diagnostics: &mut diagnostics,
+            operation,
+            budget: &mut budget,
+        };
+        initial_ignore_stack(&root, entry.path(), entry_kind, false, &mut context)?
+    };
+    let InitialIgnoreStack::Ready(ignores) = ignores else {
+        return Ok(CompletedWorkspaceDiscovery {
+            result: SourceGlobResult::new(Vec::new(), diagnostics),
+            root,
+            delivery_identity,
+        });
+    };
+
+    let mut entries = Vec::new();
+    let mut collect = |reference: &PathReference,
+                       kind: GlobKind,
+                       _file: Option<&mut File>,
+                       _diagnostics: &mut Vec<DiscoveryDiagnostic>,
+                       budget: &mut WorkspaceDiscoveryBudget|
+     -> Result<(), ResourceError> {
+        if matcher.is_match(workspace_match_path(reference, &root)?) {
+            budget.charge_glob_entry(reference, kind)?;
+            entries.push(GlobEntry::new(reference.clone(), kind)?);
+        }
+        Ok(())
+    };
+    match entry {
+        OpenedWorkspaceEntry::File {
+            mut file,
+            reference,
+            ..
+        } => collect(
+            &reference,
+            GlobKind::File,
+            Some(&mut file),
+            &mut diagnostics,
+            &mut budget,
+        )?,
+        OpenedWorkspaceEntry::Directory {
+            directory,
+            path,
+            reference,
+        } => {
+            if let Some(reference) = reference.as_ref() {
+                collect(
+                    reference,
+                    GlobKind::Directory,
+                    None,
+                    &mut diagnostics,
+                    &mut budget,
+                )?;
+            }
+            walk_workspace(
+                &root,
+                WalkFrame {
+                    directory: Some(directory),
+                    path,
+                    ignores,
+                    pending_state_bytes: 0,
+                },
+                controls,
+                operation,
+                &mut diagnostics,
+                &mut budget,
+                collect,
+            )?;
+        }
+    }
+    ensure_workspace_discovery_live(operation)?;
+    Ok(CompletedWorkspaceDiscovery {
+        result: SourceGlobResult::new(entries, diagnostics),
+        root,
+        delivery_identity,
+    })
+}
+
+struct WorkspaceGlobScope {
+    root: Arc<FilesystemRoot>,
+    path: PathBuf,
+    match_pattern: String,
+}
+
+fn workspace_glob_scope(
+    view: &WorkspaceView,
+    pattern: &str,
+    case_sensitive: bool,
+) -> Result<WorkspaceGlobScope, ResourceError> {
+    const PREFIX: &str = "rfs://workspace/";
+    if let Some(canonical) = pattern.strip_prefix(PREFIX) {
+        let (root, path_pattern) = canonical.split_once('/').ok_or_else(|| {
+            ResourceError::new(
+                ErrorCategory::InvalidPattern,
+                "canonical Workspace glob must include a path pattern",
+            )
+        })?;
+        if path_pattern.is_empty() {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidPattern,
+                "canonical Workspace glob must include a path pattern",
+            ));
+        }
+        let root_id = WorkspaceRootId::new(root.to_owned())?;
+        let root = filesystem_root(view, &root_id)?;
+        let fixed = if case_sensitive {
+            fixed_glob_prefix(path_pattern)
+        } else {
+            ""
+        };
+        let path = if fixed.is_empty() {
+            PathBuf::new()
+        } else {
+            let reference = PathReference::parse(format!("{PREFIX}{root_id}/{fixed}"))?;
+            let resolved = resolve_address(
+                view,
+                reference
+                    .workspace_address()
+                    .ok_or_else(workspace_glob_required)?,
+            )?;
+            if resolved.root.metadata.id() != root.metadata.id() {
+                return Err(workspace_glob_required());
+            }
+            resolved.path.as_path().to_owned()
+        };
+        return Ok(WorkspaceGlobScope {
+            root,
+            path,
+            match_pattern: path_pattern.to_owned(),
+        });
+    }
+
+    if pattern.contains("://") || Path::new(pattern).is_absolute() {
+        return Err(workspace_glob_required());
+    }
+    let primary = view.roots.primary().ok_or_else(|| {
+        ResourceError::new(
+            ErrorCategory::AmbiguousReference,
+            "relative Workspace glob requires one unique Primary Workspace Root",
+        )
+    })?;
+    let root = filesystem_root(view, primary)?;
+    let fixed = if case_sensitive {
+        fixed_glob_prefix(pattern)
+    } else {
+        ""
+    };
+    let path = if fixed.is_empty() {
+        PathBuf::new()
+    } else {
+        let reference = PathReference::parse(fixed)?;
+        let WorkspaceAddress::Relative(path) = reference
+            .workspace_address()
+            .ok_or_else(workspace_glob_required)?
+        else {
+            return Err(workspace_glob_required());
+        };
+        path.as_path().to_owned()
+    };
+    Ok(WorkspaceGlobScope {
+        root,
+        path,
+        match_pattern: pattern.to_owned(),
+    })
+}
+
+fn fixed_glob_prefix(pattern: &str) -> &str {
+    let mut start = 0_usize;
+    for component in pattern.split('/') {
+        if component_requires_glob_walk(component) {
+            return pattern[..start].trim_end_matches('/');
+        }
+        start = start.saturating_add(component.len() + 1);
+    }
+    pattern
+}
+
+fn component_requires_glob_walk(component: &str) -> bool {
+    let bytes = component.as_bytes();
+    let mut index = 0_usize;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && bytes[index + 1..=index + 2].is_ascii()
+        {
+            index += 3;
+            continue;
+        }
+        if bytes[index] == b'\\' || matches!(bytes[index], b'*' | b'?' | b'[' | b'{') {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+fn workspace_glob_required() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::UnsupportedProjection,
+        "filesystem Source Adapter requires a relative or canonical Workspace glob",
+    )
+}
+fn open_search_scope(
+    view: &WorkspaceView,
+    target: &SearchTarget,
+) -> Result<WorkspaceScope, ResourceError> {
+    let Some(reference) = target.reference() else {
+        let primary = view.roots.primary().ok_or_else(|| {
+            ResourceError::new(
+                ErrorCategory::AmbiguousReference,
+                "Workspace search requires one unique Primary Workspace Root",
+            )
+        })?;
+        let root = filesystem_root(view, primary)?;
+        let entry = open_workspace_entry(&root, Path::new(""))?;
+        return Ok(WorkspaceScope {
+            root,
+            entry,
+            projection: None,
+        });
+    };
+    let address = reference.workspace_address().ok_or_else(|| {
+        ResourceError::new(
+            ErrorCategory::UnsupportedProjection,
+            "filesystem Source Adapter requires a Workspace search target",
+        )
+    })?;
+    match open_workspace_address(view, address) {
+        Ok((root, entry)) => Ok(WorkspaceScope {
+            root,
+            entry,
+            projection: None,
+        }),
+        Err(error) if error.category() == ErrorCategory::NotFound => {
+            if let Some(selector_error) = reference.selector_error() {
+                return Err(selector_error.clone());
+            }
+            let Some(candidate) = reference.selector_candidate() else {
+                return Err(error);
+            };
+            let (root, entry) = open_workspace_address(view, candidate.base())?;
+            Ok(WorkspaceScope {
+                root,
+                entry,
+                projection: Some(candidate.selector().clone()),
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn open_workspace_address(
+    view: &WorkspaceView,
+    address: &WorkspaceAddress,
+) -> Result<(Arc<FilesystemRoot>, OpenedWorkspaceEntry), ResourceError> {
+    let resolved = resolve_address(view, address)?;
+    let entry = open_workspace_entry(&resolved.root, resolved.path.as_path())?;
+    Ok((resolved.root, entry))
+}
+
+fn open_workspace_entry(
+    root: &Arc<FilesystemRoot>,
+    path: &Path,
+) -> Result<OpenedWorkspaceEntry, ResourceError> {
+    if path.as_os_str().is_empty() {
+        let directory = root
+            .directory
+            .try_clone()
+            .map_err(|error| root_error(root.metadata.id(), "clone directory", error))?;
+        let final_path = normalize_handle_path(
+            final_directory_path(&directory)
+                .map_err(|error| root_error(root.metadata.id(), "resolve directory", error))?,
+        )?;
+        if !strip_beneath(&final_path, &root.canonical_path)
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err(ResourceError::new(
+                ErrorCategory::PermissionDenied,
+                "Workspace Root handle no longer resolves to its configured directory",
+            ));
+        }
+        return Ok(OpenedWorkspaceEntry::Directory {
+            directory,
+            path: PathBuf::new(),
+            reference: None,
+        });
+    }
+
+    let workspace_path = WorkspacePath::new(path)?;
+    let provisional = PathReference::canonical(root.metadata.id().clone(), workspace_path.clone());
+    let identity = provisional.requested();
+    let metadata = capability_metadata(root, &workspace_path, identity)?;
+    if metadata.is_dir() {
+        let directory = open_capability_directory(root, &workspace_path, identity)?;
+        let final_path = normalize_handle_path(
+            final_directory_path(&directory)
+                .map_err(|error| resource_io_error(identity, "resolve", error))?,
+        )?;
+        let final_workspace_path = contained_workspace_path(&final_path, &root.canonical_path)?;
+        let reference =
+            PathReference::canonical(root.metadata.id().clone(), final_workspace_path.clone());
+        return Ok(OpenedWorkspaceEntry::Directory {
+            directory,
+            path: final_workspace_path.as_path().to_owned(),
+            reference: Some(reference),
+        });
+    }
+    if metadata.is_file() {
+        let file = open_capability_file(root, &workspace_path, identity)?;
+        let actual = file
+            .metadata()
+            .map_err(|error| resource_io_error(identity, "inspect", error))?;
+        if !actual.is_file() {
+            return Err(ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                format!("Resource '{identity}' changed type while opening"),
+            ));
+        }
+        let final_path = normalize_handle_path(
+            final_file_path(&file)
+                .map_err(|error| resource_io_error(identity, "resolve", error))?,
+        )?;
+        let final_workspace_path = contained_workspace_path(&final_path, &root.canonical_path)?;
+        let reference =
+            PathReference::canonical(root.metadata.id().clone(), final_workspace_path.clone());
+        return Ok(OpenedWorkspaceEntry::File {
+            file,
+            path: final_workspace_path.as_path().to_owned(),
+            reference,
+        });
+    }
+    Err(ResourceError::new(
+        ErrorCategory::UnsupportedProjection,
+        format!("Resource '{identity}' is not a text file or directory"),
+    ))
+}
+
+fn capability_metadata(
+    root: &FilesystemRoot,
+    path: &WorkspacePath,
+    identity: &str,
+) -> Result<cap_std::fs::Metadata, ResourceError> {
+    let mut candidate = path.clone();
+    for _ in 0..40 {
+        match root.directory.metadata(candidate.as_path()) {
+            Ok(metadata) => return Ok(metadata),
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                let Some(resolved) = rewrite_absolute_symlink(root, &candidate)? else {
+                    return Err(resource_io_error(identity, "inspect", error));
+                };
+                candidate = resolved;
+            }
+            Err(error) => return Err(resource_io_error(identity, "inspect", error)),
+        }
+    }
+    Err(ResourceError::new(
+        ErrorCategory::PermissionDenied,
+        format!("Resource '{identity}' exceeds the symlink resolution limit"),
+    ))
+}
+
+fn open_capability_directory(
+    root: &FilesystemRoot,
+    path: &WorkspacePath,
+    identity: &str,
+) -> Result<Dir, ResourceError> {
+    let mut candidate = path.clone();
+    for _ in 0..40 {
+        match root.directory.open_dir(candidate.as_path()) {
+            Ok(directory) => return Ok(directory),
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                let Some(resolved) = rewrite_absolute_symlink(root, &candidate)? else {
+                    return Err(resource_io_error(identity, "open directory", error));
+                };
+                candidate = resolved;
+            }
+            Err(error) => return Err(resource_io_error(identity, "open directory", error)),
+        }
+    }
+    Err(ResourceError::new(
+        ErrorCategory::PermissionDenied,
+        format!("Resource '{identity}' exceeds the symlink resolution limit"),
+    ))
+}
+
+fn search_open_file(
+    file: &mut File,
+    reference: &PathReference,
+    projection: Option<&ProjectionSelector>,
+    matcher: &mut SearchMatcher,
+    operation: &OperationGuard,
+    budget: &mut WorkspaceDiscoveryBudget,
+) -> Result<Vec<SearchRecord>, ResourceError> {
+    if projection.is_some_and(|selector| selector.page_offset().is_some()) {
+        return Err(ResourceError::new(
+            ErrorCategory::UnsupportedProjection,
+            "page selectors cannot target Workspace files",
+        ));
+    }
+    let selection = projection.and_then(ProjectionSelector::line_selection);
+    let mut reader = BufReader::new(file);
+    let mut records = Vec::new();
+    let mut line = Vec::new();
+    let mut line_number = 0_u64;
+    let mut source_bytes = 0_usize;
+    loop {
+        let remaining = MAX_ARTIFACT_BYTES.saturating_sub(source_bytes);
+        let read = read_bounded_line(
+            &mut reader,
+            &mut line,
+            remaining,
+            operation,
+            reference.requested(),
+            "search",
+            "Workspace search source exceeds the 64 MiB Resource ceiling",
+        )?;
+        if read == 0 {
+            break;
+        }
+        source_bytes = source_bytes.checked_add(read).ok_or_else(|| {
+            limit_error("Workspace search source byte count is not representable")
+        })?;
+        budget.charge_scan(read)?;
+        line_number = line_number
+            .checked_add(1)
+            .ok_or_else(|| limit_error("Workspace search line number is not representable"))?;
+        let mut content_end = line.len();
+        if line.get(content_end.wrapping_sub(1)) == Some(&b'\n') {
+            content_end -= 1;
+            if line.get(content_end.wrapping_sub(1)) == Some(&b'\r') {
+                content_end -= 1;
+            }
+        }
+        let text = std::str::from_utf8(&line[..content_end]).map_err(|_| {
+            ResourceError::new(
+                ErrorCategory::UnsupportedProjection,
+                format!(
+                    "Resource '{}' is not valid UTF-8 text",
+                    reference.requested()
+                ),
+            )
+        })?;
+        if !line_is_selected(line_number, selection) {
+            continue;
+        }
+        budget.charge_match(matcher.engine())?;
+        if !matcher.is_match(text)? {
+            continue;
+        }
+        budget.charge_search_record(reference, line_number, text)?;
+        let text = if line.len() > 1024 * 1024 {
+            line.truncate(content_end);
+            String::from_utf8(std::mem::take(&mut line))
+                .expect("the Workspace search line was validated as UTF-8")
+        } else {
+            text.to_owned()
+        };
+        records.push(SearchRecord::new(reference.clone(), line_number, text)?);
+    }
+    ensure_workspace_discovery_live(operation)?;
+    Ok(records)
+}
+
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    remaining: usize,
+    operation: &OperationGuard,
+    identity: &str,
+    io_operation: &str,
+    limit_message: &str,
+) -> Result<usize, ResourceError> {
+    line.clear();
+    loop {
+        ensure_workspace_discovery_live(operation)?;
+        let (consumed, terminated) = {
+            let available = reader
+                .fill_buf()
+                .map_err(|error| resource_io_error(identity, io_operation, error))?;
+            if available.is_empty() {
+                return Ok(line.len());
+            }
+            let consumed = available
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(available.len(), |position| position + 1);
+            let total = line
+                .len()
+                .checked_add(consumed)
+                .ok_or_else(|| limit_error(limit_message))?;
+            if total > remaining {
+                return Err(limit_error(limit_message));
+            }
+            line.extend_from_slice(&available[..consumed]);
+            (
+                consumed,
+                available.get(consumed.wrapping_sub(1)) == Some(&b'\n'),
+            )
+        };
+        reader.consume(consumed);
+        if terminated {
+            return Ok(line.len());
+        }
+    }
+}
+
+fn line_is_selected(line: u64, selection: Option<&LineSelector>) -> bool {
+    selection.is_none_or(|selection| {
+        selection.ranges().iter().any(|range| {
+            range.start() <= line
+                && range
+                    .inclusive_end()
+                    .is_none_or(|inclusive_end| line <= inclusive_end)
+        })
+    })
+}
+
+fn initial_ignore_stack(
+    root: &Arc<FilesystemRoot>,
+    path: &Path,
+    kind: GlobKind,
+    bypass_filters: bool,
+    context: &mut IgnoreContext<'_>,
+) -> Result<InitialIgnoreStack, ResourceError> {
+    let mut stack = None;
+    if context.controls.gitignore {
+        stack = load_gitignore(root, Path::new(""), stack, context)?;
+    }
+    let components = path.components().collect::<Vec<_>>();
+    let mut current = PathBuf::new();
+    for (index, component) in components.iter().enumerate() {
+        ensure_workspace_discovery_live(context.operation)?;
+        let Component::Normal(name) = component else {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "Workspace discovery path contains a non-relative component",
+            ));
+        };
+        current.push(name);
+        let last = index + 1 == components.len();
+        let is_directory = !last || kind == GlobKind::Directory;
+        if !bypass_filters
+            && ((!context.controls.hidden && is_hidden_name(name))
+                || (context.controls.gitignore
+                    && ignored_by_stack(stack.as_ref(), &current, is_directory)))
+        {
+            return Ok(InitialIgnoreStack::Filtered);
+        }
+        if context.controls.gitignore && is_directory {
+            stack = load_gitignore(root, &current, stack, context)?;
+        }
+    }
+    Ok(InitialIgnoreStack::Ready(stack))
+}
+
+fn final_entry_ignore_stack(
+    root: &Arc<FilesystemRoot>,
+    path: &Path,
+    kind: GlobKind,
+    cache: &mut HashMap<PathBuf, InitialIgnoreStack>,
+    context: &mut IgnoreContext<'_>,
+) -> Result<InitialIgnoreStack, ResourceError> {
+    let parent = if kind == GlobKind::Directory {
+        path
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(""))
+    };
+    let mut current = PathBuf::new();
+    let mut state = cache
+        .get(&current)
+        .cloned()
+        .expect("final-filter cache contains the Workspace Root");
+    for component in parent.components() {
+        ensure_workspace_discovery_live(context.operation)?;
+        let Component::Normal(name) = component else {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "Workspace discovery path contains a non-relative component",
+            ));
+        };
+        current.push(name);
+        if let Some(cached) = cache.get(&current) {
+            state = cached.clone();
+            continue;
+        }
+        state = match state {
+            InitialIgnoreStack::Filtered => InitialIgnoreStack::Filtered,
+            InitialIgnoreStack::Ready(parent) => {
+                if (!context.controls.hidden && is_hidden_name(name))
+                    || (context.controls.gitignore
+                        && ignored_by_stack(parent.as_ref(), &current, true))
+                {
+                    InitialIgnoreStack::Filtered
+                } else {
+                    let ignores = if context.controls.gitignore {
+                        load_gitignore(root, &current, parent, context)?
+                    } else {
+                        None
+                    };
+                    InitialIgnoreStack::Ready(ignores)
+                }
+            }
+        };
+        context.budget.charge_state(retained_path_state_bytes(
+            &current,
+            size_of::<InitialIgnoreStack>(),
+        )?)?;
+        cache.insert(current.clone(), state.clone());
+    }
+    let InitialIgnoreStack::Ready(parent) = state else {
+        return Ok(InitialIgnoreStack::Filtered);
+    };
+    if kind == GlobKind::File {
+        let name = path.file_name().ok_or_else(|| {
+            ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "Workspace file has no final path component",
+            )
+        })?;
+        if (!context.controls.hidden && is_hidden_name(name))
+            || (context.controls.gitignore && ignored_by_stack(parent.as_ref(), path, false))
+        {
+            return Ok(InitialIgnoreStack::Filtered);
+        }
+    }
+    Ok(InitialIgnoreStack::Ready(parent))
+}
+
+fn load_gitignore(
+    root: &Arc<FilesystemRoot>,
+    directory_path: &Path,
+    parent: Option<Arc<IgnoreStack>>,
+    context: &mut IgnoreContext<'_>,
+) -> Result<Option<Arc<IgnoreStack>>, ResourceError> {
+    let operation = context.operation;
+    let diagnostics = &mut *context.diagnostics;
+    let budget = &mut *context.budget;
+    ensure_workspace_discovery_live(operation)?;
+    let path = directory_path.join(".gitignore");
+    let workspace_path = WorkspacePath::new(&path)?;
+    let provisional = PathReference::canonical(root.metadata.id().clone(), workspace_path);
+    let entry = match open_workspace_entry(root, &path) {
+        Ok(entry) => entry,
+        Err(error) if error.category() == ErrorCategory::NotFound => return Ok(parent),
+        Err(error) => {
+            push_workspace_diagnostic(diagnostics, diagnostic(&provisional, &error), budget)?;
+            return Ok(parent);
+        }
+    };
+    let OpenedWorkspaceEntry::File {
+        file, reference, ..
+    } = entry
+    else {
+        push_workspace_diagnostic(
+            diagnostics,
+            DiscoveryDiagnostic::new(
+                Some(provisional),
+                ErrorCategory::UnsupportedProjection,
+                "contained .gitignore Resource is not a text file",
+            ),
+            budget,
+        )?;
+        return Ok(parent);
+    };
+    let mut reader = BufReader::new(file);
+    let mut builder = GitignoreBuilder::new(directory_path);
+    let mut line = Vec::new();
+    let mut total = 0_usize;
+    let mut line_number = 0_u64;
+    let retained_rule_overhead = path
+        .as_os_str()
+        .as_encoded_bytes()
+        .len()
+        .checked_add(size_of::<PathBuf>())
+        .and_then(|bytes| bytes.checked_add(RETAINED_COLLECTION_ENTRY_BYTES))
+        .ok_or_else(|| limit_error("contained .gitignore state size is not representable"))?;
+    loop {
+        let remaining = MAX_ARTIFACT_BYTES.saturating_sub(total);
+        let read = match read_bounded_line(
+            &mut reader,
+            &mut line,
+            remaining,
+            operation,
+            reference.requested(),
+            "read",
+            "contained .gitignore exceeds the 64 MiB Resource ceiling",
+        ) {
+            Ok(read) => read,
+            Err(error) if error.category() == ErrorCategory::Cancelled => return Err(error),
+            Err(error) => {
+                push_workspace_diagnostic(
+                    diagnostics,
+                    DiscoveryDiagnostic::new(
+                        Some(reference.clone()),
+                        error.category(),
+                        if error.category() == ErrorCategory::LimitExceeded {
+                            "contained .gitignore exceeds the 64 MiB Resource ceiling"
+                        } else {
+                            "contained .gitignore could not be read"
+                        },
+                    ),
+                    budget,
+                )?;
+                return Ok(parent);
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read)
+            .ok_or_else(|| limit_error("contained .gitignore byte count is not representable"))?;
+        budget.charge_scan(read)?;
+        line_number = line_number.saturating_add(1);
+        let rule = match std::str::from_utf8(&line) {
+            Ok(rule) => rule,
+            Err(_) => {
+                push_workspace_diagnostic(
+                    diagnostics,
+                    DiscoveryDiagnostic::new(
+                        Some(reference.clone()),
+                        ErrorCategory::UnsupportedProjection,
+                        "contained .gitignore could not be read as UTF-8 text",
+                    ),
+                    budget,
+                )?;
+                return Ok(parent);
+            }
+        };
+        let rule = rule.strip_suffix('\n').unwrap_or(rule);
+        let rule = rule.strip_suffix('\r').unwrap_or(rule);
+        let rule = if line_number == 1 {
+            rule.trim_start_matches('\u{feff}')
+        } else {
+            rule
+        };
+        let retained_rule_bytes = retained_rule_overhead
+            .checked_add(rule.len())
+            .ok_or_else(|| limit_error("contained .gitignore state size is not representable"))?;
+        budget.charge_state(retained_rule_bytes)?;
+        if let Err(error) = builder.add_line(Some(path.clone()), rule) {
+            push_workspace_diagnostic(
+                diagnostics,
+                DiscoveryDiagnostic::new(
+                    Some(reference.clone()),
+                    ErrorCategory::InvalidPattern,
+                    format!("invalid contained .gitignore line {line_number}: {error}"),
+                ),
+                budget,
+            )?;
+        }
+    }
+    let matcher = match builder.build() {
+        Ok(matcher) => matcher,
+        Err(error) => {
+            push_workspace_diagnostic(
+                diagnostics,
+                DiscoveryDiagnostic::new(
+                    Some(reference),
+                    ErrorCategory::InvalidPattern,
+                    format!("contained .gitignore could not be compiled: {error}"),
+                ),
+                budget,
+            )?;
+            return Ok(parent);
+        }
+    };
+    if matcher.is_empty() {
+        return Ok(parent);
+    }
+    Ok(Some(Arc::new(IgnoreStack { matcher, parent })))
+}
+
+fn ignored_by_stack(stack: Option<&Arc<IgnoreStack>>, path: &Path, is_directory: bool) -> bool {
+    let mut current = stack.map(Arc::as_ref);
+    while let Some(ignores) = current {
+        match ignores.matcher.matched(path, is_directory) {
+            Match::Ignore(_) => return true,
+            Match::Whitelist(_) => return false,
+            Match::None => current = ignores.parent.as_deref(),
+        }
+    }
+    false
+}
+
+fn walk_workspace<F>(
+    root: &Arc<FilesystemRoot>,
+    initial: WalkFrame,
+    controls: DiscoveryControls,
+    operation: &OperationGuard,
+    diagnostics: &mut Vec<DiscoveryDiagnostic>,
+    budget: &mut WorkspaceDiscoveryBudget,
+    mut visit: F,
+) -> Result<(), ResourceError>
+where
+    F: FnMut(
+        &PathReference,
+        GlobKind,
+        Option<&mut File>,
+        &mut Vec<DiscoveryDiagnostic>,
+        &mut WorkspaceDiscoveryBudget,
+    ) -> Result<(), ResourceError>,
+{
+    let mut seen_directories = HashSet::new();
+    budget.charge_state(retained_path_state_bytes(&initial.path, 0)?)?;
+    seen_directories.insert(initial.path.clone());
+    let mut seen_files = HashSet::new();
+    let root_ignores = if initial.path.as_os_str().is_empty() {
+        initial.ignores.clone()
+    } else if controls.gitignore {
+        let mut context = IgnoreContext {
+            controls,
+            diagnostics,
+            operation,
+            budget,
+        };
+        load_gitignore(root, Path::new(""), None, &mut context)?
+    } else {
+        None
+    };
+    budget.charge_state(retained_path_state_bytes(
+        Path::new(""),
+        size_of::<InitialIgnoreStack>(),
+    )?)?;
+    let mut final_filter_cache =
+        HashMap::from([(PathBuf::new(), InitialIgnoreStack::Ready(root_ignores))]);
+    if !initial.path.as_os_str().is_empty() {
+        budget.charge_state(retained_path_state_bytes(
+            &initial.path,
+            size_of::<InitialIgnoreStack>(),
+        )?)?;
+        final_filter_cache.insert(
+            initial.path.clone(),
+            InitialIgnoreStack::Ready(initial.ignores.clone()),
+        );
+    }
+    let mut pending = vec![initial];
+    while let Some(mut frame) = pending.pop() {
+        budget.release_state(frame.pending_state_bytes);
+        ensure_workspace_discovery_live(operation)?;
+        let directory = match frame.directory.take() {
+            Some(directory) => directory,
+            None => match open_workspace_entry(root, &frame.path) {
+                Ok(OpenedWorkspaceEntry::Directory { directory, .. }) => directory,
+                Ok(OpenedWorkspaceEntry::File { reference, .. }) => {
+                    push_workspace_diagnostic(
+                        diagnostics,
+                        DiscoveryDiagnostic::new(
+                            Some(reference),
+                            ErrorCategory::SourceUnavailable,
+                            "Workspace directory changed to a file during discovery",
+                        ),
+                        budget,
+                    )?;
+                    continue;
+                }
+                Err(error) => {
+                    let reference = WorkspacePath::new(&frame.path)
+                        .ok()
+                        .map(|path| PathReference::canonical(root.metadata.id().clone(), path));
+                    push_workspace_diagnostic(
+                        diagnostics,
+                        DiscoveryDiagnostic::new(
+                            reference,
+                            error.category(),
+                            error.message().to_owned(),
+                        ),
+                        budget,
+                    )?;
+                    continue;
+                }
+            },
+        };
+        let mut names = Vec::new();
+        let entries = match directory.entries() {
+            Ok(entries) => entries,
+            Err(error) => {
+                push_workspace_diagnostic(
+                    diagnostics,
+                    directory_diagnostic(root, &frame.path, "enumerate", error),
+                    budget,
+                )?;
+                continue;
+            }
+        };
+        for entry in entries {
+            ensure_workspace_discovery_live(operation)?;
+            budget.charge_entry()?;
+            match entry {
+                Ok(entry) => names.push(entry.file_name()),
+                Err(error) => {
+                    push_workspace_diagnostic(
+                        diagnostics,
+                        directory_diagnostic(root, &frame.path, "enumerate entry", error),
+                        budget,
+                    )?;
+                }
+            }
+        }
+        drop(directory);
+        names.sort_unstable();
+        let names_state_bytes = retained_names_state_bytes(&names, names.capacity())?;
+        budget.charge_state(names_state_bytes)?;
+        for name in names {
+            ensure_workspace_discovery_live(operation)?;
+            if !controls.hidden && is_hidden_name(&name) {
+                continue;
+            }
+            let candidate_path = frame.path.join(&name);
+            let candidate = match WorkspacePath::new(&candidate_path) {
+                Ok(path) => path,
+                Err(error) => {
+                    push_workspace_diagnostic(
+                        diagnostics,
+                        DiscoveryDiagnostic::new(
+                            None,
+                            error.category(),
+                            "Workspace entry name is not a valid UTF-8 Path Reference",
+                        ),
+                        budget,
+                    )?;
+                    continue;
+                }
+            };
+            let provisional =
+                PathReference::canonical(root.metadata.id().clone(), candidate.clone());
+            if controls.gitignore
+                && ignored_by_stack(frame.ignores.as_ref(), &candidate_path, false)
+            {
+                continue;
+            }
+            let mut entry = match open_workspace_entry(root, &candidate_path) {
+                Ok(entry) => entry,
+                Err(error) => {
+                    push_workspace_diagnostic(
+                        diagnostics,
+                        diagnostic(&provisional, &error),
+                        budget,
+                    )?;
+                    continue;
+                }
+            };
+            let is_directory = entry.kind() == GlobKind::Directory;
+            if controls.gitignore
+                && ignored_by_stack(frame.ignores.as_ref(), &candidate_path, is_directory)
+            {
+                continue;
+            }
+            let final_ignores = {
+                let mut context = IgnoreContext {
+                    controls,
+                    diagnostics,
+                    operation,
+                    budget,
+                };
+                final_entry_ignore_stack(
+                    root,
+                    entry.path(),
+                    entry.kind(),
+                    &mut final_filter_cache,
+                    &mut context,
+                )?
+            };
+            let final_ignores = match final_ignores {
+                InitialIgnoreStack::Filtered => continue,
+                InitialIgnoreStack::Ready(ignores) => ignores,
+            };
+            match &mut entry {
+                OpenedWorkspaceEntry::File {
+                    file, reference, ..
+                } => {
+                    if seen_files.contains(reference.requested()) {
+                        continue;
+                    }
+                    budget.charge_state(retained_string_state_bytes(reference.requested())?)?;
+                    seen_files.insert(reference.requested().to_owned());
+                    visit(reference, GlobKind::File, Some(file), diagnostics, budget)?;
+                }
+                OpenedWorkspaceEntry::Directory {
+                    directory: _,
+                    path,
+                    reference,
+                } => {
+                    if seen_directories.contains(path) {
+                        continue;
+                    }
+                    budget.charge_state(retained_path_state_bytes(path, 0)?)?;
+                    seen_directories.insert(path.clone());
+                    let reference = reference
+                        .as_ref()
+                        .expect("only the traversal root has no canonical reference");
+                    visit(reference, GlobKind::Directory, None, diagnostics, budget)?;
+                    let child_ignores = final_ignores;
+                    let pending_state_bytes =
+                        retained_path_state_bytes(path, size_of::<WalkFrame>())?;
+                    budget.charge_state(pending_state_bytes)?;
+                    pending.push(WalkFrame {
+                        directory: None,
+                        path: path.clone(),
+                        ignores: child_ignores,
+                        pending_state_bytes,
+                    });
+                }
+            }
+        }
+        budget.release_state(names_state_bytes);
+    }
+    Ok(())
+}
+
+fn is_hidden_name(name: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes().first().copied() == Some(b'.')
+}
+
+fn workspace_match_path<'a>(
+    reference: &'a PathReference,
+    root: &FilesystemRoot,
+) -> Result<&'a str, ResourceError> {
+    let prefix = workspace_root_identity(root);
+    reference.requested().strip_prefix(&prefix).ok_or_else(|| {
+        ResourceError::new(
+            ErrorCategory::InvalidReference,
+            "Workspace discovery produced an identity under the wrong root",
+        )
+    })
+}
+
+fn workspace_root_identity(root: &FilesystemRoot) -> String {
+    format!("rfs://workspace/{}/", root.metadata.id())
+}
+
+fn diagnostic(reference: &PathReference, error: &ResourceError) -> DiscoveryDiagnostic {
+    DiscoveryDiagnostic::new(Some(reference.clone()), error.category(), error.message())
+}
+
+fn push_workspace_diagnostic(
+    diagnostics: &mut Vec<DiscoveryDiagnostic>,
+    diagnostic: DiscoveryDiagnostic,
+    budget: &mut WorkspaceDiscoveryBudget,
+) -> Result<(), ResourceError> {
+    budget.charge_diagnostic(&diagnostic)?;
+    diagnostics.push(diagnostic);
+    Ok(())
+}
+
+fn directory_diagnostic(
+    root: &FilesystemRoot,
+    path: &Path,
+    operation: &str,
+    error: io::Error,
+) -> DiscoveryDiagnostic {
+    let reference = WorkspacePath::new(path)
+        .ok()
+        .map(|path| PathReference::canonical(root.metadata.id().clone(), path));
+    let identity = reference.as_ref().map_or_else(
+        || workspace_root_identity(root),
+        |reference| reference.requested().to_owned(),
+    );
+    let error = resource_io_error(&identity, operation, error);
+    DiscoveryDiagnostic::new(reference, error.category(), error.message())
+}
+
+fn ensure_workspace_discovery_live(operation: &OperationGuard) -> Result<(), ResourceError> {
+    if operation.is_active() {
+        Ok(())
+    } else {
+        Err(ResourceError::new(
+            ErrorCategory::Cancelled,
+            "Workspace discovery operation was cancelled",
+        ))
+    }
+}
+
+fn workspace_discovery_worker_error(error: tokio::task::JoinError) -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::SourceUnavailable,
+        format!("filesystem discovery worker failed: {error}"),
+    )
+}
 async fn construct_launch_view(
     roots: Vec<LaunchRoot>,
     primary_selector: Option<String>,
@@ -1184,7 +2769,7 @@ fn resource_io_error(identity: &str, operation: &str, error: io::Error) -> Resou
     )
 }
 
-fn limit_error(message: &str) -> ResourceError {
+fn limit_error(message: impl Into<String>) -> ResourceError {
     ResourceError::new(ErrorCategory::LimitExceeded, message)
 }
 
@@ -1269,5 +2854,18 @@ mod tests {
         );
         validate_read_delivery(&authority, generation, &retained_root)
             .expect("retained-root result remains valid");
+    }
+
+    #[test]
+    fn retained_traversal_state_has_an_exact_ceiling() {
+        let mut budget = WorkspaceDiscoveryBudget::default();
+        budget
+            .charge_state(MAX_WORKSPACE_DISCOVERY_STATE_BYTES)
+            .expect("exact traversal-state ceiling");
+        let error = budget
+            .charge_state(1)
+            .expect_err("one byte over traversal-state ceiling");
+        assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+        assert!(budget.is_exhausted());
     }
 }

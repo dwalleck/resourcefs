@@ -15,6 +15,7 @@ async-trait.workspace = true
 cap-std.workspace = true
 directories.workspace = true
 globset.workspace = true
+ignore.workspace = true
 pcre2-sys.workspace = true
 regex.workspace = true
 resourcefs-core = { path = "../resourcefs-core" }

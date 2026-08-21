@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use resourcefs_core::{
-    PathReference, ResourceAddress, ResourceError, SourceAdapter, SourceResource,
+    DiscoveryAdapter, GlobOptions, GlobSource, GlobTarget, OperationGuard, PathReference,
+    ResourceAddress, ResourceError, SearchOptions, SearchSourceResult, SearchTarget, SourceAdapter,
+    SourceGlobResult, SourceResource,
 };
 
 use crate::{ArtifactSource, FilesystemSource};
@@ -27,6 +29,42 @@ impl SourceAdapter for CompiledSources {
         match reference.address() {
             ResourceAddress::Workspace(_) => self.filesystem.read(reference).await,
             ResourceAddress::Artifact(_) => self.artifacts.read(reference).await,
+        }
+    }
+}
+
+#[async_trait]
+impl DiscoveryAdapter for CompiledSources {
+    async fn search(
+        &self,
+        target: &SearchTarget,
+        pattern: &str,
+        options: SearchOptions,
+        operation: &OperationGuard,
+    ) -> Result<SearchSourceResult, ResourceError> {
+        match target.reference().map(PathReference::address) {
+            None | Some(ResourceAddress::Workspace(_)) => {
+                self.filesystem
+                    .search(target, pattern, options, operation)
+                    .await
+            }
+            Some(ResourceAddress::Artifact(_)) => {
+                self.artifacts
+                    .search(target, pattern, options, operation)
+                    .await
+            }
+        }
+    }
+
+    async fn glob(
+        &self,
+        target: &GlobTarget,
+        options: GlobOptions,
+        operation: &OperationGuard,
+    ) -> Result<SourceGlobResult, ResourceError> {
+        match target.source() {
+            GlobSource::Workspace => self.filesystem.glob(target, options, operation).await,
+            GlobSource::Artifact => self.artifacts.glob(target, options, operation).await,
         }
     }
 }

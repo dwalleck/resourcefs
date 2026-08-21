@@ -8,7 +8,7 @@ use std::{
 };
 
 use resourcefs_core::{
-    DiscoveryEngine, ErrorCategory, GlobLimits, GlobOptions, GlobRequest, GlobTarget,
+    DiscoveryEngine, ErrorCategory, GlobKind, GlobLimits, GlobOptions, GlobRequest, GlobTarget,
     MAX_ARTIFACT_BYTES, OperationGuard, PathReference, ProjectionSelector, ResourceAddress,
     SearchEngine, SearchLimits, SearchOptions, SearchRequest, SearchTarget, SourceAdapter,
     VersionTag, WorkspacePath, WorkspaceRootId,
@@ -396,6 +396,142 @@ async fn search_and_glob_are_session_isolated() {
     assert!(
         maximum_peak <= 96 * 1024 * 1024,
         "C8 maximum search transient allocation exceeded 96 MiB: {maximum_peak}"
+    );
+}
+
+#[tokio::test]
+async fn searches_selected_artifact_text() {
+    let fixture = fixture().await;
+    let content = "outside needle\r\nneedle alpha\r\ngap\r\nbeta needle\r\nneedle needle\r\n";
+    let address = retain(&fixture.session, content).await;
+    let sibling = retain(&fixture.session, "sibling needle\r\n").await;
+    let selected = PathReference::artifact(
+        address.clone(),
+        Some(ProjectionSelector::parse("2-").expect("C6 suffix selector")),
+    )
+    .expect("C6 selected Artifact");
+
+    let source = Arc::new(ArtifactSource::new(fixture.session.path_session().clone()));
+    let discovery = DiscoveryEngine::new(source, fixture.session.path_session().clone());
+    let search = discovery
+        .search(
+            SearchRequest::new(
+                SearchTarget::resource(selected),
+                "needle",
+                SearchOptions::default(),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("C6 search request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C6 selected search");
+
+    assert_eq!(search.engine(), SearchEngine::RustRegex, "C6 search engine");
+    assert_eq!(
+        search.total_records(),
+        3,
+        "C6 one terminator-free row per matching selected line"
+    );
+    assert_eq!(search.groups().len(), 1, "C6 one selected Artifact group");
+    assert_eq!(
+        search.groups()[0].reference(),
+        canonical_artifact(address.clone()).requested(),
+        "C6 canonical selected identity"
+    );
+    assert!(
+        !search
+            .groups()
+            .iter()
+            .any(|group| group.reference() == canonical_artifact(sibling.clone()).requested()),
+        "C6 sibling Artifact stays outside the search"
+    );
+    let expected_lines = [
+        (2_u64, "needle alpha"),
+        (4, "beta needle"),
+        (5, "needle needle"),
+    ];
+    let rows = search.groups()[0].lines();
+    assert_eq!(rows.len(), expected_lines.len(), "C6 per-line rows");
+    for (index, (row, (line, text))) in rows.iter().zip(expected_lines).enumerate() {
+        assert_eq!(row.line(), line, "C6 original line number for row {index}");
+        assert_eq!(row.text(), text, "C6 row text for row {index}");
+        assert!(
+            !row.text().contains(['\r', '\n']),
+            "C6 terminator-free row {index}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn glob_lists_session_artifacts() {
+    let temporary = TempDir::new().expect("C7 temporary cache");
+    let store = SessionStore::open(temporary.path())
+        .await
+        .expect("C7 session store");
+    let session = store.create_session().await.expect("C7 session");
+    let foreign = store.create_session().await.expect("C7 foreign session");
+
+    let contents = [
+        "C7 ninth",
+        "C7 second",
+        "C7 eighth",
+        "C7 first",
+        "C7 seventh",
+        "C7 third",
+        "C7 sixth",
+        "C7 fourth",
+        "C7 tenth",
+        "C7 fifth",
+        "C7 eleventh",
+    ];
+    let mut expected = Vec::with_capacity(contents.len());
+    for content in contents {
+        expected.push(
+            canonical_artifact(retain(&session, content).await)
+                .requested()
+                .to_owned(),
+        );
+    }
+    expected.sort_unstable();
+    let foreign_sentinel = retain(&foreign, "C7 foreign sentinel").await;
+
+    let source = Arc::new(ArtifactSource::new(session.path_session().clone()));
+    let discovery = DiscoveryEngine::new(source, session.path_session().clone());
+    let glob = discovery
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new("artifact://*").expect("C7 Artifact glob"),
+                GlobOptions::default(),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C7 session glob");
+
+    let actual: Vec<_> = glob
+        .entries()
+        .iter()
+        .map(|entry| entry.reference().to_owned())
+        .collect();
+    assert_eq!(actual, expected, "C7 canonical bytewise-order identities");
+    assert_eq!(
+        glob.total_records(),
+        contents.len(),
+        "C7 exact session catalog"
+    );
+    assert!(
+        glob.entries()
+            .iter()
+            .all(|entry| entry.kind() == GlobKind::Artifact),
+        "C7 every entry is an Artifact, no directories"
+    );
+    assert!(
+        !actual.contains(&canonical_artifact(foreign_sentinel).requested().to_owned()),
+        "C7 foreign-session sentinel absent"
     );
 }
 

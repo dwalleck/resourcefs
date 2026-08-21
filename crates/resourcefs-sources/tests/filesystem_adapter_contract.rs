@@ -1,16 +1,19 @@
 use std::{
     fs,
     io::{Seek, SeekFrom, Write},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use resourcefs_core::{
-    ErrorCategory, MAX_ARTIFACT_BYTES, MAX_TEXT_BYTES, MAX_WORKSPACE_ROOTS, PathReference,
-    SourceAdapter, WorkspaceRootId,
+    DiscoveryEngine, ErrorCategory, GlobKind, GlobLimits, GlobOptions, GlobRequest, GlobTarget,
+    MAX_ARTIFACT_BYTES, MAX_TEXT_BYTES, MAX_WORKSPACE_ROOTS, OperationGuard, PathReference,
+    SearchEngine, SearchLimits, SearchOptions, SearchRequest, SearchTarget, SourceAdapter,
+    WorkspaceRootId,
 };
 use resourcefs_sources::{
     BackingPathVisibility, ClientRoot, FilesystemSource, LaunchRoot, LaunchRootSource,
-    RootRefreshOutcome,
+    RootRefreshOutcome, SessionStore, StoredSession,
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -389,6 +392,16 @@ async fn single_source(
         BackingPathVisibility::Hidden,
     )
     .await
+}
+
+async fn discovery_fixture(source: FilesystemSource) -> (TempDir, StoredSession, DiscoveryEngine) {
+    let cache = TempDir::new().expect("discovery cache");
+    let store = SessionStore::open(cache.path())
+        .await
+        .expect("discovery session store");
+    let session = store.create_session().await.expect("discovery session");
+    let engine = DiscoveryEngine::new(Arc::new(source), session.path_session().clone());
+    (cache, session, engine)
 }
 
 #[tokio::test]
@@ -1117,4 +1130,1025 @@ async fn retargeted_links_never_escape() {
     }
     running.store(false, Ordering::Relaxed);
     writer.join().expect("retarget writer");
+}
+
+#[tokio::test]
+async fn search_groups_lines_and_reports_partial_failures() {
+    let (_temporary, root) = create_root();
+    fs::write(
+        root.join("good.txt"),
+        "needle needle\r\nother\nneedle suffix\n",
+    )
+    .expect("C6 text fixture");
+    fs::write(root.join("binary.bin"), b"valid prefix\n\xff\n").expect("C6 binary fixture");
+    let source = single_source(&root).await.expect("C6 filesystem source");
+    let (_cache, _session, engine) = discovery_fixture(source).await;
+
+    let result = engine
+        .search(
+            SearchRequest::new(
+                SearchTarget::primary(),
+                "needle",
+                SearchOptions::default(),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("C6 search request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C6 partial directory search");
+    assert_eq!(result.engine(), SearchEngine::RustRegex, "C6 engine");
+    assert_eq!(result.total_records(), 2, "C6 one row per matching line");
+    assert_eq!(result.groups().len(), 1, "C6 one matching Resource");
+    assert_eq!(
+        result.groups()[0].reference(),
+        "rfs://workspace/workspace/good.txt",
+        "C6 canonical group"
+    );
+    assert_eq!(
+        result.groups()[0]
+            .lines()
+            .iter()
+            .map(|line| (line.line(), line.text()))
+            .collect::<Vec<_>>(),
+        vec![(1, "needle needle"), (3, "needle suffix")],
+        "C6 terminator-free line oracle"
+    );
+    assert_eq!(result.diagnostics().len(), 1, "C6 one skipped binary");
+    assert_eq!(
+        result.diagnostics()[0].reference(),
+        Some("rfs://workspace/workspace/binary.bin"),
+        "C6 diagnostic identity"
+    );
+    assert_eq!(
+        result.diagnostics()[0].category(),
+        ErrorCategory::UnsupportedProjection,
+        "C6 diagnostic category"
+    );
+
+    let exact_error = engine
+        .search(
+            SearchRequest::new(
+                SearchTarget::resource(reference("binary.bin")),
+                "needle",
+                SearchOptions::default(),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("C6 exact request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("C6 exact binary must fail");
+    assert_eq!(
+        exact_error.category(),
+        ErrorCategory::UnsupportedProjection,
+        "C6 exact-target category"
+    );
+
+    let selected = engine
+        .search(
+            SearchRequest::new(
+                SearchTarget::resource(reference("good.txt:2-")),
+                "needle",
+                SearchOptions::default(),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("C6 selected Workspace request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C6 selected Workspace search");
+    assert_eq!(selected.total_records(), 1, "C6 selected record count");
+    assert_eq!(
+        selected.groups()[0].lines()[0].line(),
+        3,
+        "C6 selected original line number"
+    );
+
+    fs::write(root.join("literal.txt:2"), "literal marker\n").expect("C6 literal colon file");
+    let literal = engine
+        .search(
+            SearchRequest::new(
+                SearchTarget::resource(reference("literal.txt:2")),
+                "literal marker",
+                SearchOptions::default(),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("C6 literal request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C6 literal path search");
+    assert_eq!(
+        literal.groups()[0].reference(),
+        "rfs://workspace/workspace/literal.txt%3A2",
+        "C6 literal path precedes selector"
+    );
+}
+
+#[tokio::test]
+async fn discovery_filters_are_contained_and_explicit() {
+    let (temporary, root) = create_root();
+    fs::create_dir_all(root.join("sub")).expect("C5 nested directory");
+    fs::create_dir_all(root.join(".git/info")).expect("C5 Git metadata directory");
+    fs::create_dir_all(root.join("ignored-dir")).expect("C5 ignored directory");
+    fs::create_dir_all(root.join(".hidden-dir")).expect("C5 hidden directory");
+    fs::create_dir_all(root.join("ignored-parent/child")).expect("C5 nested ignored directory");
+    fs::create_dir_all(root.join(".hidden-parent/child")).expect("C5 nested hidden directory");
+    fs::write(
+        root.join(".gitignore"),
+        "\u{feff}ignored.txt\nignored-dir/\nignored-parent/\nsub/ignored-*.txt\n!sub/ignored-keep.txt\n",
+    )
+    .expect("C5 root gitignore");
+    fs::write(root.join("sub/.gitignore"), "nested-only.txt\n").expect("C5 nested gitignore");
+    fs::write(root.join(".ignore"), "visible-from-dot-ignore.txt\n").expect("C5 forbidden .ignore");
+    fs::write(
+        root.join(".git/info/exclude"),
+        "visible-from-info-exclude.txt\n",
+    )
+    .expect("C5 forbidden info exclude");
+    for path in [
+        "visible.txt",
+        "ignored.txt",
+        "sub/ignored-drop.txt",
+        "sub/ignored-keep.txt",
+        "sub/nested-only.txt",
+        "visible-from-dot-ignore.txt",
+        "visible-from-info-exclude.txt",
+        ".hidden.txt",
+        "ignored-dir/value.txt",
+        ".hidden-dir/value.txt",
+        "ignored-parent/child/value.txt",
+        ".hidden-parent/child/value.txt",
+    ] {
+        fs::write(root.join(path), format!("needle {path}\n")).expect("C5 searchable fixture");
+    }
+    let source = single_source(&root).await.expect("C5 filesystem source");
+    let (_cache, _session, engine) = discovery_fixture(source).await;
+
+    let defaults = engine
+        .search(
+            SearchRequest::new(
+                SearchTarget::primary(),
+                "needle",
+                SearchOptions::default(),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("C5 default request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C5 default discovery");
+    let default_references = defaults
+        .groups()
+        .iter()
+        .map(|group| group.reference())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        default_references,
+        vec![
+            "rfs://workspace/workspace/sub/ignored-keep.txt",
+            "rfs://workspace/workspace/visible-from-dot-ignore.txt",
+            "rfs://workspace/workspace/visible-from-info-exclude.txt",
+            "rfs://workspace/workspace/visible.txt",
+        ],
+        "C5 contained gitignore and hidden oracle"
+    );
+    assert!(defaults.diagnostics().is_empty(), "C5 default diagnostics");
+
+    let unfiltered = engine
+        .search(
+            SearchRequest::new(
+                SearchTarget::primary(),
+                "needle",
+                SearchOptions::new(true, false, true),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("C5 unfiltered request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C5 unfiltered discovery");
+    assert_eq!(
+        unfiltered.total_records(),
+        12,
+        "C5 disabled controls reveal all twelve fixtures"
+    );
+
+    for (pattern, message) in [
+        (
+            "ignored-dir/*.txt",
+            "C5 glob cannot bypass ignored ancestor",
+        ),
+        (".hidden-dir/*.txt", "C5 glob cannot bypass hidden ancestor"),
+    ] {
+        let filtered = engine
+            .glob(
+                GlobRequest::new(
+                    GlobTarget::new(pattern).expect("C5 filtered glob target"),
+                    GlobOptions::default(),
+                    0,
+                    GlobLimits::default(),
+                ),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("C5 filtered glob");
+        assert!(filtered.entries().is_empty(), "{message}");
+    }
+
+    let explicit = engine
+        .search(
+            SearchRequest::new(
+                SearchTarget::resource(reference("ignored.txt")),
+                "needle",
+                SearchOptions::default(),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("C5 explicit request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C5 explicit ignored file");
+    assert_eq!(explicit.total_records(), 1, "C5 exact target bypass");
+    assert_eq!(
+        explicit.groups()[0].reference(),
+        "rfs://workspace/workspace/ignored.txt",
+        "C5 exact canonical identity"
+    );
+
+    for (path, expected) in [
+        (
+            "ignored-dir",
+            "rfs://workspace/workspace/ignored-dir/value.txt",
+        ),
+        (
+            ".hidden-dir",
+            "rfs://workspace/workspace/.hidden-dir/value.txt",
+        ),
+        (
+            "ignored-parent/child",
+            "rfs://workspace/workspace/ignored-parent/child/value.txt",
+        ),
+        (
+            ".hidden-parent/child",
+            "rfs://workspace/workspace/.hidden-parent/child/value.txt",
+        ),
+    ] {
+        let explicit_directory = engine
+            .search(
+                SearchRequest::new(
+                    SearchTarget::resource(reference(path)),
+                    "needle",
+                    SearchOptions::default(),
+                    0,
+                    SearchLimits::default(),
+                )
+                .expect("C5 explicit directory request"),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("C5 explicit filtered directory");
+        assert_eq!(
+            explicit_directory.total_records(),
+            1,
+            "C5 exact directory target bypass for {path}"
+        );
+        assert_eq!(
+            explicit_directory.groups()[0].reference(),
+            expected,
+            "C5 exact directory canonical identity for {path}"
+        );
+    }
+    let global_excludes = temporary.path().join("global-excludes");
+    let global_config = temporary.path().join("global-gitconfig");
+    fs::write(&global_excludes, "visible.txt\n").expect("C5 poisoned global excludes");
+    fs::write(
+        &global_config,
+        format!(
+            "[core]\n\texcludesFile = {}\n",
+            global_excludes.to_string_lossy()
+        ),
+    )
+    .expect("C5 poisoned global config");
+    let child = std::process::Command::new(std::env::current_exe().expect("C5 test executable"))
+        .arg("global_gitignore_is_not_consulted_child")
+        .arg("--exact")
+        .arg("--nocapture")
+        .env("RFS_C5_GLOBAL_ROOT", &root)
+        .env("GIT_CONFIG_GLOBAL", &global_config)
+        .env(
+            "GIT_CONFIG_SYSTEM",
+            temporary.path().join("missing-system-config"),
+        )
+        .output()
+        .expect("C5 isolated global-config child");
+    assert!(
+        child.status.success(),
+        "C5 ambient global Git configuration changed discovery: {}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+}
+
+#[test]
+fn global_gitignore_is_not_consulted_child() {
+    let Some(root) = std::env::var_os("RFS_C5_GLOBAL_ROOT").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("C5 child runtime");
+    runtime.block_on(async move {
+        let source = single_source(&root).await.expect("C5 child source");
+        let (_cache, _session, engine) = discovery_fixture(source).await;
+        let result = engine
+            .search(
+                SearchRequest::new(
+                    SearchTarget::primary(),
+                    "needle",
+                    SearchOptions::default(),
+                    0,
+                    SearchLimits::default(),
+                )
+                .expect("C5 child request"),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("C5 child search");
+        assert!(
+            result
+                .groups()
+                .iter()
+                .any(|group| group.reference() == "rfs://workspace/workspace/visible.txt"),
+            "C5 ambient global excludes must not hide Workspace content"
+        );
+    });
+}
+
+#[tokio::test]
+async fn glob_language_kinds_and_order() {
+    let (_temporary, root) = create_root();
+    fs::create_dir_all(root.join("src/deep")).expect("C7 source tree");
+    for path in ["src/main.rs", "src/lib.rs", "src/deep/leaf.rs"] {
+        fs::write(root.join(path), path).expect("C7 Rust fixture");
+    }
+    fs::write(root.join("README.md"), "readme").expect("C7 Markdown fixture");
+    fs::write(root.join("literal*.txt"), "literal star").expect("C7 escaped-star fixture");
+    let source = single_source(&root).await.expect("C7 filesystem source");
+    let (_cache, _session, engine) = discovery_fixture(source).await;
+
+    let recursive = engine
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new("src/**/*.rs").expect("C7 recursive target"),
+                GlobOptions::default(),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C7 recursive glob");
+    assert_eq!(
+        recursive
+            .entries()
+            .iter()
+            .map(|entry| (entry.reference(), entry.kind()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("rfs://workspace/workspace/src/deep/leaf.rs", GlobKind::File,),
+            ("rfs://workspace/workspace/src/lib.rs", GlobKind::File),
+            ("rfs://workspace/workspace/src/main.rs", GlobKind::File),
+        ],
+        "C7 recursive slash grammar and bytewise order"
+    );
+
+    let canonical = engine
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new("rfs://workspace/workspace/src/{main,lib}.rs")
+                    .expect("C7 canonical target"),
+                GlobOptions::default(),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C7 canonical glob");
+    assert_eq!(
+        canonical
+            .entries()
+            .iter()
+            .map(|entry| entry.reference())
+            .collect::<Vec<_>>(),
+        vec![
+            "rfs://workspace/workspace/src/lib.rs",
+            "rfs://workspace/workspace/src/main.rs",
+        ],
+        "C7 canonical alternation"
+    );
+
+    let folded = engine
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new("SRC/*.RS").expect("C7 folded target"),
+                GlobOptions::new(false, true, false),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C7 ASCII-folded glob");
+    assert_eq!(
+        folded
+            .entries()
+            .iter()
+            .map(|entry| entry.reference())
+            .collect::<Vec<_>>(),
+        vec![
+            "rfs://workspace/workspace/src/lib.rs",
+            "rfs://workspace/workspace/src/main.rs",
+        ],
+        "C7 ASCII-only case folding"
+    );
+
+    let directory = engine
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new("src").expect("C7 exact directory target"),
+                GlobOptions::default(),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C7 exact directory glob");
+    assert_eq!(directory.entries().len(), 1, "C7 one directory entry");
+    assert_eq!(
+        directory.entries()[0].kind(),
+        GlobKind::Directory,
+        "C7 directory kind"
+    );
+    assert!(
+        directory.text().contains("rfs://workspace/workspace/src/"),
+        "C7 directory text has trailing slash"
+    );
+
+    let escaped = engine
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new(r"literal\*.txt").expect("C7 escaped target"),
+                GlobOptions::default(),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C7 escaped glob");
+    assert_eq!(escaped.entries().len(), 1, "C7 escaped match count");
+    assert_eq!(
+        escaped.entries()[0].reference(),
+        "rfs://workspace/workspace/literal*.txt",
+        "C7 backslash is an escape"
+    );
+
+    let invalid = engine
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new("literal\\").expect("C7 shaped dangling escape"),
+                GlobOptions::default(),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("C7 dangling escape must fail");
+    assert_eq!(
+        invalid.category(),
+        ErrorCategory::InvalidPattern,
+        "C7 dangling escape category"
+    );
+
+    let absent = engine
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new("missing/**/*.txt").expect("C7 absent-prefix target"),
+                GlobOptions::default(),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C7 absent fixed prefix is a valid no-match glob");
+    assert!(absent.entries().is_empty(), "C7 absent-prefix empty result");
+    assert!(
+        absent.diagnostics().is_empty(),
+        "C7 absent-prefix diagnostics"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discovery_links_never_escape_or_duplicate() {
+    use std::{
+        os::unix::fs::symlink,
+        sync::atomic::{AtomicBool, Ordering},
+        thread,
+    };
+
+    let temporary = TempDir::new().expect("C4 temporary directory");
+    let root = temporary.path().join("root");
+    let inside = root.join("inside");
+    let outside = temporary.path().join("outside");
+    fs::create_dir_all(&inside).expect("C4 inside directory");
+    fs::create_dir(&outside).expect("C4 outside directory");
+    fs::write(inside.join("target.txt"), "inside sentinel\n").expect("C4 inside sentinel");
+    fs::write(outside.join("target.txt"), "outside secret sentinel\n")
+        .expect("C4 outside sentinel");
+    fs::write(root.join(".gitignore"), "ignored-target.txt\n")
+        .expect("C5 contained ignore fixture");
+    fs::write(root.join(".hidden-target.txt"), "hidden secret sentinel\n")
+        .expect("C5 hidden final target");
+    fs::write(root.join("ignored-target.txt"), "ignored secret sentinel\n")
+        .expect("C5 ignored final target");
+    fs::create_dir(root.join(".hidden-dir")).expect("C5 hidden final directory");
+    fs::write(
+        root.join(".hidden-dir/nested.txt"),
+        "hidden directory secret sentinel\n",
+    )
+    .expect("C5 hidden directory target");
+    symlink(inside.join("target.txt"), root.join("alias-a.txt")).expect("C4 first file alias");
+    symlink(inside.join("target.txt"), root.join("alias-b.txt")).expect("C4 second file alias");
+    symlink(&inside, root.join("alias-dir")).expect("C4 directory alias");
+    symlink(&root, inside.join("cycle")).expect("C4 contained cycle");
+    symlink(outside.join("target.txt"), root.join("escape.txt")).expect("C4 escaping file");
+    symlink(&outside, root.join("escape-dir")).expect("C4 escaping directory");
+    let switch = root.join("switch");
+    symlink(&inside, &switch).expect("C4 initial switch");
+    symlink(
+        root.join(".hidden-target.txt"),
+        root.join("visible-hidden-alias.txt"),
+    )
+    .expect("C5 visible alias to hidden file");
+    symlink(
+        root.join("ignored-target.txt"),
+        root.join("visible-ignored-alias.txt"),
+    )
+    .expect("C5 visible alias to ignored file");
+    symlink(root.join(".hidden-dir"), root.join("visible-hidden-dir"))
+        .expect("C5 visible alias to hidden directory");
+
+    let source = single_source(&root).await.expect("C4 filesystem source");
+    let (_cache, _session, engine) = discovery_fixture(source).await;
+    let search_request = || {
+        SearchRequest::new(
+            SearchTarget::primary(),
+            "sentinel",
+            SearchOptions::default(),
+            0,
+            SearchLimits::default(),
+        )
+        .expect("C4 search request")
+    };
+    let search = engine
+        .search(search_request(), &OperationGuard::new())
+        .await
+        .expect("C4 contained search");
+    assert_eq!(search.total_records(), 1, "C4 final file identity once");
+    assert_eq!(
+        search.groups()[0].reference(),
+        "rfs://workspace/workspace/inside/target.txt",
+        "C4 final canonical search identity"
+    );
+    assert!(
+        !search.text().contains("outside secret"),
+        "C4 no outside search bytes"
+    );
+    assert!(
+        search
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.category() == ErrorCategory::PermissionDenied),
+        "C4 escaping links become permission diagnostics"
+    );
+
+    let glob = engine
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new("**/*.txt").expect("C4 glob target"),
+                GlobOptions::default(),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C4 contained glob");
+    assert_eq!(glob.total_records(), 1, "C4 final glob identity once");
+    assert_eq!(
+        glob.entries()[0].reference(),
+        "rfs://workspace/workspace/inside/target.txt",
+        "C4 final canonical glob identity"
+    );
+    assert!(
+        !glob.text().contains("outside secret"),
+        "C4 no outside glob bytes"
+    );
+
+    let running = Arc::new(AtomicBool::new(true));
+    let writer_running = Arc::clone(&running);
+    let writer_switch = switch.clone();
+    let writer = thread::spawn(move || {
+        while writer_running.load(Ordering::Relaxed) {
+            let _ = fs::remove_file(&writer_switch);
+            let _ = symlink(&outside, &writer_switch);
+            let _ = fs::remove_file(&writer_switch);
+            let _ = symlink(&inside, &writer_switch);
+        }
+    });
+    for _ in 0..100 {
+        let result = engine
+            .search(search_request(), &OperationGuard::new())
+            .await
+            .expect("C4 concurrent search remains partial-successful");
+        assert_eq!(
+            result.total_records(),
+            1,
+            "C4 concurrent final identity remains unique"
+        );
+        assert!(
+            !result.text().contains("outside secret"),
+            "C4 concurrent retarget never exposes outside bytes"
+        );
+    }
+    running.store(false, Ordering::Relaxed);
+    writer.join().expect("C4 retarget writer");
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn root_refresh_fences_discovery_delivery() {
+    let temporary = TempDir::new().expect("C14 temporary directory");
+    let first = temporary.path().join("first");
+    let second = temporary.path().join("second");
+    fs::create_dir(&first).expect("C14 first root");
+    fs::create_dir(&second).expect("C14 second root");
+    fs::write(first.join("value.txt"), "old sentinel\n").expect("C14 old fixture");
+    fs::write(second.join("value.txt"), "new sentinel\n").expect("C14 new fixture");
+    let source = single_source(&first).await.expect("C14 filesystem source");
+    let gate = source.arm_test_delivery_gate("*").await;
+    let (_cache, _session, engine) = discovery_fixture(source.clone()).await;
+    let pending_engine = engine.clone();
+    let pending = tokio::spawn(async move {
+        pending_engine
+            .search(
+                SearchRequest::new(
+                    SearchTarget::primary(),
+                    "sentinel",
+                    SearchOptions::default(),
+                    0,
+                    SearchLimits::default(),
+                )
+                .expect("C14 pending request"),
+                &OperationGuard::new(),
+            )
+            .await
+    });
+    gate.wait_until_entered().await;
+
+    let refresh = source.begin_client_root_refresh().await;
+    let acquisition = source.start_client_root_acquisition(refresh);
+    let outcome = source
+        .complete_client_root_refresh(acquisition, vec![client_root(&second, "replacement")])
+        .await
+        .expect("C14 replacement refresh");
+    assert!(
+        matches!(
+            outcome,
+            RootRefreshOutcome::Applied {
+                generation: 2,
+                ref removed,
+                ..
+            } if removed == &[WorkspaceRootId::new("workspace").expect("C14 old root ID")]
+        ),
+        "C14 root generation oracle"
+    );
+    gate.release();
+    let error = pending
+        .await
+        .expect("C14 pending task")
+        .expect_err("C14 removed-root result must not be delivered");
+    assert_eq!(
+        error.category(),
+        ErrorCategory::InvalidReference,
+        "C14 stale delivery category"
+    );
+
+    let current = engine
+        .search(
+            SearchRequest::new(
+                SearchTarget::primary(),
+                "sentinel",
+                SearchOptions::default(),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("C14 current request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C14 current discovery");
+    assert!(
+        current.text().contains("new sentinel"),
+        "C14 current root is observable"
+    );
+    assert!(
+        !current.text().contains("old sentinel"),
+        "C14 removed root is absent"
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_fences_workspace_discovery_delivery() {
+    let (_temporary, root) = create_root();
+    fs::write(root.join("value.txt"), "needle\n").expect("C14 cancellation fixture");
+    let source = single_source(&root).await.expect("C14 filesystem source");
+    let (_cache, session, engine) = discovery_fixture(source.clone()).await;
+
+    let search_gate = source.arm_test_delivery_gate("*").await;
+    let search_operation = OperationGuard::new();
+    let pending_engine = engine.clone();
+    let pending_operation = search_operation.clone();
+    let pending_search = tokio::spawn(async move {
+        pending_engine
+            .search(
+                SearchRequest::new(
+                    SearchTarget::primary(),
+                    "needle",
+                    SearchOptions::default(),
+                    0,
+                    SearchLimits::default(),
+                )
+                .expect("C14 cancellation search request"),
+                &pending_operation,
+            )
+            .await
+    });
+    search_gate.wait_until_entered().await;
+    search_operation.cancel();
+    search_gate.release();
+    let search_error = pending_search
+        .await
+        .expect("C14 cancellation search task")
+        .expect_err("C14 cancelled search must not be delivered");
+    assert_eq!(
+        search_error.category(),
+        ErrorCategory::Cancelled,
+        "C14 cancelled search category"
+    );
+
+    let glob_gate = source.arm_test_delivery_gate("*").await;
+    let glob_operation = OperationGuard::new();
+    let pending_engine = engine.clone();
+    let pending_operation = glob_operation.clone();
+    let pending_glob = tokio::spawn(async move {
+        pending_engine
+            .glob(
+                GlobRequest::new(
+                    GlobTarget::new("**/*.txt").expect("C14 cancellation glob target"),
+                    GlobOptions::default(),
+                    0,
+                    GlobLimits::default(),
+                ),
+                &pending_operation,
+            )
+            .await
+    });
+    glob_gate.wait_until_entered().await;
+    glob_operation.cancel();
+    glob_gate.release();
+    let glob_error = pending_glob
+        .await
+        .expect("C14 cancellation glob task")
+        .expect_err("C14 cancelled glob must not be delivered");
+    assert_eq!(
+        glob_error.category(),
+        ErrorCategory::Cancelled,
+        "C14 cancelled glob category"
+    );
+    assert_eq!(
+        session.path_session().artifact_count().await,
+        0,
+        "C14 cancellation publishes no recovery Artifact"
+    );
+}
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wide_directory_keeps_pending_handles_bounded() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let (_temporary, root) = create_root();
+    let wide = root.join("wide");
+    fs::create_dir(&wide).expect("C4 wide directory");
+    for index in 0..4_000 {
+        fs::create_dir(wide.join(format!("d{index:04}"))).expect("C4 wide child directory");
+    }
+    let source = single_source(&root).await.expect("C4 wide source");
+    let (_cache, _session, engine) = discovery_fixture(source).await;
+    let baseline = fs::read_dir("/proc/self/fd")
+        .expect("C4 process descriptor directory")
+        .count();
+    let running = Arc::new(AtomicBool::new(true));
+    let maximum = Arc::new(AtomicUsize::new(baseline));
+    let monitor_running = Arc::clone(&running);
+    let monitor_maximum = Arc::clone(&maximum);
+    let monitor = std::thread::spawn(move || {
+        while monitor_running.load(Ordering::Acquire) {
+            let current = fs::read_dir("/proc/self/fd")
+                .expect("C4 monitored descriptor directory")
+                .count();
+            monitor_maximum.fetch_max(current, Ordering::Relaxed);
+            std::thread::yield_now();
+        }
+    });
+
+    let result = engine
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new("wide/*").expect("C4 wide glob target"),
+                GlobOptions::default(),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C4 wide glob");
+    running.store(false, Ordering::Release);
+    monitor.join().expect("C4 descriptor monitor");
+
+    assert_eq!(result.total_records(), 4_000, "C4 wide directory count");
+    assert!(
+        result.diagnostics().is_empty(),
+        "C4 wide traversal diagnostics: {:?}",
+        result.diagnostics()
+    );
+    assert!(
+        maximum.load(Ordering::Relaxed) <= baseline + 512,
+        "C4 traversal retained too many directory handles: baseline {baseline}, peak {}",
+        maximum.load(Ordering::Relaxed)
+    );
+}
+
+#[tokio::test]
+async fn workspace_discovery_scale_is_bounded_and_deterministic() {
+    let (_temporary, root) = create_root();
+    let tree = root.join("tree");
+    fs::create_dir(&tree).expect("C4 scale tree");
+    for directory in 0..100 {
+        let directory_path = tree.join(format!("d{directory:03}"));
+        fs::create_dir(&directory_path).expect("C4 scale directory");
+        for file in 0..100 {
+            let content = if file % 10 == 0 {
+                "needle\n"
+            } else {
+                "plain\n"
+            };
+            fs::write(directory_path.join(format!("f{file:03}.txt")), content)
+                .expect("C4 scale file");
+        }
+    }
+    fs::write(tree.join("d050/.gitignore"), "ignored-extra.txt\n")
+        .expect("C5 nested scale gitignore");
+    fs::write(tree.join("d050/ignored-extra.txt"), "needle\n").expect("C5 ignored scale file");
+    fs::write(tree.join(".hidden.txt"), "needle\n").expect("C5 hidden scale file");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("missing.txt", tree.join("vanished.txt"))
+            .expect("C14 vanished scale entry");
+    }
+
+    let source = single_source(&root).await.expect("C4 scale source");
+    let (_cache, _session, engine) = discovery_fixture(source).await;
+    let mut stable_text = None;
+    for run in 0..5 {
+        let started = Instant::now();
+        let result = engine
+            .search(
+                SearchRequest::new(
+                    SearchTarget::resource(reference("tree")),
+                    "needle",
+                    SearchOptions::default(),
+                    0,
+                    SearchLimits::default(),
+                )
+                .expect("C6 scale search request"),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("C6 scale search");
+        assert!(
+            started.elapsed() <= Duration::from_secs(10),
+            "C6 scale search run {run} exceeded ten seconds: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(result.total_records(), 1_000, "C6 scale match count");
+        if let Some(expected) = stable_text.as_ref() {
+            assert_eq!(result.text(), expected, "C6 five-run deterministic text");
+        } else {
+            stable_text = Some(result.text().to_owned());
+        }
+    }
+
+    let glob_started = Instant::now();
+    let glob = engine
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new("tree/**/*.txt").expect("C7 scale glob target"),
+                GlobOptions::default(),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C7 scale glob");
+    assert!(
+        glob_started.elapsed() <= Duration::from_secs(10),
+        "C7 scale glob exceeded ten seconds: {:?}",
+        glob_started.elapsed()
+    );
+    assert_eq!(glob.total_records(), 10_000, "C7 scale glob count");
+
+    #[cfg(unix)]
+    {
+        let partial = engine
+            .search(
+                SearchRequest::new(
+                    SearchTarget::resource(reference("tree")),
+                    "absent-from-scale-tree",
+                    SearchOptions::default(),
+                    0,
+                    SearchLimits::default(),
+                )
+                .expect("C14 diagnostic request"),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("C14 diagnostic search");
+        assert_eq!(
+            partial.diagnostics().len(),
+            1,
+            "C14 vanished-entry diagnostic"
+        );
+        assert_eq!(
+            partial.diagnostics()[0].category(),
+            ErrorCategory::NotFound,
+            "C14 vanished-entry category"
+        );
+    }
+
+    let maximum = "x".repeat(MAX_ARTIFACT_BYTES);
+    fs::write(root.join("maximum.txt"), &maximum).expect("C6 maximum file");
+    drop(maximum);
+    let maximum_started = Instant::now();
+    let maximum_search = engine
+        .search(
+            SearchRequest::new(
+                SearchTarget::resource(reference("maximum.txt")),
+                "absent-pattern",
+                SearchOptions::default(),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("C6 maximum request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("C6 maximum exact search");
+    assert_eq!(
+        maximum_search.total_records(),
+        0,
+        "C6 maximum no-match count"
+    );
+    assert!(
+        maximum_started.elapsed() <= Duration::from_secs(2),
+        "C6 maximum exact search exceeded two seconds: {:?}",
+        maximum_started.elapsed()
+    );
 }

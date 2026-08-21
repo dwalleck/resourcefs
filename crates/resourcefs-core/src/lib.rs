@@ -14,7 +14,7 @@ mod version;
 pub use discovery::DiscoveryRetainGate;
 pub use discovery::{
     DiscoveryAdapter, DiscoveryDiagnostic, DiscoveryEngine, GlobEntry, GlobKind, GlobLimits,
-    GlobOptions, GlobRequest, GlobResult, GlobTarget, MAX_DISCOVERY_PATTERN_BYTES,
+    GlobOptions, GlobRequest, GlobResult, GlobSource, GlobTarget, MAX_DISCOVERY_PATTERN_BYTES,
     MAX_DISCOVERY_RESULTS, SearchEngine, SearchGroup, SearchLimits, SearchLine, SearchOptions,
     SearchRecord, SearchRequest, SearchResult, SearchSourceResult, SearchTarget, SourceGlobResult,
 };

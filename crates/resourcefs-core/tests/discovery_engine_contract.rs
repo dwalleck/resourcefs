@@ -11,11 +11,12 @@ use std::{
 use async_trait::async_trait;
 use resourcefs_core::{
     DiscoveryAdapter, DiscoveryDiagnostic, DiscoveryEngine, DiscoveryRetainGate, ErrorCategory,
-    GlobEntry, GlobKind, GlobLimits, GlobOptions, GlobRequest, GlobTarget, MAX_ARTIFACT_BYTES,
-    MAX_DISCOVERY_PATTERN_BYTES, MAX_DISCOVERY_RESULTS, MAX_TEXT_BYTES, MAX_TEXT_COLUMNS,
-    MAX_TEXT_LINES, OperationGuard, PathReference, PathSession, ResourceAddress, ResourceError,
-    SearchEngine, SearchLimits, SearchOptions, SearchRecord, SearchRequest, SearchSourceResult,
-    SearchTarget, SessionStorage, SessionToken, SourceGlobResult, WorkspacePath, WorkspaceRootId,
+    GlobEntry, GlobKind, GlobLimits, GlobOptions, GlobRequest, GlobSource, GlobTarget,
+    MAX_ARTIFACT_BYTES, MAX_DISCOVERY_PATTERN_BYTES, MAX_DISCOVERY_RESULTS, MAX_TEXT_BYTES,
+    MAX_TEXT_COLUMNS, MAX_TEXT_LINES, OperationGuard, PathReference, PathSession, ResourceAddress,
+    ResourceError, SearchEngine, SearchLimits, SearchOptions, SearchRecord, SearchRequest,
+    SearchSourceResult, SearchTarget, SessionStorage, SessionToken, SourceGlobResult,
+    WorkspacePath, WorkspaceRootId,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
@@ -506,6 +507,18 @@ async fn request_validation_precedes_adapter() {
 
     let glob_target = GlobTarget::new("**/*.txt").expect("C2 valid glob target");
     assert_eq!(glob_target.pattern(), "**/*.txt", "C2 glob pattern");
+    assert_eq!(
+        glob_target.source(),
+        GlobSource::Workspace,
+        "C2 typed Workspace glob source"
+    );
+    assert_eq!(
+        GlobTarget::new("artifact://*")
+            .expect("C2 Artifact glob target")
+            .source(),
+        GlobSource::Artifact,
+        "C2 typed Artifact glob source"
+    );
     let exact_glob_limits =
         GlobLimits::new(Some(MAX_DISCOVERY_RESULTS)).expect("C2 exact glob limit");
     discovery

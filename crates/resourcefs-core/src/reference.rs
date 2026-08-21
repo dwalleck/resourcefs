@@ -10,7 +10,7 @@ use url::Url;
 use crate::{ErrorCategory, ResourceError};
 
 const WORKSPACE_PREFIX: &str = "rfs://workspace/";
-const ARTIFACT_PREFIX: &str = "artifact://";
+pub(crate) const ARTIFACT_PREFIX: &str = "artifact://";
 pub const MAX_PATH_REFERENCE_BYTES: usize = 64 * 1024;
 pub const MAX_WORKSPACE_ROOTS: usize = 256;
 
