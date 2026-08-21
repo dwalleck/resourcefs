@@ -2,9 +2,13 @@ use std::{fmt, io::Cursor};
 
 use async_trait::async_trait;
 use resourcefs_core::{
-    ArtifactProjectionOrigin, ErrorCategory, LineSelector, PathReference, PathSession,
-    ResourceAddress, ResourceError, SourceAdapter, SourceResource, VersionTag, select_utf8,
+    ArtifactAddress, ArtifactProjectionOrigin, DiscoveryAdapter, ErrorCategory, GlobEntry,
+    GlobKind, GlobOptions, GlobTarget, LineSelector, OperationGuard, PathReference, PathSession,
+    ResourceAddress, ResourceError, SearchOptions, SearchRecord, SearchSourceResult, SearchTarget,
+    SourceAdapter, SourceGlobResult, SourceResource, VersionTag, select_utf8,
 };
+
+use crate::pattern::{GlobMatcher, SearchMatcher};
 
 /// Read-only adapter for immutable Path Session artifacts.
 ///
@@ -25,28 +29,22 @@ pub struct ArtifactSource {
     session: PathSession,
 }
 
+#[derive(Debug)]
+struct SelectedArtifact {
+    canonical: PathReference,
+    content: String,
+    version_tag: VersionTag,
+    origin: Option<ArtifactProjectionOrigin>,
+}
+
 impl ArtifactSource {
     pub fn new(session: PathSession) -> Self {
         Self { session }
     }
-}
 
-impl fmt::Debug for ArtifactSource {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ArtifactSource")
-            .finish_non_exhaustive()
-    }
-}
-
-#[async_trait]
-impl SourceAdapter for ArtifactSource {
-    async fn read(&self, reference: &PathReference) -> Result<SourceResource, ResourceError> {
+    async fn select(&self, reference: &PathReference) -> Result<SelectedArtifact, ResourceError> {
         let ResourceAddress::Artifact(address) = reference.address() else {
-            return Err(ResourceError::new(
-                ErrorCategory::UnsupportedProjection,
-                "Artifact Source Adapter cannot read non-artifact Resources",
-            ));
+            return Err(unsupported_artifact_target());
         };
         let canonical = PathReference::artifact(address.clone(), None)?;
         let mut content = self.session.read_artifact(address).await?;
@@ -81,12 +79,180 @@ impl SourceAdapter for ArtifactSource {
             )
         };
 
-        let resource = SourceResource::text_projection(canonical, content, version_tag)?;
-        match origin {
+        Ok(SelectedArtifact {
+            canonical,
+            content,
+            version_tag,
+            origin,
+        })
+    }
+}
+
+impl fmt::Debug for ArtifactSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ArtifactSource")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl SourceAdapter for ArtifactSource {
+    async fn read(&self, reference: &PathReference) -> Result<SourceResource, ResourceError> {
+        let selected = self.select(reference).await?;
+        let resource = SourceResource::text_projection(
+            selected.canonical,
+            selected.content,
+            selected.version_tag,
+        )?;
+        match selected.origin {
             Some(origin) => resource.with_artifact_origin(origin),
             None => Ok(resource),
         }
     }
+}
+
+#[async_trait]
+impl DiscoveryAdapter for ArtifactSource {
+    async fn search(
+        &self,
+        target: &SearchTarget,
+        pattern: &str,
+        options: SearchOptions,
+        operation: &OperationGuard,
+    ) -> Result<SearchSourceResult, ResourceError> {
+        let reference = target.reference().ok_or_else(unsupported_artifact_target)?;
+        if !matches!(reference.address(), ResourceAddress::Artifact(_)) {
+            return Err(unsupported_artifact_target());
+        }
+        ensure_discovery_live(&self.session, operation)?;
+        let selected = self.select(reference).await?;
+        ensure_discovery_live(&self.session, operation)?;
+
+        let pattern = pattern.to_owned();
+        let case_sensitive = options.case_sensitive();
+        let session = self.session.clone();
+        let operation = operation.clone();
+        tokio::task::spawn_blocking(move || {
+            search_selected_artifact(selected, &pattern, case_sensitive, &session, &operation)
+        })
+        .await
+        .map_err(discovery_worker_error)?
+    }
+
+    async fn glob(
+        &self,
+        target: &GlobTarget,
+        options: GlobOptions,
+        operation: &OperationGuard,
+    ) -> Result<SourceGlobResult, ResourceError> {
+        ensure_discovery_live(&self.session, operation)?;
+        let catalog = self.session.artifact_catalog().await?;
+        ensure_discovery_live(&self.session, operation)?;
+
+        let pattern = target.pattern().to_owned();
+        let case_sensitive = options.case_sensitive();
+        let session = self.session.clone();
+        let operation = operation.clone();
+        tokio::task::spawn_blocking(move || {
+            glob_artifact_catalog(catalog, &pattern, case_sensitive, &session, &operation)
+        })
+        .await
+        .map_err(discovery_worker_error)?
+    }
+}
+
+fn search_selected_artifact(
+    selected: SelectedArtifact,
+    pattern: &str,
+    case_sensitive: bool,
+    session: &PathSession,
+    operation: &OperationGuard,
+) -> Result<SearchSourceResult, ResourceError> {
+    ensure_discovery_live(session, operation)?;
+    let mut matcher = SearchMatcher::compile(pattern, case_sensitive)?;
+    let engine = matcher.engine();
+    let SelectedArtifact {
+        canonical,
+        content,
+        origin,
+        ..
+    } = selected;
+    let first_line = origin.map_or(1, ArtifactProjectionOrigin::line_number);
+    let mut records = Vec::new();
+    for (index, line) in content.lines().enumerate() {
+        ensure_discovery_live(session, operation)?;
+        if matcher.is_match(line)? {
+            let index = u64::try_from(index).map_err(|_| search_line_overflow())?;
+            let line_number = first_line
+                .checked_add(index)
+                .ok_or_else(search_line_overflow)?;
+            records.push(SearchRecord::new(canonical.clone(), line_number, line)?);
+        }
+    }
+    ensure_discovery_live(session, operation)?;
+    Ok(SearchSourceResult::new(engine, records, Vec::new()))
+}
+
+fn glob_artifact_catalog(
+    catalog: Vec<ArtifactAddress>,
+    pattern: &str,
+    case_sensitive: bool,
+    session: &PathSession,
+    operation: &OperationGuard,
+) -> Result<SourceGlobResult, ResourceError> {
+    ensure_discovery_live(session, operation)?;
+    let matcher = GlobMatcher::compile(pattern, case_sensitive)?;
+    let mut entries = Vec::new();
+    for address in catalog {
+        ensure_discovery_live(session, operation)?;
+        let reference = PathReference::artifact(address, None)?;
+        if matcher.is_match(reference.requested()) {
+            entries.push(GlobEntry::new(reference, GlobKind::Artifact)?);
+        }
+    }
+    ensure_discovery_live(session, operation)?;
+    Ok(SourceGlobResult::new(entries, Vec::new()))
+}
+
+fn ensure_discovery_live(
+    session: &PathSession,
+    operation: &OperationGuard,
+) -> Result<(), ResourceError> {
+    if !operation.is_active() {
+        return Err(ResourceError::new(
+            ErrorCategory::Cancelled,
+            "Artifact discovery operation was cancelled",
+        ));
+    }
+    if !session.is_active() {
+        return Err(ResourceError::new(
+            ErrorCategory::SourceUnavailable,
+            "Path Session disconnected during Artifact discovery",
+        ));
+    }
+    Ok(())
+}
+
+fn unsupported_artifact_target() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::UnsupportedProjection,
+        "Artifact Source Adapter requires one Artifact Resource",
+    )
+}
+
+fn search_line_overflow() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::LimitExceeded,
+        "Artifact search line number is not representable",
+    )
+}
+
+fn discovery_worker_error(error: tokio::task::JoinError) -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::SourceUnavailable,
+        format!("Artifact discovery worker failed: {error}"),
+    )
 }
 
 fn contiguous_suffix_origin(

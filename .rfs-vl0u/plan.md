@@ -186,15 +186,15 @@ The checkout currently has no configured Git remote or discoverable upstream def
 
 **Oracle:** The fixture creates two independent Path Sessions, records the exact pre-call Artifact IDs, and computes the expected set without calling catalog/discovery code.
 
-**Stress fixture:** Populate one session to 1,000 small unique Artifacts and another with a unique sentinel; force the first session's glob to spill. Expected: exactly the first session's pre-call 1,000 IDs, no second-session sentinel, no just-created recovery ID, stable ascending order, and glob within 250 ms.
+**Stress fixture:** Populate one session to 999 small unique Artifacts and another with a unique sentinel; force the first session's glob to spill into object 1,000. This is the maximal successful lossless spill under the pre-existing 1,000-object Path Session ceiling. Expected: exactly the first session's pre-call 999 IDs, no second-session sentinel, no just-created recovery ID, stable canonical order, glob within 250 ms/1 MiB transient allocation, and the post-call catalog exactly at its hard ceiling.
 
 **Regression fence:** `crates/resourcefs-sources/tests/artifact_adapter_contract.rs::search_and_glob_are_session_isolated`; `::glob_snapshot_excludes_its_recovery_artifact`.
 
 **Named mutation:** In core `discovery.rs`, retain a provisional Artifact before `DiscoveryAdapter::glob`; the pre-call catalog includes that ID and C8's self-exclusion fence turns red.
 
-**Complexity/production scale:** Catalog/glob is $O(A\log A + A\cdot G)$ for $A\le1{,}000$ and glob cost $G$; search is $O(S+B)$ over catalog selection plus at most 256 MiB aggregate live session text, with one Resource projection capped at 64 MiB. Maximum accepted costs: 250 ms/1 MiB transient allocation for 1,000-entry glob; 10 seconds/96 MiB transient allocation for a 256 MiB aggregate search, excluding core result retention already budgeted in Slice 2.
+**Complexity/production scale:** Catalog/glob is $O(A\log A + A\cdot G)$ for $A\le1{,}000$ and glob cost $G$; exact selected-Artifact search is $O(B)$ for one projection with $B\le64$ MiB. Maximum accepted costs are 250 ms/1 MiB transient allocation for the maximal recoverable 999-entry glob and 10 seconds/96 MiB transient allocation for one maximum-size selected Artifact, excluding core result retention already budgeted in Slice 2.
 
-**Wall budget/phase:** Always-on Artifact glob at 1,000 entries must finish within 250 ms; always-on maximum-session search must finish within 10 seconds. Session creation is existing one-off behavior: `N/A — reason: not introduced by this slice`.
+**Wall budget/phase:** Always-on maximal recoverable Artifact glob at 999 pre-existing entries must finish within 250 ms; always-on maximum-size selected-Artifact search must finish within 10 seconds. A 1,000-object session that needs another Recovery Artifact follows the existing bounded `limit_exceeded` contract. Session creation is existing one-off behavior: `N/A — reason: not introduced by this slice`.
 
 **Files:** `crates/resourcefs-sources/src/artifact.rs`, `crates/resourcefs-sources/tests/artifact_adapter_contract.rs`, `crates/resourcefs-core/src/discovery.rs` only during the temporary named mutation (restored, no permanent diff).
 
@@ -208,6 +208,16 @@ The checkout currently has no configured Git remote or discoverable upstream def
 
 - `cargo test -p resourcefs-sources --features test-support --test artifact_adapter_contract search_and_glob_are_session_isolated -- --exact --nocapture && cargo test -p resourcefs-sources --features test-support --test artifact_adapter_contract glob_snapshot_excludes_its_recovery_artifact -- --exact --nocapture` → C8 returns only the exact pre-call active-session set; forced spill recovery is absent from its own result; measured glob/search budgets hold.
 - Apply the C8 provisional-retain mutation, rerun the same command → red with `C8` and the extra Artifact ID; restore, rerun → green.
+
+### Slice 4 checkpoint result — PASS (2026-08-20)
+
+- Plan correction from implementation evidence: a spilling operation cannot begin with 1,000 live objects and also publish a Recovery Artifact without violating the accepted 1,000-object Path Session ceiling. The stress fixture now uses the maximal successful state: 999 pre-call objects plus recovery object 1,000. A full session that still needs lossless spill correctly returns `limit_exceeded`; no production ceiling changed.
+- Impact analysis: `ArtifactSource` had 15 language-server references and `CompiledSources` had 9. The read signature, constructor, compiled dispatcher, MCP construction, and all existing projections remain unchanged. Selection moved behind one private helper so read and discovery use identical immutable bytes, canonical identity, Version Tag, and projection origin.
+- Gate 1 — session isolation and selected search: PASS. A suffix-selected Artifact returned one `rust_regex` row for repeated occurrences on root line 2; `artifact://*` returned exactly two bytewise-canonical current-session identities; a second session's sentinel remained absent and exact foreign search returned `not_found`. An exact 64 MiB selected-Artifact no-match scan stayed inside the 10-second/96 MiB assertions.
+- Gate 2 — maximal catalog/recovery budget: PASS. A 999-object pre-call catalog returned exactly 999 recoverable identities, a one-entry inline page, and one Recovery Artifact at object 1,000. The recovered lines matched the independently retained/sorted address oracle exactly; the Recovery Reference was absent from its own snapshot. The operation stayed inside 250 ms and 1 MiB transient-allocation assertions.
+- Gate 3 — lifecycle and worker ownership: PASS. Pattern construction, matching, and raw PCRE2 state stay within one blocking worker; Artifact reads/catalog snapshots remain async. Operation/session liveness is checked before and after async boundaries and once per line/catalog item; cancellation and disconnect use typed categories.
+- Gate 4 — named mutation: PASS. Provisional retention before adapter glob changed the two-object oracle to three (`C8 current-session catalog only`). At the maximal fixture it consumed object 1,000 and made the required lossless spill fail with the existing 1,000-object ceiling. Both exact gates returned green after restoration.
+- Gate 5 — quality: PASS. All 5 Artifact contracts, all matcher contracts, strict sources/all-target/all-feature Clippy, workspace/all-target/all-feature checking, formatting, and language-server diagnostics passed.
 
 ## Slice 5: Implement contained Workspace search, glob, filtering, and authority fencing
 

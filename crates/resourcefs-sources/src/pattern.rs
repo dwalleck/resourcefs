@@ -4,7 +4,6 @@
 
 use std::{
     error::Error,
-    ffi::c_void,
     fmt,
     ptr::{self, NonNull},
 };
@@ -84,7 +83,7 @@ impl Error for PatternError {}
 
 impl From<PatternError> for ResourceError {
     fn from(error: PatternError) -> Self {
-        let category = match error.kind {
+        let category = match error.kind() {
             PatternErrorKind::InvalidPattern => ErrorCategory::InvalidPattern,
             PatternErrorKind::InputLimitExceeded
             | PatternErrorKind::MatchLimitExceeded
@@ -146,6 +145,7 @@ impl SearchMatcher {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn jit_size(&self) -> Result<usize, PatternError> {
         match &self.inner {
             SearchMatcherInner::Rust(_) => Ok(0),
@@ -294,6 +294,7 @@ impl Pcre2Matcher {
         }
     }
 
+    #[cfg(test)]
     fn jit_size(&self) -> Result<usize, PatternError> {
         let mut size = 0_usize;
         // SAFETY: `code` owns a live pattern and `size` is writable with the type required by
@@ -302,7 +303,7 @@ impl Pcre2Matcher {
             pcre2_sys::pcre2_pattern_info_8(
                 self.code.0.as_ptr(),
                 pcre2_sys::PCRE2_INFO_JITSIZE,
-                ptr::from_mut(&mut size).cast::<c_void>(),
+                ptr::from_mut(&mut size).cast::<std::ffi::c_void>(),
             )
         };
         if status == 0 {
@@ -345,5 +346,16 @@ impl Drop for Pcre2MatchData {
         // SAFETY: this pointer came from one successful match-data allocation and this RAII
         // owner drops it exactly once.
         unsafe { pcre2_sys::pcre2_match_data_free_8(self.0.as_ptr()) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SearchMatcher;
+
+    #[test]
+    fn pcre2_remains_interpreted() {
+        let matcher = SearchMatcher::compile(r"(?<=x)y", true).expect("PCRE2 test matcher");
+        assert_eq!(matcher.jit_size().expect("PCRE2 JIT-size query"), 0);
     }
 }
