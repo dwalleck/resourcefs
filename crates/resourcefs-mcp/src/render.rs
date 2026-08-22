@@ -254,11 +254,11 @@ pub(crate) fn mutation_success(receipt: MutationReceipt) -> Result<CallToolResul
         writeln!(text, "versionTag: {version_tag}")
             .expect("writing mutation Version Tag to String cannot fail");
     }
-    write_displayed_metadata(
-        &mut text,
-        receipt.displayed_ranges(),
-        receipt.displayed_eof(),
-    );
+    if let (Some(ranges), Some(displayed_eof)) =
+        (receipt.displayed_ranges(), receipt.displayed_eof())
+    {
+        write_displayed_metadata(&mut text, ranges, displayed_eof);
+    }
     if text.ends_with('\n') {
         text.truncate(text.len() - 1);
     }
@@ -271,15 +271,14 @@ pub(crate) fn mutation_success(receipt: MutationReceipt) -> Result<CallToolResul
             .source_reference()
             .map(|reference| reference.requested().to_owned()),
         version_tag: receipt.version_tag().map(ToString::to_string),
-        displayed_ranges: Some(
-            receipt
-                .displayed_ranges()
+        displayed_ranges: receipt.displayed_ranges().map(|ranges| {
+            ranges
                 .iter()
                 .copied()
                 .map(DisplayedRangeOutput::from)
-                .collect(),
-        ),
-        displayed_eof: Some(receipt.displayed_eof()),
+                .collect()
+        }),
+        displayed_eof: receipt.displayed_eof(),
         error: None,
     };
     let structured = serde_json::to_value(output)

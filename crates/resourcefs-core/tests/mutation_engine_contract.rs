@@ -10,9 +10,10 @@ use std::{
 use async_trait::async_trait;
 use resourcefs_core::{
     ArtifactId, DisplayedLineRange, ErrorCategory, MAX_HASHLINE_PATCH_BYTES, MutationAccess,
-    MutationAdapter, MutationEngine, MutationOperation, MutationSourceKey, MutationState,
-    MutationTarget, OperationGuard, PathReference, PathSession, ResourceError, ServerLimits,
-    SessionStorage, SessionToken, SourceMutation, VersionSelector, VersionTag, WriteRequest,
+    MutationAdapter, MutationEngine, MutationOperation, MutationResourceKey, MutationSourceKey,
+    MutationState, MutationTarget, OperationGuard, PathReference, PathSession, ResourceError,
+    ServerLimits, SessionStorage, SessionToken, SourceMutation, VersionSelector, VersionTag,
+    WriteRequest,
 };
 use tokio::sync::Mutex;
 
@@ -189,7 +190,22 @@ impl MutationAdapter for StatefulAdapter {
                     content,
                 };
             }
-            SourceMutation::Delete { .. } | SourceMutation::Move { .. } => {
+            SourceMutation::Delete { expected, .. } => {
+                let MutationState::Text { version_tag, .. } = &*state else {
+                    return Err(ResourceError::new(
+                        ErrorCategory::VersionConflict,
+                        "destination is missing",
+                    ));
+                };
+                if version_tag != &expected {
+                    return Err(ResourceError::new(
+                        ErrorCategory::VersionConflict,
+                        "stale destination",
+                    ));
+                }
+                *state = MutationState::Missing;
+            }
+            SourceMutation::Move { .. } => {
                 return Err(ResourceError::new(
                     ErrorCategory::UnsupportedMutation,
                     "unsupported fake mutation",
@@ -200,6 +216,9 @@ impl MutationAdapter for StatefulAdapter {
     }
 }
 
+fn lock_key(value: &str) -> MutationResourceKey {
+    MutationResourceKey::new(value).expect("test mutation Resource key")
+}
 fn session(value: u8) -> PathSession {
     PathSession::new(
         SessionToken::parse(format!("{value:032x}")).expect("session token"),
@@ -232,10 +251,10 @@ async fn write_state_matrix_and_receipt_coverage() {
     assert_eq!(created.source_reference(), None);
     let created_tag = created.version_tag().expect("created Version Tag").clone();
     assert_eq!(
-        created.displayed_ranges(),
+        created.displayed_ranges().expect("created coverage"),
         &[DisplayedLineRange::new(1, 2).expect("created coverage")]
     );
-    assert!(created.displayed_eof());
+    assert_eq!(created.displayed_eof(), Some(true));
     let snapshot = session
         .resolve_seen_for_test(
             path.requested(),
@@ -243,7 +262,10 @@ async fn write_state_matrix_and_receipt_coverage() {
         )
         .await
         .expect("created receipt snapshot");
-    assert_eq!(snapshot.1, created.displayed_ranges());
+    assert_eq!(
+        snapshot.1,
+        created.displayed_ranges().expect("created coverage")
+    );
     assert!(snapshot.2);
 
     let duplicate = engine
@@ -280,7 +302,7 @@ async fn write_state_matrix_and_receipt_coverage() {
         .expect("replace");
     assert_eq!(replaced.operation(), MutationOperation::Replaced);
     assert_eq!(
-        replaced.displayed_ranges(),
+        replaced.displayed_ranges().expect("replacement coverage"),
         &[DisplayedLineRange::new(1, 1).expect("replacement coverage")]
     );
 }
@@ -335,13 +357,13 @@ async fn put_cut_use_original_coordinates_and_never_promote_unseen_content() {
     assert_eq!(receipt.operation(), MutationOperation::Edited);
     assert_eq!(adapter.text_content().await, "TWO\r\nthree\ninserted\nfour");
     assert_eq!(
-        receipt.displayed_ranges(),
+        receipt.displayed_ranges().expect("edit coverage"),
         &[
             DisplayedLineRange::new(1, 1).expect("authored first line"),
             DisplayedLineRange::new(3, 4).expect("authored plus remapped tail"),
         ]
     );
-    assert!(receipt.displayed_eof());
+    assert_eq!(receipt.displayed_eof(), Some(true));
     let edited_tag = receipt.version_tag().expect("edited tag").clone();
 
     let unseen = format!(
@@ -393,6 +415,79 @@ async fn tail_insert_requires_seen_eof() {
         .await
         .expect_err("unseen EOF gap");
     assert_eq!(error.category(), ErrorCategory::InvalidPatch);
+}
+
+#[tokio::test]
+async fn empty_put_body_writes_a_blank_line_instead_of_deleting() {
+    let content = "keep\n";
+    let tag = VersionTag::from_content(content.as_bytes());
+    let adapter = Arc::new(StatefulAdapter::new(MutationState::Text {
+        content: content.to_owned(),
+        version_tag: tag.clone(),
+    }));
+    let path =
+        PathReference::parse("rfs://workspace/workspace/fixture.txt").expect("canonical reference");
+    let session = session(9);
+    session
+        .record_seen_for_test(
+            path.requested(),
+            &tag,
+            &[DisplayedLineRange::new(1, 1).expect("seen line")],
+            true,
+        )
+        .await
+        .expect("snapshot");
+    let engine = MutationEngine::new(adapter.clone(), session);
+    let patch = format!("[{}#{}]\nPUT 1.=1:\n+", path.requested(), tag);
+
+    engine
+        .edit(&patch, &OperationGuard::new())
+        .await
+        .expect("blank-line PUT");
+    assert_eq!(adapter.text_content().await, "\n");
+}
+
+#[tokio::test]
+async fn rem_is_only_delete_form_and_returns_no_version_or_coverage() {
+    let content = "delete me\n";
+    let tag = VersionTag::from_content(content.as_bytes());
+    let adapter = Arc::new(StatefulAdapter::new(MutationState::Text {
+        content: content.to_owned(),
+        version_tag: tag.clone(),
+    }));
+    let path =
+        PathReference::parse("rfs://workspace/workspace/fixture.txt").expect("canonical reference");
+    let session = session(8);
+    session
+        .record_seen_for_test(
+            path.requested(),
+            &tag,
+            &[DisplayedLineRange::new(1, 1).expect("seen line")],
+            true,
+        )
+        .await
+        .expect("delete snapshot");
+    let engine = MutationEngine::new(adapter.clone(), session);
+    let patch = format!("[{}#{}]\nREM", path.requested(), tag);
+
+    let receipt = engine
+        .edit(&patch, &OperationGuard::new())
+        .await
+        .expect("REM");
+    assert_eq!(receipt.operation(), MutationOperation::Deleted);
+    assert_eq!(receipt.version_tag(), None);
+    assert_eq!(receipt.displayed_ranges(), None);
+    assert_eq!(receipt.displayed_eof(), None);
+    assert!(matches!(
+        *adapter.state.lock().await,
+        MutationState::Missing
+    ));
+
+    let second = engine
+        .edit(&patch, &OperationGuard::new())
+        .await
+        .expect_err("REM of missing Resource");
+    assert_eq!(second.category(), ErrorCategory::VersionConflict);
 }
 
 #[tokio::test]
@@ -454,7 +549,7 @@ async fn failed_commit_releases_seen_reservation() {
 async fn same_resource_serializes_while_distinct_resources_progress() {
     let engine = engine();
     let first = engine
-        .lock_resources_for_test(vec!["same".to_owned()])
+        .lock_resources_for_test(vec![lock_key("same")])
         .await
         .expect("first lock");
 
@@ -464,7 +559,7 @@ async fn same_resource_serializes_while_distinct_resources_progress() {
         let acquired = Arc::clone(&acquired);
         tokio::spawn(async move {
             let _guard = blocked_engine
-                .lock_resources_for_test(vec!["same".to_owned()])
+                .lock_resources_for_test(vec![lock_key("same")])
                 .await
                 .expect("second lock");
             acquired.store(true, Ordering::Release);
@@ -478,7 +573,7 @@ async fn same_resource_serializes_while_distinct_resources_progress() {
 
     let distinct = tokio::time::timeout(
         Duration::from_millis(100),
-        engine.lock_resources_for_test(vec!["different".to_owned()]),
+        engine.lock_resources_for_test(vec![lock_key("different")]),
     )
     .await
     .expect("distinct key must progress")
@@ -498,14 +593,14 @@ async fn reverse_moves_do_not_deadlock() {
     let second_engine = first_engine.clone();
     let first = tokio::spawn(async move {
         let _guard = first_engine
-            .lock_resources_for_test(vec!["b".to_owned(), "a".to_owned()])
+            .lock_resources_for_test(vec![lock_key("b"), lock_key("a")])
             .await
             .expect("first pair");
         tokio::task::yield_now().await;
     });
     let second = tokio::spawn(async move {
         let _guard = second_engine
-            .lock_resources_for_test(vec!["a".to_owned(), "b".to_owned()])
+            .lock_resources_for_test(vec![lock_key("a"), lock_key("b")])
             .await
             .expect("reverse pair");
         tokio::task::yield_now().await;
@@ -587,6 +682,8 @@ async fn commit_masks_cancellation_after_transition() {
 fn mutation_identities_reject_empty_sources_and_relative_targets() {
     let empty = MutationSourceKey::new("").expect_err("empty source key");
     assert_eq!(empty.category(), ErrorCategory::InvalidReference);
+    let empty_resource = MutationResourceKey::new("").expect_err("empty mutation Resource key");
+    assert_eq!(empty_resource.category(), ErrorCategory::InvalidReference);
 
     let source = MutationSourceKey::new("workspace").expect("source key");
     assert_eq!(source.as_str(), "workspace");

@@ -213,7 +213,8 @@ async fn seen_regions_union_only_within_one_tag_and_session() {
     assert_eq!(
         first
             .seen_snapshot_for_test("rfs://workspace/workspace/fixture.txt", &original)
-            .await,
+            .await
+            .expect("canonical snapshot key"),
         Some((
             vec![DisplayedLineRange::new(1, 3).expect("merged range")],
             true
@@ -222,15 +223,22 @@ async fn seen_regions_union_only_within_one_tag_and_session() {
     assert_eq!(
         first
             .seen_snapshot_for_test("rfs://workspace/workspace/fixture.txt", &changed)
-            .await,
+            .await
+            .expect("canonical snapshot key"),
         Some((vec![last_two], false))
     );
     assert_eq!(
         second
             .seen_snapshot_for_test("rfs://workspace/workspace/fixture.txt", &original)
-            .await,
+            .await
+            .expect("canonical snapshot key"),
         None
     );
+    let invalid = first
+        .record_seen_for_test("relative.txt", &original, &[first_two], false)
+        .await
+        .expect_err("relative snapshot identity");
+    assert_eq!(invalid.category(), ErrorCategory::InvalidReference);
 }
 
 #[tokio::test]

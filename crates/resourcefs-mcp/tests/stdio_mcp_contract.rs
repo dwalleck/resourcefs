@@ -1067,6 +1067,34 @@ fn versioned_write_receipts_and_catalog_policy_work_over_stdio() {
         process.call_read("created.txt")["structuredContent"]["content"],
         "edited\n"
     );
+    let edited_tag = edit["result"]["structuredContent"]["versionTag"]
+        .as_str()
+        .expect("edited Version Tag");
+    let rem = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_edit",
+            "arguments": {
+                "patch": format!(
+                    "[rfs://workspace/workspace/created.txt#{edited_tag}]\nREM"
+                )
+            }
+        }),
+    );
+    assert!(rem.get("error").is_none(), "{rem}");
+    assert_eq!(rem["result"]["isError"], false);
+    assert_eq!(rem["result"]["structuredContent"]["operation"], "deleted");
+    assert!(
+        rem["result"]["structuredContent"]
+            .get("versionTag")
+            .is_none()
+    );
+    assert!(
+        rem["result"]["structuredContent"]
+            .get("displayedRanges")
+            .is_none()
+    );
+    assert_tool_error(&process.call_read("created.txt"), "not_found");
 
     process.finish();
 }

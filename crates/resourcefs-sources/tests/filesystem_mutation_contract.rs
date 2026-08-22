@@ -95,7 +95,7 @@ fn reference(path: &str) -> PathReference {
 #[tokio::test]
 async fn create_replace_state_matrix_preserves_bytes_and_permissions() {
     let workspace = TempDir::new().expect("workspace");
-    let engine = engine(workspace.path(), MutationGrants::new(true, true, false)).await;
+    let engine = engine(workspace.path(), MutationGrants::new(true, true, true)).await;
     let path = reference("fixture.txt");
 
     let created = engine
@@ -187,7 +187,7 @@ async fn create_replace_state_matrix_preserves_bytes_and_permissions() {
         appended.canonical_reference().requested(),
         appended.version_tag().expect("appended tag")
     );
-    engine
+    let cut_receipt = engine
         .edit(&cut, &OperationGuard::new())
         .await
         .expect("cut edit");
@@ -195,6 +195,17 @@ async fn create_replace_state_matrix_preserves_bytes_and_permissions() {
         fs::read(workspace.path().join("fixture.txt")).expect("cut bytes"),
         b"tail\n"
     );
+    let rem = format!(
+        "[{}#{}]\nREM",
+        cut_receipt.canonical_reference().requested(),
+        cut_receipt.version_tag().expect("cut tag")
+    );
+    let deleted = engine
+        .edit(&rem, &OperationGuard::new())
+        .await
+        .expect("REM");
+    assert_eq!(deleted.operation(), MutationOperation::Deleted);
+    assert!(!workspace.path().join("fixture.txt").exists());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -28,6 +28,27 @@ struct ExistingText {
     _file: File,
 }
 
+#[derive(Clone, Copy)]
+enum TemporaryOperation {
+    Write,
+    PreservePermissions,
+    #[cfg(windows)]
+    PreserveWindowsDacl,
+    Commit,
+}
+
+impl TemporaryOperation {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Write => "write temporary file",
+            Self::PreservePermissions => "preserve file permissions",
+            #[cfg(windows)]
+            Self::PreserveWindowsDacl => "preserve Windows DACL",
+            Self::Commit => "commit mutation",
+        }
+    }
+}
+
 #[async_trait]
 impl MutationAdapter for FilesystemSource {
     async fn resolve(
@@ -90,9 +111,12 @@ impl MutationAdapter for FilesystemSource {
                 expected,
                 content,
             } => commit_replace(active_view(&authority), target, expected, content),
-            SourceMutation::Delete { .. } | SourceMutation::Move { .. } => Err(ResourceError::new(
+            SourceMutation::Delete { target, expected } => {
+                commit_delete(active_view(&authority), target, expected)
+            }
+            SourceMutation::Move { .. } => Err(ResourceError::new(
                 ErrorCategory::UnsupportedMutation,
-                "filesystem delete and move are not enabled in this increment",
+                "filesystem move is not enabled in this increment",
             )),
         }
     }
@@ -353,6 +377,47 @@ fn commit_replace(
     )
 }
 
+fn commit_delete(
+    view: &WorkspaceView,
+    target: MutationTarget,
+    expected: VersionTag,
+) -> Result<(), ResourceError> {
+    let resolved = resolve_target(view, &target)?;
+    enforce_grant(resolved.root.grants, MutationAccess::Delete)?;
+    let parent = open_mutation_parent(
+        &resolved.root,
+        &resolved.path,
+        target.canonical_reference().requested(),
+    )?;
+    let current =
+        load_current(&parent, target.canonical_reference().requested())?.ok_or_else(|| {
+            ResourceError::new(
+                ErrorCategory::VersionConflict,
+                "REM target no longer exists",
+            )
+        })?;
+    if current.version_tag != expected {
+        return Err(ResourceError::new(
+            ErrorCategory::VersionConflict,
+            "REM Version Tag no longer matches authoritative content",
+        ));
+    }
+    parent.directory.remove_file(&parent.name).map_err(|error| {
+        let category = if error.kind() == io::ErrorKind::NotFound {
+            ErrorCategory::VersionConflict
+        } else {
+            ErrorCategory::SourceUnavailable
+        };
+        ResourceError::new(
+            category,
+            format!(
+                "Resource '{}' failed atomic REM: {error}",
+                target.canonical_reference().requested()
+            ),
+        )
+    })
+}
+
 fn write_temporary(
     parent: &OpenMutationParent,
     content: &str,
@@ -392,7 +457,7 @@ fn write_temporary(
             .write_all(content.as_bytes())
             .and_then(|()| file.flush())
         {
-            return cleanup_error(parent, &name, identity, "write temporary file", error);
+            return cleanup_error(parent, &name, identity, TemporaryOperation::Write, error);
         }
         if let Some(current) = current {
             preserve_permissions(parent, &name, &file, current, identity)?;
@@ -420,13 +485,19 @@ fn preserve_permissions(
             parent,
             temporary,
             identity,
-            "preserve file permissions",
+            TemporaryOperation::PreservePermissions,
             error,
         );
     }
     #[cfg(windows)]
     if let Err(error) = copy_windows_dacl(&current._file, _temporary_file) {
-        return cleanup_error(parent, temporary, identity, "preserve Windows DACL", error);
+        return cleanup_error(
+            parent,
+            temporary,
+            identity,
+            TemporaryOperation::PreserveWindowsDacl,
+            error,
+        );
     }
     Ok(())
 }
@@ -435,13 +506,18 @@ fn cleanup_error<T>(
     parent: &OpenMutationParent,
     temporary: &OsString,
     identity: &str,
-    operation: &str,
+    operation: TemporaryOperation,
     error: io::Error,
 ) -> Result<T, ResourceError> {
-    let failure = if operation == "commit mutation" {
-        mutation_commit_error(identity, &error)
-    } else {
-        resource_io_error(identity, operation, error)
+    let failure = match operation {
+        TemporaryOperation::Commit => mutation_commit_error(identity, &error),
+        TemporaryOperation::Write | TemporaryOperation::PreservePermissions => {
+            resource_io_error(identity, operation.as_str(), error)
+        }
+        #[cfg(windows)]
+        TemporaryOperation::PreserveWindowsDacl => {
+            resource_io_error(identity, operation.as_str(), error)
+        }
     };
     match parent.directory.remove_file(temporary) {
         Ok(()) => Err(failure),
@@ -484,7 +560,13 @@ fn commit_temporary(
     );
     match result {
         Ok(()) => Ok(()),
-        Err(error) => cleanup_error(parent, temporary_name, identity, "commit mutation", error),
+        Err(error) => cleanup_error(
+            parent,
+            temporary_name,
+            identity,
+            TemporaryOperation::Commit,
+            error,
+        ),
     }
 }
 

@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
 
 use crate::{
-    ArtifactAddress, DisplayedLineRange, ErrorCategory, ResourceError, ServerLimits,
-    VersionSelector, VersionTag,
+    ArtifactAddress, DisplayedLineRange, ErrorCategory, PathReference, ResourceAddress,
+    ResourceError, ServerLimits, VersionSelector, VersionTag, WorkspaceAddress,
 };
 
 pub const MAX_SESSION_BYTES: usize = 256 * 1024 * 1024;
@@ -205,8 +205,33 @@ struct SessionState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SnapshotResourceKey(String);
+
+impl SnapshotResourceKey {
+    fn parse(value: &str) -> Result<Self, ResourceError> {
+        let reference = PathReference::parse(value.to_owned())?;
+        if reference.requested() != value
+            || !matches!(
+                reference.address(),
+                ResourceAddress::Workspace(WorkspaceAddress::Canonical { .. })
+            )
+        {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "snapshot identity must be a canonical workspace reference",
+            ));
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SnapshotKey {
-    canonical_reference: String,
+    canonical_reference: SnapshotResourceKey,
     version_tag: VersionTag,
 }
 
@@ -217,7 +242,7 @@ struct SeenSnapshot {
 }
 
 struct SeenRecord<'a> {
-    canonical_reference: &'a str,
+    canonical_reference: &'a SnapshotResourceKey,
     version_tag: &'a VersionTag,
     ranges: &'a [DisplayedLineRange],
     displayed_eof: bool,
@@ -316,13 +341,14 @@ impl PathSession {
         ranges: &[DisplayedLineRange],
         displayed_eof: bool,
     ) -> Result<ArtifactAddress, ResourceError> {
+        let canonical_reference = SnapshotResourceKey::parse(canonical_reference)?;
         let digest: [u8; 32] = Sha256::digest(content.as_bytes()).into();
         self.retain_with_digest(
             content,
             digest,
             operation,
             Some(SeenRecord {
-                canonical_reference,
+                canonical_reference: &canonical_reference,
                 version_tag,
                 ranges,
                 displayed_eof,
@@ -446,6 +472,7 @@ impl PathSession {
         ranges: &[DisplayedLineRange],
         displayed_eof: bool,
     ) -> Result<(), ResourceError> {
+        let canonical_reference = SnapshotResourceKey::parse(canonical_reference)?;
         if !self.is_active() {
             return Err(inactive_catalog_error());
         }
@@ -456,7 +483,7 @@ impl PathSession {
         let update = prepare_snapshot_update(
             &state,
             SeenRecord {
-                canonical_reference,
+                canonical_reference: &canonical_reference,
                 version_tag,
                 ranges,
                 displayed_eof,
@@ -481,15 +508,17 @@ impl PathSession {
         ranges: &[DisplayedLineRange],
         displayed_eof: bool,
     ) -> Result<SeenReservation, ResourceError> {
+        let canonical_reference = SnapshotResourceKey::parse(canonical_reference)?;
         let mut state = self.inner.admission.lock().await;
         let key = SnapshotKey {
-            canonical_reference: canonical_reference.to_owned(),
+            canonical_reference: canonical_reference.clone(),
             version_tag: version_tag.clone(),
         };
         let key_bytes = if state.snapshots.contains_key(&key) {
             0
         } else {
             canonical_reference
+                .as_str()
                 .len()
                 .checked_add(version_tag.as_str().len())
                 .and_then(|bytes| bytes.checked_add(std::mem::size_of::<bool>()))
@@ -511,7 +540,7 @@ impl PathSession {
         let update = prepare_snapshot_update(
             &state,
             SeenRecord {
-                canonical_reference,
+                canonical_reference: &canonical_reference,
                 version_tag,
                 ranges,
                 displayed_eof,
@@ -579,16 +608,17 @@ impl PathSession {
         &self,
         canonical_reference: &str,
         version_tag: &VersionTag,
-    ) -> Option<(Vec<DisplayedLineRange>, bool)> {
+    ) -> Result<Option<(Vec<DisplayedLineRange>, bool)>, ResourceError> {
+        let canonical_reference = SnapshotResourceKey::parse(canonical_reference)?;
         let state = self.inner.admission.lock().await;
         let key = SnapshotKey {
-            canonical_reference: canonical_reference.to_owned(),
+            canonical_reference,
             version_tag: version_tag.clone(),
         };
-        state
+        Ok(state
             .snapshots
             .get(&key)
-            .map(|snapshot| (snapshot.ranges.clone(), snapshot.displayed_eof))
+            .map(|snapshot| (snapshot.ranges.clone(), snapshot.displayed_eof)))
     }
 
     pub async fn used_bytes(&self) -> usize {
@@ -610,6 +640,7 @@ impl PathSession {
                 "Path Session is inactive",
             ));
         }
+        let canonical_reference = SnapshotResourceKey::parse(canonical_reference)?;
         let state = self.inner.admission.lock().await;
         let matches = state
             .snapshots
@@ -715,7 +746,7 @@ fn prepare_snapshot_update(
     session_limit: usize,
 ) -> Result<SnapshotUpdate, ResourceError> {
     let key = SnapshotKey {
-        canonical_reference: seen.canonical_reference.to_owned(),
+        canonical_reference: seen.canonical_reference.clone(),
         version_tag: seen.version_tag.clone(),
     };
     let existing = state.snapshots.get(&key);
@@ -730,6 +761,7 @@ fn prepare_snapshot_update(
     let previous_bytes = existing.map_or(0, snapshot_allocation_bytes);
     let key_bytes = if existing.is_none() {
         seen.canonical_reference
+            .as_str()
             .len()
             .checked_add(seen.version_tag.as_str().len())
             .ok_or_else(|| session_quota_error(session_limit))?

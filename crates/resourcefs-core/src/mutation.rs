@@ -995,13 +995,18 @@ impl MutationOperation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ReceiptCoverage {
+    displayed_ranges: Vec<crate::DisplayedLineRange>,
+    displayed_eof: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationReceipt {
     operation: MutationOperation,
     canonical_reference: PathReference,
     source_reference: Option<PathReference>,
     version_tag: Option<VersionTag>,
-    displayed_ranges: Vec<crate::DisplayedLineRange>,
-    displayed_eof: bool,
+    coverage: Option<ReceiptCoverage>,
 }
 
 impl MutationReceipt {
@@ -1021,12 +1026,16 @@ impl MutationReceipt {
         self.version_tag.as_ref()
     }
 
-    pub fn displayed_ranges(&self) -> &[crate::DisplayedLineRange] {
-        &self.displayed_ranges
+    pub fn displayed_ranges(&self) -> Option<&[crate::DisplayedLineRange]> {
+        self.coverage
+            .as_ref()
+            .map(|coverage| coverage.displayed_ranges.as_slice())
     }
 
-    pub const fn displayed_eof(&self) -> bool {
-        self.displayed_eof
+    pub fn displayed_eof(&self) -> Option<bool> {
+        self.coverage
+            .as_ref()
+            .map(|coverage| coverage.displayed_eof)
     }
 }
 
@@ -1047,6 +1056,32 @@ impl MutationSourceKey {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MutationResourceKey(String);
+
+impl MutationResourceKey {
+    pub fn new(value: impl Into<String>) -> Result<Self, ResourceError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "mutation Resource key must not be empty",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    fn from_target(target: &MutationTarget) -> Self {
+        let mut key = String::with_capacity(
+            target.source_key.as_str().len() + target.canonical_reference.requested().len() + 1,
+        );
+        key.push_str(target.source_key.as_str());
+        key.push('\0');
+        key.push_str(target.canonical_reference.requested());
+        Self(key)
     }
 }
 
@@ -1083,14 +1118,8 @@ impl MutationTarget {
         &self.source_key
     }
 
-    fn lock_key(&self) -> String {
-        let mut key = String::with_capacity(
-            self.source_key.as_str().len() + self.canonical_reference.requested().len() + 1,
-        );
-        key.push_str(self.source_key.as_str());
-        key.push('\0');
-        key.push_str(self.canonical_reference.requested());
-        key
+    fn lock_key(&self) -> MutationResourceKey {
+        MutationResourceKey::from_target(self)
     }
 }
 
@@ -1255,8 +1284,10 @@ impl MutationEngine {
             canonical_reference: target.canonical_reference().clone(),
             source_reference: None,
             version_tag: Some(version_tag),
-            displayed_ranges,
-            displayed_eof: true,
+            coverage: Some(ReceiptCoverage {
+                displayed_ranges,
+                displayed_eof: true,
+            }),
         })
     }
 
@@ -1266,16 +1297,15 @@ impl MutationEngine {
         operation: &OperationGuard,
     ) -> Result<MutationReceipt, ResourceError> {
         let patch = HashlinePatch::parse(document)?;
-        if patch.operations().iter().any(|operation| {
-            matches!(
-                operation.0,
-                PatchOperationKind::Remove | PatchOperationKind::Move { .. }
-            )
-        }) {
-            return Err(ResourceError::new(
-                ErrorCategory::UnsupportedMutation,
-                "REM and MV execution are not enabled in this increment",
-            ));
+        match &patch.operations()[0].0 {
+            PatchOperationKind::Remove => return self.remove_patch(&patch, operation).await,
+            PatchOperationKind::Move { .. } => {
+                return Err(ResourceError::new(
+                    ErrorCategory::UnsupportedMutation,
+                    "MV execution is not enabled in this increment",
+                ));
+            }
+            PatchOperationKind::Put { .. } | PatchOperationKind::Cut { .. } => {}
         }
         let target = self
             .adapter
@@ -1357,8 +1387,65 @@ impl MutationEngine {
             canonical_reference: target.canonical_reference().clone(),
             source_reference: None,
             version_tag: Some(new_version),
-            displayed_ranges: seen_ranges,
-            displayed_eof: seen_eof,
+            coverage: Some(ReceiptCoverage {
+                displayed_ranges: seen_ranges,
+                displayed_eof: seen_eof,
+            }),
+        })
+    }
+
+    async fn remove_patch(
+        &self,
+        patch: &HashlinePatch,
+        operation: &OperationGuard,
+    ) -> Result<MutationReceipt, ResourceError> {
+        let target = self
+            .adapter
+            .resolve(patch.target(), MutationAccess::Delete)
+            .await?;
+        let _locks = self.lock_resources([target.lock_key()]).await?;
+        let snapshot = self
+            .session
+            .resolve_seen(target.canonical_reference().requested(), patch.version())
+            .await?;
+        let state = self
+            .adapter
+            .load(&target, MutationAccess::Delete, operation)
+            .await?;
+        let MutationState::Text { version_tag, .. } = state else {
+            return Err(ResourceError::new(
+                ErrorCategory::VersionConflict,
+                "REM requires an existing text Resource",
+            ));
+        };
+        if version_tag != snapshot.version_tag {
+            return Err(ResourceError::new(
+                ErrorCategory::VersionConflict,
+                "REM Version Tag no longer matches authoritative content",
+            ));
+        }
+        operation.begin_commit()?;
+        let committed = self
+            .adapter
+            .commit(
+                SourceMutation::Delete {
+                    target: target.clone(),
+                    expected: snapshot.version_tag,
+                },
+                operation,
+            )
+            .await;
+        debug_assert!(
+            operation.finish_commit(),
+            "REM commit transition must complete"
+        );
+        committed?;
+        Ok(MutationReceipt {
+            operation: MutationOperation::Deleted,
+            canonical_reference: target.canonical_reference().clone(),
+            source_reference: None,
+            version_tag: None,
+            coverage: None,
         })
     }
 
@@ -1376,7 +1463,7 @@ impl MutationEngine {
 
     pub(crate) async fn lock_resources(
         &self,
-        keys: impl IntoIterator<Item = String>,
+        keys: impl IntoIterator<Item = MutationResourceKey>,
     ) -> Result<MutationLockSet, ResourceError> {
         self.locks.acquire(keys).await
     }
@@ -1384,7 +1471,7 @@ impl MutationEngine {
     #[cfg(feature = "test-support")]
     pub async fn lock_resources_for_test(
         &self,
-        keys: Vec<String>,
+        keys: Vec<MutationResourceKey>,
     ) -> Result<MutationLockSet, ResourceError> {
         self.lock_resources(keys).await
     }
@@ -1392,13 +1479,13 @@ impl MutationEngine {
 
 #[derive(Default)]
 struct MutationLocks {
-    entries: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
+    entries: StdMutex<HashMap<MutationResourceKey, Weak<Mutex<()>>>>,
 }
 
 impl MutationLocks {
     async fn acquire(
         &self,
-        keys: impl IntoIterator<Item = String>,
+        keys: impl IntoIterator<Item = MutationResourceKey>,
     ) -> Result<MutationLockSet, ResourceError> {
         let mut keys = keys.into_iter().collect::<Vec<_>>();
         keys.sort_unstable();
