@@ -1061,7 +1061,12 @@ fn versioned_write_receipts_and_catalog_policy_work_over_stdio() {
         }),
     );
     assert!(edit.get("error").is_none(), "{edit}");
-    assert_tool_error(&edit["result"], "unsupported_mutation");
+    assert_eq!(edit["result"]["isError"], false);
+    assert_eq!(edit["result"]["structuredContent"]["operation"], "edited");
+    assert_eq!(
+        process.call_read("created.txt")["structuredContent"]["content"],
+        "edited\n"
+    );
 
     process.finish();
 }

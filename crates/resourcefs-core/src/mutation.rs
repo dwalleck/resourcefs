@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     num::NonZeroU64,
     sync::{Arc, Mutex as StdMutex, Weak},
@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::{
     ErrorCategory, MAX_ARTIFACT_BYTES, OperationGuard, PathReference, PathSession, ResourceAddress,
-    ResourceError, VersionTag, WorkspaceAddress,
+    ResourceError, VersionTag, WorkspaceAddress, session::SeenSnapshotData,
 };
 
 pub const MAX_HASHLINE_PATCH_BYTES: usize = MAX_ARTIFACT_BYTES;
@@ -409,6 +409,523 @@ fn validate_operation_conflicts(operations: &[PatchOperation]) -> Result<(), Res
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+enum NewlineStyle {
+    Lf,
+    CrLf,
+}
+
+impl NewlineStyle {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::CrLf => "\r\n",
+        }
+    }
+}
+
+struct TextAnalysis {
+    total_lines: u64,
+    offsets: HashMap<u64, usize>,
+    styles: HashMap<u64, NewlineStyle>,
+    dominant_style: NewlineStyle,
+    last_style: Option<NewlineStyle>,
+    ends_with_newline: bool,
+}
+
+struct ByteEdit {
+    byte_start: usize,
+    byte_end: usize,
+    start_line: u64,
+    end_line: u64,
+    replacement: String,
+    inserted_lines: u64,
+}
+
+struct PatchApplication {
+    content: String,
+    seen_ranges: Vec<crate::DisplayedLineRange>,
+    seen_eof: bool,
+}
+
+fn apply_patch(
+    content: &str,
+    operations: &[PatchOperation],
+    snapshot: &SeenSnapshotData,
+) -> Result<PatchApplication, ResourceError> {
+    let (wanted_offsets, wanted_styles) = wanted_line_metadata(operations)?;
+    let analysis = analyze_text(content, &wanted_offsets, &wanted_styles);
+    let mut edits = operations
+        .iter()
+        .map(|operation| build_byte_edit(content, operation, snapshot, &analysis))
+        .collect::<Result<Vec<_>, _>>()?;
+    edits.sort_unstable_by_key(|edit| {
+        (
+            edit.start_line,
+            u8::from(edit.end_line != edit.start_line),
+            edit.end_line,
+        )
+    });
+
+    let capacity = edits.iter().try_fold(content.len(), |capacity, edit| {
+        capacity
+            .checked_sub(edit.byte_end - edit.byte_start)
+            .and_then(|bytes| bytes.checked_add(edit.replacement.len()))
+            .ok_or_else(|| {
+                ResourceError::new(
+                    ErrorCategory::LimitExceeded,
+                    "edited content length overflows",
+                )
+            })
+    })?;
+    if capacity > MAX_ARTIFACT_BYTES {
+        return Err(ResourceError::new(
+            ErrorCategory::LimitExceeded,
+            format!("edited content exceeds the {MAX_ARTIFACT_BYTES}-byte ceiling"),
+        ));
+    }
+    let mut output = String::with_capacity(capacity);
+    let mut byte_cursor = 0;
+    for edit in &edits {
+        if edit.byte_start < byte_cursor {
+            return Err(invalid_patch(
+                "patch operations conflict in the original tagged snapshot",
+            ));
+        }
+        output.push_str(&content[byte_cursor..edit.byte_start]);
+        output.push_str(&edit.replacement);
+        byte_cursor = edit.byte_end;
+    }
+    output.push_str(&content[byte_cursor..]);
+
+    let seen_ranges = remap_seen_ranges(snapshot, analysis.total_lines, &edits)?;
+    let seen_eof = snapshot.displayed_eof
+        || edits
+            .iter()
+            .any(|edit| edit.end_line == analysis.total_lines.saturating_add(1));
+    Ok(PatchApplication {
+        content: output,
+        seen_ranges,
+        seen_eof,
+    })
+}
+
+fn wanted_line_metadata(
+    operations: &[PatchOperation],
+) -> Result<(HashSet<u64>, HashSet<u64>), ResourceError> {
+    let mut offsets = HashSet::new();
+    let mut styles = HashSet::new();
+    offsets.insert(1);
+    for operation in operations {
+        match &operation.0 {
+            PatchOperationKind::Put {
+                target: PutTarget::Range(range),
+                ..
+            }
+            | PatchOperationKind::Cut { range } => {
+                let start = range.start().get();
+                let end = range.end().get();
+                offsets.insert(start);
+                offsets.insert(
+                    end.checked_add(1)
+                        .ok_or_else(|| invalid_patch("line range boundary overflows"))?,
+                );
+                styles.insert(start);
+                if start > 1 {
+                    styles.insert(start - 1);
+                }
+            }
+            PatchOperationKind::Put {
+                target: PutTarget::Before(line),
+                ..
+            } => {
+                let line = line.get();
+                offsets.insert(line);
+                styles.insert(line);
+                if line > 1 {
+                    styles.insert(line - 1);
+                }
+            }
+            PatchOperationKind::Put {
+                target: PutTarget::After(line),
+                ..
+            } => {
+                let line = line.get();
+                offsets.insert(
+                    line.checked_add(1)
+                        .ok_or_else(|| invalid_patch("line gap boundary overflows"))?,
+                );
+                styles.insert(line);
+            }
+            PatchOperationKind::Put {
+                target: PutTarget::Tail,
+                ..
+            }
+            | PatchOperationKind::Remove
+            | PatchOperationKind::Move { .. } => {}
+        }
+    }
+    Ok((offsets, styles))
+}
+
+fn analyze_text(
+    content: &str,
+    wanted_offsets: &HashSet<u64>,
+    wanted_styles: &HashSet<u64>,
+) -> TextAnalysis {
+    let mut offsets = HashMap::with_capacity(wanted_offsets.len());
+    let mut styles = HashMap::with_capacity(wanted_styles.len());
+    if wanted_offsets.contains(&1) {
+        offsets.insert(1, 0);
+    }
+    let mut line = 1_u64;
+    let mut lf = 0_u64;
+    let mut crlf = 0_u64;
+    let mut last_style = None;
+    for (index, byte) in content.bytes().enumerate() {
+        if byte != b'\n' {
+            continue;
+        }
+        let style = if index != 0 && content.as_bytes()[index - 1] == b'\r' {
+            crlf += 1;
+            NewlineStyle::CrLf
+        } else {
+            lf += 1;
+            NewlineStyle::Lf
+        };
+        if wanted_styles.contains(&line) {
+            styles.insert(line, style);
+        }
+        last_style = Some(style);
+        line += 1;
+        if wanted_offsets.contains(&line) {
+            offsets.insert(line, index + 1);
+        }
+    }
+    let ends_with_newline = content.ends_with('\n');
+    let total_lines = if content.is_empty() {
+        0
+    } else if ends_with_newline {
+        line - 1
+    } else {
+        line
+    };
+    if wanted_offsets.contains(&total_lines.saturating_add(1)) {
+        offsets.insert(total_lines.saturating_add(1), content.len());
+    }
+    TextAnalysis {
+        total_lines,
+        offsets,
+        styles,
+        dominant_style: if crlf > lf {
+            NewlineStyle::CrLf
+        } else {
+            NewlineStyle::Lf
+        },
+        last_style,
+        ends_with_newline,
+    }
+}
+
+fn build_byte_edit(
+    content: &str,
+    operation: &PatchOperation,
+    snapshot: &SeenSnapshotData,
+    analysis: &TextAnalysis,
+) -> Result<ByteEdit, ResourceError> {
+    match &operation.0 {
+        PatchOperationKind::Put {
+            target: PutTarget::Range(range),
+            body,
+        } => {
+            validate_seen_range(snapshot, *range, analysis.total_lines)?;
+            let start = range.start().get();
+            let end = range.end().get();
+            let style = line_style(analysis, start);
+            let terminates_last = end < analysis.total_lines || analysis.ends_with_newline;
+            Ok(ByteEdit {
+                byte_start: line_offset(analysis, start)?,
+                byte_end: line_offset(
+                    analysis,
+                    end.checked_add(1)
+                        .ok_or_else(|| invalid_patch("line range boundary overflows"))?,
+                )?,
+                start_line: start,
+                end_line: end + 1,
+                replacement: build_body(body, style, false, terminates_last)?,
+                inserted_lines: body.len() as u64,
+            })
+        }
+        PatchOperationKind::Cut { range } => {
+            validate_seen_range(snapshot, *range, analysis.total_lines)?;
+            let start = range.start().get();
+            let end = range.end().get();
+            Ok(ByteEdit {
+                byte_start: line_offset(analysis, start)?,
+                byte_end: line_offset(
+                    analysis,
+                    end.checked_add(1)
+                        .ok_or_else(|| invalid_patch("line range boundary overflows"))?,
+                )?,
+                start_line: start,
+                end_line: end + 1,
+                replacement: String::new(),
+                inserted_lines: 0,
+            })
+        }
+        PatchOperationKind::Put {
+            target: PutTarget::Before(line),
+            body,
+        } => {
+            let line = line.get();
+            validate_seen_line(snapshot, line, analysis.total_lines)?;
+            let style = adjacent_style(analysis, line);
+            Ok(ByteEdit {
+                byte_start: line_offset(analysis, line)?,
+                byte_end: line_offset(analysis, line)?,
+                start_line: line,
+                end_line: line,
+                replacement: build_body(body, style, false, true)?,
+                inserted_lines: body.len() as u64,
+            })
+        }
+        PatchOperationKind::Put {
+            target: PutTarget::After(line),
+            body,
+        } => {
+            let line = line.get();
+            validate_seen_line(snapshot, line, analysis.total_lines)?;
+            let gap = line
+                .checked_add(1)
+                .ok_or_else(|| invalid_patch("line gap boundary overflows"))?;
+            let at_unterminated_eof = line == analysis.total_lines && !analysis.ends_with_newline;
+            let style = line_style(analysis, line);
+            Ok(ByteEdit {
+                byte_start: line_offset(analysis, gap)?,
+                byte_end: line_offset(analysis, gap)?,
+                start_line: gap,
+                end_line: gap,
+                replacement: build_body(body, style, at_unterminated_eof, !at_unterminated_eof)?,
+                inserted_lines: body.len() as u64,
+            })
+        }
+        PatchOperationKind::Put {
+            target: PutTarget::Tail,
+            body,
+        } => {
+            if !snapshot.displayed_eof {
+                return Err(invalid_patch(
+                    "PUT >$: requires the same tagged snapshot to display EOF",
+                ));
+            }
+            let gap = analysis.total_lines.saturating_add(1);
+            let at_unterminated_eof = analysis.total_lines != 0 && !analysis.ends_with_newline;
+            let style = analysis.last_style.unwrap_or(analysis.dominant_style);
+            Ok(ByteEdit {
+                byte_start: content.len(),
+                byte_end: content.len(),
+                start_line: gap,
+                end_line: gap,
+                replacement: build_body(
+                    body,
+                    style,
+                    at_unterminated_eof,
+                    analysis.ends_with_newline,
+                )?,
+                inserted_lines: body.len() as u64,
+            })
+        }
+        PatchOperationKind::Remove | PatchOperationKind::Move { .. } => Err(ResourceError::new(
+            ErrorCategory::UnsupportedMutation,
+            "REM and MV are not PUT/CUT byte edits",
+        )),
+    }
+}
+
+fn line_offset(analysis: &TextAnalysis, line: u64) -> Result<usize, ResourceError> {
+    analysis.offsets.get(&line).copied().ok_or_else(|| {
+        invalid_patch(format!(
+            "line coordinate {line} is outside the authoritative Resource"
+        ))
+    })
+}
+
+fn line_style(analysis: &TextAnalysis, line: u64) -> NewlineStyle {
+    analysis
+        .styles
+        .get(&line)
+        .copied()
+        .or(analysis.last_style)
+        .unwrap_or(analysis.dominant_style)
+}
+
+fn adjacent_style(analysis: &TextAnalysis, line: u64) -> NewlineStyle {
+    line.checked_sub(1)
+        .and_then(|previous| analysis.styles.get(&previous).copied())
+        .or_else(|| analysis.styles.get(&line).copied())
+        .or(analysis.last_style)
+        .unwrap_or(analysis.dominant_style)
+}
+
+fn build_body(
+    body: &[String],
+    style: NewlineStyle,
+    leading_separator: bool,
+    terminate_last: bool,
+) -> Result<String, ResourceError> {
+    let newline = style.as_str();
+    let capacity = body.iter().try_fold(
+        usize::from(leading_separator) * newline.len(),
+        |capacity, row| {
+            capacity
+                .checked_add(row.len())
+                .and_then(|bytes| bytes.checked_add(newline.len()))
+                .ok_or_else(|| {
+                    ResourceError::new(ErrorCategory::LimitExceeded, "patch body length overflows")
+                })
+        },
+    )?;
+    let mut output = String::with_capacity(capacity);
+    if leading_separator {
+        output.push_str(newline);
+    }
+    for (index, row) in body.iter().enumerate() {
+        output.push_str(row);
+        if index + 1 != body.len() || terminate_last {
+            output.push_str(newline);
+        }
+    }
+    Ok(output)
+}
+
+fn validate_seen_range(
+    snapshot: &SeenSnapshotData,
+    range: OriginalLineRange,
+    total_lines: u64,
+) -> Result<(), ResourceError> {
+    let start = range.start().get();
+    let end = range.end().get();
+    if end > total_lines {
+        return Err(invalid_patch(format!(
+            "line range {start}.={end} extends past EOF"
+        )));
+    }
+    if snapshot
+        .ranges
+        .iter()
+        .any(|seen| seen.start_line() <= start && seen.end_line() >= end)
+    {
+        Ok(())
+    } else {
+        Err(invalid_patch(format!(
+            "line range {start}.={end} was not fully displayed; call rfs_read first"
+        )))
+    }
+}
+
+fn validate_seen_line(
+    snapshot: &SeenSnapshotData,
+    line: u64,
+    total_lines: u64,
+) -> Result<(), ResourceError> {
+    if line == 0 || line > total_lines {
+        return Err(invalid_patch(format!("line coordinate {line} is past EOF")));
+    }
+    if snapshot
+        .ranges
+        .iter()
+        .any(|seen| seen.start_line() <= line && seen.end_line() >= line)
+    {
+        Ok(())
+    } else {
+        Err(invalid_patch(format!(
+            "line {line} was not displayed; call rfs_read first"
+        )))
+    }
+}
+
+fn remap_seen_ranges(
+    snapshot: &SeenSnapshotData,
+    total_lines: u64,
+    edits: &[ByteEdit],
+) -> Result<Vec<crate::DisplayedLineRange>, ResourceError> {
+    let mut output = Vec::new();
+    let mut original_cursor = 1_u64;
+    let mut output_cursor = 1_u64;
+    for edit in edits {
+        if edit.start_line < original_cursor {
+            return Err(invalid_patch(
+                "patch operations conflict in original line coordinates",
+            ));
+        }
+        append_shifted_seen(
+            &mut output,
+            &snapshot.ranges,
+            original_cursor,
+            edit.start_line,
+            output_cursor,
+        )?;
+        output_cursor += edit.start_line - original_cursor;
+        if edit.inserted_lines != 0 {
+            push_seen_range(
+                &mut output,
+                crate::DisplayedLineRange::new(
+                    output_cursor,
+                    output_cursor + edit.inserted_lines - 1,
+                )?,
+            );
+            output_cursor += edit.inserted_lines;
+        }
+        original_cursor = edit.end_line;
+    }
+    let source_end = total_lines.saturating_add(1);
+    append_shifted_seen(
+        &mut output,
+        &snapshot.ranges,
+        original_cursor,
+        source_end,
+        output_cursor,
+    )?;
+    Ok(output)
+}
+
+fn append_shifted_seen(
+    output: &mut Vec<crate::DisplayedLineRange>,
+    seen: &[crate::DisplayedLineRange],
+    source_start: u64,
+    source_end: u64,
+    output_start: u64,
+) -> Result<(), ResourceError> {
+    for range in seen {
+        let start = range.start_line().max(source_start);
+        let end = range.end_line().min(source_end.saturating_sub(1));
+        if start > end {
+            continue;
+        }
+        let shifted_start = output_start + (start - source_start);
+        let shifted_end = output_start + (end - source_start);
+        push_seen_range(
+            output,
+            crate::DisplayedLineRange::new(shifted_start, shifted_end)?,
+        );
+    }
+    Ok(())
+}
+
+fn push_seen_range(
+    ranges: &mut Vec<crate::DisplayedLineRange>,
+    incoming: crate::DisplayedLineRange,
+) {
+    if let Some(last) = ranges.last_mut()
+        && last.end_line().checked_add(1) == Some(incoming.start_line())
+    {
+        *last = crate::DisplayedLineRange::new(last.start_line(), incoming.end_line())
+            .expect("merged seen ranges remain positive and ascending");
+    } else {
+        ranges.push(incoming);
+    }
+}
+
 fn complete_content_ranges(content: &str) -> Result<Vec<crate::DisplayedLineRange>, ResourceError> {
     let lines = content.bytes().filter(|byte| *byte == b'\n').count() as u64
         + u64::from(!content.is_empty() && !content.ends_with('\n'));
@@ -740,6 +1257,108 @@ impl MutationEngine {
             version_tag: Some(version_tag),
             displayed_ranges,
             displayed_eof: true,
+        })
+    }
+
+    pub async fn edit(
+        &self,
+        document: &str,
+        operation: &OperationGuard,
+    ) -> Result<MutationReceipt, ResourceError> {
+        let patch = HashlinePatch::parse(document)?;
+        if patch.operations().iter().any(|operation| {
+            matches!(
+                operation.0,
+                PatchOperationKind::Remove | PatchOperationKind::Move { .. }
+            )
+        }) {
+            return Err(ResourceError::new(
+                ErrorCategory::UnsupportedMutation,
+                "REM and MV execution are not enabled in this increment",
+            ));
+        }
+        let target = self
+            .adapter
+            .resolve(patch.target(), MutationAccess::Update)
+            .await?;
+        let _locks = self.lock_resources([target.lock_key()]).await?;
+        let snapshot = self
+            .session
+            .resolve_seen(target.canonical_reference().requested(), patch.version())
+            .await?;
+        let state = self
+            .adapter
+            .load(&target, MutationAccess::Update, operation)
+            .await?;
+        let MutationState::Text {
+            content,
+            version_tag,
+        } = state
+        else {
+            return Err(ResourceError::new(
+                ErrorCategory::VersionConflict,
+                "hashline edit requires an existing text Resource",
+            ));
+        };
+        if version_tag != snapshot.version_tag {
+            return Err(ResourceError::new(
+                ErrorCategory::VersionConflict,
+                "hashline edit Version Tag no longer matches authoritative content",
+            ));
+        }
+        let applied = apply_patch(&content, patch.operations(), &snapshot)?;
+        if applied.content.len() > MAX_ARTIFACT_BYTES {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!("edited content exceeds the {MAX_ARTIFACT_BYTES}-byte ceiling"),
+            ));
+        }
+        let PatchApplication {
+            content: edited_content,
+            seen_ranges,
+            seen_eof,
+        } = applied;
+        let new_version = VersionTag::from_content(edited_content.as_bytes());
+        let reservation = self
+            .session
+            .reserve_seen(
+                target.canonical_reference().requested(),
+                &new_version,
+                &seen_ranges,
+                seen_eof,
+            )
+            .await?;
+        if let Err(error) = operation.begin_commit() {
+            self.session.cancel_seen(reservation).await;
+            return Err(error);
+        }
+        let committed = self
+            .adapter
+            .commit(
+                SourceMutation::Replace {
+                    target: target.clone(),
+                    expected: snapshot.version_tag,
+                    content: edited_content,
+                },
+                operation,
+            )
+            .await;
+        debug_assert!(
+            operation.finish_commit(),
+            "edit commit transition must complete"
+        );
+        if let Err(error) = committed {
+            self.session.cancel_seen(reservation).await;
+            return Err(error);
+        }
+        self.session.publish_seen(reservation).await;
+        Ok(MutationReceipt {
+            operation: MutationOperation::Edited,
+            canonical_reference: target.canonical_reference().clone(),
+            source_reference: None,
+            version_tag: Some(new_version),
+            displayed_ranges: seen_ranges,
+            displayed_eof: seen_eof,
         })
     }
 

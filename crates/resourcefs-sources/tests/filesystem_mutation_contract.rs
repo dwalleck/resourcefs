@@ -156,7 +156,8 @@ async fn create_replace_state_matrix_preserves_bytes_and_permissions() {
     let before = fs::read(workspace.path().join("fixture.txt")).expect("before stale");
     let stale = engine
         .write(
-            WriteRequest::new(path, "stale\n".to_owned(), Some(current)).expect("stale request"),
+            WriteRequest::new(path.clone(), "stale\n".to_owned(), Some(current))
+                .expect("stale request"),
             &OperationGuard::new(),
         )
         .await
@@ -166,6 +167,33 @@ async fn create_replace_state_matrix_preserves_bytes_and_permissions() {
     assert_eq!(
         fs::read(workspace.path().join("fixture.txt")).expect("after stale"),
         before
+    );
+
+    let append = format!(
+        "[{}#{}]\nPUT >$:\n+tail",
+        replaced.canonical_reference().requested(),
+        replaced.version_tag().expect("replacement tag")
+    );
+    let appended = engine
+        .edit(&append, &OperationGuard::new())
+        .await
+        .expect("append edit");
+    assert_eq!(
+        fs::read(workspace.path().join("fixture.txt")).expect("appended bytes"),
+        b"replacement\ntail\n"
+    );
+    let cut = format!(
+        "[{}#{}]\nCUT 1.=1",
+        appended.canonical_reference().requested(),
+        appended.version_tag().expect("appended tag")
+    );
+    engine
+        .edit(&cut, &OperationGuard::new())
+        .await
+        .expect("cut edit");
+    assert_eq!(
+        fs::read(workspace.path().join("fixture.txt")).expect("cut bytes"),
+        b"tail\n"
     );
 }
 

@@ -9,9 +9,9 @@ use std::{
 
 use resourcefs_core::{
     DiscoveryEngine, ErrorCategory, GlobLimits, GlobOptions, GlobRequest, GlobTarget,
-    MutationAccess, MutationEngine, OperationGuard, PatchOperationRef, PathReference, PathSession,
-    ReadEngine, ReadRequest, ResourceError, SearchLimits, SearchOptions, SearchRequest,
-    SearchTarget, ServerLimits, TextLimits, VersionTag, WriteRequest,
+    MutationEngine, OperationGuard, PathReference, PathSession, ReadEngine, ReadRequest,
+    ResourceError, SearchLimits, SearchOptions, SearchRequest, SearchTarget, ServerLimits,
+    TextLimits, VersionTag, WriteRequest,
 };
 #[cfg(feature = "test-support")]
 use resourcefs_sources::StorageFailurePoint;
@@ -659,35 +659,10 @@ impl ResourceFsServer {
         document: &str,
         operation: &OperationGuard,
     ) -> Result<CallToolResult, String> {
-        let patch = match self.mutation_engine.parse_edit(document) {
-            Ok(patch) => patch,
-            Err(error) => return render::mutation_failure("", &error),
-        };
-        let access = match patch.operations()[0].kind() {
-            PatchOperationRef::Put { .. } | PatchOperationRef::Cut { .. } => MutationAccess::Update,
-            PatchOperationRef::Remove | PatchOperationRef::Move { .. } => MutationAccess::Delete,
-        };
-        if let Err(error) = self
-            .mutation_engine
-            .adapter()
-            .resolve(patch.target(), access)
-            .await
-        {
-            return render::mutation_failure(patch.target().requested(), &error);
+        match self.mutation_engine.edit(document, operation).await {
+            Ok(receipt) => render::mutation_success(receipt),
+            Err(error) => render::mutation_failure("", &error),
         }
-        if !operation.is_active() {
-            return render::mutation_failure(
-                patch.target().requested(),
-                &ResourceError::new(ErrorCategory::Cancelled, "rfs_edit was cancelled"),
-            );
-        }
-        render::mutation_failure(
-            patch.target().requested(),
-            &ResourceError::new(
-                ErrorCategory::UnsupportedMutation,
-                "PUT/CUT/REM/MV execution is not enabled in this increment",
-            ),
-        )
     }
 
     async fn execute_read(

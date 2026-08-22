@@ -4,15 +4,15 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
 use resourcefs_core::{
-    ArtifactId, DisplayedLineRange, ErrorCategory, MutationAccess, MutationAdapter, MutationEngine,
-    MutationOperation, MutationSourceKey, MutationState, MutationTarget, OperationGuard,
-    PathReference, PathSession, ResourceError, ServerLimits, SessionStorage, SessionToken,
-    SourceMutation, VersionSelector, VersionTag, WriteRequest,
+    ArtifactId, DisplayedLineRange, ErrorCategory, MAX_HASHLINE_PATCH_BYTES, MutationAccess,
+    MutationAdapter, MutationEngine, MutationOperation, MutationSourceKey, MutationState,
+    MutationTarget, OperationGuard, PathReference, PathSession, ResourceError, ServerLimits,
+    SessionStorage, SessionToken, SourceMutation, VersionSelector, VersionTag, WriteRequest,
 };
 use tokio::sync::Mutex;
 
@@ -111,6 +111,14 @@ impl StatefulAdapter {
 
     fn fail_next_commit(&self) {
         self.fail_commit.store(true, Ordering::Release);
+    }
+
+    async fn text_content(&self) -> String {
+        let state = self.state.lock().await;
+        let MutationState::Text { content, .. } = &*state else {
+            panic!("expected text state");
+        };
+        content.clone()
     }
 }
 
@@ -287,6 +295,137 @@ fn mutation_operation_spellings_are_stable() {
             MutationOperation::Moved.as_str(),
         ],
         ["created", "replaced", "edited", "deleted", "moved"]
+    );
+}
+
+#[tokio::test]
+async fn put_cut_use_original_coordinates_and_never_promote_unseen_content() {
+    let original = "one\r\ntwo\r\nthree\nfour";
+    let original_tag = VersionTag::from_content(original.as_bytes());
+    let adapter = Arc::new(StatefulAdapter::new(MutationState::Text {
+        content: original.to_owned(),
+        version_tag: original_tag.clone(),
+    }));
+    let path =
+        PathReference::parse("rfs://workspace/workspace/fixture.txt").expect("canonical reference");
+    let session = session(5);
+    session
+        .record_seen_for_test(
+            path.requested(),
+            &original_tag,
+            &[
+                DisplayedLineRange::new(1, 2).expect("first seen range"),
+                DisplayedLineRange::new(4, 4).expect("last seen line"),
+            ],
+            true,
+        )
+        .await
+        .expect("original snapshot");
+    let engine = MutationEngine::new(adapter.clone(), session.clone());
+    let patch = format!(
+        "[{}#{}]\nPUT 2.=2:\n+TWO\nPUT <4:\n+inserted\nCUT 1.=1",
+        path.requested(),
+        original_tag
+    );
+
+    let receipt = engine
+        .edit(&patch, &OperationGuard::new())
+        .await
+        .expect("snapshot-bound edit");
+    assert_eq!(receipt.operation(), MutationOperation::Edited);
+    assert_eq!(adapter.text_content().await, "TWO\r\nthree\ninserted\nfour");
+    assert_eq!(
+        receipt.displayed_ranges(),
+        &[
+            DisplayedLineRange::new(1, 1).expect("authored first line"),
+            DisplayedLineRange::new(3, 4).expect("authored plus remapped tail"),
+        ]
+    );
+    assert!(receipt.displayed_eof());
+    let edited_tag = receipt.version_tag().expect("edited tag").clone();
+
+    let unseen = format!(
+        "[{}#{}]\nPUT 2.=2:\n+forbidden",
+        path.requested(),
+        edited_tag
+    );
+    let before = adapter.text_content().await;
+    let error = engine
+        .edit(&unseen, &OperationGuard::new())
+        .await
+        .expect_err("unseen preserved line");
+    assert_eq!(error.category(), ErrorCategory::InvalidPatch);
+    assert_eq!(adapter.text_content().await, before);
+
+    let consecutive = format!("[{}#{}]\nPUT 3.=3:\n+again", path.requested(), edited_tag);
+    engine
+        .edit(&consecutive, &OperationGuard::new())
+        .await
+        .expect("receipt-authored line remains editable");
+    assert_eq!(adapter.text_content().await, "TWO\r\nthree\nagain\nfour");
+}
+
+#[tokio::test]
+async fn tail_insert_requires_seen_eof() {
+    let original = "one\n";
+    let tag = VersionTag::from_content(original.as_bytes());
+    let adapter = Arc::new(StatefulAdapter::new(MutationState::Text {
+        content: original.to_owned(),
+        version_tag: tag.clone(),
+    }));
+    let path =
+        PathReference::parse("rfs://workspace/workspace/fixture.txt").expect("canonical reference");
+    let session = session(6);
+    session
+        .record_seen_for_test(
+            path.requested(),
+            &tag,
+            &[DisplayedLineRange::new(1, 1).expect("seen line")],
+            false,
+        )
+        .await
+        .expect("bounded snapshot");
+    let engine = MutationEngine::new(adapter, session);
+    let patch = format!("[{}#{}]\nPUT >$:\n+tail", path.requested(), tag);
+
+    let error = engine
+        .edit(&patch, &OperationGuard::new())
+        .await
+        .expect_err("unseen EOF gap");
+    assert_eq!(error.category(), ErrorCategory::InvalidPatch);
+}
+
+#[tokio::test]
+async fn exact_limit_edit_budget() {
+    let original_tag = VersionTag::from_content(b"");
+    let adapter = Arc::new(StatefulAdapter::new(MutationState::Text {
+        content: String::new(),
+        version_tag: original_tag.clone(),
+    }));
+    let path =
+        PathReference::parse("rfs://workspace/workspace/fixture.txt").expect("canonical reference");
+    let session = session(7);
+    session
+        .record_seen_for_test(path.requested(), &original_tag, &[], true)
+        .await
+        .expect("empty EOF snapshot");
+    let engine = MutationEngine::new(adapter, session);
+    let prefix = format!("[{}#{}]\nPUT >$:\n+", path.requested(), original_tag);
+    let mut patch = String::with_capacity(MAX_HASHLINE_PATCH_BYTES);
+    patch.push_str(&prefix);
+    patch.extend(std::iter::repeat_n(
+        'x',
+        MAX_HASHLINE_PATCH_BYTES - prefix.len(),
+    ));
+    let started = Instant::now();
+    engine
+        .edit(&patch, &OperationGuard::new())
+        .await
+        .expect("exact-limit edit");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed <= Duration::from_secs(5),
+        "64 MiB edit took {elapsed:?}"
     );
 }
 
