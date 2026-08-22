@@ -8,7 +8,10 @@ use resourcefs_core::{
     SourceAdapter, SourceGlobResult, SourceResource, VersionTag, select_utf8,
 };
 
-use crate::pattern::{GlobMatcher, SearchMatcher};
+use crate::{
+    catalog::{SourceCatalogEntry, SourceCatalogMetadata},
+    pattern::{GlobMatcher, SearchMatcher},
+};
 
 /// Read-only adapter for immutable Path Session artifacts.
 ///
@@ -93,6 +96,17 @@ impl fmt::Debug for ArtifactSource {
         formatter
             .debug_struct("ArtifactSource")
             .finish_non_exhaustive()
+    }
+}
+
+impl SourceCatalogMetadata for ArtifactSource {
+    fn catalog_entries(&self) -> Result<Vec<SourceCatalogEntry>, ResourceError> {
+        Ok(vec![SourceCatalogEntry::new(
+            "artifact://",
+            "artifact://<session>-<id>[:selector]",
+            "artifact://00000000000000000000000000000000-1",
+            None,
+        )?])
     }
 }
 

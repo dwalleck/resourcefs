@@ -565,10 +565,14 @@ mod tests {
         )
         .await
         .expect("render fixture filesystem source");
-        let compiled = Arc::new(CompiledSources::new(
-            filesystem,
-            ArtifactSource::new(session.path_session().clone()),
-        ));
+        let compiled = Arc::new(
+            CompiledSources::new(
+                filesystem,
+                ArtifactSource::new(session.path_session().clone()),
+            )
+            .await
+            .expect("render fixture compiled sources"),
+        );
         let engine = DiscoveryEngine::new(
             compiled,
             session.path_session().clone(),

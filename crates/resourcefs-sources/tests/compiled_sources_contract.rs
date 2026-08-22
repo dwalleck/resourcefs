@@ -64,7 +64,9 @@ async fn fixture() -> Fixture {
     let artifacts = ArtifactSource::new(session.path_session().clone());
 
     Fixture {
-        compiled: CompiledSources::new(filesystem, artifacts),
+        compiled: CompiledSources::new(filesystem, artifacts)
+            .await
+            .expect("compiled sources"),
         artifact_root,
         session,
         _cache: cache,

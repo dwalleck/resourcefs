@@ -75,7 +75,7 @@ Slices 1–5. Mergeable definition: exact catalog and root-directory references 
 
 **Wall budget/phase:** Always-on when the renderer is invoked: source rendering <= 250 ms at 256 entries/4 MiB; workspace rendering <= 25 ms at 256 production roots. No I/O or probe runs in either phase.
 
-**Files:** New `crates/resourcefs-sources/src/catalog.rs`; `crates/resourcefs-sources/src/lib.rs`; `crates/resourcefs-sources/src/compiled.rs`; `crates/resourcefs-sources/src/filesystem.rs`; `crates/resourcefs-sources/src/artifact.rs`; `crates/resourcefs-sources/tests/compiled_sources_contract.rs`; `crates/resourcefs-sources/tests/filesystem_adapter_contract.rs`; `crates/resourcefs-mcp/src/server.rs`.
+**Files:** New `crates/resourcefs-sources/src/catalog.rs`; `crates/resourcefs-sources/src/lib.rs`; `crates/resourcefs-sources/src/compiled.rs`; `crates/resourcefs-sources/src/filesystem.rs`; `crates/resourcefs-sources/src/artifact.rs`; `crates/resourcefs-sources/tests/compiled_sources_contract.rs`; `crates/resourcefs-sources/tests/filesystem_adapter_contract.rs`; `crates/resourcefs-sources/tests/filesystem_resource_limits_contract.rs`; `crates/resourcefs-mcp/src/server.rs`; `crates/resourcefs-mcp/src/render.rs`.
 
 **Estimate:** 4–6 hours.
 
@@ -86,7 +86,7 @@ Slices 1–5. Mergeable definition: exact catalog and root-directory references 
 **Commands and expected results:**
 - `cargo test -p resourcefs-sources catalog::tests::` → count/field/example/state/root/header/determinism fixtures agree byte-for-byte with independent literals. C2, C3, C4, C10, and C14 mutations each make the named test red; restoration is green.
 - `cargo test --release -p resourcefs-sources catalog_production_budget` → the 256-entry/4-MiB renderer is <= 250 ms and the 256-root renderer <= 25 ms while content still equals the boundary oracle.
-- `cargo test -p resourcefs-sources --test compiled_sources_contract catalog_metadata_is_the_compiled_registry` → filesystem and artifact metadata are registered once through the compiled composite, with no central per-scheme table.
+- `cargo test -p resourcefs-sources compiled::tests::catalog_metadata_is_the_compiled_registry` → filesystem and artifact metadata are registered once through the compiled composite, with no central per-scheme table.
 
 ## Slice 3: Wire typed catalog routing and discovery redirects
 

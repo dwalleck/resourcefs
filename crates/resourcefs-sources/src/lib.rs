@@ -1,6 +1,7 @@
 //! Compiled ResourceFS Source Adapters.
 
 mod artifact;
+mod catalog;
 mod compiled;
 mod configuration;
 mod filesystem;

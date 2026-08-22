@@ -1159,10 +1159,8 @@ async fn serve_inner(
     let mut heartbeat = tokio::spawn(heartbeat_session(stored_session.clone(), heartbeat_stop));
     let session = stored_session.path_session().clone();
     let disconnect = Arc::new(DisconnectState::new(session.clone()));
-    let compiled_sources = Arc::new(CompiledSources::new(
-        source.clone(),
-        ArtifactSource::new(session.clone()),
-    ));
+    let compiled_sources =
+        Arc::new(CompiledSources::new(source.clone(), ArtifactSource::new(session.clone())).await?);
     let read_sources = Arc::clone(&compiled_sources);
     let discovery_sources = Arc::clone(&compiled_sources);
     let read_engine = ReadEngine::new(read_sources, session.clone(), limits);

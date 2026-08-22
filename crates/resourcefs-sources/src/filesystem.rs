@@ -31,8 +31,11 @@ use tokio::{
 };
 use url::Url;
 
-use crate::configuration::paths::{normalize_platform_path, strip_beneath};
-use crate::pattern::{GlobMatcher, SearchMatcher};
+use crate::{
+    catalog::{SourceCatalogEntry, SourceCatalogMetadata},
+    configuration::paths::{normalize_platform_path, strip_beneath},
+    pattern::{GlobMatcher, SearchMatcher},
+};
 
 const ROOT_CONSTRUCTION_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_WORKSPACE_DISCOVERY_ENTRIES: usize = 100_000;
@@ -294,7 +297,7 @@ struct FilesystemRoot {
 
 #[derive(Debug)]
 struct WorkspaceView {
-    roots: WorkspaceRootSet,
+    roots: Arc<WorkspaceRootSet>,
     filesystems: HashMap<WorkspaceRootId, Arc<FilesystemRoot>>,
 }
 
@@ -649,6 +652,11 @@ impl FilesystemSource {
         }
     }
 
+    pub(crate) async fn workspace_root_set(&self) -> Result<Arc<WorkspaceRootSet>, ResourceError> {
+        let (_, view) = self.active_view().await?;
+        Ok(Arc::clone(&view.roots))
+    }
+
     async fn read_contained(
         &self,
         reference: &PathReference,
@@ -719,6 +727,16 @@ fn validate_read_delivery(
         AuthorityState::Refreshing { .. } | AuthorityState::Disabled { .. } => Err(
             authority_unavailable("Workspace Root authority changed while reading"),
         ),
+    }
+}
+impl SourceCatalogMetadata for FilesystemSource {
+    fn catalog_entries(&self) -> Result<Vec<SourceCatalogEntry>, ResourceError> {
+        Ok(vec![SourceCatalogEntry::new(
+            "rfs://workspace",
+            "<relative-path> | rfs://workspace/<root>/<path>[:selector] | file://<absolute-path> (relative paths use the Primary Workspace Root)",
+            "rfs://workspace/workspace/src/lib.rs",
+            None,
+        )?])
     }
 }
 
@@ -2232,10 +2250,10 @@ fn workspace_view(
     opened: Vec<Arc<FilesystemRoot>>,
     primary_selector: Option<&str>,
 ) -> Result<WorkspaceView, ResourceError> {
-    let root_set = WorkspaceRootSet::new(
+    let root_set = Arc::new(WorkspaceRootSet::new(
         opened.iter().map(|root| root.metadata.clone()).collect(),
         primary_selector,
-    )?;
+    )?);
     let filesystems = opened
         .into_iter()
         .map(|root| (root.metadata.id().clone(), root))
