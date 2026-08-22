@@ -10,6 +10,8 @@ use url::Url;
 use crate::{ErrorCategory, ResourceError};
 
 const WORKSPACE_PREFIX: &str = "rfs://workspace/";
+pub(crate) const SOURCE_CATALOG_REFERENCE: &str = "rfs://";
+pub(crate) const WORKSPACE_CATALOG_REFERENCE: &str = "rfs://workspace";
 pub(crate) const ARTIFACT_PREFIX: &str = "artifact://";
 pub const MAX_PATH_REFERENCE_BYTES: usize = 64 * 1024;
 pub const MAX_WORKSPACE_ROOTS: usize = 256;
@@ -171,9 +173,25 @@ impl ArtifactAddress {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogAddress {
+    Sources,
+    Workspace,
+}
+
+impl CatalogAddress {
+    pub(crate) const fn canonical_reference(self) -> &'static str {
+        match self {
+            Self::Sources => SOURCE_CATALOG_REFERENCE,
+            Self::Workspace => WORKSPACE_CATALOG_REFERENCE,
+        }
+    }
+}
+
 /// Parsed source identity independent of its optional projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceAddress {
+    Catalog(CatalogAddress),
     Workspace(WorkspaceAddress),
     Artifact(ArtifactAddress),
 }
@@ -332,6 +350,22 @@ impl PathReference {
     pub fn parse(input: impl Into<String>) -> Result<Self, ResourceError> {
         let mut requested = input.into();
         validate_reference_input(&requested)?;
+        let catalog = match requested.as_str() {
+            SOURCE_CATALOG_REFERENCE => Some(CatalogAddress::Sources),
+            WORKSPACE_CATALOG_REFERENCE | "rfs://workspace/" => Some(CatalogAddress::Workspace),
+            _ => None,
+        };
+        if let Some(address) = catalog {
+            requested.clear();
+            requested.push_str(address.canonical_reference());
+            return Ok(Self {
+                requested,
+                address: ResourceAddress::Catalog(address),
+                projection: None,
+                selector_candidate: None,
+                selector_error: None,
+            });
+        }
         if requested.starts_with(ARTIFACT_PREFIX) {
             let (base, projection) = projection_candidate_split(&requested).map_or_else(
                 || Ok((requested.as_str(), None)),
@@ -420,7 +454,7 @@ impl PathReference {
     pub fn workspace_address(&self) -> Option<&WorkspaceAddress> {
         match &self.address {
             ResourceAddress::Workspace(address) => Some(address),
-            ResourceAddress::Artifact(_) => None,
+            ResourceAddress::Catalog(_) | ResourceAddress::Artifact(_) => None,
         }
     }
 

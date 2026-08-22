@@ -72,6 +72,10 @@ struct SessionBackedSource {
 impl SourceAdapter for SessionBackedSource {
     async fn read(&self, reference: &PathReference) -> Result<SourceResource, ResourceError> {
         match reference.address() {
+            ResourceAddress::Catalog(_) => Err(ResourceError::new(
+                ErrorCategory::UnsupportedProjection,
+                "test source does not implement catalog Resources",
+            )),
             ResourceAddress::Workspace(_) => SourceResource::text(
                 workspace_reference(),
                 self.workspace_content.as_str().to_owned(),

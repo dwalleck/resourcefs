@@ -1289,6 +1289,100 @@ fn client_roots_replace_refresh_and_restore_launch_roots() {
 }
 
 #[test]
+fn namespace_catalog_tracks_client_root_replacement() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let launch = temporary.path().join("launch");
+    let alpha = temporary.path().join("alpha");
+    let beta = temporary.path().join("beta");
+    for root in [&launch, &alpha, &beta] {
+        fs::create_dir(root).expect("root fixture");
+    }
+    fs::write(alpha.join("shared.txt"), "alpha").expect("alpha fixture");
+    fs::write(beta.join("shared.txt"), "beta").expect("beta fixture");
+
+    let mut process = McpProcess::start_with_roots(&[("launch", &launch)], None);
+    process.initialize_with_roots(VERSION_2026, vec![mcp_root(&alpha, "alpha")]);
+    let initial_catalog = process.call_read("rfs://workspace");
+    assert_eq!(process.root_list_calls, 1);
+    let alpha_file = process.call_read("shared.txt");
+    let alpha_root = alpha_file["structuredContent"]["canonicalReference"]
+        .as_str()
+        .expect("alpha canonical reference")
+        .strip_suffix("shared.txt")
+        .expect("alpha root prefix");
+    assert_eq!(
+        initial_catalog["structuredContent"]["content"],
+        format!("{alpha_root} (primary)\n")
+    );
+    let initial_tag = initial_catalog["structuredContent"]["versionTag"]
+        .as_str()
+        .expect("initial catalog tag")
+        .to_owned();
+
+    process.change_client_roots(vec![mcp_root(&beta, "beta")]);
+    let replacement_catalog = process.call_read("rfs://workspace");
+    assert_eq!(process.root_list_calls, 2);
+    let beta_file = process.call_read("shared.txt");
+    let beta_root = beta_file["structuredContent"]["canonicalReference"]
+        .as_str()
+        .expect("beta canonical reference")
+        .strip_suffix("shared.txt")
+        .expect("beta root prefix");
+    assert_eq!(
+        replacement_catalog["structuredContent"]["content"],
+        format!("{beta_root} (primary)\n")
+    );
+    assert!(
+        !replacement_catalog["structuredContent"]["content"]
+            .as_str()
+            .expect("replacement content")
+            .contains(alpha_root)
+    );
+    assert_ne!(
+        replacement_catalog["structuredContent"]["versionTag"],
+        initial_tag
+    );
+    process.finish();
+}
+
+#[test]
+fn catalog_search_and_glob_redirect_before_io() {
+    let fixture = WorkspaceFixture::new();
+    let mut process = McpProcess::start(&fixture.root);
+    process.initialize_with_roots(VERSION_2026, vec![mcp_root(&fixture.root, "workspace")]);
+
+    for (tool, path) in [
+        ("rfs_search", "rfs://"),
+        ("rfs_search", "rfs://workspace"),
+        ("rfs_glob", "rfs://"),
+        ("rfs_glob", "rfs://workspace"),
+    ] {
+        let arguments = if tool == "rfs_search" {
+            json!({"path": path, "pattern": "needle"})
+        } else {
+            json!({"path": path})
+        };
+        let response = process.request("tools/call", json!({"name": tool, "arguments": arguments}));
+        assert!(response.get("error").is_none(), "{tool} {path}: {response}");
+        let result = &response["result"];
+        assert_tool_error(result, "unsupported_projection");
+        let expected = format!("catalog references are read-only discovery; use rfs_read {path}");
+        assert_eq!(
+            result["structuredContent"]["error"]["message"], expected,
+            "{tool} {path}"
+        );
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains(&expected)),
+            "{tool} {path}: {result}"
+        );
+    }
+    assert_eq!(process.root_list_calls, 0);
+    process.finish();
+}
+
+#[test]
 fn profile_launch_authority_reaches_stdio_and_scratch_profiles_have_no_cwd_root() {
     let temporary = TempDir::new().expect("profile stdio fixture");
     let profile_directory = temporary.path().join("profile");

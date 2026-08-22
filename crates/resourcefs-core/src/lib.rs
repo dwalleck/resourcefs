@@ -20,6 +20,7 @@ pub use discovery::{
     GlobOptions, GlobRequest, GlobResult, GlobSource, GlobTarget, MAX_DISCOVERY_PATTERN_BYTES,
     MAX_DISCOVERY_RESULTS, SearchEngine, SearchGroup, SearchLimits, SearchLine, SearchOptions,
     SearchRecord, SearchRequest, SearchResult, SearchSourceResult, SearchTarget, SourceGlobResult,
+    catalog_discovery_unsupported,
 };
 pub use error::{ErrorCategory, ResourceError};
 pub use limits::{
@@ -32,9 +33,10 @@ pub use probe::{
 };
 pub use read::{ReadEngine, ReadRequest, TextLimits};
 pub use reference::{
-    ArtifactAddress, LineRange, LineSelector, MAX_PATH_REFERENCE_BYTES, MAX_WORKSPACE_ROOTS,
-    PathReference, ProjectionSelector, ResourceAddress, SelectedWorkspaceAddress, WorkspaceAddress,
-    WorkspacePath, WorkspaceRoot, WorkspaceRootId, WorkspaceRootSet,
+    ArtifactAddress, CatalogAddress, LineRange, LineSelector, MAX_PATH_REFERENCE_BYTES,
+    MAX_WORKSPACE_ROOTS, PathReference, ProjectionSelector, ResourceAddress,
+    SelectedWorkspaceAddress, WorkspaceAddress, WorkspacePath, WorkspaceRoot, WorkspaceRootId,
+    WorkspaceRootSet,
 };
 pub use resource::{
     ArtifactProjectionOrigin, BEHAVIOR_CONTRACT_VERSION, MAX_ARTIFACT_BYTES, MAX_TEXT_BYTES,

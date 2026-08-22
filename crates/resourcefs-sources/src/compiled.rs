@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use resourcefs_core::{
-    DiscoveryAdapter, GlobOptions, GlobSource, GlobTarget, OperationGuard, PathReference,
-    ResourceAddress, ResourceError, SearchOptions, SearchSourceResult, SearchTarget, SourceAdapter,
-    SourceGlobResult, SourceResource,
+    CatalogAddress, DiscoveryAdapter, GlobOptions, GlobSource, GlobTarget, OperationGuard,
+    PathReference, ResourceAddress, ResourceError, SearchOptions, SearchSourceResult, SearchTarget,
+    SourceAdapter, SourceGlobResult, SourceResource, catalog_discovery_unsupported,
 };
 
 use crate::{
@@ -59,6 +59,18 @@ impl CompiledSources {
 impl SourceAdapter for CompiledSources {
     async fn read(&self, reference: &PathReference) -> Result<SourceResource, ResourceError> {
         match reference.address() {
+            ResourceAddress::Catalog(address) => {
+                let document = match address {
+                    CatalogAddress::Sources => {
+                        NamespaceCatalog::source_document(self.catalog_entries()?)?
+                    }
+                    CatalogAddress::Workspace => {
+                        NamespaceCatalog::workspace_document(&self.filesystem).await?
+                    }
+                };
+                let (content, version_tag) = document.into_parts();
+                SourceResource::text_projection(reference.clone(), content, version_tag)
+            }
             ResourceAddress::Workspace(_) => self.filesystem.read(reference).await,
             ResourceAddress::Artifact(_) => self.artifacts.read(reference).await,
         }
@@ -75,6 +87,12 @@ impl DiscoveryAdapter for CompiledSources {
         operation: &OperationGuard,
     ) -> Result<SearchSourceResult, ResourceError> {
         match target.reference().map(PathReference::address) {
+            Some(ResourceAddress::Catalog(_)) => Err(catalog_discovery_unsupported(
+                target
+                    .reference()
+                    .expect("matched a concrete catalog target")
+                    .requested(),
+            )),
             None | Some(ResourceAddress::Workspace(_)) => {
                 self.filesystem
                     .search(target, pattern, options, operation)

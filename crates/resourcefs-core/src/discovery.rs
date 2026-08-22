@@ -64,6 +64,9 @@ impl GlobTarget {
                 ),
             ));
         }
+        if let Some(reference) = canonical_catalog_target(&pattern) {
+            return Err(catalog_discovery_unsupported(reference));
+        }
         let source = if pattern.starts_with(crate::reference::ARTIFACT_PREFIX) {
             GlobSource::Artifact
         } else {
@@ -245,6 +248,12 @@ impl SearchRequest {
                 ),
             ));
         }
+        if let Some(reference) = target.reference().and_then(|reference| {
+            matches!(reference.address(), ResourceAddress::Catalog(_))
+                .then_some(reference.requested())
+        }) {
+            return Err(catalog_discovery_unsupported(reference));
+        }
         Ok(Self {
             target,
             pattern,
@@ -361,6 +370,7 @@ pub struct GlobEntry {
 impl GlobEntry {
     pub fn new(reference: PathReference, kind: GlobKind) -> Result<Self, ResourceError> {
         let kind_matches_source = match reference.address() {
+            ResourceAddress::Catalog(_) => false,
             ResourceAddress::Workspace(_) => !matches!(kind, GlobKind::Artifact),
             ResourceAddress::Artifact(_) => matches!(kind, GlobKind::Artifact),
         };
@@ -1151,13 +1161,17 @@ fn validate_result_limit(value: Option<usize>) -> Result<usize, ResourceError> {
 
 fn canonical_identity(reference: &PathReference) -> Result<String, ResourceError> {
     let canonical = match reference.address() {
+        ResourceAddress::Catalog(address) => {
+            reference.projection().is_none()
+                && reference.requested() == address.canonical_reference()
+        }
         ResourceAddress::Workspace(WorkspaceAddress::Canonical { .. }) => {
             reference.projection().is_none()
         }
         ResourceAddress::Artifact(address) => {
             reference.projection().is_none()
-                && PathReference::artifact(address.clone(), None)
-                    .is_ok_and(|canonical| canonical.requested() == reference.requested())
+                && canonical_artifact_reference(address)
+                    .is_ok_and(|canonical| canonical == reference.requested())
         }
         ResourceAddress::Workspace(_) => false,
     };
@@ -1190,6 +1204,25 @@ fn continuation_overflow() -> ResourceError {
     ResourceError::new(
         ErrorCategory::LimitExceeded,
         "discovery continuation line is not representable",
+    )
+}
+
+fn canonical_catalog_target(input: &str) -> Option<&'static str> {
+    match input {
+        crate::reference::SOURCE_CATALOG_REFERENCE => {
+            Some(crate::reference::SOURCE_CATALOG_REFERENCE)
+        }
+        crate::reference::WORKSPACE_CATALOG_REFERENCE | "rfs://workspace/" => {
+            Some(crate::reference::WORKSPACE_CATALOG_REFERENCE)
+        }
+        _ => None,
+    }
+}
+
+pub fn catalog_discovery_unsupported(reference: &str) -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::UnsupportedProjection,
+        format!("catalog references are read-only discovery; use rfs_read {reference}"),
     )
 }
 

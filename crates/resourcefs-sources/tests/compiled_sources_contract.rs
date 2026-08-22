@@ -1,18 +1,19 @@
 use std::{fs, sync::Arc};
 
 use resourcefs_core::{
-    DiscoveryEngine, GlobKind, GlobLimits, GlobOptions, GlobRequest, GlobTarget, OperationGuard,
-    PathReference, ProjectionSelector, SearchLimits, SearchOptions, SearchRequest, SearchTarget,
-    SourceAdapter, WorkspacePath, WorkspaceRootId,
+    DiscoveryEngine, ErrorCategory, GlobKind, GlobLimits, GlobOptions, GlobRequest, GlobTarget,
+    OperationGuard, PathReference, ProjectionSelector, SearchLimits, SearchOptions, SearchRequest,
+    SearchTarget, SourceAdapter, WorkspacePath, WorkspaceRootId,
 };
 use resourcefs_sources::{
-    ArtifactSource, BackingPathVisibility, CompiledSources, FilesystemSource, LaunchRoot,
-    LaunchRootSource, SessionStore,
+    ArtifactSource, BackingPathVisibility, ClientRoot, CompiledSources, FilesystemSource,
+    LaunchRoot, LaunchRootSource, SessionStore,
 };
 use tempfile::TempDir;
 
 struct Fixture {
     compiled: CompiledSources,
+    filesystem: FilesystemSource,
     artifact_root: String,
     session: resourcefs_sources::StoredSession,
     _cache: TempDir,
@@ -64,9 +65,10 @@ async fn fixture() -> Fixture {
     let artifacts = ArtifactSource::new(session.path_session().clone());
 
     Fixture {
-        compiled: CompiledSources::new(filesystem, artifacts)
+        compiled: CompiledSources::new(filesystem.clone(), artifacts)
             .await
             .expect("compiled sources"),
+        filesystem,
         artifact_root,
         session,
         _cache: cache,
@@ -133,6 +135,96 @@ async fn routes_every_reference_by_typed_address_family_only() {
     assert_eq!(fixture.session.path_session().artifact_count().await, 1);
 }
 
+#[tokio::test]
+async fn catalog_reads_route_by_typed_address_family() {
+    let fixture = fixture().await;
+    let sources = fixture
+        .compiled
+        .read(&PathReference::parse("rfs://").expect("source catalog"))
+        .await
+        .expect("source catalog read");
+    assert_eq!(sources.canonical_reference(), "rfs://");
+    assert!(!sources.is_mutable());
+    assert_eq!(
+        sources.content(),
+        concat!(
+            "Mounted sources\n",
+            "Next discovery step: rfs_read rfs://workspace\n",
+            "Selectors: :N | :N-M | :N- | comma-separated ranges | :raw | :page:N\n",
+            "artifact:// — artifact://<session>-<id>[:selector] — artifact://00000000000000000000000000000000-1\n",
+            "rfs://workspace — <relative-path> | rfs://workspace/<root>/<path>[:selector] | file://<absolute-path> (relative paths use the Primary Workspace Root) — rfs://workspace/workspace/src/lib.rs\n",
+        )
+    );
+
+    let canonical = fixture
+        .compiled
+        .read(&PathReference::parse("rfs://workspace").expect("workspace catalog"))
+        .await
+        .expect("workspace catalog read");
+    let alias = fixture
+        .compiled
+        .read(&PathReference::parse("rfs://workspace/").expect("workspace alias"))
+        .await
+        .expect("workspace alias read");
+    assert_eq!(canonical, alias);
+    assert_eq!(canonical.canonical_reference(), "rfs://workspace");
+    assert_eq!(
+        canonical.content(),
+        "rfs://workspace/workspace/ (primary)\n"
+    );
+    assert!(!canonical.is_mutable());
+}
+
+#[tokio::test]
+async fn workspace_catalog_snapshot_never_mixes_root_generations() {
+    let fixture = fixture().await;
+    let client = TempDir::new().expect("client root");
+    fs::write(client.path().join("plain.txt"), "client bytes\n").expect("client file");
+    let client_uri = url::Url::from_directory_path(client.path())
+        .expect("client root URI")
+        .to_string();
+
+    let refresh = fixture.filesystem.begin_client_root_refresh().await;
+    let refreshing = fixture
+        .compiled
+        .read(&PathReference::parse("rfs://workspace").expect("workspace catalog"))
+        .await
+        .expect_err("refreshing authority must not deliver a mixed catalog");
+    assert_eq!(refreshing.category(), ErrorCategory::SourceUnavailable);
+
+    let acquisition = fixture.filesystem.start_client_root_acquisition(refresh);
+    fixture
+        .filesystem
+        .complete_client_root_refresh(
+            acquisition,
+            vec![ClientRoot {
+                uri: client_uri,
+                name: Some("client".to_owned()),
+            }],
+        )
+        .await
+        .expect("client root replacement");
+
+    let file_uri = url::Url::from_file_path(client.path().join("plain.txt"))
+        .expect("client file URI")
+        .to_string();
+    let file = fixture
+        .compiled
+        .read(&PathReference::parse(file_uri).expect("client file reference"))
+        .await
+        .expect("client file read");
+    let root_reference = file
+        .canonical_reference()
+        .strip_suffix("plain.txt")
+        .expect("canonical root prefix");
+    let catalog = fixture
+        .compiled
+        .read(&PathReference::parse("rfs://workspace").expect("workspace catalog"))
+        .await
+        .expect("replacement catalog");
+    assert_eq!(catalog.content(), format!("{root_reference} (primary)\n"));
+    assert!(!catalog.content().contains("rfs://workspace/workspace/"));
+}
 #[tokio::test]
 async fn routes_every_discovery_request_by_typed_family_only() {
     let fixture = fixture().await;

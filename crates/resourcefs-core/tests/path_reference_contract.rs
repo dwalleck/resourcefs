@@ -4,8 +4,8 @@ use std::{
 };
 
 use resourcefs_core::{
-    ErrorCategory, MAX_PATH_REFERENCE_BYTES, PathReference, WorkspaceAddress, WorkspacePath,
-    WorkspaceRoot, WorkspaceRootId, WorkspaceRootSet,
+    CatalogAddress, ErrorCategory, MAX_PATH_REFERENCE_BYTES, PathReference, ResourceAddress,
+    WorkspaceAddress, WorkspacePath, WorkspaceRoot, WorkspaceRootId, WorkspaceRootSet,
 };
 use serde::Deserialize;
 
@@ -166,6 +166,40 @@ fn workspace_root_sentinel_is_not_general_empty_path_input() {
             .category(),
         ErrorCategory::InvalidReference
     );
+}
+
+#[test]
+fn catalog_references_are_typed_with_one_alias() {
+    let sources = PathReference::parse("rfs://").expect("source catalog");
+    assert!(matches!(
+        sources.address(),
+        ResourceAddress::Catalog(CatalogAddress::Sources)
+    ));
+    assert_eq!(sources.requested(), "rfs://");
+
+    let workspace = PathReference::parse("rfs://workspace").expect("workspace catalog");
+    let alias = PathReference::parse("rfs://workspace/").expect("workspace catalog alias");
+    assert_eq!(workspace, alias);
+    assert!(matches!(
+        workspace.address(),
+        ResourceAddress::Catalog(CatalogAddress::Workspace)
+    ));
+    assert_eq!(workspace.requested(), "rfs://workspace");
+
+    for rejected in [
+        "rfs://:raw",
+        "rfs://workspace:raw",
+        "rfs://workspace/:raw",
+        "rfs://bogus",
+    ] {
+        assert_eq!(
+            PathReference::parse(rejected)
+                .expect_err("catalog neighbor must remain invalid")
+                .category(),
+            ErrorCategory::InvalidReference,
+            "{rejected}"
+        );
+    }
 }
 
 #[test]

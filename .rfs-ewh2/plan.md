@@ -98,7 +98,7 @@ Slices 1–5. Mergeable definition: exact catalog and root-directory references 
 
 **Stress fixture:** Both canonical catalogs plus the one alias and rejected selector neighbors; direct composite reads; a completed root replacement and gated refresh race; all four catalog search/glob calls while root/source delivery gates are armed. Expected: canonical typed identities, one complete root generation or existing `source_unavailable`, immutable SourceResources, and zero root/source I/O for discovery redirects.
 
-**Regression fence:** `crates/resourcefs-core/tests/path_reference_contract.rs::catalog_references_are_typed_with_one_alias`; `crates/resourcefs-sources/tests/compiled_sources_contract.rs::catalog_reads_route_by_typed_address_family`; `crates/resourcefs-sources/tests/filesystem_adapter_contract.rs::workspace_catalog_snapshot_never_mixes_root_generations`; `crates/resourcefs-mcp/tests/stdio_mcp_contract.rs::{namespace_catalog_tracks_client_root_replacement,catalog_search_and_glob_redirect_before_io}` — created in this slice.
+**Regression fence:** `crates/resourcefs-core/tests/path_reference_contract.rs::catalog_references_are_typed_with_one_alias`; `crates/resourcefs-sources/tests/compiled_sources_contract.rs::{catalog_reads_route_by_typed_address_family,workspace_catalog_snapshot_never_mixes_root_generations}`; `crates/resourcefs-mcp/tests/stdio_mcp_contract.rs::{namespace_catalog_tracks_client_root_replacement,catalog_search_and_glob_redirect_before_io}` — created in this slice.
 
 **Named mutation:** C1 moves catalog checks after generic workspace parsing; C5 snapshots `launch_view` instead of `active_view`; C8 removes the exact-catalog check from `GlobTarget::new`; C11 removes typed Catalog routing from `CompiledSources`; C12 sets `SourceResource.mutable` true for Catalog identities. Each named fence must turn red independently, then green after restoration.
 
@@ -117,7 +117,7 @@ Slices 1–5. Mergeable definition: exact catalog and root-directory references 
 **Commands and expected results:**
 - `cargo test -p resourcefs-core --test path_reference_contract catalog_references_are_typed_with_one_alias` → canonical catalogs and alias match the literal typed/canonical oracle; neighboring references retain categories. C1 and C12 mutations make it red.
 - `cargo test -p resourcefs-sources --test compiled_sources_contract catalog_reads_route_by_typed_address_family` → direct typed reads return both immutable catalog Resources without MCP. C11 and C12 mutations are red.
-- `cargo test -p resourcefs-sources --test filesystem_adapter_contract workspace_catalog_snapshot_never_mixes_root_generations` → gated refresh yields one generation or existing `source_unavailable`, never mixed. C5's launch-view mutation is red.
+- `cargo test -p resourcefs-sources --test compiled_sources_contract workspace_catalog_snapshot_never_mixes_root_generations` → gated refresh yields one generation or existing `source_unavailable`, never mixed. C5's launch-view mutation is red.
 - `cargo test -p resourcefs-mcp --test stdio_mcp_contract namespace_catalog_tracks_client_root_replacement` → the next read equals replacement roots, excludes removed roots, and changes content/tag exactly once.
 - `cargo test -p resourcefs-mcp --test stdio_mcp_contract catalog_search_and_glob_redirect_before_io` → all four calls return the approved error/redirect and leave roots/source gates untouched. C8's glob fallthrough mutation is red.
 

@@ -113,7 +113,7 @@ impl ReadEngine {
 
         let requested_artifact = match request.reference.address() {
             ResourceAddress::Artifact(address) => Some(address.clone()),
-            ResourceAddress::Workspace(_) => None,
+            ResourceAddress::Catalog(_) | ResourceAddress::Workspace(_) => None,
         };
         let requested_artifact_projection = request.reference.projection().is_some();
         let mut parts = source.into_parts();

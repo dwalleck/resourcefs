@@ -281,7 +281,9 @@ fn artifact_address(reference: &str) -> resourcefs_core::ArtifactAddress {
     let parsed = PathReference::parse(reference).expect("recovery Path Reference");
     match parsed.address() {
         ResourceAddress::Artifact(address) => address.clone(),
-        ResourceAddress::Workspace(_) => panic!("recovery must name an Artifact"),
+        ResourceAddress::Catalog(_) | ResourceAddress::Workspace(_) => {
+            panic!("recovery must name an Artifact")
+        }
     }
 }
 
@@ -559,6 +561,60 @@ async fn request_validation_precedes_adapter() {
         "C2 glob limit category"
     );
     assert_eq!(adapter.glob_calls(), 1, "C2 invalid glob reached adapter");
+}
+
+#[test]
+fn catalog_targets_redirect_to_read_during_request_validation() {
+    for (spelling, canonical) in [
+        ("rfs://", "rfs://"),
+        ("rfs://workspace", "rfs://workspace"),
+        ("rfs://workspace/", "rfs://workspace"),
+    ] {
+        let search = SearchRequest::new(
+            SearchTarget::resource(PathReference::parse(spelling).expect("catalog reference")),
+            "needle",
+            SearchOptions::default(),
+            0,
+            SearchLimits::default(),
+        )
+        .expect_err("catalog search must redirect");
+        assert_eq!(search.category(), ErrorCategory::UnsupportedProjection);
+        assert_eq!(
+            search.message(),
+            format!("catalog references are read-only discovery; use rfs_read {canonical}")
+        );
+
+        let glob = GlobTarget::new(spelling).expect_err("catalog glob must redirect");
+        assert_eq!(glob.category(), ErrorCategory::UnsupportedProjection);
+        assert_eq!(
+            glob.message(),
+            format!("catalog references are read-only discovery; use rfs_read {canonical}")
+        );
+    }
+}
+
+#[test]
+fn catalog_target_validation_production_budget() {
+    let reference = PathReference::parse("rfs://workspace").expect("workspace catalog");
+    let started = Instant::now();
+    for _ in 0..1_000 {
+        SearchRequest::new(
+            SearchTarget::resource(reference.clone()),
+            "needle",
+            SearchOptions::default(),
+            0,
+            SearchLimits::default(),
+        )
+        .expect_err("catalog search redirect");
+        GlobTarget::new("rfs://workspace").expect_err("catalog glob redirect");
+    }
+    let elapsed = started.elapsed();
+    if !cfg!(debug_assertions) {
+        assert!(
+            elapsed <= Duration::from_secs(2),
+            "2,000 catalog target validations exceeded the 1 ms/request budget: {elapsed:?}"
+        );
+    }
 }
 
 #[tokio::test]

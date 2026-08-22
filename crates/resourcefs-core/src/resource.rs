@@ -260,6 +260,10 @@ impl ReadResource {
 
 fn validate_canonical_identity(reference: &PathReference) -> Result<(), ResourceError> {
     let canonical = match reference.address() {
+        ResourceAddress::Catalog(address) => {
+            reference.projection().is_none()
+                && reference.requested() == address.canonical_reference()
+        }
         ResourceAddress::Workspace(WorkspaceAddress::Canonical { .. }) => true,
         ResourceAddress::Artifact(address) => {
             reference.projection().is_none() && canonical_artifact_reference(reference, address)
