@@ -3,6 +3,7 @@
 use std::error::Error;
 
 mod cli;
+mod logging;
 mod profile;
 mod render;
 mod server;

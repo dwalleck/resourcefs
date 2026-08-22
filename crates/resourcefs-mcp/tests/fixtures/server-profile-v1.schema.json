@@ -348,15 +348,18 @@
               "type": "string"
             },
             "path": {
+              "minLength": 1,
               "type": "string"
             },
             "retainFiles": {
-              "format": "uint",
-              "minimum": 0,
+              "format": "int64",
+              "maximum": 10,
+              "minimum": 1,
               "type": "integer"
             },
             "rotationBytes": {
-              "format": "uint",
+              "format": "int64",
+              "maximum": 10485760,
               "minimum": 0,
               "type": "integer"
             }

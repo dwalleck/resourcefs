@@ -429,6 +429,62 @@ fn session_configuration_resolves_paths_and_validates_the_signed_ttl_interval() 
     assert!(empty_cache.to_string().contains("session.cacheDirectory"));
 }
 
+#[test]
+fn logging_configuration_validates_the_signed_rotation_and_retention_intervals() {
+    let fixture = local_fixture();
+    let absolute_log = fixture.path().join("absolute.log");
+    for profile in [
+        json!({"schemaVersion":1}),
+        json!({"schemaVersion":1,"logging":{}}),
+        json!({"schemaVersion":1,"logging":{"level":"error","destination":{"kind":"stderr"}}}),
+        json!({"schemaVersion":1,"logging":{"level":"warn","destination":{"kind":"stderr"}}}),
+        json!({"schemaVersion":1,"logging":{"level":"info","destination":{"kind":"stderr"}}}),
+        json!({"schemaVersion":1,"logging":{"level":"debug","destination":{"kind":"stderr"}}}),
+        json!({"schemaVersion":1,"logging":{"destination":{"kind":"file","path":"relative.log","rotationBytes":0,"retainFiles":1}}}),
+        json!({"schemaVersion":1,"logging":{"destination":{"kind":"file","path":absolute_log,"rotationBytes":10_485_760,"retainFiles":10}}}),
+    ] {
+        parse_in(&profile, fixture.path())
+            .unwrap_or_else(|error| panic!("valid logging profile must decode: {error}"));
+    }
+
+    for (field, value, expected_kind) in [
+        ("rotationBytes", -1_i64, ProfileErrorKind::LimitExceeded),
+        ("rotationBytes", 10_485_761, ProfileErrorKind::LimitExceeded),
+        ("retainFiles", -1, ProfileErrorKind::LimitExceeded),
+        ("retainFiles", 0, ProfileErrorKind::LimitExceeded),
+        ("retainFiles", 11, ProfileErrorKind::LimitExceeded),
+    ] {
+        let mut profile = json!({
+            "schemaVersion":1,
+            "logging":{
+                "destination":{
+                    "kind":"file",
+                    "path":"resourcefs.log"
+                }
+            }
+        });
+        profile["logging"]["destination"][field] = json!(value);
+        let result = parse_in(&profile, fixture.path());
+        let error = result.expect_err("invalid logging limit must fail");
+        assert_eq!(error.kind(), expected_kind, "{field}={value}: {error}");
+        assert!(
+            error.to_string().contains(field),
+            "{field}={value} diagnostic must identify the field: {error}"
+        );
+    }
+
+    let empty_path = parse_in(
+        &json!({
+            "schemaVersion":1,
+            "logging":{"destination":{"kind":"file","path":""}}
+        }),
+        fixture.path(),
+    )
+    .expect_err("empty logging path");
+    assert_eq!(empty_path.kind(), ProfileErrorKind::InvalidProfile);
+    assert!(empty_path.to_string().contains("logging.destination.path"));
+}
+
 fn profile_with_limit(field: &str, value: i64) -> Value {
     let limits = match field {
         "text.bytes" => json!({"text":{"bytes":value}}),

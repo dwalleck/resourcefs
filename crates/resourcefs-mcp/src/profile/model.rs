@@ -3,6 +3,10 @@
     reason = "strict DTO fields are consumed by serde and schemars before every adapter uses their values"
 )]
 
+use crate::logging::{
+    DEFAULT_RETAINED_FILES, LogConfig, LogError, LogErrorKind, LogLevel, MAX_ROTATION_BYTES,
+};
+
 use resourcefs_core::{
     DiscoveryLimitInput, ErrorCategory, ServerLimits, ServerLimitsInput, StorageLimitInput,
     TextLimitInput,
@@ -123,6 +127,9 @@ pub struct ProfileDocument {
     #[serde(skip)]
     #[schemars(skip)]
     session_storage_config: Option<SessionStorageConfig>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    logging_config: Option<LogConfig>,
 }
 
 impl ProfileDocument {
@@ -206,6 +213,7 @@ impl ProfileDocument {
                 .unwrap_or_default()
                 .storage_config(base)?,
         );
+        profile.logging_config = Some(profile.logging.take().unwrap_or_default().config(base)?);
         super::validate::validate_profile(&profile)?;
         profile.static_sources = profile
             .sources()
@@ -250,6 +258,12 @@ impl ProfileDocument {
         self.session_storage_config
             .as_ref()
             .expect("decoded profile contains validated session storage configuration")
+    }
+
+    pub(crate) fn logging_config(&self) -> &LogConfig {
+        self.logging_config
+            .as_ref()
+            .expect("decoded profile contains validated logging configuration")
     }
 }
 
@@ -642,7 +656,7 @@ fn session_storage_profile_error(error: resourcefs_core::ResourceError) -> Profi
 }
 
 /// Bounded off-protocol logging configuration.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct LoggingProfile {
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
@@ -653,6 +667,37 @@ struct LoggingProfile {
     destination: Option<LogDestinationProfile>,
 }
 
+impl LoggingProfile {
+    fn config(self, base: &ConfigurationDirectory) -> Result<LogConfig, ProfileError> {
+        let level = self.level.unwrap_or(LogLevelProfile::Info).into();
+        let config = match self.destination.unwrap_or(LogDestinationProfile::Stderr) {
+            LogDestinationProfile::Stderr => Ok(LogConfig::stderr(level)),
+            LogDestinationProfile::File {
+                path,
+                rotation_bytes,
+                retain_files,
+            } => {
+                if path.is_empty() {
+                    return Err(ProfileError::new(
+                        ProfileErrorKind::InvalidProfile,
+                        "invalid logging configuration: logging.destination.path must not be empty",
+                    ));
+                }
+                let configured = std::path::PathBuf::from(path);
+                let path = if configured.is_absolute() {
+                    configured
+                } else {
+                    base.path().join(configured)
+                };
+                let rotation_bytes = rotation_bytes.unwrap_or(MAX_ROTATION_BYTES as i64);
+                let retain_files = retain_files.unwrap_or(DEFAULT_RETAINED_FILES as i64);
+                LogConfig::file(level, path, rotation_bytes, retain_files)
+            }
+        };
+        config.map_err(logging_profile_error)
+    }
+}
+
 /// Diagnostic severity floor.
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -661,6 +706,17 @@ enum LogLevelProfile {
     Warn,
     Info,
     Debug,
+}
+
+impl From<LogLevelProfile> for LogLevel {
+    fn from(level: LogLevelProfile) -> Self {
+        match level {
+            LogLevelProfile::Error => Self::Error,
+            LogLevelProfile::Warn => Self::Warn,
+            LogLevelProfile::Info => Self::Info,
+            LogLevelProfile::Debug => Self::Debug,
+        }
+    }
 }
 
 /// Diagnostic output destination.
@@ -674,14 +730,24 @@ enum LogLevelProfile {
 enum LogDestinationProfile {
     Stderr,
     File {
+        #[schemars(length(min = 1))]
         path: String,
         #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-        #[schemars(with = "usize")]
-        rotation_bytes: Option<usize>,
+        #[schemars(with = "i64", range(min = 0, max = 10_485_760))]
+        rotation_bytes: Option<i64>,
         #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-        #[schemars(with = "usize")]
-        retain_files: Option<usize>,
+        #[schemars(with = "i64", range(min = 1, max = 10))]
+        retain_files: Option<i64>,
     },
+}
+
+fn logging_profile_error(error: LogError) -> ProfileError {
+    let kind = match error.kind() {
+        LogErrorKind::InvalidConfig => ProfileErrorKind::InvalidProfile,
+        LogErrorKind::LimitExceeded => ProfileErrorKind::LimitExceeded,
+        LogErrorKind::Io => ProfileErrorKind::Io,
+    };
+    ProfileError::new(kind, format!("invalid logging configuration: {error}"))
 }
 
 /// One strict Portable Source configuration.
@@ -1528,4 +1594,50 @@ fn grants_or_default(grants: Option<MutationGrantsProfile>) -> MutationGrants {
             grants.delete.unwrap_or(false),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProfileDocument;
+    use crate::logging::{LogDestinationKind, LogLevel};
+
+    #[test]
+    fn logging_paths_resolve_from_the_profile_directory() {
+        let fixture = tempfile::tempdir().expect("profile directory");
+        let default = ProfileDocument::from_slice_in(br#"{"schemaVersion":1}"#, fixture.path())
+            .expect("default logging profile");
+        assert_eq!(default.logging_config().level(), LogLevel::Info);
+        assert_eq!(
+            default.logging_config().destination_kind(),
+            LogDestinationKind::Stderr
+        );
+
+        let relative = ProfileDocument::from_slice_in(
+            br#"{"schemaVersion":1,"logging":{"level":"debug","destination":{"kind":"file","path":"logs/resourcefs.log","rotationBytes":0,"retainFiles":10}}}"#,
+            fixture.path(),
+        )
+        .expect("relative logging profile");
+        let relative_config = relative.logging_config();
+        assert_eq!(relative_config.level(), LogLevel::Debug);
+        assert_eq!(relative_config.destination_kind(), LogDestinationKind::File);
+        assert_eq!(
+            relative_config.path(),
+            Some(fixture.path().join("logs/resourcefs.log").as_path())
+        );
+        assert_eq!(relative_config.rotation_bytes(), Some(0));
+        assert_eq!(relative_config.retained_files(), Some(10));
+
+        let absolute_path = fixture.path().join("absolute.log");
+        let encoded = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion":1,
+            "logging":{"destination":{"kind":"file","path":absolute_path}}
+        }))
+        .expect("absolute profile bytes");
+        let absolute = ProfileDocument::from_slice_in(&encoded, fixture.path())
+            .expect("absolute logging profile");
+        assert_eq!(
+            absolute.logging_config().path(),
+            Some(absolute_path.as_path())
+        );
+    }
 }
