@@ -49,7 +49,7 @@ Every tool result has:
 - a structured object whose output schema has root `type: "object"`;
 - stable semantic fields for contract version, canonical reference, content type, Version Tag, mutability, boundedness, and Recovery Reference where applicable.
 
-Operational failures are tool errors with stable categories such as invalid reference, not found, permission denied, version conflict, limit exceeded, source unavailable, unsupported projection, and ambiguous reference. Protocol/schema failures remain MCP errors.
+Operational failures are tool errors with stable categories: invalid reference, invalid pattern, invalid patch, not found, permission denied, version conflict, limit exceeded, source unavailable, unsupported projection, unsupported mutation, ambiguous reference, and cancelled. Protocol/schema failures remain MCP errors.
 
 MCP Resources and templates mirror every resolvable Path Reference when negotiated. They are additive application/UI affordances, not a second behavior model and not required for the tool workflow. Resource listing is bounded and paginated. Completion is fast and local; network-backed enumeration never runs on every keystroke. Only local/workspace and Path Session resources publish subscription changes initially.
 
