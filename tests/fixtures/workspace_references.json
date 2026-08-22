@@ -8,6 +8,8 @@
 {"kind": "parse", "input": "notes:raw:2-4", "platform": "all", "expected": {"status": "ok", "addressKind": "relative", "value": "notes:raw:2-4", "selector": "raw:2-4"}},
 {"kind": "parse", "input": "rfs://workspace/workspace/src/hello.txt", "platform": "all", "expected": {"status": "ok", "addressKind": "canonical", "root": "workspace", "value": "src/hello.txt", "selector": null}},
 {"kind": "parse", "input": "rfs://workspace/root-a/notes%3A2", "platform": "all", "expected": {"status": "ok", "addressKind": "canonical", "root": "root-a", "value": "notes:2", "selector": null}},
+{"kind": "parse", "input": "rfs://workspace/root-a/", "platform": "all", "expected": {"status": "ok", "addressKind": "canonical", "root": "root-a", "value": "", "selector": null}},
+{"kind": "parse", "input": "rfs://workspace/root-a", "platform": "all", "expected": {"status": "ok", "addressKind": "canonical", "root": "root-a", "value": "", "selector": null}},
 {"kind": "parse", "input": "file:///tmp/workspace/file.txt", "platform": "posix", "expected": {"status": "ok", "addressKind": "fileUri", "value": "file:///tmp/workspace/file.txt", "selector": null}},
 {"kind": "parse", "input": "file://localhost/tmp/workspace/file.txt", "platform": "posix", "expected": {"status": "ok", "addressKind": "fileUri", "value": "file:///tmp/workspace/file.txt", "selector": null}},
 {"kind": "parse", "input": "/tmp/workspace/file.txt", "platform": "posix", "expected": {"status": "ok", "addressKind": "absolute", "value": "/tmp/workspace/file.txt", "selector": null}},

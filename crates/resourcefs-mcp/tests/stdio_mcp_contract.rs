@@ -662,6 +662,32 @@ fn negotiates_required_revisions() {
 }
 
 #[test]
+fn catalog_root_lines_parse_and_teach() {
+    let fixture = WorkspaceFixture::new();
+    let mut process = McpProcess::start(&fixture.root);
+    process.initialize(VERSION_2026);
+    let expected = "Resource 'rfs://workspace/workspace/' is a directory; enumerate it with rfs_glob or read a file below it; bounded directory listings are tracked by rfs-hwlm";
+
+    for spelling in ["rfs://workspace/workspace/", "rfs://workspace/workspace"] {
+        let result = process.call_read(spelling);
+        assert_tool_error(&result, "unsupported_projection");
+        assert_eq!(
+            result["structuredContent"]["error"]["message"], expected,
+            "{spelling}"
+        );
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains(expected)),
+            "{spelling}: {result}"
+        );
+    }
+
+    let stderr = process.finish();
+    assert!(stderr.is_empty(), "unexpected server diagnostics: {stderr}");
+}
+
+#[test]
 fn lists_and_calls_discovery_tools() {
     let fixture = WorkspaceFixture::new();
     let mut process = McpProcess::start(&fixture.root);

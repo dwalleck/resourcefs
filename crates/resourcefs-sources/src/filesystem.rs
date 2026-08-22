@@ -807,7 +807,7 @@ enum OpenedWorkspaceEntry {
     Directory {
         directory: Dir,
         path: PathBuf,
-        reference: Option<PathReference>,
+        reference: PathReference,
     },
 }
 
@@ -818,10 +818,9 @@ impl OpenedWorkspaceEntry {
         }
     }
 
-    fn reference(&self) -> Option<&PathReference> {
+    fn reference(&self) -> &PathReference {
         match self {
-            Self::File { reference, .. } => Some(reference),
-            Self::Directory { reference, .. } => reference.as_ref(),
+            Self::File { reference, .. } | Self::Directory { reference, .. } => reference,
         }
     }
 
@@ -880,10 +879,7 @@ fn search_workspace(
         entry,
         projection,
     } = open_search_scope(view, target)?;
-    let delivery_identity = entry.reference().map_or_else(
-        || workspace_root_identity(&root),
-        |reference| reference.requested().to_owned(),
-    );
+    let delivery_identity = entry.reference().requested().to_owned();
 
     let mut records = Vec::new();
     let mut diagnostics = Vec::new();
@@ -1000,10 +996,7 @@ fn glob_workspace(
         }
         Err(error) => return Err(error),
     };
-    let delivery_identity = entry.reference().map_or_else(
-        || workspace_root_identity(&root),
-        |reference| reference.requested().to_owned(),
-    );
+    let delivery_identity = entry.reference().requested().to_owned();
     let controls = DiscoveryControls {
         gitignore: options.gitignore(),
         hidden: options.hidden(),
@@ -1058,9 +1051,9 @@ fn glob_workspace(
             path,
             reference,
         } => {
-            if let Some(reference) = reference.as_ref() {
+            if !path.as_os_str().is_empty() {
                 collect(
-                    reference,
+                    &reference,
                     GlobKind::Directory,
                     None,
                     &mut diagnostics,
@@ -1297,7 +1290,7 @@ fn open_workspace_entry(
         return Ok(OpenedWorkspaceEntry::Directory {
             directory,
             path: PathBuf::new(),
-            reference: None,
+            reference: PathReference::canonical(root.metadata.id().clone(), WorkspacePath::root()),
         });
     }
 
@@ -1317,7 +1310,7 @@ fn open_workspace_entry(
         return Ok(OpenedWorkspaceEntry::Directory {
             directory,
             path: final_workspace_path.as_path().to_owned(),
-            reference: Some(reference),
+            reference,
         });
     }
     if metadata.is_file() {
@@ -2001,9 +1994,6 @@ where
                     }
                     budget.charge_state(retained_path_state_bytes(path, 0)?)?;
                     seen_directories.insert(path.clone());
-                    let reference = reference
-                        .as_ref()
-                        .expect("only the traversal root has no canonical reference");
                     visit(reference, GlobKind::Directory, None, diagnostics, budget)?;
                     let child_ignores = final_ignores;
                     let pending_state_bytes =
@@ -2320,6 +2310,14 @@ fn read_address(
     let provisional =
         PathReference::canonical(resolved.root.metadata.id().clone(), resolved.path.clone());
     let identity = provisional.requested();
+    if resolved.path.is_root() {
+        return Err(ResourceError::new(
+            ErrorCategory::UnsupportedProjection,
+            format!(
+                "Resource '{identity}' is a directory; enumerate it with rfs_glob or read a file below it; bounded directory listings are tracked by rfs-hwlm"
+            ),
+        ));
+    }
     let mut file = open_capability_file(&resolved.root, &resolved.path, identity)?;
     let metadata = file
         .metadata()

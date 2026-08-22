@@ -100,6 +100,14 @@ impl WorkspacePath {
         Ok(Self(normalized))
     }
 
+    pub fn root() -> Self {
+        Self(PathBuf::new())
+    }
+
+    pub fn is_root(&self) -> bool {
+        self.0.as_os_str().is_empty()
+    }
+
     pub fn as_path(&self) -> &Path {
         &self.0
     }
@@ -322,7 +330,7 @@ pub struct PathReference {
 
 impl PathReference {
     pub fn parse(input: impl Into<String>) -> Result<Self, ResourceError> {
-        let requested = input.into();
+        let mut requested = input.into();
         validate_reference_input(&requested)?;
         if requested.starts_with(ARTIFACT_PREFIX) {
             let (base, projection) = projection_candidate_split(&requested).map_or_else(
@@ -352,6 +360,13 @@ impl PathReference {
                     Err(error) => (None, Some(error)),
                 }
             });
+        if matches!(
+            &literal,
+            WorkspaceAddress::Canonical { path, .. } if path.is_root()
+        ) && !requested.ends_with('/')
+        {
+            requested.push('/');
+        }
         Ok(Self {
             requested,
             address: ResourceAddress::Workspace(literal),
@@ -586,11 +601,12 @@ fn parse_workspace_address(input: &str) -> Result<WorkspaceAddress, ResourceErro
     }
 
     if let Some(workspace_path) = input.strip_prefix(WORKSPACE_PREFIX) {
-        let (root, path) = workspace_path.split_once('/').ok_or_else(|| {
-            invalid_reference("canonical workspace reference must include a root and path")
-        })?;
+        let (root, path) = match workspace_path.split_once('/') {
+            Some((root, "")) => (root, WorkspacePath::root()),
+            Some((root, path)) => (root, parse_workspace_path(path)?),
+            None => (workspace_path, WorkspacePath::root()),
+        };
         let root = WorkspaceRootId::new(root.to_owned())?;
-        let path = parse_workspace_path(path)?;
         return Ok(WorkspaceAddress::Canonical { root, path });
     }
     if input.starts_with("rfs:") {

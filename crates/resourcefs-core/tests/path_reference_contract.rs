@@ -132,6 +132,43 @@ fn canonical_construction_percent_encodes_ambiguous_component_characters() {
 }
 
 #[test]
+fn catalog_root_lines_parse_and_teach() {
+    let trailing =
+        PathReference::parse("rfs://workspace/root.with-dots/").expect("trailing root reference");
+    let slashless =
+        PathReference::parse("rfs://workspace/root.with-dots").expect("slashless root reference");
+
+    assert_eq!(trailing, slashless);
+    assert_eq!(trailing.requested(), "rfs://workspace/root.with-dots/");
+    let WorkspaceAddress::Canonical { root, path } = trailing
+        .workspace_address()
+        .expect("canonical workspace address")
+    else {
+        panic!("root reference must be canonical");
+    };
+    assert_eq!(root.as_str(), "root.with-dots");
+    assert!(path.is_root());
+}
+
+#[test]
+fn workspace_root_sentinel_is_not_general_empty_path_input() {
+    let root = WorkspacePath::root();
+    assert!(root.is_root());
+    assert_eq!(
+        WorkspacePath::new("")
+            .expect_err("empty relative path")
+            .category(),
+        ErrorCategory::InvalidReference
+    );
+    assert_eq!(
+        WorkspacePath::new(".")
+            .expect_err("dot relative path")
+            .category(),
+        ErrorCategory::InvalidReference
+    );
+}
+
+#[test]
 fn empty_root_sets_represent_scratch_only_authority() {
     let empty = WorkspaceRootSet::new(Vec::new(), None).expect("scratch-only root set");
     assert!(empty.roots().is_empty());

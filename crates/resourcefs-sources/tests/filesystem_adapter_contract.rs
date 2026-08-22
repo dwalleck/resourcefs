@@ -9,7 +9,7 @@ use resourcefs_core::{
     DiscoveryEngine, ErrorCategory, GlobKind, GlobLimits, GlobOptions, GlobRequest, GlobTarget,
     MAX_ARTIFACT_BYTES, MAX_TEXT_BYTES, MAX_WORKSPACE_ROOTS, OperationGuard, PathReference,
     SearchEngine, SearchLimits, SearchOptions, SearchRequest, SearchTarget, SourceAdapter,
-    WorkspaceRootId,
+    WorkspaceAddress, WorkspaceRootId,
 };
 use resourcefs_sources::{
     BackingPathVisibility, ClientRoot, FilesystemSource, LaunchRoot, LaunchRootSource,
@@ -78,6 +78,59 @@ async fn maps_missing_directory_and_binary_resources() {
         .await
         .expect_err("binary should fail");
     assert_eq!(binary.category(), ErrorCategory::UnsupportedProjection);
+}
+
+#[tokio::test]
+async fn root_directory_references_are_valid_and_teach() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let alpha = temporary.path().join("alpha");
+    let dotted = temporary.path().join("dotted");
+    let z_last = temporary.path().join("z-last");
+    for path in [&alpha, &dotted, &z_last] {
+        fs::create_dir(path).expect("workspace root");
+    }
+    let source = launch_source(
+        vec![
+            launch_root("alpha", &alpha),
+            launch_root("root.with-dots", &dotted),
+            launch_root("z-last", &z_last),
+        ],
+        None,
+        BackingPathVisibility::Hidden,
+    )
+    .await
+    .expect("multi-root source");
+    let expected = "Resource 'rfs://workspace/root.with-dots/' is a directory; enumerate it with rfs_glob or read a file below it; bounded directory listings are tracked by rfs-hwlm";
+
+    for spelling in [
+        "rfs://workspace/root.with-dots/",
+        "rfs://workspace/root.with-dots",
+    ] {
+        let error = source
+            .read(&reference(spelling))
+            .await
+            .expect_err("root directory read must teach");
+        assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
+        assert_eq!(error.message(), expected);
+    }
+
+    let file_uri =
+        url::Url::from_directory_path(fs::canonicalize(&dotted).expect("canonical dotted root"))
+            .expect("file URI")
+            .to_string();
+    let file_reference = reference(&file_uri);
+    assert!(matches!(
+        file_reference.workspace_address(),
+        Some(WorkspaceAddress::FileUri(_))
+    ));
+    assert_eq!(
+        source
+            .read(&file_reference)
+            .await
+            .expect_err("file URI root is still a directory")
+            .category(),
+        ErrorCategory::UnsupportedProjection
+    );
 }
 
 #[tokio::test]
