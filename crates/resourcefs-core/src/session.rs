@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
 
-use crate::{ArtifactAddress, ErrorCategory, ResourceError, ServerLimits};
+use crate::{
+    ArtifactAddress, DisplayedLineRange, ErrorCategory, ResourceError, ServerLimits, VersionTag,
+};
 
 pub const MAX_SESSION_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_SESSION_ARTIFACTS: usize = 1_000;
@@ -142,6 +144,33 @@ struct SessionState {
     used_bytes: usize,
     records: HashSet<ArtifactId>,
     digest_index: HashMap<[u8; 32], Vec<ArtifactId>>,
+    snapshots: HashMap<SnapshotKey, SeenSnapshot>,
+    snapshot_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SnapshotKey {
+    canonical_reference: String,
+    version_tag: VersionTag,
+}
+
+#[derive(Debug, Clone)]
+struct SeenSnapshot {
+    ranges: Vec<DisplayedLineRange>,
+    displayed_eof: bool,
+}
+
+struct SeenRecord<'a> {
+    canonical_reference: &'a str,
+    version_tag: &'a VersionTag,
+    ranges: &'a [DisplayedLineRange],
+    displayed_eof: bool,
+}
+
+struct SnapshotUpdate {
+    key: SnapshotKey,
+    snapshot: SeenSnapshot,
+    next_snapshot_bytes: usize,
 }
 
 impl PathSession {
@@ -159,6 +188,8 @@ impl PathSession {
                     used_bytes: 0,
                     records: HashSet::new(),
                     digest_index: HashMap::new(),
+                    snapshots: HashMap::new(),
+                    snapshot_bytes: 0,
                 }),
                 storage,
                 limits,
@@ -189,7 +220,32 @@ impl PathSession {
         operation: &OperationGuard,
     ) -> Result<ArtifactAddress, ResourceError> {
         let digest: [u8; 32] = Sha256::digest(content.as_bytes()).into();
-        self.retain_with_digest(content, digest, operation).await
+        self.retain_with_digest(content, digest, operation, None)
+            .await
+    }
+
+    pub(crate) async fn retain_with_seen(
+        &self,
+        content: &str,
+        operation: &OperationGuard,
+        canonical_reference: &str,
+        version_tag: &VersionTag,
+        ranges: &[DisplayedLineRange],
+        displayed_eof: bool,
+    ) -> Result<ArtifactAddress, ResourceError> {
+        let digest: [u8; 32] = Sha256::digest(content.as_bytes()).into();
+        self.retain_with_digest(
+            content,
+            digest,
+            operation,
+            Some(SeenRecord {
+                canonical_reference,
+                version_tag,
+                ranges,
+                displayed_eof,
+            }),
+        )
+        .await
     }
 
     #[cfg(feature = "test-support")]
@@ -199,7 +255,8 @@ impl PathSession {
         digest: [u8; 32],
         operation: &OperationGuard,
     ) -> Result<ArtifactAddress, ResourceError> {
-        self.retain_with_digest(content, digest, operation).await
+        self.retain_with_digest(content, digest, operation, None)
+            .await
     }
 
     async fn retain_with_digest(
@@ -207,6 +264,7 @@ impl PathSession {
         content: &str,
         digest: [u8; 32],
         operation: &OperationGuard,
+        seen: Option<SeenRecord<'_>>,
     ) -> Result<ArtifactAddress, ResourceError> {
         let content_bytes = content.as_bytes();
         if content_bytes.len() > self.inner.limits.object_bytes() {
@@ -222,9 +280,26 @@ impl PathSession {
 
         let mut state = self.inner.admission.lock().await;
         ensure_commit_live(self, operation)?;
+        let snapshot_update = seen
+            .map(|record| {
+                prepare_snapshot_update(&state, record, self.inner.limits.session_bytes())
+            })
+            .transpose()?;
+        let next_snapshot_bytes = snapshot_update
+            .as_ref()
+            .map_or(state.snapshot_bytes, |update| update.next_snapshot_bytes);
+
         if let Some(candidates) = state.digest_index.get(&digest).cloned() {
             for id in candidates {
                 if self.inner.storage.content_equals(id, content_bytes).await? {
+                    let next_used_bytes = combined_session_bytes(
+                        &state,
+                        next_snapshot_bytes,
+                        0,
+                        self.inner.limits.session_bytes(),
+                    )?;
+                    apply_snapshot_update(&mut state, snapshot_update);
+                    state.used_bytes = next_used_bytes;
                     return self.address(id);
                 }
             }
@@ -238,13 +313,12 @@ impl PathSession {
                 ),
             ));
         }
-        let resulting_bytes = state
-            .used_bytes
-            .checked_add(content_bytes.len())
-            .ok_or_else(|| session_quota_error(self.inner.limits.session_bytes()))?;
-        if resulting_bytes > self.inner.limits.session_bytes() {
-            return Err(session_quota_error(self.inner.limits.session_bytes()));
-        }
+        let resulting_bytes = combined_session_bytes(
+            &state,
+            next_snapshot_bytes,
+            content_bytes.len(),
+            self.inner.limits.session_bytes(),
+        )?;
 
         let id = ArtifactId::new(state.next_object_id)?;
         state.next_object_id = state.next_object_id.checked_add(1).ok_or_else(|| {
@@ -261,6 +335,7 @@ impl PathSession {
 
         state.records.insert(id);
         state.digest_index.entry(digest).or_default().push(id);
+        apply_snapshot_update(&mut state, snapshot_update);
         state.used_bytes = resulting_bytes;
         self.address(id)
     }
@@ -279,6 +354,70 @@ impl PathSession {
             return Err(artifact_not_found());
         }
         content
+    }
+
+    pub(crate) async fn record_seen(
+        &self,
+        canonical_reference: &str,
+        version_tag: &VersionTag,
+        ranges: &[DisplayedLineRange],
+        displayed_eof: bool,
+    ) -> Result<(), ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_catalog_error());
+        }
+        let mut state = self.inner.admission.lock().await;
+        if !self.is_active() {
+            return Err(inactive_catalog_error());
+        }
+        let update = prepare_snapshot_update(
+            &state,
+            SeenRecord {
+                canonical_reference,
+                version_tag,
+                ranges,
+                displayed_eof,
+            },
+            self.inner.limits.session_bytes(),
+        )?;
+        let next_used_bytes = combined_session_bytes(
+            &state,
+            update.next_snapshot_bytes,
+            0,
+            self.inner.limits.session_bytes(),
+        )?;
+        apply_snapshot_update(&mut state, Some(update));
+        state.used_bytes = next_used_bytes;
+        Ok(())
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn record_seen_for_test(
+        &self,
+        canonical_reference: &str,
+        version_tag: &VersionTag,
+        ranges: &[DisplayedLineRange],
+        displayed_eof: bool,
+    ) -> Result<(), ResourceError> {
+        self.record_seen(canonical_reference, version_tag, ranges, displayed_eof)
+            .await
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn seen_snapshot_for_test(
+        &self,
+        canonical_reference: &str,
+        version_tag: &VersionTag,
+    ) -> Option<(Vec<DisplayedLineRange>, bool)> {
+        let state = self.inner.admission.lock().await;
+        let key = SnapshotKey {
+            canonical_reference: canonical_reference.to_owned(),
+            version_tag: version_tag.clone(),
+        };
+        state
+            .snapshots
+            .get(&key)
+            .map(|snapshot| (snapshot.ranges.clone(), snapshot.displayed_eof))
     }
 
     pub async fn used_bytes(&self) -> usize {
@@ -313,6 +452,105 @@ impl PathSession {
     fn address(&self, id: ArtifactId) -> Result<ArtifactAddress, ResourceError> {
         ArtifactAddress::new(self.inner.token.as_str(), id.get())
     }
+}
+
+fn snapshot_allocation_bytes(snapshot: &SeenSnapshot) -> usize {
+    snapshot.ranges.capacity() * std::mem::size_of::<DisplayedLineRange>()
+        + std::mem::size_of::<bool>()
+}
+
+fn merge_seen_ranges(
+    existing: &[DisplayedLineRange],
+    incoming: &[DisplayedLineRange],
+) -> Result<Vec<DisplayedLineRange>, ResourceError> {
+    let mut ranges = Vec::with_capacity(existing.len().saturating_add(incoming.len()));
+    ranges.extend_from_slice(existing);
+    ranges.extend_from_slice(incoming);
+    ranges.sort_unstable_by_key(|range| range.start_line());
+    let mut merged: Vec<DisplayedLineRange> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if let Some(last) = merged.last_mut()
+            && last
+                .end_line()
+                .checked_add(1)
+                .is_some_and(|next| next >= range.start_line())
+        {
+            *last =
+                DisplayedLineRange::new(last.start_line(), last.end_line().max(range.end_line()))?;
+        } else {
+            merged.push(range);
+        }
+    }
+    merged.shrink_to_fit();
+    Ok(merged)
+}
+
+fn prepare_snapshot_update(
+    state: &SessionState,
+    seen: SeenRecord<'_>,
+    session_limit: usize,
+) -> Result<SnapshotUpdate, ResourceError> {
+    let key = SnapshotKey {
+        canonical_reference: seen.canonical_reference.to_owned(),
+        version_tag: seen.version_tag.clone(),
+    };
+    let existing = state.snapshots.get(&key);
+    let snapshot = SeenSnapshot {
+        ranges: merge_seen_ranges(
+            existing.map_or(&[], |snapshot| snapshot.ranges.as_slice()),
+            seen.ranges,
+        )?,
+        displayed_eof: seen.displayed_eof
+            || existing.is_some_and(|snapshot| snapshot.displayed_eof),
+    };
+    let previous_bytes = existing.map_or(0, snapshot_allocation_bytes);
+    let key_bytes = if existing.is_none() {
+        seen.canonical_reference
+            .len()
+            .checked_add(seen.version_tag.as_str().len())
+            .ok_or_else(|| session_quota_error(session_limit))?
+    } else {
+        0
+    };
+    let next_snapshot_bytes = state
+        .snapshot_bytes
+        .checked_sub(previous_bytes)
+        .and_then(|bytes| bytes.checked_add(key_bytes))
+        .and_then(|bytes| bytes.checked_add(snapshot_allocation_bytes(&snapshot)))
+        .ok_or_else(|| session_quota_error(session_limit))?;
+    Ok(SnapshotUpdate {
+        key,
+        snapshot,
+        next_snapshot_bytes,
+    })
+}
+
+fn combined_session_bytes(
+    state: &SessionState,
+    next_snapshot_bytes: usize,
+    added_artifact_bytes: usize,
+    session_limit: usize,
+) -> Result<usize, ResourceError> {
+    let artifact_bytes = state
+        .used_bytes
+        .checked_sub(state.snapshot_bytes)
+        .ok_or_else(|| session_quota_error(session_limit))?;
+    let resulting = artifact_bytes
+        .checked_add(added_artifact_bytes)
+        .and_then(|bytes| bytes.checked_add(next_snapshot_bytes))
+        .ok_or_else(|| session_quota_error(session_limit))?;
+    if resulting > session_limit {
+        return Err(session_quota_error(session_limit));
+    }
+    Ok(resulting)
+}
+
+fn apply_snapshot_update(state: &mut SessionState, update: Option<SnapshotUpdate>) {
+    let Some(update) = update else {
+        return;
+    };
+    state.snapshot_bytes = update.next_snapshot_bytes;
+    state.snapshots.insert(update.key, update.snapshot);
 }
 
 fn ensure_commit_live(

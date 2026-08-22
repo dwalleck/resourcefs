@@ -9,9 +9,10 @@ use std::{
 
 use async_trait::async_trait;
 use resourcefs_core::{
-    ArtifactAddress, ArtifactId, ErrorCategory, MAX_ARTIFACT_BYTES, MAX_SESSION_ARTIFACTS,
-    MAX_SESSION_BYTES, OperationGuard, PathReference, PathSession, ResourceError, ServerLimits,
-    ServerLimitsInput, SessionStorage, SessionToken, StorageLimitInput,
+    ArtifactAddress, ArtifactId, DisplayedLineRange, ErrorCategory, MAX_ARTIFACT_BYTES,
+    MAX_SESSION_ARTIFACTS, MAX_SESSION_BYTES, OperationGuard, PathReference, PathSession,
+    ResourceError, ServerLimits, ServerLimitsInput, SessionStorage, SessionToken,
+    StorageLimitInput, VersionTag,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Barrier, Mutex, Notify};
@@ -170,6 +171,66 @@ fn session(value: u8, storage: Arc<FakeStorage>) -> PathSession {
 fn session_with_limits(value: u8, storage: Arc<FakeStorage>, limits: ServerLimits) -> PathSession {
     let trait_storage: Arc<dyn SessionStorage> = storage;
     PathSession::new(token(value), trait_storage, limits)
+}
+
+#[tokio::test]
+async fn seen_regions_union_only_within_one_tag_and_session() {
+    let first = session(30, Arc::new(FakeStorage::default()));
+    let second = session(31, Arc::new(FakeStorage::default()));
+    let original = VersionTag::from_content(b"one\ntwo\nthree\n");
+    let changed = VersionTag::from_content(b"one\nTWO\nthree\n");
+    let first_two = DisplayedLineRange::new(1, 2).expect("first range");
+    let last_two = DisplayedLineRange::new(2, 3).expect("second range");
+
+    first
+        .record_seen_for_test(
+            "rfs://workspace/workspace/fixture.txt",
+            &original,
+            &[first_two],
+            false,
+        )
+        .await
+        .expect("record first region");
+    first
+        .record_seen_for_test(
+            "rfs://workspace/workspace/fixture.txt",
+            &original,
+            &[last_two],
+            true,
+        )
+        .await
+        .expect("union second region");
+    first
+        .record_seen_for_test(
+            "rfs://workspace/workspace/fixture.txt",
+            &changed,
+            &[last_two],
+            false,
+        )
+        .await
+        .expect("record changed tag");
+
+    assert_eq!(
+        first
+            .seen_snapshot_for_test("rfs://workspace/workspace/fixture.txt", &original)
+            .await,
+        Some((
+            vec![DisplayedLineRange::new(1, 3).expect("merged range")],
+            true
+        ))
+    );
+    assert_eq!(
+        first
+            .seen_snapshot_for_test("rfs://workspace/workspace/fixture.txt", &changed)
+            .await,
+        Some((vec![last_two], false))
+    );
+    assert_eq!(
+        second
+            .seen_snapshot_for_test("rfs://workspace/workspace/fixture.txt", &original)
+            .await,
+        None
+    );
 }
 
 #[tokio::test]

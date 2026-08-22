@@ -1083,6 +1083,11 @@ fn renders_complete_success_and_errors() {
         assert_eq!(structured["content"], "fixture text\n");
         assert_eq!(structured["mutable"], false);
         assert_eq!(structured["bounded"], false);
+        assert_eq!(
+            structured["displayedRanges"],
+            json!([{"startLine": 1, "endLine": 1}])
+        );
+        assert_eq!(structured["displayedEof"], true);
         assert!(
             structured["versionTag"]
                 .as_str()
@@ -1092,14 +1097,14 @@ fn renders_complete_success_and_errors() {
         assert_eq!(
             text,
             format!(
-                "[{}#{}]\n{}",
+                "[{}#{}]\nDisplayed Lines: 1-1\nDisplayed EOF: true\n{}",
                 structured["canonicalReference"]
                     .as_str()
                     .expect("canonical reference"),
                 structured["versionTag"].as_str().expect("Version Tag"),
                 structured["content"].as_str().expect("structured content")
             ),
-            "complete success must render the header, metadata-free body, and exact content"
+            "complete success must render the header, coordinate metadata, and exact content"
         );
         assert!(
             !text.contains("Recovery Reference:"),
@@ -1112,6 +1117,29 @@ fn renders_complete_success_and_errors() {
 
         let canonical = process.call_read("rfs://workspace/workspace/fixture.txt");
         assert_eq!(canonical["structuredContent"]["content"], "fixture text\n");
+
+        let numbered = process.call_read_arguments(json!({
+            "path": "fixture.txt",
+            "numbered": true
+        }));
+        assert_eq!(
+            numbered["structuredContent"]["content"], "fixture text\n",
+            "numbering never changes structured content"
+        );
+        assert_eq!(
+            numbered["content"][0]["text"]
+                .as_str()
+                .expect("numbered text"),
+            format!(
+                "[{}#{}]\nDisplayed Lines: 1-1\nDisplayed EOF: true\n1:fixture text\n",
+                numbered["structuredContent"]["canonicalReference"]
+                    .as_str()
+                    .expect("canonical reference"),
+                numbered["structuredContent"]["versionTag"]
+                    .as_str()
+                    .expect("Version Tag"),
+            )
+        );
 
         let unicode = process.call_read("unicode space.txt");
         assert_eq!(
@@ -1182,7 +1210,7 @@ fn renders_complete_success_and_errors() {
         assert_eq!(
             over_text,
             format!(
-                "[{}#{}]\nRecovery Reference: {recovery}\nContinuation Reference: {continuation}\n{}",
+                "[{}#{}]\nDisplayed Lines: 1-96\nDisplayed EOF: false\nRecovery Reference: {recovery}\nContinuation Reference: {continuation}\n{}",
                 over_structured["canonicalReference"]
                     .as_str()
                     .expect("bounded canonical reference"),
@@ -1191,7 +1219,7 @@ fn renders_complete_success_and_errors() {
                     .expect("bounded Version Tag"),
                 maximum_text(),
             ),
-            "bounded text must render the header, both references, and the exact page content"
+            "bounded text must render coordinate metadata, both references, and exact page content"
         );
 
         let final_page = process.call_read(&continuation);
@@ -1222,7 +1250,7 @@ fn renders_complete_success_and_errors() {
         assert_eq!(
             final_text,
             format!(
-                "[{}#{}]\nRecovery Reference: {recovery}\n{}",
+                "[{}#{}]\nDisplayed Lines: 1-1\nDisplayed EOF: true\nRecovery Reference: {recovery}\n{}",
                 final_structured["canonicalReference"]
                     .as_str()
                     .expect("final canonical reference"),
@@ -1231,7 +1259,7 @@ fn renders_complete_success_and_errors() {
                     .expect("final Version Tag"),
                 "x",
             ),
-            "the final page must render the header, the stable Recovery Reference, and no continuation"
+            "the final page must render coordinate metadata, the stable Recovery Reference, and no continuation"
         );
 
         let malformed = process.request("tools/call", json!({"name": "rfs_read", "arguments": {}}));
@@ -1818,6 +1846,8 @@ fn catalogs_use_common_read_result_shape() {
                 "content",
                 "contentType",
                 "contractVersion",
+                "displayedEof",
+                "displayedRanges",
                 "mutable",
                 "ok",
                 "requestedPath",
@@ -1835,10 +1865,21 @@ fn catalogs_use_common_read_result_shape() {
         assert_eq!(structured["mutable"], false, "{path}");
         assert_eq!(structured["bounded"], false, "{path}");
         assert_eq!(structured["content"], expected_content, "{path}");
+        let displayed = structured["displayedRanges"]
+            .as_array()
+            .expect("catalog displayed ranges");
+        assert_eq!(displayed.len(), 1, "{path}");
+        assert_eq!(displayed[0]["startLine"], 1, "{path}");
+        assert_eq!(structured["displayedEof"], true, "{path}");
+        let end_line = displayed[0]["endLine"]
+            .as_u64()
+            .expect("catalog displayed end line");
         let tag = structured["versionTag"].as_str().expect("Version Tag");
         assert_eq!(
             result["content"][0]["text"],
-            format!("[{canonical}#{tag}]\n{expected_content}"),
+            format!(
+                "[{canonical}#{tag}]\nDisplayed Lines: 1-{end_line}\nDisplayed EOF: true\n{expected_content}"
+            ),
             "{path}"
         );
     }

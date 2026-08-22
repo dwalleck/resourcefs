@@ -36,6 +36,126 @@ impl ArtifactProjectionOrigin {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayedLineRange {
+    start_line: u64,
+    end_line: u64,
+}
+
+impl DisplayedLineRange {
+    pub fn new(start_line: u64, end_line: u64) -> Result<Self, ResourceError> {
+        if start_line == 0 || end_line < start_line {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "displayed line ranges must be positive and ascending",
+            ));
+        }
+        Ok(Self {
+            start_line,
+            end_line,
+        })
+    }
+
+    pub const fn start_line(self) -> u64 {
+        self.start_line
+    }
+
+    pub const fn end_line(self) -> u64 {
+        self.end_line
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectionSpan {
+    output_start: usize,
+    output_end: usize,
+    start_line: u64,
+    end_line: u64,
+    reaches_eof: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectionMetadata {
+    spans: Vec<ProjectionSpan>,
+    source_eof: bool,
+}
+
+impl ProjectionMetadata {
+    fn complete(content: &str) -> Self {
+        let lines = line_count(content);
+        Self {
+            spans: (lines != 0)
+                .then_some(ProjectionSpan {
+                    output_start: 0,
+                    output_end: content.len(),
+                    start_line: 1,
+                    end_line: lines,
+                    reaches_eof: true,
+                })
+                .into_iter()
+                .collect(),
+            source_eof: true,
+        }
+    }
+
+    fn displayed_prefix(
+        &self,
+        content: &str,
+        prefix: usize,
+    ) -> (Vec<DisplayedLineRange>, Vec<u64>, bool) {
+        let mut ranges = Vec::new();
+        let mut line_numbers = Vec::new();
+        for span in &self.spans {
+            if span.output_start >= prefix {
+                break;
+            }
+            let visible_end = span.output_end.min(prefix);
+            let visible = &content[span.output_start..visible_end];
+            if visible.is_empty() {
+                continue;
+            }
+            let terminators = visible.bytes().filter(|byte| *byte == b'\n').count() as u64;
+            let rendered_lines = terminators + u64::from(!visible.ends_with('\n'));
+            line_numbers.extend(span.start_line..span.start_line + rendered_lines);
+
+            let complete_lines = terminators
+                + u64::from(
+                    visible_end == span.output_end && span.reaches_eof && !visible.ends_with('\n'),
+                );
+            if complete_lines != 0 {
+                push_merged_range(
+                    &mut ranges,
+                    DisplayedLineRange {
+                        start_line: span.start_line,
+                        end_line: span.start_line + complete_lines - 1,
+                    },
+                );
+            }
+        }
+        let displayed_eof = self.source_eof
+            && self
+                .spans
+                .last()
+                .is_none_or(|span| prefix >= span.output_end);
+        (ranges, line_numbers, displayed_eof)
+    }
+}
+
+fn push_merged_range(ranges: &mut Vec<DisplayedLineRange>, incoming: DisplayedLineRange) {
+    if let Some(last) = ranges.last_mut()
+        && last.end_line.checked_add(1) == Some(incoming.start_line)
+    {
+        last.end_line = incoming.end_line;
+        return;
+    }
+    ranges.push(incoming);
+}
+
+fn line_count(content: &str) -> u64 {
+    content.bytes().filter(|byte| *byte == b'\n').count() as u64
+        + u64::from(!content.is_empty() && !content.ends_with('\n'))
+}
+
 /// Complete authoritative UTF-8 projection returned by a Source Adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceResource {
@@ -47,6 +167,7 @@ pub struct SourceResource {
     artifact_identity: bool,
     artifact_origin: Option<ArtifactProjectionOrigin>,
     content: String,
+    projection: ProjectionMetadata,
 }
 
 impl SourceResource {
@@ -63,6 +184,7 @@ impl SourceResource {
     ) -> Result<Self, ResourceError> {
         validate_canonical_identity(&reference)?;
         let artifact_identity = matches!(reference.address(), ResourceAddress::Artifact(_));
+        let projection = ProjectionMetadata::complete(&content);
         Ok(Self {
             canonical_reference: reference.requested().to_owned(),
             content_type: TEXT_CONTENT_TYPE,
@@ -72,6 +194,40 @@ impl SourceResource {
             artifact_identity,
             artifact_origin: None,
             content,
+            projection,
+        })
+    }
+
+    pub fn selected_text(
+        reference: PathReference,
+        selected: crate::selector::SelectedText,
+    ) -> Result<Self, ResourceError> {
+        validate_canonical_identity(&reference)?;
+        let artifact_identity = matches!(reference.address(), ResourceAddress::Artifact(_));
+        let (content, version_tag, spans, source_eof) = selected.into_projected_parts();
+        let projection = ProjectionMetadata {
+            spans: spans
+                .into_iter()
+                .map(|span| ProjectionSpan {
+                    output_start: span.output_start,
+                    output_end: span.output_end,
+                    start_line: span.start_line,
+                    end_line: span.end_line,
+                    reaches_eof: span.reaches_eof,
+                })
+                .collect(),
+            source_eof,
+        };
+        Ok(Self {
+            canonical_reference: reference.requested().to_owned(),
+            content_type: TEXT_CONTENT_TYPE,
+            version_tag,
+            mutable: false,
+            backing_file_uri: None,
+            artifact_identity,
+            artifact_origin: None,
+            content,
+            projection,
         })
     }
 
@@ -134,6 +290,7 @@ impl SourceResource {
             backing_file_uri: self.backing_file_uri,
             artifact_origin: self.artifact_origin,
             content: self.content,
+            projection: self.projection,
         }
     }
 }
@@ -146,6 +303,16 @@ pub(crate) struct SourceResourceParts {
     pub backing_file_uri: Option<String>,
     pub artifact_origin: Option<ArtifactProjectionOrigin>,
     pub content: String,
+    pub projection: ProjectionMetadata,
+}
+
+impl SourceResourceParts {
+    pub(crate) fn displayed_prefix(
+        &self,
+        prefix: usize,
+    ) -> (Vec<DisplayedLineRange>, Vec<u64>, bool) {
+        self.projection.displayed_prefix(&self.content, prefix)
+    }
 }
 
 /// Bounded source-neutral result returned to an MCP renderer.
@@ -160,6 +327,10 @@ pub struct ReadResource {
     recovery_reference: Option<String>,
     continuation_reference: Option<String>,
     content: String,
+    displayed_ranges: Vec<DisplayedLineRange>,
+    displayed_eof: bool,
+    display_line_numbers: Vec<u64>,
+    numbered: bool,
 }
 
 impl ReadResource {
@@ -180,7 +351,8 @@ impl ReadResource {
     }
 
     fn from_source(source: SourceResource) -> Result<Self, ResourceError> {
-        Self::from_parts(source.into_parts(), false, None, None)
+        let content_len = source.content().len();
+        Self::from_parts(source.into_parts(), false, None, None, content_len, false)
     }
 
     pub(crate) fn from_parts(
@@ -188,6 +360,8 @@ impl ReadResource {
         bounded: bool,
         recovery_reference: Option<String>,
         continuation_reference: Option<String>,
+        page_end: usize,
+        numbered: bool,
     ) -> Result<Self, ResourceError> {
         if bounded != continuation_reference.is_some() {
             return Err(ResourceError::new(
@@ -195,6 +369,9 @@ impl ReadResource {
                 "bounded reads must carry exactly one progressing continuation",
             ));
         }
+        let (displayed_ranges, display_line_numbers, displayed_eof) = source
+            .projection
+            .displayed_prefix(&source.content, page_end);
         Ok(Self {
             canonical_reference: source.canonical_reference,
             content_type: source.content_type,
@@ -205,6 +382,10 @@ impl ReadResource {
             recovery_reference,
             continuation_reference,
             content: source.content,
+            displayed_ranges,
+            displayed_eof,
+            display_line_numbers,
+            numbered,
         })
     }
 
@@ -226,6 +407,22 @@ impl ReadResource {
 
     pub const fn is_bounded(&self) -> bool {
         self.bounded
+    }
+
+    pub fn displayed_ranges(&self) -> &[DisplayedLineRange] {
+        &self.displayed_ranges
+    }
+
+    pub const fn displayed_eof(&self) -> bool {
+        self.displayed_eof
+    }
+
+    pub fn display_line_numbers(&self) -> &[u64] {
+        &self.display_line_numbers
+    }
+
+    pub const fn is_numbered(&self) -> bool {
+        self.numbered
     }
 
     pub fn with_backing_file_uri(

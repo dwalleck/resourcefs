@@ -10,11 +10,11 @@ use std::{
 
 use async_trait::async_trait;
 use resourcefs_core::{
-    ArtifactAddress, ArtifactId, ArtifactProjectionOrigin, ErrorCategory, LineSelector,
-    MAX_ARTIFACT_BYTES, OperationGuard, PathReference, PathSession, ProjectionSelector, ReadEngine,
-    ReadRequest, ResourceAddress, ResourceError, ServerLimits, ServerLimitsInput, SessionStorage,
-    SessionToken, SourceAdapter, SourceResource, TextLimitInput, TextLimits, VersionTag,
-    WorkspacePath, WorkspaceRootId, select_utf8,
+    ArtifactAddress, ArtifactId, ArtifactProjectionOrigin, DisplayedLineRange, ErrorCategory,
+    LineSelector, MAX_ARTIFACT_BYTES, OperationGuard, PathReference, PathSession,
+    ProjectionSelector, ReadEngine, ReadRequest, ResourceAddress, ResourceError, ServerLimits,
+    ServerLimitsInput, SessionStorage, SessionToken, SourceAdapter, SourceResource, TextLimitInput,
+    TextLimits, VersionTag, WorkspacePath, WorkspaceRootId, select_utf8,
 };
 use tokio::sync::Mutex;
 
@@ -76,10 +76,26 @@ impl SourceAdapter for SessionBackedSource {
                 ErrorCategory::UnsupportedProjection,
                 "test source does not implement catalog Resources",
             )),
-            ResourceAddress::Workspace(_) => SourceResource::text(
-                workspace_reference(),
-                self.workspace_content.as_str().to_owned(),
-            ),
+            ResourceAddress::Workspace(_) => {
+                let projection = reference.projection().or_else(|| {
+                    reference
+                        .selector_candidate()
+                        .map(|candidate| candidate.selector())
+                });
+                match projection {
+                    Some(projection) => {
+                        let selected = select_utf8(
+                            Cursor::new(self.workspace_content.as_bytes()),
+                            Some(projection),
+                        )?;
+                        SourceResource::selected_text(workspace_reference(), selected)
+                    }
+                    None => SourceResource::text(
+                        workspace_reference(),
+                        self.workspace_content.as_str().to_owned(),
+                    ),
+                }
+            }
             ResourceAddress::Artifact(address) => self.read_artifact(reference, address).await,
         }
     }
@@ -161,13 +177,85 @@ impl Harness {
     async fn read(
         &self,
         reference: PathReference,
+
         limits: TextLimits,
     ) -> resourcefs_core::ReadResource {
         self.engine
-            .read(ReadRequest { reference, limits }, &OperationGuard::new())
+            .read(
+                ReadRequest {
+                    reference,
+                    limits,
+                    numbered: false,
+                },
+                &OperationGuard::new(),
+            )
             .await
             .expect("bounded read")
     }
+}
+#[test]
+fn displayed_line_ranges_reject_zero_and_descending_bounds() {
+    for (start, end) in [(0, 1), (2, 1)] {
+        let error = DisplayedLineRange::new(start, end).expect_err("invalid displayed line range");
+        assert_eq!(error.category(), ErrorCategory::InvalidReference);
+    }
+}
+
+#[tokio::test]
+async fn displayed_ranges_exclude_partial_lines() {
+    let harness = Harness::new("first\nsecond\nthird".to_owned());
+
+    let partial = harness
+        .read(
+            workspace_reference(),
+            TextLimits::new(None, None, Some(3)).expect("partial-line limits"),
+        )
+        .await;
+    assert_eq!(partial.content(), "fir");
+    assert_eq!(partial.displayed_ranges(), &[]);
+    assert!(!partial.displayed_eof());
+
+    let one_line = harness
+        .read(
+            workspace_reference(),
+            TextLimits::new(None, Some(1), None).expect("single-line limits"),
+        )
+        .await;
+    assert_eq!(one_line.content(), "first\n");
+    assert_eq!(
+        one_line.displayed_ranges(),
+        &[DisplayedLineRange::new(1, 1).expect("line range")]
+    );
+    assert!(!one_line.displayed_eof());
+
+    let complete = harness
+        .read(workspace_reference(), TextLimits::default())
+        .await;
+    assert_eq!(
+        complete.displayed_ranges(),
+        &[DisplayedLineRange::new(1, 3).expect("line range")]
+    );
+    assert!(complete.displayed_eof());
+}
+
+#[tokio::test]
+async fn selected_workspace_ranges_keep_original_line_coordinates() {
+    let harness = Harness::new("one\ntwo\nthree\nfour\n".to_owned());
+    let reference =
+        PathReference::parse("fixture.txt:2-2,4-4").expect("multi-range workspace reference");
+
+    let selected = harness.read(reference, TextLimits::default()).await;
+
+    assert_eq!(selected.content(), "two\nfour\n");
+    assert_eq!(
+        selected.displayed_ranges(),
+        &[
+            DisplayedLineRange::new(2, 2).expect("second line"),
+            DisplayedLineRange::new(4, 4).expect("fourth line"),
+        ]
+    );
+    assert!(selected.displayed_eof());
+    assert_eq!(selected.display_line_numbers(), &[2, 4]);
 }
 
 fn workspace_reference() -> PathReference {
@@ -422,12 +510,45 @@ async fn repeated_identical_spill_reuses_one_root_and_one_charge() {
     let harness = Harness::new(content);
     let limits = TextLimits::default();
     let first = harness.read(workspace_reference(), limits).await;
+    let first_charge = harness.session.used_bytes().await;
     let second = harness.read(workspace_reference(), limits).await;
 
     assert_eq!(first.recovery_reference(), second.recovery_reference());
     assert_eq!(harness.session.artifact_count().await, 1);
-    assert_eq!(harness.session.used_bytes().await, 6_002);
+    assert!(first_charge > 6_002, "snapshot metadata must be charged");
+    assert_eq!(harness.session.used_bytes().await, first_charge);
     assert_eq!(harness.storage.write_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn snapshot_quota_failure_does_not_publish_recovery_artifact() {
+    let limits = ServerLimits::new(ServerLimitsInput {
+        storage: resourcefs_core::StorageLimitInput {
+            object_bytes: Some(6_050),
+            session_bytes: Some(6_050),
+        },
+        ..ServerLimitsInput::default()
+    })
+    .expect("snapshot-tight limits");
+    let harness = Harness::with_limits("x\n".repeat(3_001), limits);
+
+    let error = harness
+        .engine
+        .read(
+            ReadRequest {
+                reference: workspace_reference(),
+                limits: TextLimits::default(),
+                numbered: false,
+            },
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("snapshot plus artifact must exceed session quota");
+
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+    assert_eq!(harness.session.artifact_count().await, 0);
+    assert_eq!(harness.session.used_bytes().await, 0);
+    assert_eq!(harness.storage.write_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -439,6 +560,7 @@ async fn one_byte_over_object_ceiling_fails_without_artifact() {
             ReadRequest {
                 reference: workspace_reference(),
                 limits: TextLimits::default(),
+                numbered: false,
             },
             &OperationGuard::new(),
         )
@@ -448,7 +570,8 @@ async fn one_byte_over_object_ceiling_fails_without_artifact() {
     assert!(
         error
             .message()
-            .starts_with("Source Adapter selected projection")
+            .starts_with("Source Adapter selected projection"),
+        "{error}"
     );
     assert_eq!(harness.session.artifact_count().await, 0);
     assert_eq!(harness.storage.write_calls.load(Ordering::SeqCst), 0);
@@ -484,6 +607,30 @@ async fn artifact_page_production_budget() {
             "64 MiB artifact page took {elapsed:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn workspace_snapshot_production_budget() {
+    let content = "x\n".repeat(MAX_ARTIFACT_BYTES / 2);
+    assert_eq!(content.len(), MAX_ARTIFACT_BYTES);
+    let harness = Harness::new(content);
+
+    let started = Instant::now();
+    let page = harness
+        .read(workspace_reference(), TextLimits::default())
+        .await;
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        page.displayed_ranges(),
+        &[DisplayedLineRange::new(1, 3_000).expect("displayed page")]
+    );
+    assert!(!page.displayed_eof());
+    assert_eq!(harness.session.artifact_count().await, 1);
+    assert!(
+        elapsed <= Duration::from_secs(5),
+        "64 MiB workspace snapshot page took {elapsed:?}"
+    );
 }
 
 #[tokio::test]

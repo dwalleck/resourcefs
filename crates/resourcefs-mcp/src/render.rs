@@ -1,8 +1,8 @@
 use std::fmt::Write as _;
 
 use resourcefs_core::{
-    BEHAVIOR_CONTRACT_VERSION, DiscoveryDiagnostic, GlobKind, GlobResult, ReadResource,
-    ResourceError, SearchEngine, SearchResult,
+    BEHAVIOR_CONTRACT_VERSION, DiscoveryDiagnostic, DisplayedLineRange, GlobKind, GlobResult,
+    ReadResource, ResourceError, SearchEngine, SearchResult,
 };
 use rmcp::model::{CallToolResult, ContentBlock};
 use schemars::JsonSchema;
@@ -27,6 +27,10 @@ pub(crate) struct ReadToolOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     bounded: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    displayed_ranges: Option<Vec<DisplayedRangeOutput>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    displayed_eof: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     recovery_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     continuation_reference: Option<String>,
@@ -41,6 +45,22 @@ pub(crate) struct ReadToolOutput {
 struct ReadErrorOutput {
     category: String,
     message: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct DisplayedRangeOutput {
+    start_line: u64,
+    end_line: u64,
+}
+
+impl From<DisplayedLineRange> for DisplayedRangeOutput {
+    fn from(range: DisplayedLineRange) -> Self {
+        Self {
+            start_line: range.start_line(),
+            end_line: range.end_line(),
+        }
+    }
 }
 
 pub(crate) fn success(
@@ -64,6 +84,11 @@ pub(crate) fn success(
         resource.version_tag()
     )
     .expect("writing a read header to String cannot fail");
+    write_displayed_metadata(
+        &mut text,
+        resource.displayed_ranges(),
+        resource.displayed_eof(),
+    );
 
     if let Some(reference) = recovery_reference.as_deref() {
         writeln!(text, "Recovery Reference: {reference}")
@@ -73,7 +98,7 @@ pub(crate) fn success(
         writeln!(text, "Continuation Reference: {reference}")
             .expect("writing a continuation reference to String cannot fail");
     }
-    text.push_str(resource.content());
+    write_read_content(&mut text, &resource);
     let output = ReadToolOutput {
         ok: true,
         contract_version: BEHAVIOR_CONTRACT_VERSION,
@@ -84,6 +109,15 @@ pub(crate) fn success(
         version_tag: Some(resource.version_tag().to_string()),
         mutable: Some(resource.is_mutable()),
         bounded: Some(resource.is_bounded()),
+        displayed_ranges: Some(
+            resource
+                .displayed_ranges()
+                .iter()
+                .copied()
+                .map(DisplayedRangeOutput::from)
+                .collect(),
+        ),
+        displayed_eof: Some(resource.displayed_eof()),
         recovery_reference,
         continuation_reference,
         content: Some(resource.content().to_owned()),
@@ -94,6 +128,43 @@ pub(crate) fn success(
     let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
     result.structured_content = Some(structured);
     Ok(result)
+}
+
+fn write_displayed_metadata(text: &mut String, ranges: &[DisplayedLineRange], displayed_eof: bool) {
+    text.push_str("Displayed Lines: ");
+    if ranges.is_empty() {
+        text.push_str("none");
+    } else {
+        for (index, range) in ranges.iter().enumerate() {
+            if index != 0 {
+                text.push_str(", ");
+            }
+            write!(text, "{}-{}", range.start_line(), range.end_line())
+                .expect("writing displayed ranges to String cannot fail");
+        }
+    }
+    writeln!(text).expect("writing displayed ranges to String cannot fail");
+    writeln!(text, "Displayed EOF: {displayed_eof}")
+        .expect("writing displayed EOF to String cannot fail");
+}
+
+fn write_read_content(text: &mut String, resource: &ReadResource) {
+    if !resource.is_numbered() {
+        text.push_str(resource.content());
+        return;
+    }
+    let mut lines = resource.display_line_numbers().iter();
+    for segment in resource.content().split_inclusive('\n') {
+        let line = lines
+            .next()
+            .expect("every rendered content row has a source line number");
+        write!(text, "{line}:{segment}")
+            .expect("writing numbered Resource content to String cannot fail");
+    }
+    debug_assert!(
+        lines.next().is_none(),
+        "line number metadata matches content"
+    );
 }
 
 pub(crate) fn failure(
@@ -121,6 +192,8 @@ pub(crate) fn failure(
         mutable: None,
         bounded: None,
         recovery_reference: None,
+        displayed_ranges: None,
+        displayed_eof: None,
         continuation_reference: None,
         content: None,
         error: Some(ReadErrorOutput {

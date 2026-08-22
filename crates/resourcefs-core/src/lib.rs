@@ -39,8 +39,9 @@ pub use reference::{
     WorkspaceRootSet,
 };
 pub use resource::{
-    ArtifactProjectionOrigin, BEHAVIOR_CONTRACT_VERSION, MAX_ARTIFACT_BYTES, MAX_TEXT_BYTES,
-    MAX_TEXT_COLUMNS, MAX_TEXT_LINES, ReadResource, SourceResource, TEXT_CONTENT_TYPE,
+    ArtifactProjectionOrigin, BEHAVIOR_CONTRACT_VERSION, DisplayedLineRange, MAX_ARTIFACT_BYTES,
+    MAX_TEXT_BYTES, MAX_TEXT_COLUMNS, MAX_TEXT_LINES, ReadResource, SourceResource,
+    TEXT_CONTENT_TYPE,
 };
 pub use secret::{Redactor, Secret, SecretError};
 pub use selector::{SelectedText, select_utf8};

@@ -15,6 +15,8 @@ pub struct SelectedText {
     content: String,
     version_tag: VersionTag,
     source_bytes: u64,
+    pub(crate) spans: Vec<SelectedLineSpan>,
+    pub(crate) source_eof: bool,
 }
 
 impl SelectedText {
@@ -33,6 +35,28 @@ impl SelectedText {
     pub fn into_parts(self) -> (String, VersionTag, u64) {
         (self.content, self.version_tag, self.source_bytes)
     }
+
+    pub(crate) fn into_projected_parts(self) -> (String, VersionTag, Vec<SelectedLineSpan>, bool) {
+        (self.content, self.version_tag, self.spans, self.source_eof)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SelectedLineSpan {
+    pub(crate) output_start: usize,
+    pub(crate) output_end: usize,
+    pub(crate) start_line: u64,
+    pub(crate) end_line: u64,
+    pub(crate) reaches_eof: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SourceLineSpan {
+    source_start: u64,
+    source_end: u64,
+    start_line: u64,
+    end_line: u64,
+    reaches_eof: bool,
 }
 
 /// Select exact UTF-8 line spans while hashing and validating the complete seekable source.
@@ -57,9 +81,9 @@ where
     let boundaries = requested_boundaries(ranges);
     let first = scan_source(&mut reader, &boundaries)?;
     let spans = selected_spans(ranges, &first)?;
-    let selected_bytes = spans.iter().try_fold(0_u64, |total, (start, end)| {
+    let selected_bytes = spans.iter().try_fold(0_u64, |total, span| {
         total
-            .checked_add(end - start)
+            .checked_add(span.source_end - span.source_start)
             .ok_or_else(selection_too_large)
     })?;
     if selected_bytes > MAX_ARTIFACT_BYTES as u64 {
@@ -67,12 +91,14 @@ where
     }
 
     let mut content = Vec::with_capacity(selected_bytes as usize);
+    let mut selected_spans = Vec::with_capacity(spans.len());
     let mut buffer = vec![0_u8; SCAN_BUFFER_BYTES];
-    for (start, end) in spans {
+    for span in spans {
         reader
-            .seek(SeekFrom::Start(start))
+            .seek(SeekFrom::Start(span.source_start))
             .map_err(selection_io_error)?;
-        let mut remaining = end - start;
+        let output_start = content.len();
+        let mut remaining = span.source_end - span.source_start;
         while remaining != 0 {
             let wanted = remaining.min(buffer.len() as u64) as usize;
             let read = reader
@@ -87,6 +113,13 @@ where
             content.extend_from_slice(&buffer[..read]);
             remaining -= read as u64;
         }
+        selected_spans.push(SelectedLineSpan {
+            output_start,
+            output_end: content.len(),
+            start_line: span.start_line,
+            end_line: span.end_line,
+            reaches_eof: span.reaches_eof,
+        });
     }
 
     let second = scan_source(&mut reader, &HashSet::new())?;
@@ -102,10 +135,14 @@ where
             "Resource is not valid UTF-8 text",
         )
     })?;
+    let source_eof = selected_bytes == 0 && second.source_bytes == 0
+        || selected_spans.last().is_some_and(|span| span.reaches_eof);
     Ok(SelectedText {
         content,
         version_tag: VersionTag::from_sha256_digest(second.digest),
         source_bytes: second.source_bytes,
+        spans: selected_spans,
+        source_eof,
     })
 }
 
@@ -189,9 +226,18 @@ fn scan_source<R: Read + Seek>(
 fn selected_spans(
     ranges: Option<&crate::LineSelector>,
     source: &SourceScan,
-) -> Result<Vec<(u64, u64)>, ResourceError> {
+) -> Result<Vec<SourceLineSpan>, ResourceError> {
     let Some(ranges) = ranges else {
-        return Ok(vec![(0, source.source_bytes)]);
+        return Ok((source.total_lines != 0)
+            .then_some(SourceLineSpan {
+                source_start: 0,
+                source_end: source.source_bytes,
+                start_line: 1,
+                end_line: source.total_lines,
+                reaches_eof: true,
+            })
+            .into_iter()
+            .collect());
     };
     let mut spans = Vec::with_capacity(ranges.ranges().len());
     for range in ranges.ranges() {
@@ -204,13 +250,13 @@ fn selected_spans(
         }
         let requested_end = range.inclusive_end().unwrap_or(source.total_lines);
         let end_line = requested_end.min(source.total_lines);
-        let start = *source.line_offsets.get(&start_line).ok_or_else(|| {
+        let source_start = *source.line_offsets.get(&start_line).ok_or_else(|| {
             ResourceError::new(
                 ErrorCategory::SourceUnavailable,
                 "Resource line index changed during selection",
             )
         })?;
-        let end = if end_line == source.total_lines {
+        let source_end = if end_line == source.total_lines {
             source.source_bytes
         } else {
             *source.line_offsets.get(&(end_line + 1)).ok_or_else(|| {
@@ -220,7 +266,13 @@ fn selected_spans(
                 )
             })?
         };
-        spans.push((start, end));
+        spans.push(SourceLineSpan {
+            source_start,
+            source_end,
+            start_line,
+            end_line,
+            reaches_eof: end_line == source.total_lines,
+        });
     }
     Ok(spans)
 }

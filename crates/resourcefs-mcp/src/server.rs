@@ -122,6 +122,8 @@ impl ReadLimitsInput {
 #[serde(deny_unknown_fields)]
 struct ReadInput {
     path: String,
+    #[serde(default)]
+    numbered: bool,
     #[serde(default, deserialize_with = "deserialize_object_limits")]
     limits: ReadLimitsInput,
 }
@@ -523,7 +525,7 @@ impl ResourceFsServer {
             .limits
             .into_text_limits()
             .map_err(|error| error.to_string())?;
-        self.execute_read(&input.path, limits, &OperationGuard::new())
+        self.execute_read(&input.path, limits, input.numbered, &OperationGuard::new())
             .await
     }
 
@@ -586,13 +588,18 @@ impl ResourceFsServer {
         &self,
         path: &str,
         limits: TextLimits,
+        numbered: bool,
         operation: &OperationGuard,
     ) -> Result<CallToolResult, String> {
         let reference = match PathReference::parse(path) {
             Ok(reference) => reference,
             Err(error) => return render::failure(path, &error),
         };
-        let request = ReadRequest { reference, limits };
+        let request = ReadRequest {
+            reference,
+            limits,
+            numbered,
+        };
         match self.read_engine.read(request, operation).await {
             Ok(resource) => render::success(path, resource),
             Err(error) => render::failure(path, &error),
@@ -649,7 +656,7 @@ impl ResourceFsServer {
                 .map(CallToolResponse::from)
                 .map_err(|error| McpError::internal_error(error, None));
         }
-        let pending = self.execute_read(&input.path, limits, &operation);
+        let pending = self.execute_read(&input.path, limits, input.numbered, &operation);
         let result = run_under_cancellation(
             &operation,
             cancellation_received(cancellation),

@@ -73,6 +73,7 @@ impl Default for TextLimits {
 pub struct ReadRequest {
     pub reference: PathReference,
     pub limits: TextLimits,
+    pub numbered: bool,
 }
 
 #[derive(Clone)]
@@ -116,6 +117,8 @@ impl ReadEngine {
             ResourceAddress::Catalog(_) | ResourceAddress::Workspace(_) => None,
         };
         let requested_artifact_projection = request.reference.projection().is_some();
+        let requested_workspace =
+            matches!(request.reference.address(), ResourceAddress::Workspace(_));
         let mut parts = source.into_parts();
         if parts.content.len() > MAX_ARTIFACT_BYTES {
             return Err(ResourceError::new(
@@ -137,13 +140,36 @@ impl ReadEngine {
                 None
             };
             ensure_live(&self.session, operation)?;
-            return ReadResource::from_parts(parts, false, recovery_reference, None);
+            let resource = ReadResource::from_parts(
+                parts,
+                false,
+                recovery_reference,
+                None,
+                page_end,
+                request.numbered,
+            )?;
+            self.record_seen(&request.reference, &resource).await?;
+            return Ok(resource);
         }
 
         let (recovery_address, origin) = match (requested_artifact, parts.artifact_origin) {
             (Some(address), Some(origin)) => (address, origin),
             _ => {
-                let address = self.session.retain(&parts.content, operation).await?;
+                let (ranges, _, displayed_eof) = parts.displayed_prefix(page_end);
+                let address = if requested_workspace && (!ranges.is_empty() || displayed_eof) {
+                    self.session
+                        .retain_with_seen(
+                            &parts.content,
+                            operation,
+                            &parts.canonical_reference,
+                            &parts.version_tag,
+                            &ranges,
+                            displayed_eof,
+                        )
+                        .await?
+                } else {
+                    self.session.retain(&parts.content, operation).await?
+                };
                 (address, ArtifactProjectionOrigin::new(0, 1))
             }
         };
@@ -161,15 +187,35 @@ impl ReadEngine {
         } else {
             artifact_page_continuation(&recovery_address, absolute_end)?
         };
-
         parts.content.truncate(page_end);
+
         ensure_live(&self.session, operation)?;
-        ReadResource::from_parts(
+        let resource = ReadResource::from_parts(
             parts,
             true,
             Some(recovery_reference),
             Some(continuation_reference),
-        )
+            page_end,
+            request.numbered,
+        )?;
+        Ok(resource)
+    }
+    async fn record_seen(
+        &self,
+        requested: &PathReference,
+        resource: &ReadResource,
+    ) -> Result<(), ResourceError> {
+        if matches!(requested.address(), ResourceAddress::Workspace(_)) {
+            self.session
+                .record_seen(
+                    resource.canonical_reference(),
+                    resource.version_tag(),
+                    resource.displayed_ranges(),
+                    resource.displayed_eof(),
+                )
+                .await?;
+        }
+        Ok(())
     }
 }
 

@@ -2375,8 +2375,7 @@ fn read_address(
     let canonical_reference =
         PathReference::canonical(resolved.root.metadata.id().clone(), relative_path);
     let selected = select_utf8(&mut file, projection)?;
-    let (content, version_tag, _) = selected.into_parts();
-    let mut resource = SourceResource::text_projection(canonical_reference, content, version_tag)?;
+    let mut resource = SourceResource::selected_text(canonical_reference, selected)?;
     if visibility == BackingPathVisibility::Visible {
         let backing_uri = Url::from_file_path(&final_path)
             .map_err(|()| {
