@@ -2,6 +2,7 @@
 
 mod discovery;
 mod error;
+mod probe;
 mod read;
 mod reference;
 mod resource;
@@ -20,6 +21,10 @@ pub use discovery::{
     SearchRecord, SearchRequest, SearchResult, SearchSourceResult, SearchTarget, SourceGlobResult,
 };
 pub use error::{ErrorCategory, ResourceError};
+pub use probe::{
+    MAX_PROBE_DIAGNOSTIC_BYTES, ProbeDiagnostic, ProbeDiagnosticError, ProbeOutcome, ProbeState,
+    SourceProbe,
+};
 pub use read::{ReadEngine, ReadRequest, TextLimits};
 pub use reference::{
     ArtifactAddress, LineRange, LineSelector, MAX_PATH_REFERENCE_BYTES, MAX_WORKSPACE_ROOTS,

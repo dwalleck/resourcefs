@@ -5,6 +5,7 @@ mod compiled;
 mod configuration;
 mod filesystem;
 mod pattern;
+mod probe;
 mod process;
 pub mod secret;
 mod session_storage;
@@ -27,6 +28,9 @@ pub use filesystem::TestDeliveryGate;
 pub use filesystem::{
     BackingPathVisibility, ClientRoot, FilesystemSource, LaunchRoot, LaunchRootSource,
     RootAcquisition, RootRefresh, RootRefreshOutcome,
+};
+pub use probe::{
+    NetworkProbe, ProbeRecord, ProbeRun, ProbeRunner, ProbeTarget, ValidatedLocalProbe,
 };
 pub use process::{
     CommandError, CommandErrorKind, CommandExecutor, CommandInput, CommandLimits, CommandOutput,

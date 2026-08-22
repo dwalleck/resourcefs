@@ -103,6 +103,12 @@ pub struct ProfileDocument {
     #[serde(skip)]
     #[schemars(skip)]
     configured_sources: Vec<super::convert::ConfiguredSource>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    static_sources: Vec<StaticSource>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    configuration_base: std::path::PathBuf,
 }
 
 impl ProfileDocument {
@@ -165,6 +171,13 @@ impl ProfileDocument {
             ));
         }
         super::validate::validate_profile(&profile)?;
+        profile.static_sources = profile
+            .sources()
+            .iter()
+            .enumerate()
+            .map(|(index, source)| StaticSource::from_profile(index, source))
+            .collect();
+        profile.configuration_base = base.path().to_owned();
         profile.configured_sources =
             super::convert::convert_sources(profile.sources.take().unwrap_or_default(), base)?;
         Ok(profile)
@@ -172,6 +185,14 @@ impl ProfileDocument {
 
     pub(crate) const fn schema_version(&self) -> u32 {
         self.schema_version
+    }
+
+    pub(super) fn static_sources(&self) -> &[StaticSource] {
+        &self.static_sources
+    }
+
+    pub(super) fn configuration_base(&self) -> &Path {
+        &self.configuration_base
     }
 
     pub(super) const fn workspace(&self) -> Option<&WorkspaceProfile> {
@@ -1041,6 +1062,21 @@ impl SourceProfile {
         }
     }
 
+    pub(super) const fn required(&self) -> bool {
+        match self {
+            Self::Https(source) => source.required,
+            Self::Github(source) => source.required,
+            Self::Ssh(source) => source.required,
+            Self::Documents(source) => source.required,
+            Self::Skills(source) => source.required,
+            Self::Rules(source) => source.required,
+            Self::Memory(source) => source.required,
+            Self::Vault(source) => source.required,
+            Self::AgentExport(source) => source.required,
+            Self::DownstreamMcp(source) => source.required,
+        }
+    }
+
     pub(super) fn grants(&self) -> MutationGrants {
         let grants = match self {
             Self::Https(source) => source.grants,
@@ -1095,6 +1131,212 @@ impl SourceProfile {
             | Self::DownstreamMcp(_) => {}
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct StaticSource {
+    pub(super) id: String,
+    pub(super) kind: &'static str,
+    pub(super) required: bool,
+    pub(super) requirements: Vec<StaticRequirement>,
+    pub(super) probe: StaticProbe,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum StaticProbe {
+    ValidatedLocal,
+    Network(Vec<String>),
+    Unsupported,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum StaticRequirement {
+    Secret(StaticSecret),
+    Command(StaticCommand),
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct StaticSecret {
+    pub(super) field: String,
+    pub(super) kind: StaticSecretKind,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum StaticSecretKind {
+    Environment(String),
+    Command(StaticCommand),
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct StaticCommand {
+    pub(super) field: String,
+    pub(super) argv: Vec<String>,
+    pub(super) environment: Vec<StaticEnvironment>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct StaticEnvironment {
+    pub(super) field: String,
+    pub(super) destination: String,
+    pub(super) value: StaticEnvironmentValue,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum StaticEnvironmentValue {
+    Literal(String),
+    Inherit(String),
+    Secret(StaticSecret),
+}
+
+impl StaticSource {
+    fn from_profile(index: usize, source: &SourceProfile) -> Self {
+        let base = format!("sources[{index}]");
+        let mut requirements = Vec::new();
+        match source {
+            SourceProfile::Https(source) => {
+                for (origin_index, origin) in source.origins.iter().enumerate() {
+                    if let Some(credential) = &origin.credential {
+                        requirements.push(StaticRequirement::Secret(StaticSecret::from_profile(
+                            format!("{base}.origins[{origin_index}].credential.secret"),
+                            &credential.secret,
+                        )));
+                    }
+                }
+            }
+            SourceProfile::Github(source) => {
+                requirements.push(StaticRequirement::Secret(StaticSecret::from_profile(
+                    format!("{base}.credential"),
+                    &source.credential,
+                )));
+            }
+            SourceProfile::Ssh(source) => {
+                requirements.push(StaticRequirement::Command(StaticCommand::from_profile(
+                    format!("{base}.command"),
+                    &source.command,
+                )));
+            }
+            SourceProfile::Documents(source) => {
+                requirements.extend(source.converters.iter().enumerate().map(
+                    |(converter_index, converter)| {
+                        StaticRequirement::Command(StaticCommand::from_profile(
+                            format!("{base}.converters[{converter_index}].command"),
+                            &converter.command,
+                        ))
+                    },
+                ));
+            }
+            SourceProfile::DownstreamMcp(source) => {
+                for (server_index, server) in source.servers.iter().enumerate() {
+                    match &server.transport {
+                        DownstreamTransportProfile::Stdio { command } => {
+                            requirements.push(StaticRequirement::Command(
+                                StaticCommand::from_profile(
+                                    format!("{base}.servers[{server_index}].transport.command"),
+                                    command,
+                                ),
+                            ));
+                        }
+                        DownstreamTransportProfile::Http { credential, .. } => {
+                            if let Some(credential) = credential {
+                                requirements.push(StaticRequirement::Secret(
+                                    StaticSecret::from_profile(
+                                        format!(
+                                            "{base}.servers[{server_index}].transport.credential.secret"
+                                        ),
+                                        &credential.secret,
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            SourceProfile::Skills(_)
+            | SourceProfile::Rules(_)
+            | SourceProfile::Memory(_)
+            | SourceProfile::Vault(_)
+            | SourceProfile::AgentExport(_) => {}
+        }
+        let probe = match source {
+            SourceProfile::Https(source) => StaticProbe::Network(
+                source
+                    .origins
+                    .iter()
+                    .map(|origin| origin.base_url.clone())
+                    .collect(),
+            ),
+            SourceProfile::Github(source) => StaticProbe::Network(vec![
+                source
+                    .api_base_url
+                    .clone()
+                    .unwrap_or_else(|| "https://api.github.com".to_owned()),
+            ]),
+            SourceProfile::Documents(_)
+            | SourceProfile::Skills(_)
+            | SourceProfile::Rules(_)
+            | SourceProfile::Memory(_)
+            | SourceProfile::Vault(_)
+            | SourceProfile::AgentExport(_) => StaticProbe::ValidatedLocal,
+            SourceProfile::Ssh(_) | SourceProfile::DownstreamMcp(_) => StaticProbe::Unsupported,
+        };
+        Self {
+            id: source.id().to_owned(),
+            kind: source.kind(),
+            required: source.required(),
+            requirements,
+            probe,
+        }
+    }
+}
+
+impl StaticSecret {
+    fn from_profile(field: String, secret: &SecretReferenceProfile) -> Self {
+        let kind = match secret {
+            SecretReferenceProfile::Environment { name } => {
+                StaticSecretKind::Environment(name.clone())
+            }
+            SecretReferenceProfile::Command { command } => StaticSecretKind::Command(
+                StaticCommand::from_profile(format!("{field}.command"), command),
+            ),
+        };
+        Self { field, kind }
+    }
+}
+
+impl StaticCommand {
+    fn from_profile(field: String, command: &CommandProfile) -> Self {
+        let environment = command
+            .environment
+            .as_ref()
+            .into_iter()
+            .flat_map(BTreeMap::iter)
+            .enumerate()
+            .map(|(index, (destination, value))| {
+                let environment_field = format!("{field}.environment[{index}]");
+                let value = match value {
+                    EnvironmentValueProfile::Literal { value } => {
+                        StaticEnvironmentValue::Literal(value.clone())
+                    }
+                    EnvironmentValueProfile::Inherit { name } => {
+                        StaticEnvironmentValue::Inherit(name.clone())
+                    }
+                    EnvironmentValueProfile::Secret { secret } => StaticEnvironmentValue::Secret(
+                        StaticSecret::from_profile(format!("{environment_field}.secret"), secret),
+                    ),
+                };
+                StaticEnvironment {
+                    field: environment_field,
+                    destination: destination.clone(),
+                    value,
+                }
+            })
+            .collect();
+        Self {
+            field,
+            argv: command.argv.clone(),
+            environment,
+        }
     }
 }
 

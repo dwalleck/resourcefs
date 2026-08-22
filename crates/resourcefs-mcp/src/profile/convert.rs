@@ -39,7 +39,12 @@ pub(super) fn convert_sources(
 ) -> Result<Vec<ConfiguredSource>, ProfileError> {
     sources
         .into_iter()
-        .map(|source| convert_source(source, base))
+        .enumerate()
+        .map(|(index, source)| {
+            convert_source(source, base).map_err(|error| {
+                ProfileError::invalid(format!("sources[{index}] is invalid: {error}"))
+            })
+        })
         .collect()
 }
 

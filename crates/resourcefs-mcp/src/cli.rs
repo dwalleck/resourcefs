@@ -4,11 +4,11 @@ use std::{
     str::FromStr,
 };
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, error::ErrorKind};
 use resourcefs_core::WorkspaceRootId;
 use resourcefs_sources::{BackingPathVisibility, FilesystemSource, LaunchRoot, LaunchRootSource};
 
-use crate::{BoxError, profile_schema_json, server};
+use crate::{BoxError, profile, profile_schema_json, server};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -25,6 +25,8 @@ struct Cli {
 enum Command {
     /// Serve ResourceFS over standard input and standard output.
     Serve(ServeArgs),
+    /// Validate a Server Profile, optionally probing configured dependencies.
+    Check(CheckArgs),
     /// Print the current strict Server Profile JSON Schema.
     Schema,
 }
@@ -38,6 +40,17 @@ struct ServeArgs {
     /// Select the launch root used for relative Path References.
     #[arg(long, value_name = "ID")]
     primary_root: Option<RootIdArgument>,
+}
+
+#[derive(Debug, Args)]
+struct CheckArgs {
+    /// Server Profile to validate.
+    #[arg(long, value_name = "PATH")]
+    config: PathBuf,
+
+    /// Perform one bounded, non-mutating availability probe per source.
+    #[arg(long)]
+    probe: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -86,11 +99,45 @@ impl From<RootArgument> for LaunchRoot {
     }
 }
 
-pub async fn run_cli() -> Result<(), BoxError> {
-    let cli = Cli::parse();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliOutcome {
+    Success,
+    UsageError,
+    RequiredUnavailable,
+}
+
+impl CliOutcome {
+    pub const fn exit_code(self) -> u8 {
+        match self {
+            Self::Success => 0,
+            Self::UsageError => 2,
+            Self::RequiredUnavailable => 3,
+        }
+    }
+}
+
+pub async fn run_cli() -> Result<CliOutcome, BoxError> {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let outcome = match error.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => CliOutcome::Success,
+                _ => CliOutcome::UsageError,
+            };
+            error.print()?;
+            return Ok(outcome);
+        }
+    };
     match cli.command {
-        Command::Serve(arguments) => serve(arguments).await,
-        Command::Schema => write_schema(),
+        Command::Serve(arguments) => {
+            serve(arguments).await?;
+            Ok(CliOutcome::Success)
+        }
+        Command::Check(arguments) => check(arguments).await,
+        Command::Schema => {
+            write_schema()?;
+            Ok(CliOutcome::Success)
+        }
     }
 }
 
@@ -101,6 +148,43 @@ fn write_schema() -> Result<(), BoxError> {
     output.write_all(b"\n")?;
     output.flush()?;
     Ok(())
+}
+
+async fn check(arguments: CheckArgs) -> Result<CliOutcome, BoxError> {
+    match profile::check(&arguments.config, arguments.probe).await {
+        Ok(output) => {
+            let stdout = io::stdout();
+            let mut destination = stdout.lock();
+            destination.write_all(output.report().as_bytes())?;
+            destination.write_all(b"\n")?;
+            destination.flush()?;
+            Ok(if output.ok() {
+                CliOutcome::Success
+            } else {
+                CliOutcome::RequiredUnavailable
+            })
+        }
+        Err(error) => {
+            let rendered = error.to_string();
+            let diagnostic = bounded_diagnostic(&rendered, 4_096);
+            let stderr = io::stderr();
+            let mut destination = stderr.lock();
+            writeln!(destination, "resourcefs: {diagnostic}")?;
+            destination.flush()?;
+            Ok(CliOutcome::UsageError)
+        }
+    }
+}
+
+fn bounded_diagnostic(message: &str, limit: usize) -> &str {
+    if message.len() <= limit {
+        return message;
+    }
+    let mut end = limit;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    &message[..end]
 }
 
 async fn serve(arguments: ServeArgs) -> Result<(), BoxError> {
