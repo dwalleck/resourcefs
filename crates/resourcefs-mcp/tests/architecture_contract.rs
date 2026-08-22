@@ -50,6 +50,59 @@ fn enforces_dependency_direction() {
     assert!(mcp.contains("rmcp"));
     assert!(mcp.contains("clap"));
 }
+
+#[test]
+fn forbids_telemetry_dependencies() {
+    let metadata = MetadataCommand::new()
+        .exec()
+        .expect("workspace cargo metadata");
+    let forbidden = [
+        "metrics-exporter-prometheus",
+        "opentelemetry",
+        "opentelemetry-otlp",
+        "sentry",
+        "tracing-opentelemetry",
+    ];
+    let offenders = metadata
+        .packages
+        .iter()
+        .filter_map(|package| {
+            forbidden
+                .contains(&package.name.as_str())
+                .then_some(package.name.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        offenders.is_empty(),
+        "telemetry/exporter dependencies are forbidden: {offenders:?}"
+    );
+}
+
+#[test]
+fn profile_capabilities_stay_in_owning_modules() {
+    let metadata = MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .expect("workspace cargo metadata");
+    let root = metadata.workspace_root.as_std_path();
+    let launch = std::fs::read_to_string(root.join("crates/resourcefs-mcp/src/launch.rs"))
+        .expect("launch module");
+    let server = std::fs::read_to_string(root.join("crates/resourcefs-mcp/src/server.rs"))
+        .expect("server module");
+
+    for forbidden in ["tokio::process", "CommandExecutor", "ProfileDocument"] {
+        assert!(
+            !launch.contains(forbidden),
+            "launch.rs must compose checked values without owning `{forbidden}` capabilities"
+        );
+    }
+    for forbidden in ["CommandExecutor", "ProfileDocument"] {
+        assert!(
+            !server.contains(forbidden),
+            "server.rs must consume LaunchPlan without owning `{forbidden}` capabilities"
+        );
+    }
+}
 /// Recursively collect every `.rs` file under `root` whose contents contain
 /// `token` as a standalone identifier. Build output (`target`) and hidden
 /// directories (`.git`) are skipped so the scan never trips over generated or

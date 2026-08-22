@@ -15,7 +15,7 @@ use resourcefs_sources::{
 use url::Url;
 
 use super::{
-    ProfileDocument, ProfileError,
+    CheckedLaunchProfile, CheckedSourceClaim, ProfileDocument, ProfileError,
     model::{
         StaticCommand, StaticEnvironmentValue, StaticProbe, StaticRequirement, StaticSecret,
         StaticSecretKind, StaticSource,
@@ -27,6 +27,7 @@ pub(super) struct CheckedProfile {
     sources: Vec<CheckedSource>,
     configuration_base: PathBuf,
     secrets: Vec<Secret>,
+    profile: ProfileDocument,
 }
 
 impl CheckedProfile {
@@ -41,6 +42,39 @@ impl CheckedProfile {
     pub(super) fn redactor(&self) -> Result<Redactor, ProfileError> {
         Redactor::new(&self.secrets).map_err(|_| {
             ProfileError::invalid("could not construct the profile credential redactor")
+        })
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(super) fn register_test_secret(&mut self, value: String) -> Result<(), ProfileError> {
+        let secret = Secret::new(value)
+            .map_err(|_| ProfileError::invalid("test credential injection was invalid"))?;
+        self.secrets.push(secret);
+        Ok(())
+    }
+
+    pub(super) fn into_launch_profile(self) -> Result<CheckedLaunchProfile, ProfileError> {
+        let redactor = Redactor::new(&self.secrets).map_err(|_| {
+            ProfileError::invalid("could not construct the profile credential redactor")
+        })?;
+        let sources = self
+            .sources
+            .into_iter()
+            .map(|source| CheckedSourceClaim {
+                id: source.id,
+                kind: source.kind,
+            })
+            .collect();
+        let components = self.profile.into_launch_components()?;
+        Ok(CheckedLaunchProfile {
+            root_source: components.root_source,
+            primary_selector: components.primary_selector,
+            visibility: components.visibility,
+            limits: components.limits,
+            session_storage: components.session_storage,
+            logging: components.logging,
+            redactor,
+            sources,
         })
     }
 
@@ -200,6 +234,7 @@ where
         sources,
         configuration_base: profile.configuration_base().to_owned(),
         secrets: checker.secrets,
+        profile,
     })
 }
 

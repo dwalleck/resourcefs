@@ -42,6 +42,8 @@ use tokio::sync::{Mutex, OnceCell, watch};
 
 use crate::{
     BoxError,
+    launch::LaunchPlan,
+    logging::{LogLevel, LogSink},
     render::{self, GlobToolOutput, ReadToolOutput, SearchToolOutput},
 };
 
@@ -1096,7 +1098,53 @@ async fn heartbeat_session(
     }
 }
 
-pub(crate) async fn serve(
+pub(crate) struct ServeFailure {
+    diagnostic: Option<String>,
+}
+
+impl ServeFailure {
+    fn reported() -> Self {
+        Self { diagnostic: None }
+    }
+
+    fn unreported(error: impl fmt::Display) -> Self {
+        Self {
+            diagnostic: Some(error.to_string()),
+        }
+    }
+
+    pub(crate) fn diagnostic(&self) -> Option<&str> {
+        self.diagnostic.as_deref()
+    }
+}
+
+pub(crate) async fn serve(plan: LaunchPlan) -> Result<(), ServeFailure> {
+    let (source, limits, session_storage, logging, redactor) = plan.into_parts();
+    let logging = LogSink::new(logging, redactor)
+        .await
+        .map_err(ServeFailure::unreported)?;
+    #[cfg(feature = "test-support")]
+    if let Some(message) = std::env::var_os("RESOURCEFS_TEST_LOG_MESSAGE") {
+        let message = message
+            .into_string()
+            .map_err(|_| ServeFailure::unreported("test log message was not Unicode"))?;
+        logging
+            .write(LogLevel::Error, &message)
+            .await
+            .map_err(ServeFailure::unreported)?;
+    }
+    match serve_inner(source, limits, session_storage).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if let Err(logging_error) = logging.write(LogLevel::Error, &error.to_string()).await {
+                return Err(ServeFailure::unreported(logging_error));
+            }
+            Err(ServeFailure::reported())
+        }
+    }
+}
+
+async fn serve_inner(
     source: FilesystemSource,
     limits: ServerLimits,
     session_storage: SessionStorageConfig,

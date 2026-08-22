@@ -481,9 +481,10 @@ impl WorkspaceRootSet {
         primary_selector: Option<&str>,
     ) -> Result<Self, ResourceError> {
         if roots.is_empty() {
-            return Err(invalid_reference(
-                "Workspace Root set must contain at least one root",
-            ));
+            return Ok(Self {
+                roots,
+                primary: None,
+            });
         }
         if roots.len() > MAX_WORKSPACE_ROOTS {
             return Err(limit_exceeded("Workspace Root count exceeds 256"));

@@ -87,6 +87,20 @@ impl McpProcess {
         Self::start_config(roots, primary, None, None, None, None)
     }
 
+    fn start_profile(profile: &Path, current_directory: &Path) -> Self {
+        Self::start_arguments(
+            vec![
+                "serve".to_owned(),
+                "--config".to_owned(),
+                profile.display().to_string(),
+            ],
+            None,
+            None,
+            None,
+            None,
+            Some(current_directory),
+        )
+    }
     #[cfg(feature = "test-support")]
     fn start_gated(
         roots: &[(&str, &Path)],
@@ -157,12 +171,33 @@ impl McpProcess {
             arguments.push("--primary-root".to_owned());
             arguments.push(primary.to_owned());
         }
+        Self::start_arguments(
+            arguments,
+            delivery_gate,
+            delivery_identity,
+            session_root,
+            storage_failure,
+            None,
+        )
+    }
+
+    fn start_arguments(
+        arguments: Vec<String>,
+        delivery_gate: Option<&Path>,
+        delivery_identity: Option<&str>,
+        session_root: Option<&Path>,
+        storage_failure: Option<&str>,
+        current_directory: Option<&Path>,
+    ) -> Self {
         let mut command = Command::new(binary());
         command
             .args(arguments)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(current_directory) = current_directory {
+            command.current_dir(current_directory);
+        }
         if let Some(delivery_gate) = delivery_gate {
             command.env("RESOURCEFS_TEST_DELIVERY_GATE", delivery_gate);
         }
@@ -1224,6 +1259,127 @@ fn client_roots_replace_refresh_and_restore_launch_roots() {
         "alpha"
     );
     assert_eq!(process.root_list_calls, 4);
+    process.finish();
+}
+
+#[test]
+fn profile_launch_authority_reaches_stdio_and_scratch_profiles_have_no_cwd_root() {
+    let temporary = TempDir::new().expect("profile stdio fixture");
+    let profile_directory = temporary.path().join("profile");
+    let launch_directory = temporary.path().join("launch");
+    let profile_root = profile_directory.join("workspace");
+    let client_root = temporary.path().join("client");
+    fs::create_dir_all(&profile_root).expect("profile workspace");
+    fs::create_dir(&launch_directory).expect("launch directory");
+    fs::create_dir(&client_root).expect("client workspace");
+    fs::write(profile_root.join("shared.txt"), "profile").expect("profile fixture");
+    fs::write(launch_directory.join("shared.txt"), "launch").expect("launch fixture");
+    fs::write(client_root.join("shared.txt"), "client").expect("client fixture");
+    let profile = profile_directory.join("server.json");
+    fs::write(
+        &profile,
+        serde_json::to_vec(&json!({
+            "schemaVersion":1,
+            "workspace":{
+                "roots":[{"id":"profile","path":"workspace"}],
+                "primaryRoot":"profile"
+            },
+            "session":{"cacheDirectory":"cache","retentionTtlSeconds":0}
+        }))
+        .expect("serialize profile"),
+    )
+    .expect("write profile");
+
+    let mut process = McpProcess::start_profile(&profile, &launch_directory);
+    process.initialize_with_roots(VERSION_2026, Vec::new());
+    assert_eq!(
+        process.call_read("shared.txt")["structuredContent"]["content"],
+        "profile"
+    );
+    process.change_client_roots(vec![mcp_root(&client_root, "client")]);
+    assert_eq!(
+        process.call_read("shared.txt")["structuredContent"]["content"],
+        "client"
+    );
+    process.change_client_roots(Vec::new());
+    assert_eq!(
+        process.call_read("shared.txt")["structuredContent"]["content"],
+        "profile"
+    );
+    process.finish();
+
+    let scratch = profile_directory.join("scratch.json");
+    fs::write(
+        &scratch,
+        serde_json::to_vec(&json!({
+            "schemaVersion":1,
+            "session":{"cacheDirectory":"scratch-cache","retentionTtlSeconds":0}
+        }))
+        .expect("serialize scratch profile"),
+    )
+    .expect("write scratch profile");
+    let mut scratch_process = McpProcess::start_profile(&scratch, &launch_directory);
+    scratch_process.initialize_with_roots(VERSION_2026, Vec::new());
+    assert_tool_error(
+        &scratch_process.call_read("shared.txt"),
+        "ambiguous_reference",
+    );
+    scratch_process.finish();
+}
+
+#[test]
+fn profile_limits_bound_live_mcp_reads_and_discovery() {
+    let temporary = TempDir::new().expect("profile limits fixture");
+    let workspace = temporary.path().join("workspace");
+    let launch_directory = temporary.path().join("launch");
+    fs::create_dir(&workspace).expect("workspace");
+    fs::create_dir(&launch_directory).expect("launch directory");
+    fs::write(workspace.join("first.txt"), "fixture first\n".repeat(20)).expect("first fixture");
+    fs::write(workspace.join("second.txt"), "fixture third\n").expect("second fixture");
+    let profile = temporary.path().join("limits.json");
+    fs::write(
+        &profile,
+        serde_json::to_vec(&json!({
+            "schemaVersion":1,
+            "workspace":{
+                "roots":[{"id":"workspace","path":"workspace"}],
+                "primaryRoot":"workspace"
+            },
+            "limits":{
+                "text":{"bytes":100},
+                "discovery":{"searchMatches":1,"globEntries":1,"listingEntries":1}
+            },
+            "session":{"cacheDirectory":"cache","retentionTtlSeconds":0}
+        }))
+        .expect("serialize bounded profile"),
+    )
+    .expect("write bounded profile");
+
+    let mut process = McpProcess::start_profile(&profile, &launch_directory);
+    process.initialize(VERSION_2026);
+    let read = process.call_read("first.txt");
+    assert_eq!(
+        read["structuredContent"]["content"].as_str().map(str::len),
+        Some(100)
+    );
+    assert_eq!(read["structuredContent"]["bounded"], true);
+    let lower = process.call_read_arguments(json!({
+        "path":"first.txt",
+        "limits":{"bytes":3}
+    }));
+    assert_eq!(lower["structuredContent"]["content"], "fix");
+
+    for (tool, arguments) in [
+        ("rfs_search", json!({"pattern":"fixture"})),
+        ("rfs_glob", json!({"path":"*.txt"})),
+    ] {
+        let response = process.request("tools/call", json!({"name":tool,"arguments":arguments}));
+        assert!(response.get("error").is_none(), "{tool}: {response}");
+        assert_eq!(
+            response["result"]["structuredContent"]["returnedRecords"], 1,
+            "{tool}: {response}"
+        );
+    }
     process.finish();
 }
 

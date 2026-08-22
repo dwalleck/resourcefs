@@ -1,6 +1,9 @@
-#![expect(
-    dead_code,
-    reason = "strict DTO fields are consumed by serde and schemars before every adapter uses their values"
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "strict DTO fields are consumed by serde and schemars before every adapter uses their values"
+    )
 )]
 
 use crate::logging::{
@@ -9,11 +12,11 @@ use crate::logging::{
 
 use resourcefs_core::{
     DiscoveryLimitInput, ErrorCategory, ServerLimits, ServerLimitsInput, StorageLimitInput,
-    TextLimitInput,
+    TextLimitInput, WorkspaceRootId,
 };
 use resourcefs_sources::{
-    ConfigurationDirectory, ConfigurationError, MutationGrants, MutationSupport,
-    SESSION_CLEANUP_TTL, SessionStorageConfig,
+    BackingPathVisibility, ConfigurationDirectory, ConfigurationError, LaunchRoot,
+    LaunchRootSource, MutationGrants, MutationSupport, SESSION_CLEANUP_TTL, SessionStorageConfig,
 };
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
@@ -22,7 +25,7 @@ use std::{
     fmt,
     fs::File,
     io::{self, Read},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 /// Maximum accepted encoded Server Profile size.
@@ -130,6 +133,15 @@ pub struct ProfileDocument {
     #[serde(skip)]
     #[schemars(skip)]
     logging_config: Option<LogConfig>,
+}
+
+pub(super) struct LaunchProfileComponents {
+    pub(super) root_source: LaunchRootSource,
+    pub(super) primary_selector: Option<String>,
+    pub(super) visibility: BackingPathVisibility,
+    pub(super) limits: ServerLimits,
+    pub(super) session_storage: SessionStorageConfig,
+    pub(super) logging: LogConfig,
 }
 
 impl ProfileDocument {
@@ -264,6 +276,61 @@ impl ProfileDocument {
         self.logging_config
             .as_ref()
             .expect("decoded profile contains validated logging configuration")
+    }
+
+    pub(super) fn into_launch_components(
+        mut self,
+    ) -> Result<LaunchProfileComponents, ProfileError> {
+        let limits = self.server_limits;
+        let session_storage = self.session_storage_config.take().ok_or_else(|| {
+            ProfileError::invalid("decoded profile lost its session storage configuration")
+        })?;
+        let logging = self.logging_config.take().ok_or_else(|| {
+            ProfileError::invalid("decoded profile lost its logging configuration")
+        })?;
+        let (roots, primary_selector, visibility) = match self.workspace.take() {
+            Some(workspace) => {
+                let roots = workspace
+                    .roots
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|root| {
+                        let configured = PathBuf::from(root.path);
+                        if configured.as_os_str().is_empty() {
+                            return Err(ProfileError::invalid(
+                                "workspace root path must not be empty",
+                            ));
+                        }
+                        let path = if configured.is_absolute() {
+                            configured
+                        } else {
+                            self.configuration_base.join(configured)
+                        };
+                        let id = WorkspaceRootId::new(root.id).map_err(|error| {
+                            ProfileError::invalid(format!("workspace root ID: {error}"))
+                        })?;
+                        Ok(LaunchRoot { id, path })
+                    })
+                    .collect::<Result<Vec<_>, ProfileError>>()?;
+                (
+                    roots,
+                    workspace.primary_root,
+                    workspace
+                        .backing_path_visibility
+                        .unwrap_or(BackingPathVisibilityProfile::Hidden)
+                        .into(),
+                )
+            }
+            None => (Vec::new(), None, BackingPathVisibility::Hidden),
+        };
+        Ok(LaunchProfileComponents {
+            root_source: LaunchRootSource::Profile(roots),
+            primary_selector,
+            visibility,
+            limits,
+            session_storage,
+            logging,
+        })
     }
 }
 
@@ -462,6 +529,15 @@ enum BackingPathVisibilityProfile {
     Hidden,
     /// Include backing file URI metadata.
     Visible,
+}
+
+impl From<BackingPathVisibilityProfile> for BackingPathVisibility {
+    fn from(visibility: BackingPathVisibilityProfile) -> Self {
+        match visibility {
+            BackingPathVisibilityProfile::Hidden => Self::Hidden,
+            BackingPathVisibilityProfile::Visible => Self::Visible,
+        }
+    }
 }
 
 /// Independent create, update, and delete grants.

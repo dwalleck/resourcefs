@@ -411,8 +411,17 @@ Mergeability is defined against the repository's default upstream branch; each i
 - `cargo test -p resourcefs-mcp --test cli_contract profile_serve_matrix && cargo test -p resourcefs-mcp --test stdio_mcp_contract` → scratch-only initialize succeeds without launch-directory authority; every uncompiled configured kind exits 3 before stdio; profile root read returns the profile sentinel; client non-empty Roots replace rather than union launch roots; connection isolation remains green.
 - `cargo test -p resourcefs-mcp --test cli_contract profile_is_immutable_per_process` → mutating and deleting the profile after a gated startup leaves the current process's behavior on the old version sentinel while the next invocation observes the change; the refresh-re-read mutation flips the current-process sentinel row (red), restore → green.
 - `cargo test -p resourcefs-mcp --test architecture_contract` → `forbids_telemetry_dependencies` and `profile_capabilities_stay_in_owning_modules` green; the `tokio::process`-in-`launch` mutation fails naming that file, restore → green.
-- `cargo test -p resourcefs-mcp --test cli_contract secret_never_reaches_observable_channels` → the compiled binary runs every sink row (process stderr, logging stderr/files, static report, probe report, CLI diagnostics, raw MCP stdout) with one unique sentinel per row across success and every fixture failure; raw byte scans find zero complete or partial sentinel occurrences; the `Redactor::scrub` input-clone mutation flips every secret-bearing sink row (red), restore → green.
+- `cargo test -p resourcefs-mcp --all-features --test cli_contract secret_never_reaches_observable_channels` → the compiled binary runs every sink row (process stderr, logging stderr/files, static report, probe report, CLI diagnostics, raw MCP stdout) with one unique sentinel per row across success and every fixture failure; raw byte scans find zero complete or partial sentinel occurrences; the `Redactor::scrub` input-clone mutation flips every secret-bearing sink row (red), restore → green.
 - `cargo test --workspace --all-targets` → every fence from slices 1–10 remains green.
+
+## Execution record
+
+- Slices 1–10: all assigned C1/C4/C6–C27/C29/C32 fences remain PASS from their 2026-08-21 checkpoints.
+- Slice 11: C2/C3/C5/C28/C30/C31/C33 completed 2026-08-22. Named mutations for C2/C3/C5/C28/C31/C33 turned their assigned fences red and were restored green; C30 is enforced by the immutable `LaunchPlan` handoff plus current/next-process profile sentinels.
+- Final Linux gates: `cargo fmt --all -- --check`, workspace all-target/all-feature check and Clippy with warnings denied, 243 all-target tests, and all doctests passed. The compiled stdio smoke negotiated MCP `2026-07-28`.
+- Final differential/fuzz gates: generated profile schema hash matched the checked-in fixture (`fb9514b7cd99f570908b9e027e4a2e6ab4fe82ace9b2d1370c1c417253d2ee48`); all independent profile oracles passed; the nightly `server_profile` target completed 1,669,839 executions in 61 seconds without a crash.
+- Final native Windows gate: the statically linked MSVC `cli_contract` binary passed all seven compiled CLI/profile tests under a native Windows 11 VM. Windows process-tree evidence remained PASS.
+- Final macOS gate: `cargo zigbuild --target x86_64-apple-darwin --workspace --all-features --tests` compiled every crate and test target successfully. Packaged native release acceptance remains assigned to `rfs-5os7` and `rfs-58r1`.
 
 ## Tracker taxonomy
 

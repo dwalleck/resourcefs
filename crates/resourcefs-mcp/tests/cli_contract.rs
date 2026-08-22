@@ -1,12 +1,19 @@
 use std::{
     fs,
+    io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
-    path::Path,
-    process::{Command, Output},
+    path::{Path, PathBuf},
+    process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio},
 };
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
+
+fn binary() -> PathBuf {
+    std::env::var_os("RESOURCEFS_TEST_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_resourcefs")))
+}
 
 #[test]
 fn static_check_is_offline_and_deterministic() {
@@ -272,7 +279,7 @@ fn static_check_is_offline_and_deterministic() {
 }
 
 fn run_check(path: &Path, probe: bool, environment: &[(&str, Option<&str>)]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_resourcefs"));
+    let mut command = Command::new(binary());
     command.args(["check", "--config"]).arg(path);
     if probe {
         command.arg("--probe");
@@ -341,4 +348,880 @@ fn create_executable(path: &Path) {
 #[cfg(windows)]
 fn create_executable(path: &Path) {
     fs::write(path, b"fixture").expect("write helper");
+}
+
+#[test]
+fn selects_exactly_one_launch_authority() {
+    let temporary = TempDir::new().expect("launch authority fixture");
+    let root = temporary.path().join("cli-root");
+    fs::create_dir(&root).expect("CLI root");
+    let profile = write_profile(
+        temporary.path(),
+        "scratch.json",
+        &scratch_profile("scratch-cache"),
+    );
+    let root_argument = format!("workspace={}", root.display());
+
+    for arguments in [
+        vec!["serve".to_owned()],
+        vec![
+            "serve".to_owned(),
+            "--config".to_owned(),
+            profile.display().to_string(),
+            "--root".to_owned(),
+            root_argument.clone(),
+        ],
+        vec![
+            "serve".to_owned(),
+            "--config".to_owned(),
+            profile.display().to_string(),
+            "--primary-root".to_owned(),
+            "workspace".to_owned(),
+        ],
+    ] {
+        let output = run_binary(&arguments, temporary.path(), &[]);
+        assert_eq!(output.status.code(), Some(2), "arguments: {arguments:?}");
+        assert!(output.stdout.is_empty(), "arguments: {arguments:?}");
+        assert!(!output.stderr.is_empty(), "arguments: {arguments:?}");
+    }
+
+    let profile_only = run_initialized_serve(
+        &[
+            "serve".to_owned(),
+            "--config".to_owned(),
+            profile.display().to_string(),
+        ],
+        temporary.path(),
+        &[],
+    );
+    assert_clean_protocol_serve(profile_only);
+
+    let roots_only = run_initialized_serve(
+        &[
+            "serve".to_owned(),
+            "--root".to_owned(),
+            root_argument,
+            "--primary-root".to_owned(),
+            "workspace".to_owned(),
+        ],
+        temporary.path(),
+        &[],
+    );
+    assert_clean_protocol_serve(roots_only);
+
+    let help = run_binary(&["--help".to_owned()], temporary.path(), &[]);
+    assert_eq!(help.status.code(), Some(0));
+    assert!(help.stderr.is_empty());
+    let help = String::from_utf8(help.stdout).expect("UTF-8 help");
+    for command in ["serve", "check", "schema"] {
+        assert!(help.contains(command), "missing {command} command: {help}");
+    }
+    for absent in ["config-manager", "profile", "telemetry"] {
+        assert!(
+            !help.contains(absent),
+            "unexpected command {absent}: {help}"
+        );
+    }
+}
+
+#[test]
+fn exit_and_channel_matrix() {
+    let temporary = TempDir::new().expect("exit matrix fixture");
+    let root = temporary.path().join("workspace");
+    fs::create_dir(&root).expect("workspace");
+
+    let success = run_binary(&["schema".to_owned()], temporary.path(), &[]);
+    assert_eq!(success.status.code(), Some(0));
+    assert!(success.stderr.is_empty());
+    assert!(success.stdout.starts_with(b"{"));
+    assert_eq!(success.stdout.last(), Some(&b'\n'));
+
+    let missing = run_binary(
+        &[
+            "serve".to_owned(),
+            "--config".to_owned(),
+            temporary.path().join("missing.json").display().to_string(),
+        ],
+        temporary.path(),
+        &[],
+    );
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(missing.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("could not read Server Profile"));
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("unavailable-source listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking unavailable-source listener");
+    let unsupported_profile = write_profile(
+        temporary.path(),
+        "unsupported.json",
+        &json!({
+            "schemaVersion":1,
+            "session":{"cacheDirectory":"unsupported-cache"},
+            "sources":[{
+                "kind":"https",
+                "id":"web",
+                "required":true,
+                "origins":[{
+                    "baseUrl":format!(
+                        "https://127.0.0.1:{}/",
+                        listener.local_addr().expect("listener address").port()
+                    ),
+                    "allowPrivateNetwork":true
+                }]
+            }]
+        }),
+    );
+    let unsupported = run_serve_profile(&unsupported_profile, temporary.path(), &[]);
+    assert_eq!(unsupported.status.code(), Some(3));
+    assert!(unsupported.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&unsupported.stderr).contains("not supported"));
+    assert_eq!(
+        listener
+            .accept()
+            .expect_err("serve must stay offline")
+            .kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+
+    let log_directory = temporary.path().join("log-directory");
+    fs::create_dir(&log_directory).expect("log directory");
+    let internal_profile = write_profile(
+        temporary.path(),
+        "internal.json",
+        &json!({
+            "schemaVersion":1,
+            "session":{"cacheDirectory":"internal-cache"},
+            "logging":{"destination":{"kind":"file","path":"log-directory"}}
+        }),
+    );
+    let internal = run_serve_profile(&internal_profile, temporary.path(), &[]);
+    assert_eq!(internal.status.code(), Some(1));
+    assert!(internal.stdout.is_empty());
+    assert!(!internal.stderr.is_empty());
+    let clean = run_initialized_serve(
+        &[
+            "serve".to_owned(),
+            "--root".to_owned(),
+            format!("workspace={}", root.display()),
+        ],
+        temporary.path(),
+        &[],
+    );
+    assert_clean_protocol_serve(clean);
+}
+
+#[test]
+fn profile_serve_matrix() {
+    let temporary = TempDir::new().expect("profile serve fixture");
+    let scratch = write_profile(
+        temporary.path(),
+        "scratch.json",
+        &scratch_profile("scratch-cache"),
+    );
+    assert_clean_protocol_serve(run_initialized_serve(
+        &[
+            "serve".to_owned(),
+            "--config".to_owned(),
+            scratch.display().to_string(),
+        ],
+        temporary.path(),
+        &[],
+    ));
+
+    let helper = temporary.path().join(helper_name());
+    create_executable(&helper);
+    for directory in ["skills", "notes", "vault"] {
+        fs::create_dir(temporary.path().join(directory)).expect("source directory");
+    }
+    fs::write(temporary.path().join("rules.json"), b"{}").expect("rules manifest");
+    fs::write(temporary.path().join("agents.json"), b"{}").expect("agent manifest");
+
+    for kind in [
+        "https",
+        "github",
+        "ssh",
+        "documents",
+        "skills",
+        "rules",
+        "memory",
+        "vault",
+        "agentExport",
+        "downstreamMcp",
+    ] {
+        let source = unsupported_source(kind, &helper);
+        let profile = write_profile(
+            temporary.path(),
+            &format!("{kind}.json"),
+            &json!({
+                "schemaVersion":1,
+                "session":{"cacheDirectory":format!("{kind}-cache")},
+                "sources":[source]
+            }),
+        );
+        let output = run_serve_profile(
+            &profile,
+            temporary.path(),
+            &[("RFS_SERVE_SECRET", Some("serve-secret-sentinel"))],
+        );
+        assert_eq!(output.status.code(), Some(3), "source kind {kind}");
+        assert!(output.stdout.is_empty(), "source kind {kind}");
+        let diagnostic = String::from_utf8(output.stderr).expect("UTF-8 unavailable diagnostic");
+        assert!(
+            diagnostic.contains(kind),
+            "source kind {kind}: {diagnostic}"
+        );
+        assert!(
+            !diagnostic.contains("serve-secret-sentinel"),
+            "source kind {kind}: {diagnostic}"
+        );
+    }
+}
+
+#[test]
+fn secret_never_reaches_observable_channels() {
+    const STATIC_SECRET: &str = "RFS-static-credential-sentinel";
+    const PROBE_SECRET: &str = "RFS-probe-credential-sentinel";
+    const LOG_SECRET: &str = "RFS-log-ambient-sentinel";
+
+    let temporary = TempDir::new().expect("secret sink fixture");
+    #[cfg(feature = "test-support")]
+    const STDERR_REDACTION_SECRET: &str = "RFS-stderr-redaction-sentinel";
+    #[cfg(feature = "test-support")]
+    const FILE_REDACTION_SECRET: &str = "RFS-file-redaction-sentinel";
+    let static_profile = write_profile(
+        temporary.path(),
+        "secret-static.json",
+        &json!({
+            "schemaVersion":1,
+            "sources":[{
+                "kind":"github",
+                "id":"github",
+                "required":false,
+                "allowPrivateNetwork":false,
+                "credential":{"kind":"environment","name":"RFS_SECRET_STATIC"},
+                "repositories":[{"name":"owner/repository"}]
+            }]
+        }),
+    );
+    let static_output = run_check(
+        &static_profile,
+        false,
+        &[("RFS_SECRET_STATIC", Some(STATIC_SECRET))],
+    );
+    assert_eq!(static_output.status.code(), Some(0));
+    assert_bytes_exclude(&static_output.stdout, STATIC_SECRET);
+    assert_bytes_exclude(&static_output.stderr, STATIC_SECRET);
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("probe listener");
+    let probe_profile = write_profile(
+        temporary.path(),
+        "secret-probe.json",
+        &json!({
+            "schemaVersion":1,
+            "sources":[{
+                "kind":"https",
+                "id":"web",
+                "required":false,
+                "origins":[{
+                    "baseUrl":format!(
+                        "https://127.0.0.1:{}/",
+                        listener.local_addr().expect("probe listener address").port()
+                    ),
+                    "allowPrivateNetwork":true,
+                    "credential":{
+                        "header":"Authorization",
+                        "secret":{"kind":"environment","name":"RFS_SECRET_PROBE"}
+                    }
+                }]
+            }]
+        }),
+    );
+    let probe_output = run_check(
+        &probe_profile,
+        true,
+        &[("RFS_SECRET_PROBE", Some(PROBE_SECRET))],
+    );
+    assert!(matches!(probe_output.status.code(), Some(0) | Some(3)));
+    assert_bytes_exclude(&probe_output.stdout, PROBE_SECRET);
+    assert_bytes_exclude(&probe_output.stderr, PROBE_SECRET);
+
+    let cache_file = temporary.path().join("not-a-cache-directory");
+
+    #[cfg(feature = "test-support")]
+    {
+        let stderr_profile = write_profile(
+            temporary.path(),
+            "redaction-stderr.json",
+            &scratch_profile("redaction-stderr-cache"),
+        );
+        let stderr_redaction = run_initialized_serve(
+            &[
+                "serve".to_owned(),
+                "--config".to_owned(),
+                stderr_profile.display().to_string(),
+            ],
+            temporary.path(),
+            &[
+                (
+                    "RESOURCEFS_TEST_REDACTION_SECRET",
+                    Some(STDERR_REDACTION_SECRET),
+                ),
+                ("RESOURCEFS_TEST_LOG_MESSAGE", Some(STDERR_REDACTION_SECRET)),
+            ],
+        );
+        assert_bytes_exclude(&stderr_redaction.stdout, STDERR_REDACTION_SECRET);
+        assert_bytes_exclude(&stderr_redaction.stderr, STDERR_REDACTION_SECRET);
+        let redacted_stderr = assert_protocol_serve(stderr_redaction);
+        assert!(redacted_stderr.contains("<redacted>"));
+
+        let redaction_log = temporary.path().join("redaction.log");
+        let file_profile = write_profile(
+            temporary.path(),
+            "redaction-file.json",
+            &json!({
+                "schemaVersion":1,
+                "session":{
+                    "cacheDirectory":"redaction-file-cache",
+                    "retentionTtlSeconds":0
+                },
+                "logging":{"destination":{
+                    "kind":"file",
+                    "path":"redaction.log",
+                    "rotationBytes":1024,
+                    "retainFiles":2
+                }}
+            }),
+        );
+        let file_redaction = run_initialized_serve(
+            &[
+                "serve".to_owned(),
+                "--config".to_owned(),
+                file_profile.display().to_string(),
+            ],
+            temporary.path(),
+            &[
+                (
+                    "RESOURCEFS_TEST_REDACTION_SECRET",
+                    Some(FILE_REDACTION_SECRET),
+                ),
+                ("RESOURCEFS_TEST_LOG_MESSAGE", Some(FILE_REDACTION_SECRET)),
+            ],
+        );
+        assert_bytes_exclude(&file_redaction.stdout, FILE_REDACTION_SECRET);
+        assert_bytes_exclude(&file_redaction.stderr, FILE_REDACTION_SECRET);
+        assert_clean_protocol_serve(file_redaction);
+        let log_bytes = fs::read(redaction_log).expect("redacted file log");
+        assert_bytes_exclude(&log_bytes, FILE_REDACTION_SECRET);
+        assert!(String::from_utf8_lossy(&log_bytes).contains("<redacted>"));
+    }
+    fs::write(&cache_file, b"fixture").expect("cache file");
+    let log_path = temporary.path().join("resourcefs.log");
+    let logging_profile = write_profile(
+        temporary.path(),
+        "secret-log.json",
+        &json!({
+            "schemaVersion":1,
+            "session":{"cacheDirectory":"not-a-cache-directory"},
+            "logging":{"destination":{
+                "kind":"file",
+                "path":"resourcefs.log",
+                "rotationBytes":1024,
+                "retainFiles":2
+            }}
+        }),
+    );
+    let logged = run_serve_profile(
+        &logging_profile,
+        temporary.path(),
+        &[("RFS_LOG_AMBIENT", Some(LOG_SECRET))],
+    );
+    assert_eq!(logged.status.code(), Some(1));
+    assert!(logged.stdout.is_empty());
+    assert!(logged.stderr.is_empty());
+    assert_bytes_exclude(&fs::read(log_path).expect("file diagnostic"), LOG_SECRET);
+
+    let unavailable = run_serve_profile(
+        &static_profile,
+        temporary.path(),
+        &[("RFS_SECRET_STATIC", Some(STATIC_SECRET))],
+    );
+    assert_eq!(unavailable.status.code(), Some(3));
+    assert_bytes_exclude(&unavailable.stdout, STATIC_SECRET);
+    assert_bytes_exclude(&unavailable.stderr, STATIC_SECRET);
+}
+
+#[test]
+fn profile_workspace_authority() {
+    let temporary = TempDir::new().expect("profile workspace fixture");
+    let profile_directory = temporary.path().join("profile");
+    let launch_directory = temporary.path().join("launch");
+    let profile_root = profile_directory.join("profile-root");
+    let client_root = temporary.path().join("client-root");
+    fs::create_dir_all(&profile_root).expect("profile root");
+    fs::create_dir(&launch_directory).expect("launch directory");
+    fs::create_dir(&client_root).expect("client root");
+    fs::write(profile_root.join("shared.txt"), "profile").expect("profile sentinel");
+    fs::write(launch_directory.join("shared.txt"), "launch").expect("launch sentinel");
+    fs::write(client_root.join("shared.txt"), "client").expect("client sentinel");
+    let profile = write_profile(
+        &profile_directory,
+        "server.json",
+        &workspace_profile("profile-root", "profile-cache"),
+    );
+
+    let mut process = ProfileMcpProcess::start(&profile, &launch_directory);
+    process.initialize_with_roots(Vec::new());
+    let profile_read = process.call_read("shared.txt");
+    assert_eq!(profile_read["structuredContent"]["content"], "profile");
+    assert_eq!(
+        profile_read["structuredContent"]["canonicalReference"],
+        "rfs://workspace/profile/shared.txt"
+    );
+    assert!(
+        profile_read["structuredContent"]
+            .get("backingFileUri")
+            .is_none()
+    );
+
+    process.change_roots(vec![mcp_root(&client_root, "client")]);
+    let client_read = process.call_read_until_content("shared.txt", "client");
+    assert_eq!(client_read["structuredContent"]["content"], "client");
+    assert_ne!(
+        client_read["structuredContent"]["canonicalReference"],
+        "rfs://workspace/profile/shared.txt"
+    );
+    let old_profile = process.call_read("rfs://workspace/profile/shared.txt");
+    assert_eq!(old_profile["isError"], true);
+
+    process.change_roots(Vec::new());
+    process.call_read_until_content("shared.txt", "profile");
+    assert!(process.finish().is_empty());
+
+    let alternate_root = temporary.path().join("alternate-root");
+    fs::create_dir(&alternate_root).expect("alternate client root");
+    fs::write(alternate_root.join("shared.txt"), "alternate").expect("alternate sentinel");
+    let mut deferred_profile = scratch_profile("deferred-primary-cache");
+    deferred_profile
+        .as_object_mut()
+        .expect("profile object")
+        .insert("workspace".to_owned(), json!({"primaryRoot":"client"}));
+    let deferred_profile = write_profile(
+        &profile_directory,
+        "deferred-primary.json",
+        &deferred_profile,
+    );
+    let mut deferred = ProfileMcpProcess::start(&deferred_profile, &launch_directory);
+    deferred.initialize_with_roots(vec![
+        mcp_root(&alternate_root, "alternate"),
+        mcp_root(&client_root, "client"),
+    ]);
+    deferred.call_read_until_content("shared.txt", "client");
+    assert!(deferred.finish().is_empty());
+}
+
+#[test]
+fn profile_is_immutable_per_process() {
+    let temporary = TempDir::new().expect("immutable profile fixture");
+    let first_root = temporary.path().join("first");
+    let second_root = temporary.path().join("second");
+    let launch_directory = temporary.path().join("launch");
+    fs::create_dir(&first_root).expect("first root");
+    fs::create_dir(&second_root).expect("second root");
+    fs::create_dir(&launch_directory).expect("launch directory");
+    fs::write(first_root.join("version.txt"), "version-one").expect("first version");
+    fs::write(second_root.join("version.txt"), "version-two").expect("second version");
+    let profile_path = write_profile(
+        temporary.path(),
+        "server.json",
+        &workspace_profile("first", "immutable-cache"),
+    );
+
+    let mut first = ProfileMcpProcess::start(&profile_path, &launch_directory);
+    first.initialize_with_roots(Vec::new());
+    assert_eq!(
+        first.call_read("version.txt")["structuredContent"]["content"],
+        "version-one"
+    );
+    write_profile(
+        temporary.path(),
+        "server.json",
+        &workspace_profile("second", "immutable-cache"),
+    );
+    assert_eq!(
+        first.call_read("version.txt")["structuredContent"]["content"],
+        "version-one"
+    );
+    assert!(first.finish().is_empty());
+
+    let mut second = ProfileMcpProcess::start(&profile_path, &launch_directory);
+    second.initialize_with_roots(Vec::new());
+    assert_eq!(
+        second.call_read("version.txt")["structuredContent"]["content"],
+        "version-two"
+    );
+    fs::remove_file(&profile_path).expect("remove profile");
+    assert_eq!(
+        second.call_read("version.txt")["structuredContent"]["content"],
+        "version-two"
+    );
+    assert!(second.finish().is_empty());
+
+    let missing = run_serve_profile(&profile_path, &launch_directory, &[]);
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(missing.stdout.is_empty());
+}
+
+fn workspace_profile(root: &str, cache: &str) -> Value {
+    json!({
+        "schemaVersion":1,
+        "workspace":{
+            "roots":[{"id":"profile","path":root}],
+            "primaryRoot":"profile"
+        },
+        "session":{"cacheDirectory":cache,"retentionTtlSeconds":0}
+    })
+}
+
+fn mcp_root(path: &Path, name: &str) -> Value {
+    json!({
+        "uri":url::Url::from_directory_path(path)
+            .expect("directory file URI")
+            .to_string(),
+        "name":name
+    })
+}
+
+struct ProfileMcpProcess {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+    roots: Vec<Value>,
+    next_id: u64,
+}
+
+impl ProfileMcpProcess {
+    fn start(profile: &Path, current_directory: &Path) -> Self {
+        let mut child = Command::new(binary())
+            .args(["serve", "--config"])
+            .arg(profile)
+            .current_dir(current_directory)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start profile ResourceFS");
+        let stdin = child.stdin.take().expect("profile ResourceFS stdin");
+        let stdout = BufReader::new(child.stdout.take().expect("profile ResourceFS stdout"));
+        Self {
+            child,
+            stdin: Some(stdin),
+            stdout,
+            roots: Vec::new(),
+            next_id: 1,
+        }
+    }
+
+    fn initialize_with_roots(&mut self, roots: Vec<Value>) {
+        self.roots = roots;
+        let response = self.request(
+            "initialize",
+            json!({
+                "protocolVersion":"2026-07-28",
+                "capabilities":{"roots":{"listChanged":true}},
+                "clientInfo":{"name":"profile-cli-contract","version":"1.0.0"}
+            }),
+        );
+        assert!(response.get("error").is_none(), "initialize: {response}");
+        self.write(&json!({
+            "jsonrpc":"2.0",
+            "method":"notifications/initialized"
+        }));
+    }
+    fn call_read(&mut self, path: &str) -> Value {
+        let response = self.request(
+            "tools/call",
+            json!({"name":"rfs_read","arguments":{"path":path}}),
+        );
+        assert!(response.get("error").is_none(), "read response: {response}");
+        response["result"].clone()
+    }
+
+    fn call_read_until_content(&mut self, path: &str, expected: &str) -> Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let result = self.call_read(path);
+            if result["structuredContent"]["content"].as_str() == Some(expected) {
+                return result;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "read {path:?} did not converge to {expected:?}: {result}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn change_roots(&mut self, roots: Vec<Value>) {
+        self.roots = roots;
+        self.write(&json!({
+            "jsonrpc":"2.0",
+            "method":"notifications/roots/list_changed"
+        }));
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.write(&json!({
+            "jsonrpc":"2.0",
+            "id":id,
+            "method":method,
+            "params":params
+        }));
+        loop {
+            let message = self.read();
+            if message["method"] == "roots/list" {
+                let request_id = message["id"].clone();
+                self.write(&json!({
+                    "jsonrpc":"2.0",
+                    "id":request_id,
+                    "result":{"roots":self.roots}
+                }));
+                continue;
+            }
+            if message["id"] == id {
+                return message;
+            }
+        }
+    }
+
+    fn write(&mut self, message: &Value) {
+        let stdin = self.stdin.as_mut().expect("open profile ResourceFS stdin");
+        serde_json::to_writer(&mut *stdin, message).expect("serialize MCP message");
+        writeln!(stdin).expect("MCP message delimiter");
+        stdin.flush().expect("flush MCP message");
+    }
+
+    fn read(&mut self) -> Value {
+        let mut line = String::new();
+        let bytes = self.stdout.read_line(&mut line).expect("read MCP message");
+        assert_ne!(bytes, 0, "profile ResourceFS closed protocol stdout");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|error| panic!("invalid MCP response {line:?}: {error}"))
+    }
+
+    fn finish(&mut self) -> String {
+        self.stdin.take();
+        let status = self.child.wait().expect("wait for profile ResourceFS");
+        let mut remaining = String::new();
+        self.stdout
+            .read_to_string(&mut remaining)
+            .expect("drain profile stdout");
+        assert!(
+            remaining.trim().is_empty(),
+            "unexpected MCP stdout: {remaining}"
+        );
+        let mut stderr = String::new();
+        self.child
+            .stderr
+            .take()
+            .expect("profile ResourceFS stderr")
+            .read_to_string(&mut stderr)
+            .expect("read profile stderr");
+        assert!(
+            status.success(),
+            "profile ResourceFS exited {status}: {stderr}"
+        );
+        stderr
+    }
+}
+
+impl Drop for ProfileMcpProcess {
+    fn drop(&mut self) {
+        if self.child.try_wait().is_ok_and(|status| status.is_none()) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+fn scratch_profile(cache_directory: &str) -> Value {
+    json!({
+        "schemaVersion":1,
+        "session":{"cacheDirectory":cache_directory,"retentionTtlSeconds":0}
+    })
+}
+
+fn unsupported_source(kind: &str, helper: &Path) -> Value {
+    let command = helper.display().to_string();
+    let body = match kind {
+        "https" => json!({
+            "origins":[{"baseUrl":"https://example.test/","allowPrivateNetwork":false}]
+        }),
+        "github" => json!({
+            "allowPrivateNetwork":false,
+            "credential":{"kind":"environment","name":"RFS_SERVE_SECRET"},
+            "repositories":[{"name":"owner/repository"}]
+        }),
+        "ssh" => json!({
+            "command":{"argv":[command]},
+            "hosts":[{"alias":"host","remoteRoots":["/srv/repository"]}]
+        }),
+        "documents" => json!({
+            "converters":[{
+                "extensions":["md"],
+                "input":"stdin",
+                "command":{"argv":[command]}
+            }]
+        }),
+        "skills" => json!({"roots":["skills"]}),
+        "rules" => json!({"manifests":["rules.json"]}),
+        "memory" => json!({"roots":[{"name":"notes","path":"notes"}]}),
+        "vault" => json!({"vaults":[{"name":"vault","path":"vault"}]}),
+        "agentExport" => json!({"manifests":["agents.json"]}),
+        "downstreamMcp" => json!({
+            "servers":[{
+                "id":"server",
+                "schemes":["example"],
+                "transport":{"kind":"stdio","command":{"argv":[command]}}
+            }]
+        }),
+        _ => panic!("unknown source kind {kind}"),
+    };
+    let mut source = body.as_object().expect("source body").clone();
+    source.insert("kind".to_owned(), Value::String(kind.to_owned()));
+    source.insert("id".to_owned(), Value::String(format!("{kind}-source")));
+    source.insert("required".to_owned(), Value::Bool(false));
+    Value::Object(source)
+}
+
+fn run_serve_profile(
+    profile: &Path,
+    current_directory: &Path,
+    environment: &[(&str, Option<&str>)],
+) -> Output {
+    run_binary(
+        &[
+            "serve".to_owned(),
+            "--config".to_owned(),
+            profile.display().to_string(),
+        ],
+        current_directory,
+        environment,
+    )
+}
+
+fn run_binary(
+    arguments: &[String],
+    current_directory: &Path,
+    environment: &[(&str, Option<&str>)],
+) -> Output {
+    let mut command = Command::new(binary());
+    command
+        .args(arguments)
+        .current_dir(current_directory)
+        .stdin(Stdio::null());
+    for (name, value) in environment {
+        match value {
+            Some(value) => {
+                command.env(name, value);
+            }
+            None => {
+                command.env_remove(name);
+            }
+        }
+    }
+    command.output().expect("run resourcefs")
+}
+
+fn run_initialized_serve(
+    arguments: &[String],
+    current_directory: &Path,
+    environment: &[(&str, Option<&str>)],
+) -> Output {
+    use std::io::Write as _;
+
+    let mut command = Command::new(binary());
+    command
+        .args(arguments)
+        .current_dir(current_directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (name, value) in environment {
+        match value {
+            Some(value) => {
+                command.env(name, value);
+            }
+            None => {
+                command.env_remove(name);
+            }
+        }
+    }
+    let mut child = command.spawn().expect("start initialized resourcefs");
+    let mut stdin = child.stdin.take().expect("resourcefs stdin");
+    serde_json::to_writer(
+        &mut stdin,
+        &json!({
+            "jsonrpc":"2.0",
+            "id":1,
+            "method":"initialize",
+            "params":{
+                "protocolVersion":"2026-07-28",
+                "capabilities":{},
+                "clientInfo":{"name":"cli-contract","version":"1.0.0"}
+            }
+        }),
+    )
+    .expect("serialize initialize");
+    writeln!(stdin).expect("initialize delimiter");
+    serde_json::to_writer(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .expect("serialize initialized");
+    writeln!(stdin).expect("initialized delimiter");
+    stdin.flush().expect("flush protocol input");
+    drop(stdin);
+    child.wait_with_output().expect("finish initialized serve")
+}
+
+fn assert_protocol_serve(output: Output) -> String {
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let messages = String::from_utf8(output.stdout).expect("UTF-8 protocol output");
+    let rows = messages.lines().collect::<Vec<_>>();
+    assert_eq!(rows.len(), 1, "protocol messages: {messages}");
+    let response: Value = serde_json::from_str(rows[0]).expect("initialize response JSON");
+    assert_eq!(response["id"], 1);
+    assert!(
+        response.get("error").is_none(),
+        "initialize response: {response}"
+    );
+    String::from_utf8(output.stderr).expect("UTF-8 diagnostic output")
+}
+
+fn assert_clean_protocol_serve(output: Output) {
+    let stderr = assert_protocol_serve(output);
+    assert!(stderr.is_empty(), "unexpected diagnostic: {stderr}");
+}
+
+fn assert_bytes_exclude(bytes: &[u8], sentinel: &str) {
+    const MIN_FRAGMENT_BYTES: usize = 8;
+    assert!(sentinel.len() >= MIN_FRAGMENT_BYTES);
+    for fragment in sentinel.as_bytes().windows(MIN_FRAGMENT_BYTES) {
+        assert!(
+            !bytes
+                .windows(MIN_FRAGMENT_BYTES)
+                .any(|window| window == fragment),
+            "observable bytes contained a secret sentinel fragment"
+        );
+    }
 }

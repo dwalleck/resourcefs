@@ -132,6 +132,18 @@ fn canonical_construction_percent_encodes_ambiguous_component_characters() {
 }
 
 #[test]
+fn empty_root_sets_represent_scratch_only_authority() {
+    let empty = WorkspaceRootSet::new(Vec::new(), None).expect("scratch-only root set");
+    assert!(empty.roots().is_empty());
+    assert_eq!(empty.primary(), None);
+
+    let deferred = WorkspaceRootSet::new(Vec::new(), Some("workspace"))
+        .expect("scratch-only root set may accept a deferred external selector");
+    assert!(deferred.roots().is_empty());
+    assert_eq!(deferred.primary(), None);
+}
+
+#[test]
 fn root_sets_are_order_independent_and_primary_selection_is_exact() {
     let alpha = WorkspaceRoot::new(
         WorkspaceRootId::new("alpha").expect("id"),

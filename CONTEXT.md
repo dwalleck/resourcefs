@@ -32,6 +32,10 @@ _Avoid_: Conversation, workspace session
 The explicit source configuration and credentials used by a Path Resource Server independently of an agent harness's internal configuration.
 _Avoid_: OMP config
 
+**Launch Authority**:
+The one operator-selected source of initial Workspace Root authority for a ResourceFS process: either one Server Profile or one or more CLI Workspace Roots. Client-declared MCP Roots may replace that authority for a connection; the process working directory never supplies it implicitly.
+_Avoid_: Default workspace, current-directory fallback
+
 **Recovery Reference**:
 A Path Reference returned with bounded output that addresses content omitted from the result.
 _Avoid_: Truncation notice when the omitted content remains recoverable
