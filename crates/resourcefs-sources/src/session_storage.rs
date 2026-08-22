@@ -8,7 +8,9 @@ use std::{
 
 use async_trait::async_trait;
 use directories::BaseDirs;
-use resourcefs_core::{ArtifactId, PathSession, ResourceError, SessionStorage, SessionToken};
+use resourcefs_core::{
+    ArtifactId, PathSession, ResourceError, ServerLimits, SessionStorage, SessionToken,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[cfg(feature = "test-support")]
@@ -50,13 +52,16 @@ impl SessionStore {
         Self::open(base.cache_dir().join("resourcefs")).await
     }
 
-    pub async fn create_session(&self) -> Result<StoredSession, ResourceError> {
+    pub async fn create_session(
+        &self,
+        limits: ServerLimits,
+    ) -> Result<StoredSession, ResourceError> {
         let token = SessionToken::generate()?;
         let storage = Arc::new(
             DiskSessionStorage::create(self.sessions_root.as_ref().clone(), token.clone()).await?,
         );
         let trait_storage: Arc<dyn SessionStorage> = storage.clone();
-        let session = PathSession::new(token, trait_storage);
+        let session = PathSession::new(token, trait_storage, limits);
         Ok(StoredSession { session, storage })
     }
 

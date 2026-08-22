@@ -12,8 +12,9 @@ use async_trait::async_trait;
 use resourcefs_core::{
     ArtifactAddress, ArtifactId, ArtifactProjectionOrigin, ErrorCategory, LineSelector,
     MAX_ARTIFACT_BYTES, OperationGuard, PathReference, PathSession, ProjectionSelector, ReadEngine,
-    ReadRequest, ResourceAddress, ResourceError, SessionStorage, SessionToken, SourceAdapter,
-    SourceResource, TextLimits, VersionTag, WorkspacePath, WorkspaceRootId, select_utf8,
+    ReadRequest, ResourceAddress, ResourceError, ServerLimits, ServerLimitsInput, SessionStorage,
+    SessionToken, SourceAdapter, SourceResource, TextLimitInput, TextLimits, VersionTag,
+    WorkspacePath, WorkspaceRootId, select_utf8,
 };
 use tokio::sync::Mutex;
 
@@ -132,17 +133,22 @@ struct Harness {
 
 impl Harness {
     fn new(content: String) -> Self {
+        Self::with_limits(content, ServerLimits::default())
+    }
+
+    fn with_limits(content: String, limits: ServerLimits) -> Self {
         let storage = Arc::new(MemoryStorage::default());
         let session = PathSession::new(
             SessionToken::parse("00000000000000000000000000000042").expect("session token"),
             storage.clone(),
+            limits,
         );
         let source: Arc<dyn SourceAdapter> = Arc::new(SessionBackedSource {
             workspace_content: Arc::new(content),
             session: session.clone(),
         });
         Self {
-            engine: ReadEngine::new(source, session.clone()),
+            engine: ReadEngine::new(source, session.clone(), limits),
             session,
             storage,
         }
@@ -187,6 +193,34 @@ fn suffix_origin(content: &str, selector: &LineSelector) -> Option<ArtifactProje
         }
     }
     None
+}
+
+#[tokio::test]
+async fn server_text_ceiling_and_per_call_ceiling_compose_by_minimum() {
+    let limits = ServerLimits::new(ServerLimitsInput {
+        text: TextLimitInput {
+            bytes: Some(4),
+            ..TextLimitInput::default()
+        },
+        ..ServerLimitsInput::default()
+    })
+    .expect("lower server text ceiling");
+    let harness = Harness::with_limits("a\nb\nc\n".to_owned(), limits);
+
+    let server_bounded = harness
+        .read(workspace_reference(), TextLimits::default())
+        .await;
+    assert_eq!(server_bounded.content(), "a\nb\n");
+    assert!(server_bounded.is_bounded());
+
+    let call_bounded = harness
+        .read(
+            workspace_reference(),
+            TextLimits::new(Some(2), None, None).expect("lower per-call ceiling"),
+        )
+        .await;
+    assert_eq!(call_bounded.content(), "a\n");
+    assert!(call_bounded.is_bounded());
 }
 
 fn invalid_page() -> ResourceError {

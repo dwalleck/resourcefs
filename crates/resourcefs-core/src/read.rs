@@ -3,7 +3,7 @@ use std::{fmt, sync::Arc};
 use crate::{
     ArtifactAddress, ArtifactProjectionOrigin, ErrorCategory, MAX_ARTIFACT_BYTES, MAX_TEXT_BYTES,
     MAX_TEXT_COLUMNS, MAX_TEXT_LINES, OperationGuard, PathReference, PathSession,
-    ProjectionSelector, ReadResource, ResourceAddress, ResourceError, SourceAdapter,
+    ProjectionSelector, ReadResource, ResourceAddress, ResourceError, ServerLimits, SourceAdapter,
 };
 
 /// Valid lower-only ceilings for one inline text page.
@@ -29,6 +29,21 @@ impl TextLimits {
                 MAX_TEXT_COLUMNS,
             )?,
         })
+    }
+    pub(crate) const fn from_validated(bytes: usize, lines: usize, columns: usize) -> Self {
+        Self {
+            bytes,
+            lines,
+            columns,
+        }
+    }
+
+    fn lowered_by(self, base: Self) -> Self {
+        Self {
+            bytes: self.bytes.min(base.bytes),
+            lines: self.lines.min(base.lines),
+            columns: self.columns.min(base.columns),
+        }
     }
 
     pub const fn bytes(self) -> usize {
@@ -64,6 +79,7 @@ pub struct ReadRequest {
 pub struct ReadEngine {
     sources: Arc<dyn SourceAdapter>,
     session: PathSession,
+    limits: ServerLimits,
 }
 
 impl fmt::Debug for ReadEngine {
@@ -73,8 +89,16 @@ impl fmt::Debug for ReadEngine {
 }
 
 impl ReadEngine {
-    pub fn new(sources: Arc<dyn SourceAdapter>, session: PathSession) -> Self {
-        Self { sources, session }
+    pub fn new(
+        sources: Arc<dyn SourceAdapter>,
+        session: PathSession,
+        limits: ServerLimits,
+    ) -> Self {
+        Self {
+            sources,
+            session,
+            limits,
+        }
     }
 
     pub async fn read(
@@ -82,6 +106,7 @@ impl ReadEngine {
         request: ReadRequest,
         operation: &OperationGuard,
     ) -> Result<ReadResource, ResourceError> {
+        let limits = request.limits.lowered_by(self.limits.text_limits());
         ensure_live(&self.session, operation)?;
         let source = self.sources.read(&request.reference).await?;
         ensure_live(&self.session, operation)?;
@@ -101,7 +126,7 @@ impl ReadEngine {
             ));
         }
 
-        let page_end = page_prefix_len(&parts.content, request.limits)?;
+        let page_end = page_prefix_len(&parts.content, limits)?;
         if page_end == parts.content.len() {
             let recovery_reference = if requested_artifact_projection {
                 requested_artifact

@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
 
-use crate::{ArtifactAddress, ErrorCategory, MAX_ARTIFACT_BYTES, ResourceError};
+use crate::{ArtifactAddress, ErrorCategory, ResourceError, ServerLimits};
 
 pub const MAX_SESSION_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_SESSION_ARTIFACTS: usize = 1_000;
@@ -133,6 +133,7 @@ struct PathSessionInner {
     active: AtomicBool,
     admission: Mutex<SessionState>,
     storage: Arc<dyn SessionStorage>,
+    limits: ServerLimits,
 }
 
 #[derive(Debug)]
@@ -144,7 +145,11 @@ struct SessionState {
 }
 
 impl PathSession {
-    pub fn new(token: SessionToken, storage: Arc<dyn SessionStorage>) -> Self {
+    pub fn new(
+        token: SessionToken,
+        storage: Arc<dyn SessionStorage>,
+        limits: ServerLimits,
+    ) -> Self {
         Self {
             inner: Arc::new(PathSessionInner {
                 token,
@@ -156,6 +161,7 @@ impl PathSession {
                     digest_index: HashMap::new(),
                 }),
                 storage,
+                limits,
             }),
         }
     }
@@ -203,11 +209,12 @@ impl PathSession {
         operation: &OperationGuard,
     ) -> Result<ArtifactAddress, ResourceError> {
         let content_bytes = content.as_bytes();
-        if content_bytes.len() > MAX_ARTIFACT_BYTES {
+        if content_bytes.len() > self.inner.limits.object_bytes() {
             return Err(ResourceError::new(
                 ErrorCategory::LimitExceeded,
                 format!(
-                    "selected projection exceeds the {MAX_ARTIFACT_BYTES}-byte artifact ceiling; narrow the selector"
+                    "selected projection exceeds the configured {}-byte artifact ceiling; narrow the selector",
+                    self.inner.limits.object_bytes()
                 ),
             ));
         }
@@ -234,9 +241,9 @@ impl PathSession {
         let resulting_bytes = state
             .used_bytes
             .checked_add(content_bytes.len())
-            .ok_or_else(session_quota_error)?;
-        if resulting_bytes > MAX_SESSION_BYTES {
-            return Err(session_quota_error());
+            .ok_or_else(|| session_quota_error(self.inner.limits.session_bytes()))?;
+        if resulting_bytes > self.inner.limits.session_bytes() {
+            return Err(session_quota_error(self.inner.limits.session_bytes()));
         }
 
         let id = ArtifactId::new(state.next_object_id)?;
@@ -334,12 +341,10 @@ fn inactive_catalog_error() -> ResourceError {
     )
 }
 
-fn session_quota_error() -> ResourceError {
+fn session_quota_error(limit: usize) -> ResourceError {
     ResourceError::new(
         ErrorCategory::LimitExceeded,
-        format!(
-            "Path Session exceeds the {MAX_SESSION_BYTES}-byte artifact quota; narrow the selector"
-        ),
+        format!("Path Session exceeds the {limit}-byte artifact quota; narrow the selector"),
     )
 }
 

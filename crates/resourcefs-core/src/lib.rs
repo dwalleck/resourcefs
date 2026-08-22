@@ -2,6 +2,7 @@
 
 mod discovery;
 mod error;
+mod limits;
 mod probe;
 mod read;
 mod reference;
@@ -21,6 +22,10 @@ pub use discovery::{
     SearchRecord, SearchRequest, SearchResult, SearchSourceResult, SearchTarget, SourceGlobResult,
 };
 pub use error::{ErrorCategory, ResourceError};
+pub use limits::{
+    DiscoveryLimitInput, MAX_IMAGE_BYTES, ServerLimits, ServerLimitsInput, StorageLimitInput,
+    TextLimitInput,
+};
 pub use probe::{
     MAX_PROBE_DIAGNOSTIC_BYTES, ProbeDiagnostic, ProbeDiagnosticError, ProbeOutcome, ProbeState,
     SourceProbe,

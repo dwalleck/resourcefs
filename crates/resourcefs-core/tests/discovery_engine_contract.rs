@@ -10,13 +10,13 @@ use std::{
 
 use async_trait::async_trait;
 use resourcefs_core::{
-    DiscoveryAdapter, DiscoveryDiagnostic, DiscoveryEngine, DiscoveryRetainGate, ErrorCategory,
-    GlobEntry, GlobKind, GlobLimits, GlobOptions, GlobRequest, GlobSource, GlobTarget,
-    MAX_ARTIFACT_BYTES, MAX_DISCOVERY_PATTERN_BYTES, MAX_DISCOVERY_RESULTS, MAX_TEXT_BYTES,
-    MAX_TEXT_COLUMNS, MAX_TEXT_LINES, OperationGuard, PathReference, PathSession, ResourceAddress,
-    ResourceError, SearchEngine, SearchLimits, SearchOptions, SearchRecord, SearchRequest,
-    SearchSourceResult, SearchTarget, SessionStorage, SessionToken, SourceGlobResult,
-    WorkspacePath, WorkspaceRootId,
+    DiscoveryAdapter, DiscoveryDiagnostic, DiscoveryEngine, DiscoveryLimitInput,
+    DiscoveryRetainGate, ErrorCategory, GlobEntry, GlobKind, GlobLimits, GlobOptions, GlobRequest,
+    GlobSource, GlobTarget, MAX_ARTIFACT_BYTES, MAX_DISCOVERY_PATTERN_BYTES, MAX_DISCOVERY_RESULTS,
+    MAX_TEXT_BYTES, MAX_TEXT_COLUMNS, MAX_TEXT_LINES, OperationGuard, PathReference, PathSession,
+    ResourceAddress, ResourceError, SearchEngine, SearchLimits, SearchOptions, SearchRecord,
+    SearchRequest, SearchSourceResult, SearchTarget, ServerLimits, ServerLimitsInput,
+    SessionStorage, SessionToken, SourceGlobResult, WorkspacePath, WorkspaceRootId,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
@@ -215,9 +215,16 @@ fn token(value: u8) -> SessionToken {
 }
 
 fn session(value: u8) -> (PathSession, Arc<MemoryStorage>) {
+    session_with_limits(value, ServerLimits::default())
+}
+
+fn session_with_limits(value: u8, limits: ServerLimits) -> (PathSession, Arc<MemoryStorage>) {
     let storage = Arc::new(MemoryStorage::default());
     let trait_storage: Arc<dyn SessionStorage> = storage.clone();
-    (PathSession::new(token(value), trait_storage), storage)
+    (
+        PathSession::new(token(value), trait_storage, limits),
+        storage,
+    )
 }
 
 fn workspace_reference(path: &str) -> PathReference {
@@ -244,8 +251,16 @@ fn empty_glob() -> SourceGlobResult {
 }
 
 fn engine(adapter: Arc<FakeAdapter>, path_session: PathSession) -> DiscoveryEngine {
+    engine_with_limits(adapter, path_session, ServerLimits::default())
+}
+
+fn engine_with_limits(
+    adapter: Arc<FakeAdapter>,
+    path_session: PathSession,
+    limits: ServerLimits,
+) -> DiscoveryEngine {
     let trait_adapter: Arc<dyn DiscoveryAdapter> = adapter;
-    DiscoveryEngine::new(trait_adapter, path_session)
+    DiscoveryEngine::new(trait_adapter, path_session, limits)
 }
 
 fn search_request(
@@ -544,6 +559,83 @@ async fn request_validation_precedes_adapter() {
         "C2 glob limit category"
     );
     assert_eq!(adapter.glob_calls(), 1, "C2 invalid glob reached adapter");
+}
+
+#[tokio::test]
+async fn server_discovery_ceilings_and_per_call_ceilings_compose_by_minimum() {
+    let limits = ServerLimits::new(ServerLimitsInput {
+        discovery: DiscoveryLimitInput {
+            search_matches: Some(2),
+            glob_entries: Some(1),
+            listing_entries: Some(3),
+        },
+        ..ServerLimitsInput::default()
+    })
+    .expect("lower server discovery ceilings");
+    let (path_session, _) = session_with_limits(29, limits);
+    let adapter = Arc::new(FakeAdapter::new(
+        || {
+            SearchSourceResult::new(
+                SearchEngine::RustRegex,
+                vec![
+                    search_record("a.txt", 1, "one"),
+                    search_record("b.txt", 1, "two"),
+                    search_record("c.txt", 1, "three"),
+                ],
+                Vec::new(),
+            )
+        },
+        || {
+            SourceGlobResult::new(
+                vec![
+                    glob_entry("a.txt", GlobKind::File),
+                    glob_entry("b.txt", GlobKind::File),
+                    glob_entry("c.txt", GlobKind::File),
+                ],
+                Vec::new(),
+            )
+        },
+    ));
+    let discovery = engine_with_limits(adapter, path_session, limits);
+
+    let server_bounded = discovery
+        .search(
+            search_request("match", 0, SearchLimits::default()).expect("search request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("server-bounded search");
+    assert_eq!(server_bounded.returned_records(), 2);
+    assert_eq!(server_bounded.total_records(), 3);
+
+    let call_bounded = discovery
+        .search(
+            search_request(
+                "match",
+                0,
+                SearchLimits::new(Some(1), None, None, None).expect("per-call search limit"),
+            )
+            .expect("search request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("call-bounded search");
+    assert_eq!(call_bounded.returned_records(), 1);
+
+    let glob = discovery
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new("**").expect("glob target"),
+                GlobOptions::default(),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("server-bounded glob");
+    assert_eq!(glob.returned_records(), 1);
+    assert_eq!(glob.total_records(), 3);
 }
 
 #[tokio::test]

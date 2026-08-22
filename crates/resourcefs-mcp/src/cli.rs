@@ -5,7 +5,7 @@ use std::{
 };
 
 use clap::{Args, Parser, Subcommand, error::ErrorKind};
-use resourcefs_core::WorkspaceRootId;
+use resourcefs_core::{ServerLimits, WorkspaceRootId};
 use resourcefs_sources::{BackingPathVisibility, FilesystemSource, LaunchRoot, LaunchRootSource};
 
 use crate::{BoxError, profile, profile_schema_json, server};
@@ -198,5 +198,5 @@ async fn serve(arguments: ServeArgs) -> Result<(), BoxError> {
         BackingPathVisibility::Hidden,
     )
     .await?;
-    server::serve(source).await
+    server::serve(source, ServerLimits::default()).await
 }

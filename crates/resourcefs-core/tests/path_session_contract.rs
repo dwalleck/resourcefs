@@ -10,8 +10,8 @@ use std::{
 use async_trait::async_trait;
 use resourcefs_core::{
     ArtifactAddress, ArtifactId, ErrorCategory, MAX_ARTIFACT_BYTES, MAX_SESSION_ARTIFACTS,
-    MAX_SESSION_BYTES, OperationGuard, PathReference, PathSession, ResourceError, SessionStorage,
-    SessionToken,
+    MAX_SESSION_BYTES, OperationGuard, PathReference, PathSession, ResourceError, ServerLimits,
+    ServerLimitsInput, SessionStorage, SessionToken, StorageLimitInput,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Barrier, Mutex, Notify};
@@ -164,8 +164,61 @@ fn token(value: u8) -> SessionToken {
 }
 
 fn session(value: u8, storage: Arc<FakeStorage>) -> PathSession {
+    session_with_limits(value, storage, ServerLimits::default())
+}
+
+fn session_with_limits(value: u8, storage: Arc<FakeStorage>, limits: ServerLimits) -> PathSession {
     let trait_storage: Arc<dyn SessionStorage> = storage;
-    PathSession::new(token(value), trait_storage)
+    PathSession::new(token(value), trait_storage, limits)
+}
+
+#[tokio::test]
+async fn configured_object_and_session_quotas_are_enforced_atomically() {
+    let limits = ServerLimits::new(ServerLimitsInput {
+        storage: StorageLimitInput {
+            object_bytes: Some(4),
+            session_bytes: Some(6),
+        },
+        ..ServerLimitsInput::default()
+    })
+    .expect("lower storage quotas");
+    let storage = Arc::new(FakeStorage::default());
+    storage.skip_write_delays();
+    let session = session_with_limits(19, Arc::clone(&storage), limits);
+    let operation = OperationGuard::new();
+
+    session
+        .retain("1234", &operation)
+        .await
+        .expect("exact object quota");
+    let object_error = session
+        .retain("12345", &operation)
+        .await
+        .expect_err("one over object quota");
+    assert_eq!(object_error.category(), ErrorCategory::LimitExceeded);
+    assert_eq!(session.used_bytes().await, 4);
+
+    session
+        .retain("xy", &operation)
+        .await
+        .expect("exact session quota");
+    let session_error = session
+        .retain("z", &operation)
+        .await
+        .expect_err("one over session quota");
+    assert_eq!(session_error.category(), ErrorCategory::LimitExceeded);
+    assert_eq!(session.used_bytes().await, 6);
+    assert_eq!(session.artifact_count().await, 2);
+    assert_eq!(
+        storage
+            .calls()
+            .await
+            .into_iter()
+            .filter(|call| matches!(call, Call::Write(_, _)))
+            .count(),
+        2,
+        "rejected quota rows must not write"
+    );
 }
 
 #[test]

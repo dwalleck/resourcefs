@@ -3,6 +3,9 @@
     reason = "strict DTO fields are consumed by serde and schemars before every adapter uses their values"
 )]
 
+use resourcefs_core::{
+    DiscoveryLimitInput, ServerLimits, ServerLimitsInput, StorageLimitInput, TextLimitInput,
+};
 use resourcefs_sources::{
     ConfigurationDirectory, ConfigurationError, MutationGrants, MutationSupport,
 };
@@ -109,6 +112,12 @@ pub struct ProfileDocument {
     #[serde(skip)]
     #[schemars(skip)]
     configuration_base: std::path::PathBuf,
+    #[serde(skip)]
+    #[schemars(skip)]
+    server_limits: ServerLimits,
+    #[serde(skip)]
+    #[schemars(skip)]
+    process_concurrency: usize,
 }
 
 impl ProfileDocument {
@@ -155,7 +164,19 @@ impl ProfileDocument {
     }
 
     fn decode(bytes: &[u8], base: &ConfigurationDirectory) -> Result<Self, ProfileError> {
-        let mut profile: Self = serde_json::from_slice(bytes).map_err(|error| {
+        let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+        let mut profile: Self =
+            serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+                let path = error.path().to_string();
+                let detail = error.inner();
+                let message = if path.is_empty() {
+                    format!("invalid Server Profile: {detail}")
+                } else {
+                    format!("invalid Server Profile field {path}: {detail}")
+                };
+                ProfileError::new(ProfileErrorKind::InvalidProfile, message)
+            })?;
+        deserializer.end().map_err(|error| {
             ProfileError::new(
                 ProfileErrorKind::InvalidProfile,
                 format!("invalid Server Profile: {error}"),
@@ -170,6 +191,9 @@ impl ProfileDocument {
                 ),
             ));
         }
+        let limits = profile.limits.unwrap_or_default();
+        profile.server_limits = limits.server_limits()?;
+        profile.process_concurrency = limits.validated_process_concurrency()?;
         super::validate::validate_profile(&profile)?;
         profile.static_sources = profile
             .sources()
@@ -201,6 +225,13 @@ impl ProfileDocument {
 
     pub(super) fn sources(&self) -> &[SourceProfile] {
         self.sources.as_deref().unwrap_or_default()
+    }
+    pub const fn server_limits(&self) -> ServerLimits {
+        self.server_limits
+    }
+
+    pub const fn process_concurrency(&self) -> usize {
+        self.process_concurrency
     }
 }
 
@@ -420,33 +451,110 @@ struct MutationGrantsProfile {
 }
 
 /// Lower-only server ceilings.
-#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct LimitsProfile {
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-    #[schemars(with = "usize")]
-    text_bytes: Option<usize>,
+    #[schemars(with = "TextLimitsProfile")]
+    text: Option<TextLimitsProfile>,
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-    #[schemars(with = "usize")]
-    text_lines: Option<usize>,
+    #[schemars(with = "DiscoveryLimitsProfile")]
+    discovery: Option<DiscoveryLimitsProfile>,
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-    #[schemars(with = "usize")]
-    text_columns: Option<usize>,
-    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-    #[schemars(with = "usize")]
+    #[schemars(with = "usize", range(min = 1, max = 5_242_880))]
     image_bytes: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-    #[schemars(with = "usize")]
+    #[schemars(with = "StorageLimitsProfile")]
+    storage: Option<StorageLimitsProfile>,
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    #[schemars(with = "usize", range(min = 1, max = 32))]
+    process_concurrency: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct TextLimitsProfile {
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    #[schemars(with = "usize", range(min = 1, max = 49_152))]
+    bytes: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    #[schemars(with = "usize", range(min = 1, max = 3_000))]
+    lines: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    #[schemars(with = "usize", range(min = 1, max = 512))]
+    columns: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct DiscoveryLimitsProfile {
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    #[schemars(with = "usize", range(min = 1, max = 1_000))]
+    search_matches: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    #[schemars(with = "usize", range(min = 1, max = 1_000))]
+    glob_entries: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    #[schemars(with = "usize", range(min = 1, max = 1_000))]
+    listing_entries: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct StorageLimitsProfile {
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    #[schemars(with = "usize", range(min = 1, max = 67_108_864))]
     object_bytes: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-    #[schemars(with = "usize")]
+    #[schemars(with = "usize", range(min = 1, max = 268_435_456))]
     session_bytes: Option<usize>,
-    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-    #[schemars(with = "usize")]
-    listing_entries: Option<usize>,
-    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-    #[schemars(with = "usize")]
-    process_concurrency: Option<usize>,
+}
+
+impl LimitsProfile {
+    fn server_limits(self) -> Result<ServerLimits, ProfileError> {
+        let text = self.text.unwrap_or_default();
+        let discovery = self.discovery.unwrap_or_default();
+        let storage = self.storage.unwrap_or_default();
+        ServerLimits::new(ServerLimitsInput {
+            text: TextLimitInput {
+                bytes: text.bytes,
+                lines: text.lines,
+                columns: text.columns,
+            },
+            discovery: DiscoveryLimitInput {
+                search_matches: discovery.search_matches,
+                glob_entries: discovery.glob_entries,
+                listing_entries: discovery.listing_entries,
+            },
+            image_bytes: self.image_bytes,
+            storage: StorageLimitInput {
+                object_bytes: storage.object_bytes,
+                session_bytes: storage.session_bytes,
+            },
+        })
+        .map_err(|error| {
+            ProfileError::new(
+                ProfileErrorKind::LimitExceeded,
+                format!("invalid limits: {}", error.message()),
+            )
+        })
+    }
+
+    fn validated_process_concurrency(self) -> Result<usize, ProfileError> {
+        let value = self
+            .process_concurrency
+            .unwrap_or(resourcefs_sources::MAX_LIVE_COMMAND_TREES);
+        if value == 0 || value > resourcefs_sources::MAX_LIVE_COMMAND_TREES {
+            return Err(ProfileError::new(
+                ProfileErrorKind::LimitExceeded,
+                format!(
+                    "invalid limits: processConcurrency must be between 1 and {}",
+                    resourcefs_sources::MAX_LIVE_COMMAND_TREES
+                ),
+            ));
+        }
+        Ok(value)
+    }
 }
 
 /// Retained Path Session configuration.

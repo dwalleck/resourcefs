@@ -10,7 +10,7 @@ use std::{
 use resourcefs_core::{
     DiscoveryEngine, ErrorCategory, GlobLimits, GlobOptions, GlobRequest, GlobTarget,
     OperationGuard, PathReference, PathSession, ReadEngine, ReadRequest, ResourceError,
-    SearchLimits, SearchOptions, SearchRequest, SearchTarget, TextLimits,
+    SearchLimits, SearchOptions, SearchRequest, SearchTarget, ServerLimits, TextLimits,
 };
 #[cfg(feature = "test-support")]
 use resourcefs_sources::StorageFailurePoint;
@@ -1093,11 +1093,11 @@ async fn heartbeat_session(
     }
 }
 
-pub(crate) async fn serve(source: FilesystemSource) -> Result<(), BoxError> {
+pub(crate) async fn serve(source: FilesystemSource, limits: ServerLimits) -> Result<(), BoxError> {
     #[cfg(feature = "test-support")]
     let test_delivery_gate = start_test_delivery_gate(&source).await?;
     let session_store = open_session_store().await?;
-    let stored_session = session_store.create_session().await?;
+    let stored_session = session_store.create_session(limits).await?;
     #[cfg(feature = "test-support")]
     configure_test_storage_failure(&stored_session).await?;
     let (heartbeat_shutdown, heartbeat_stop) = watch::channel(false);
@@ -1110,8 +1110,8 @@ pub(crate) async fn serve(source: FilesystemSource) -> Result<(), BoxError> {
     ));
     let read_sources = Arc::clone(&compiled_sources);
     let discovery_sources = Arc::clone(&compiled_sources);
-    let read_engine = ReadEngine::new(read_sources, session.clone());
-    let discovery_engine = DiscoveryEngine::new(discovery_sources, session);
+    let read_engine = ReadEngine::new(read_sources, session.clone(), limits);
+    let discovery_engine = DiscoveryEngine::new(discovery_sources, session, limits);
     let (stdin, stdout) = rmcp::transport::stdio();
     let stdio = rmcp::transport::async_rw::AsyncRwTransport::<RoleServer, _, _>::new(stdin, stdout);
     let cancellations = Arc::new(RequestCancellations::default());

@@ -71,7 +71,10 @@ async fn artifact_storage_failure_is_atomic() {
         StorageFailurePoint::Persist,
     ] {
         let (_temporary, store) = store().await;
-        let session = store.create_session().await.expect("stored session");
+        let session = store
+            .create_session(resourcefs_core::ServerLimits::default())
+            .await
+            .expect("stored session");
         let stable = retain(&session, "stable").await;
         let before = directory_snapshot(session.storage_for_test().session_dir_for_test());
         let used_before = session.path_session().used_bytes().await;
@@ -108,7 +111,10 @@ async fn artifact_storage_failure_is_atomic() {
 #[tokio::test]
 async fn remove_failure_keeps_the_published_object_unchanged() {
     let (_temporary, store) = store().await;
-    let session = store.create_session().await.expect("stored session");
+    let session = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("stored session");
     let address = retain(&session, "kept").await;
     let before = directory_snapshot(session.storage_for_test().session_dir_for_test());
     session
@@ -139,7 +145,10 @@ async fn remove_failure_keeps_the_published_object_unchanged() {
 #[tokio::test]
 async fn heartbeat_updates_persisted_liveness_within_budget() {
     let (_temporary, store) = store().await;
-    let session = store.create_session().await.expect("stored session");
+    let session = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("stored session");
     let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
     session
         .storage_for_test()
@@ -171,7 +180,10 @@ async fn session_cleanup_respects_lease_and_ttl() {
     let (_temporary, store) = store().await;
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000);
 
-    let fresh = store.create_session().await.expect("fresh session");
+    let fresh = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("fresh session");
     let fresh_token = fresh.path_session().token().as_str().to_owned();
     fresh.mark_disconnected().await.expect("fresh tombstone");
     fresh
@@ -180,7 +192,10 @@ async fn session_cleanup_respects_lease_and_ttl() {
         .expect("fresh age");
     drop(fresh);
 
-    let exact = store.create_session().await.expect("exact session");
+    let exact = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("exact session");
     let exact_token = exact.path_session().token().as_str().to_owned();
     exact.mark_disconnected().await.expect("exact tombstone");
     exact
@@ -189,7 +204,10 @@ async fn session_cleanup_respects_lease_and_ttl() {
         .expect("exact age");
     drop(exact);
 
-    let old = store.create_session().await.expect("old session");
+    let old = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("old session");
     let old_token = old.path_session().token().as_str().to_owned();
     old.mark_disconnected().await.expect("old tombstone");
     old.storage_for_test()
@@ -197,7 +215,10 @@ async fn session_cleanup_respects_lease_and_ttl() {
         .expect("old age");
     drop(old);
 
-    let live = store.create_session().await.expect("live session");
+    let live = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("live session");
     let live_token = live.path_session().token().as_str().to_owned();
     fs::remove_file(
         live.storage_for_test()
@@ -263,7 +284,10 @@ async fn cleanup_ignores_symlinked_and_malformed_session_entries() {
 #[tokio::test]
 async fn durable_write_at_object_ceiling_within_budget() {
     let (_temporary, store) = store().await;
-    let session = store.create_session().await.expect("stored session");
+    let session = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("stored session");
     let mut content = "x".repeat(MAX_ARTIFACT_BYTES);
     content.replace_range(MAX_ARTIFACT_BYTES - 1.., "\n");
 

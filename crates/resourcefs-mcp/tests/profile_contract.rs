@@ -1,6 +1,11 @@
 use std::fs;
 use std::path::Path;
 
+use resourcefs_core::{
+    DiscoveryLimitInput, MAX_ARTIFACT_BYTES, MAX_DISCOVERY_RESULTS, MAX_IMAGE_BYTES,
+    MAX_SESSION_BYTES, MAX_TEXT_BYTES, MAX_TEXT_COLUMNS, MAX_TEXT_LINES, ServerLimits,
+    ServerLimitsInput, StorageLimitInput, TextLimitInput,
+};
 use resourcefs_mcp::{MAX_ALLOWLIST_ENTRIES, MAX_PROFILE_BYTES, ProfileDocument, ProfileErrorKind};
 use resourcefs_sources::{
     MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMAND_ARGUMENTS, MAX_COMMAND_ENVIRONMENT_ENTRIES,
@@ -277,6 +282,166 @@ fn schema_matches_deserializer() {
         }
     }
 }
+#[test]
+fn nested_limits_map_to_the_core_aggregate_without_clamping() {
+    let omitted = parse(&json!({"schemaVersion":1}))
+        .expect("omitted limits")
+        .server_limits();
+    let empty = parse(&json!({
+        "schemaVersion":1,
+        "limits":{"text":{},"discovery":{},"storage":{}}
+    }))
+    .expect("empty limit groups")
+    .server_limits();
+    assert_eq!(omitted, ServerLimits::default());
+    assert_eq!(empty, omitted);
+
+    for (field, maximum) in [
+        ("text.bytes", MAX_TEXT_BYTES),
+        ("text.lines", MAX_TEXT_LINES),
+        ("text.columns", MAX_TEXT_COLUMNS),
+        ("discovery.searchMatches", MAX_DISCOVERY_RESULTS),
+        ("discovery.globEntries", MAX_DISCOVERY_RESULTS),
+        ("discovery.listingEntries", MAX_DISCOVERY_RESULTS),
+        ("imageBytes", MAX_IMAGE_BYTES),
+        ("storage.objectBytes", MAX_ARTIFACT_BYTES),
+        ("storage.sessionBytes", MAX_SESSION_BYTES),
+    ] {
+        for signed_value in [-1_i64, 0, maximum as i64, maximum as i64 + 1] {
+            let profile_result = parse(&profile_with_limit(field, signed_value));
+            let direct_result = usize::try_from(signed_value)
+                .map_err(|_| ())
+                .and_then(|value| {
+                    ServerLimits::new(input_with_limit(field, value)).map_err(|_| ())
+                });
+            assert_eq!(
+                profile_result.is_ok(),
+                direct_result.is_ok(),
+                "{field}={signed_value}"
+            );
+            match (profile_result, direct_result) {
+                (Ok(profile), Ok(direct)) => {
+                    assert_eq!(profile.server_limits(), direct, "{field}={signed_value}");
+                }
+                (Err(profile_error), Err(())) => {
+                    assert!(
+                        profile_error.to_string().contains(field),
+                        "{field}={signed_value} diagnostic must identify the field: {profile_error}"
+                    );
+                }
+                _ => panic!("{field}={signed_value} profile/core acceptance diverged"),
+            }
+        }
+    }
+
+    for (object_bytes, session_bytes, accepted) in [(1, 2, true), (2, 2, true), (2, 1, false)] {
+        let profile = json!({
+            "schemaVersion":1,
+            "limits":{"storage":{
+                "objectBytes":object_bytes,
+                "sessionBytes":session_bytes
+            }}
+        });
+        assert_eq!(
+            parse(&profile).is_ok(),
+            accepted,
+            "objectBytes={object_bytes}, sessionBytes={session_bytes}"
+        );
+    }
+
+    for (value, accepted) in [(-1_i64, false), (0, false), (32, true), (33, false)] {
+        let result = parse(&json!({
+            "schemaVersion":1,
+            "limits":{"processConcurrency":value}
+        }));
+        assert_eq!(result.is_ok(), accepted, "processConcurrency={value}");
+        if let Ok(profile) = result {
+            assert_eq!(profile.process_concurrency(), value as usize);
+        }
+    }
+}
+
+fn profile_with_limit(field: &str, value: i64) -> Value {
+    let limits = match field {
+        "text.bytes" => json!({"text":{"bytes":value}}),
+        "text.lines" => json!({"text":{"lines":value}}),
+        "text.columns" => json!({"text":{"columns":value}}),
+        "discovery.searchMatches" => json!({"discovery":{"searchMatches":value}}),
+        "discovery.globEntries" => json!({"discovery":{"globEntries":value}}),
+        "discovery.listingEntries" => json!({"discovery":{"listingEntries":value}}),
+        "imageBytes" => json!({"imageBytes":value}),
+        "storage.objectBytes" => json!({"storage":{"objectBytes":value}}),
+        "storage.sessionBytes" => json!({"storage":{"sessionBytes":value}}),
+        _ => panic!("unknown limit field {field}"),
+    };
+    json!({"schemaVersion":1,"limits":limits})
+}
+
+fn input_with_limit(field: &str, value: usize) -> ServerLimitsInput {
+    match field {
+        "text.bytes" => ServerLimitsInput {
+            text: TextLimitInput {
+                bytes: Some(value),
+                ..TextLimitInput::default()
+            },
+            ..ServerLimitsInput::default()
+        },
+        "text.lines" => ServerLimitsInput {
+            text: TextLimitInput {
+                lines: Some(value),
+                ..TextLimitInput::default()
+            },
+            ..ServerLimitsInput::default()
+        },
+        "text.columns" => ServerLimitsInput {
+            text: TextLimitInput {
+                columns: Some(value),
+                ..TextLimitInput::default()
+            },
+            ..ServerLimitsInput::default()
+        },
+        "discovery.searchMatches" => ServerLimitsInput {
+            discovery: DiscoveryLimitInput {
+                search_matches: Some(value),
+                ..DiscoveryLimitInput::default()
+            },
+            ..ServerLimitsInput::default()
+        },
+        "discovery.globEntries" => ServerLimitsInput {
+            discovery: DiscoveryLimitInput {
+                glob_entries: Some(value),
+                ..DiscoveryLimitInput::default()
+            },
+            ..ServerLimitsInput::default()
+        },
+        "discovery.listingEntries" => ServerLimitsInput {
+            discovery: DiscoveryLimitInput {
+                listing_entries: Some(value),
+                ..DiscoveryLimitInput::default()
+            },
+            ..ServerLimitsInput::default()
+        },
+        "imageBytes" => ServerLimitsInput {
+            image_bytes: Some(value),
+            ..ServerLimitsInput::default()
+        },
+        "storage.objectBytes" => ServerLimitsInput {
+            storage: StorageLimitInput {
+                object_bytes: Some(value),
+                ..StorageLimitInput::default()
+            },
+            ..ServerLimitsInput::default()
+        },
+        "storage.sessionBytes" => ServerLimitsInput {
+            storage: StorageLimitInput {
+                session_bytes: Some(value),
+                ..StorageLimitInput::default()
+            },
+            ..ServerLimitsInput::default()
+        },
+        _ => panic!("unknown limit field {field}"),
+    }
+}
 
 #[test]
 fn rejects_invalid_profiles() {
@@ -310,7 +475,7 @@ fn rejects_explicit_null_at_every_optional_profile_field() {
             "primaryRoot":"root",
             "backingPathVisibility":"hidden"
         },
-        "limits":{},
+        "limits":{"text":{},"discovery":{},"storage":{}},
         "session":{},
         "logging":{},
         "sources":minimal_sources()
@@ -336,18 +501,33 @@ fn rejects_explicit_null_at_every_optional_profile_field() {
         ));
     }
     for field in [
-        "textBytes",
-        "textLines",
-        "textColumns",
+        "text",
+        "discovery",
         "imageBytes",
-        "objectBytes",
-        "sessionBytes",
-        "listingEntries",
+        "storage",
         "processConcurrency",
     ] {
         cases.push((
             format!("limits.{field}"),
             with_null(base.clone(), "/limits", field),
+        ));
+    }
+    for field in ["bytes", "lines", "columns"] {
+        cases.push((
+            format!("limits.text.{field}"),
+            with_null(base.clone(), "/limits/text", field),
+        ));
+    }
+    for field in ["searchMatches", "globEntries", "listingEntries"] {
+        cases.push((
+            format!("limits.discovery.{field}"),
+            with_null(base.clone(), "/limits/discovery", field),
+        ));
+    }
+    for field in ["objectBytes", "sessionBytes"] {
+        cases.push((
+            format!("limits.storage.{field}"),
+            with_null(base.clone(), "/limits/storage", field),
         ));
     }
     for field in ["cacheDirectory", "retentionTtlSeconds"] {

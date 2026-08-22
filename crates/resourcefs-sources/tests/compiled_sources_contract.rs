@@ -42,7 +42,10 @@ async fn fixture() -> Fixture {
     let store = SessionStore::open(cache.path())
         .await
         .expect("session store");
-    let session = store.create_session().await.expect("stored session");
+    let session = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("stored session");
     let address = session
         .path_session()
         .retain("artifact bytes\n", &OperationGuard::new())
@@ -128,6 +131,7 @@ async fn routes_every_discovery_request_by_typed_family_only() {
     let discovery = DiscoveryEngine::new(
         Arc::new(fixture.compiled.clone()),
         fixture.session.path_session().clone(),
+        resourcefs_core::ServerLimits::default(),
     );
     let operation = OperationGuard::new();
     let adversarial = "rfs://workspace/workspace/artifact%3Aimpostor.txt";

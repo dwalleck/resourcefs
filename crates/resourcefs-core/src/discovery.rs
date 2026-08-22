@@ -11,7 +11,7 @@ use tokio::sync::Notify;
 
 use crate::{
     ErrorCategory, MAX_ARTIFACT_BYTES, MAX_PATH_REFERENCE_BYTES, OperationGuard, PathReference,
-    PathSession, ResourceAddress, ResourceError, TextLimits, WorkspaceAddress,
+    PathSession, ResourceAddress, ResourceError, ServerLimits, TextLimits, WorkspaceAddress,
     read::{artifact_line_continuation, canonical_artifact_reference, page_prefix_len},
 };
 pub const MAX_DISCOVERY_PATTERN_BYTES: usize = 64 * 1024;
@@ -169,6 +169,16 @@ impl SearchLimits {
             text: TextLimits::new(max_bytes, max_lines, max_columns)?,
         })
     }
+    fn lowered_by(self, base_results: usize, base_text: TextLimits) -> Self {
+        Self {
+            max_results: self.max_results.min(base_results),
+            text: TextLimits::from_validated(
+                self.text.bytes().min(base_text.bytes()),
+                self.text.lines().min(base_text.lines()),
+                self.text.columns().min(base_text.columns()),
+            ),
+        }
+    }
 }
 
 impl Default for SearchLimits {
@@ -190,6 +200,11 @@ impl GlobLimits {
         Ok(Self {
             max_results: validate_result_limit(max_results)?,
         })
+    }
+    fn lowered_by(self, base_results: usize) -> Self {
+        Self {
+            max_results: self.max_results.min(base_results),
+        }
     }
 }
 
@@ -577,6 +592,7 @@ impl DiscoveryRetainGate {
 pub struct DiscoveryEngine {
     sources: Arc<dyn DiscoveryAdapter>,
     session: PathSession,
+    limits: ServerLimits,
     #[cfg(feature = "test-support")]
     retain_gate: Option<Arc<DiscoveryRetainGate>>,
 }
@@ -590,10 +606,15 @@ impl fmt::Debug for DiscoveryEngine {
 }
 
 impl DiscoveryEngine {
-    pub fn new(sources: Arc<dyn DiscoveryAdapter>, session: PathSession) -> Self {
+    pub fn new(
+        sources: Arc<dyn DiscoveryAdapter>,
+        session: PathSession,
+        limits: ServerLimits,
+    ) -> Self {
         Self {
             sources,
             session,
+            limits,
             #[cfg(feature = "test-support")]
             retain_gate: None,
         }
@@ -610,6 +631,9 @@ impl DiscoveryEngine {
         request: SearchRequest,
         operation: &OperationGuard,
     ) -> Result<SearchResult, ResourceError> {
+        let limits = request
+            .limits
+            .lowered_by(self.limits.search_matches(), self.limits.text_limits());
         ensure_discovery_live(&self.session, operation)?;
         let source = self
             .sources
@@ -630,13 +654,7 @@ impl DiscoveryEngine {
         normalize_search_records(&mut records);
         normalize_diagnostics(&mut diagnostics)?;
         let document = render_search_document(&records, &diagnostics)?;
-        let page = select_search_page(
-            &document,
-            &records,
-            &diagnostics,
-            request.skip,
-            request.limits,
-        )?;
+        let page = select_search_page(&document, &records, &diagnostics, request.skip, limits)?;
         let recovery = self
             .retain_omitted(&document, page.omitted, page.next_record, operation)
             .await?;
@@ -658,6 +676,7 @@ impl DiscoveryEngine {
         request: GlobRequest,
         operation: &OperationGuard,
     ) -> Result<GlobResult, ResourceError> {
+        let limits = request.limits.lowered_by(self.limits.glob_entries());
         ensure_discovery_live(&self.session, operation)?;
         let source = self
             .sources
@@ -677,7 +696,7 @@ impl DiscoveryEngine {
             entries.len(),
             diagnostics.len(),
             request.skip,
-            request.limits,
+            limits,
         );
         let recovery = self
             .retain_omitted(&document, page.omitted, page.next_record, operation)

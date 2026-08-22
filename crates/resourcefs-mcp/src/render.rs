@@ -546,7 +546,7 @@ mod tests {
             .await
             .expect("render fixture session store");
         let session = store
-            .create_session()
+            .create_session(resourcefs_core::ServerLimits::default())
             .await
             .expect("render fixture session");
         let filesystem = FilesystemSource::new(
@@ -563,7 +563,11 @@ mod tests {
             filesystem,
             ArtifactSource::new(session.path_session().clone()),
         ));
-        let engine = DiscoveryEngine::new(compiled, session.path_session().clone());
+        let engine = DiscoveryEngine::new(
+            compiled,
+            session.path_session().clone(),
+            resourcefs_core::ServerLimits::default(),
+        );
         Fixture {
             _temporary: temporary,
             session,

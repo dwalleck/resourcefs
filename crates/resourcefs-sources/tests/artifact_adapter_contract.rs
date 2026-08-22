@@ -84,7 +84,10 @@ async fn fixture() -> Fixture {
     let store = SessionStore::open(temporary.path())
         .await
         .expect("session store");
-    let session = store.create_session().await.expect("stored session");
+    let session = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("stored session");
     let content = "αlpha\r\nbeta\ngamma\r\ndelta".to_owned();
     let address = session
         .path_session()
@@ -260,8 +263,14 @@ async fn search_and_glob_are_session_isolated() {
     let store = SessionStore::open(temporary.path())
         .await
         .expect("C8 session store");
-    let first = store.create_session().await.expect("C8 first session");
-    let foreign = store.create_session().await.expect("C8 foreign session");
+    let first = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("C8 first session");
+    let foreign = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("C8 foreign session");
 
     let selected_address = retain(&first, "top\nneedle needle\nend\n").await;
     let second_address = retain(&first, "other\n").await;
@@ -273,7 +282,11 @@ async fn search_and_glob_are_session_isolated() {
     .expect("C8 selected Artifact");
 
     let source = Arc::new(ArtifactSource::new(first.path_session().clone()));
-    let discovery = DiscoveryEngine::new(source, first.path_session().clone());
+    let discovery = DiscoveryEngine::new(
+        source,
+        first.path_session().clone(),
+        resourcefs_core::ServerLimits::default(),
+    );
     let search_started = Instant::now();
     let search = discovery
         .search(
@@ -412,7 +425,11 @@ async fn searches_selected_artifact_text() {
     .expect("C6 selected Artifact");
 
     let source = Arc::new(ArtifactSource::new(fixture.session.path_session().clone()));
-    let discovery = DiscoveryEngine::new(source, fixture.session.path_session().clone());
+    let discovery = DiscoveryEngine::new(
+        source,
+        fixture.session.path_session().clone(),
+        resourcefs_core::ServerLimits::default(),
+    );
     let search = discovery
         .search(
             SearchRequest::new(
@@ -470,8 +487,14 @@ async fn glob_lists_session_artifacts() {
     let store = SessionStore::open(temporary.path())
         .await
         .expect("C7 session store");
-    let session = store.create_session().await.expect("C7 session");
-    let foreign = store.create_session().await.expect("C7 foreign session");
+    let session = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("C7 session");
+    let foreign = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("C7 foreign session");
 
     let contents = [
         "C7 ninth",
@@ -498,7 +521,11 @@ async fn glob_lists_session_artifacts() {
     let foreign_sentinel = retain(&foreign, "C7 foreign sentinel").await;
 
     let source = Arc::new(ArtifactSource::new(session.path_session().clone()));
-    let discovery = DiscoveryEngine::new(source, session.path_session().clone());
+    let discovery = DiscoveryEngine::new(
+        source,
+        session.path_session().clone(),
+        resourcefs_core::ServerLimits::default(),
+    );
     let glob = discovery
         .glob(
             GlobRequest::new(
@@ -541,7 +568,10 @@ async fn glob_snapshot_excludes_its_recovery_artifact() {
     let store = SessionStore::open(temporary.path())
         .await
         .expect("C8 session store");
-    let session = store.create_session().await.expect("C8 session");
+    let session = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("C8 session");
     let mut expected = Vec::with_capacity(999);
     for index in 0..999 {
         expected.push(
@@ -558,7 +588,11 @@ async fn glob_snapshot_excludes_its_recovery_artifact() {
     );
 
     let source = Arc::new(ArtifactSource::new(session.path_session().clone()));
-    let discovery = DiscoveryEngine::new(source, session.path_session().clone());
+    let discovery = DiscoveryEngine::new(
+        source,
+        session.path_session().clone(),
+        resourcefs_core::ServerLimits::default(),
+    );
     let allocation_baseline = begin_allocation_measurement();
     let started = Instant::now();
     let result = discovery

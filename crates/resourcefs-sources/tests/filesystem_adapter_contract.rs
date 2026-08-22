@@ -399,8 +399,15 @@ async fn discovery_fixture(source: FilesystemSource) -> (TempDir, StoredSession,
     let store = SessionStore::open(cache.path())
         .await
         .expect("discovery session store");
-    let session = store.create_session().await.expect("discovery session");
-    let engine = DiscoveryEngine::new(Arc::new(source), session.path_session().clone());
+    let session = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("discovery session");
+    let engine = DiscoveryEngine::new(
+        Arc::new(source),
+        session.path_session().clone(),
+        resourcefs_core::ServerLimits::default(),
+    );
     (cache, session, engine)
 }
 

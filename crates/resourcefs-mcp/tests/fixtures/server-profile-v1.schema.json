@@ -67,6 +67,30 @@
       ],
       "type": "object"
     },
+    "DiscoveryLimitsProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "globEntries": {
+          "format": "uint",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "listingEntries": {
+          "format": "uint",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "searchMatches": {
+          "format": "uint",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "DocumentConverterProfile": {
       "additionalProperties": false,
       "description": "One extension-owned direct converter.",
@@ -276,45 +300,26 @@
       "additionalProperties": false,
       "description": "Lower-only server ceilings.",
       "properties": {
+        "discovery": {
+          "$ref": "#/$defs/DiscoveryLimitsProfile"
+        },
         "imageBytes": {
           "format": "uint",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "listingEntries": {
-          "format": "uint",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "objectBytes": {
-          "format": "uint",
-          "minimum": 0,
+          "maximum": 5242880,
+          "minimum": 1,
           "type": "integer"
         },
         "processConcurrency": {
           "format": "uint",
-          "minimum": 0,
+          "maximum": 32,
+          "minimum": 1,
           "type": "integer"
         },
-        "sessionBytes": {
-          "format": "uint",
-          "minimum": 0,
-          "type": "integer"
+        "storage": {
+          "$ref": "#/$defs/StorageLimitsProfile"
         },
-        "textBytes": {
-          "format": "uint",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "textColumns": {
-          "format": "uint",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "textLines": {
-          "format": "uint",
-          "minimum": 0,
-          "type": "integer"
+        "text": {
+          "$ref": "#/$defs/TextLimitsProfile"
         }
       },
       "type": "object"
@@ -1007,6 +1012,48 @@
         "alias",
         "remoteRoots"
       ],
+      "type": "object"
+    },
+    "StorageLimitsProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "objectBytes": {
+          "format": "uint",
+          "maximum": 67108864,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sessionBytes": {
+          "format": "uint",
+          "maximum": 268435456,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "TextLimitsProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "format": "uint",
+          "maximum": 49152,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "columns": {
+          "format": "uint",
+          "maximum": 512,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "lines": {
+          "format": "uint",
+          "maximum": 3000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
       "type": "object"
     },
     "VaultProfile": {

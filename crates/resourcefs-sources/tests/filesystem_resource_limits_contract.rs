@@ -133,12 +133,19 @@ async fn newline_free_files_are_rejected_before_unbounded_allocation() {
     let store = SessionStore::open(cache.path())
         .await
         .expect("C5 session store");
-    let session = store.create_session().await.expect("C5 session");
+    let session = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("C5 session");
     let compiled = Arc::new(resourcefs_sources::CompiledSources::new(
         source,
         ArtifactSource::new(session.path_session().clone()),
     ));
-    let engine = DiscoveryEngine::new(compiled, session.path_session().clone());
+    let engine = DiscoveryEngine::new(
+        compiled,
+        session.path_session().clone(),
+        resourcefs_core::ServerLimits::default(),
+    );
 
     let baseline = begin_allocation_measurement();
     let result = engine
