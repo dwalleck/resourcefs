@@ -12,6 +12,14 @@ use tempfile::TempDir;
 
 const VERSION_2026: &str = "2026-07-28";
 const VERSION_2025: &str = "2025-11-25";
+const SOURCE_CATALOG_TEXT: &str = concat!(
+    "Mounted sources\n",
+    "Next discovery step: rfs_read rfs://workspace\n",
+    "Selectors: :N | :N-M | :N- | comma-separated ranges | :raw | :page:N\n",
+    "artifact:// — artifact://<session>-<id>[:selector] — artifact://00000000000000000000000000000000-1\n",
+    "rfs://workspace — <relative-path> | rfs://workspace/<root>/<path>[:selector] | file://<absolute-path> (relative paths use the Primary Workspace Root) — rfs://workspace/workspace/src/lib.rs\n",
+);
+const WORKSPACE_CATALOG_TEXT: &str = "rfs://workspace/workspace/ (primary)\n";
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_resourcefs")
@@ -1750,6 +1758,57 @@ fn displayed_shape(content: &str) -> (usize, usize) {
     }
     (lines, maximum_columns)
 }
+#[test]
+fn catalogs_use_common_read_result_shape() {
+    let fixture = WorkspaceFixture::new();
+    let mut process = McpProcess::start(&fixture.root);
+    process.initialize(VERSION_2026);
+
+    for (path, canonical, expected_content) in [
+        ("rfs://", "rfs://", SOURCE_CATALOG_TEXT),
+        ("rfs://workspace", "rfs://workspace", WORKSPACE_CATALOG_TEXT),
+    ] {
+        let result = process.call_read(path);
+        assert_eq!(result["isError"], false, "{path}");
+        let structured = result["structuredContent"]
+            .as_object()
+            .expect("structured catalog result");
+        let mut keys = structured.keys().map(String::as_str).collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "bounded",
+                "canonicalReference",
+                "content",
+                "contentType",
+                "contractVersion",
+                "mutable",
+                "ok",
+                "requestedPath",
+                "versionTag",
+            ],
+            "{path}"
+        );
+        assert_eq!(structured["ok"], true, "{path}");
+        assert_eq!(structured["requestedPath"], path, "{path}");
+        assert_eq!(structured["canonicalReference"], canonical, "{path}");
+        assert_eq!(
+            structured["contentType"], "text/plain; charset=utf-8",
+            "{path}"
+        );
+        assert_eq!(structured["mutable"], false, "{path}");
+        assert_eq!(structured["bounded"], false, "{path}");
+        assert_eq!(structured["content"], expected_content, "{path}");
+        let tag = structured["versionTag"].as_str().expect("Version Tag");
+        assert_eq!(
+            result["content"][0]["text"],
+            format!("[{canonical}#{tag}]\n{expected_content}"),
+            "{path}"
+        );
+    }
+    process.finish();
+}
 
 fn assert_page_within_limits(content: &str, limits: &Value) {
     if let Some(bytes) = limits.get("bytes").and_then(Value::as_u64) {
@@ -1847,6 +1906,35 @@ fn reconstruct_with_limits(process: &mut McpProcess, path: &str, limits: Value, 
         reconstructed, expected,
         "concatenated pages must reconstruct the exact fixture bytes"
     );
+}
+
+#[test]
+fn catalog_reads_obey_common_limits_and_reconstruct() {
+    let fixture = WorkspaceFixture::new();
+    let temporary = TempDir::new().expect("temporary directory");
+    let session_root = temporary.path().join("cache");
+    fs::create_dir(&session_root).expect("session root");
+    let mut process = McpProcess::start_with_session_root(
+        &[("workspace", &fixture.root)],
+        Some("workspace"),
+        &session_root,
+    );
+    process.initialize(VERSION_2026);
+
+    for limits in [
+        json!({"bytes": 64}),
+        json!({"lines": 1}),
+        json!({"columns": 32}),
+    ] {
+        reconstruct_with_limits(&mut process, "rfs://", limits, SOURCE_CATALOG_TEXT);
+    }
+    reconstruct_with_limits(
+        &mut process,
+        "rfs://workspace",
+        json!({"bytes": 16}),
+        WORKSPACE_CATALOG_TEXT,
+    );
+    process.finish();
 }
 
 #[test]
