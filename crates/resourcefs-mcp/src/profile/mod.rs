@@ -1,3 +1,4 @@
+mod convert;
 mod model;
 mod schema;
 mod validate;

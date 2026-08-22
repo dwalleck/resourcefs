@@ -98,6 +98,9 @@ pub struct ProfileDocument {
     #[schemars(length(max = 256))]
     #[schemars(with = "Vec<SourceProfile>")]
     sources: Option<Vec<SourceProfile>>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    configured_sources: Vec<super::convert::ConfiguredSource>,
 }
 
 impl ProfileDocument {
@@ -112,7 +115,7 @@ impl ProfileDocument {
         Self::from_slice(&bytes)
     }
 
-    /// Decodes one already-bounded profile value without constructing authority.
+    /// Decodes and validates one already-bounded profile value.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ProfileError> {
         if bytes.len() > MAX_PROFILE_BYTES {
             return Err(ProfileError::new(
@@ -123,7 +126,7 @@ impl ProfileDocument {
                 ),
             ));
         }
-        let profile: Self = serde_json::from_slice(bytes).map_err(|error| {
+        let mut profile: Self = serde_json::from_slice(bytes).map_err(|error| {
             ProfileError::new(
                 ProfileErrorKind::InvalidProfile,
                 format!("invalid Server Profile: {error}"),
@@ -139,6 +142,8 @@ impl ProfileDocument {
             ));
         }
         super::validate::validate_profile(&profile)?;
+        profile.configured_sources =
+            super::convert::convert_sources(profile.sources.take().unwrap_or_default())?;
         Ok(profile)
     }
 
@@ -178,6 +183,15 @@ fn configuration_id_schema(generator: &mut SchemaGenerator) -> Schema {
     schema.insert(
         "pattern".to_owned(),
         serde_json::Value::from(r"^[A-Za-z0-9][A-Za-z0-9._-]*$"),
+    );
+    schema
+}
+
+fn command_environment_schema(generator: &mut SchemaGenerator) -> Schema {
+    let mut schema = BTreeMap::<String, EnvironmentValueProfile>::json_schema(generator);
+    schema.insert(
+        "maxProperties".to_owned(),
+        serde_json::Value::from(resourcefs_sources::MAX_COMMAND_ENVIRONMENT_ENTRIES),
     );
     schema
 }
@@ -468,7 +482,7 @@ pub(super) struct HttpsSourceProfile {
 /// One authorized HTTPS base URL prefix.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct HttpsOriginProfile {
+pub(super) struct HttpsOriginProfile {
     base_url: String,
     allow_private_network: bool,
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
@@ -479,7 +493,7 @@ struct HttpsOriginProfile {
 /// Credential header resolved at process startup.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct CredentialHeaderProfile {
+pub(super) struct CredentialHeaderProfile {
     header: String,
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
     #[schemars(with = "String")]
@@ -510,7 +524,7 @@ pub(super) struct GithubSourceProfile {
 /// One allowlisted GitHub repository.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct GithubRepositoryProfile {
+pub(super) struct GithubRepositoryProfile {
     name: String,
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
     #[schemars(schema_with = "github_grants_schema")]
@@ -536,7 +550,7 @@ pub(super) struct SshSourceProfile {
 /// One SSH config alias and its contained remote roots.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct SshHostProfile {
+pub(super) struct SshHostProfile {
     alias: String,
     #[serde(deserialize_with = "deserialize_bounded_vec")]
     #[schemars(length(max = 4096))]
@@ -689,7 +703,7 @@ pub(super) struct DownstreamMcpSourceProfile {
 /// One downstream server and its native URI scheme claims.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct DownstreamServerProfile {
+pub(super) struct DownstreamServerProfile {
     id: String,
     #[serde(deserialize_with = "deserialize_bounded_vec")]
     #[schemars(length(max = 4096))]
@@ -705,7 +719,7 @@ struct DownstreamServerProfile {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-enum DownstreamTransportProfile {
+pub(super) enum DownstreamTransportProfile {
     Stdio {
         command: CommandProfile,
     },
@@ -721,19 +735,19 @@ enum DownstreamTransportProfile {
 /// Strict direct-argv subprocess definition.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct CommandProfile {
+pub(super) struct CommandProfile {
     #[serde(deserialize_with = "deserialize_bounded_vec")]
-    #[schemars(length(max = 4096))]
+    #[schemars(length(max = 256))]
     argv: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-    #[schemars(with = "BTreeMap<String, EnvironmentValueProfile>")]
+    #[schemars(schema_with = "command_environment_schema")]
     environment: Option<BTreeMap<String, EnvironmentValueProfile>>,
 }
 
 /// Explicit subprocess environment mapping.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(tag = "kind", deny_unknown_fields, rename_all = "camelCase")]
-enum EnvironmentValueProfile {
+pub(super) enum EnvironmentValueProfile {
     Literal { value: String },
     Inherit { name: String },
     Secret { secret: SecretReferenceProfile },
@@ -742,9 +756,111 @@ enum EnvironmentValueProfile {
 /// Opaque environment or helper-command secret reference.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(tag = "kind", deny_unknown_fields, rename_all = "camelCase")]
-enum SecretReferenceProfile {
+pub(super) enum SecretReferenceProfile {
     Environment { name: String },
     Command { command: CommandProfile },
+}
+
+impl HttpsSourceProfile {
+    pub(super) fn into_parts(self) -> (String, bool, MutationGrants, Vec<HttpsOriginProfile>) {
+        (
+            self.id,
+            self.required,
+            grants_or_default(self.grants),
+            self.origins,
+        )
+    }
+}
+
+impl HttpsOriginProfile {
+    pub(super) fn into_parts(self) -> (String, bool, Option<CredentialHeaderProfile>) {
+        (self.base_url, self.allow_private_network, self.credential)
+    }
+}
+
+impl CredentialHeaderProfile {
+    pub(super) fn into_parts(self) -> (String, Option<String>, SecretReferenceProfile) {
+        (self.header, self.scheme, self.secret)
+    }
+}
+
+impl GithubSourceProfile {
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        String,
+        bool,
+        MutationGrants,
+        Option<String>,
+        bool,
+        SecretReferenceProfile,
+        Vec<GithubRepositoryProfile>,
+    ) {
+        (
+            self.id,
+            self.required,
+            grants_or_default(self.grants),
+            self.api_base_url,
+            self.allow_private_network,
+            self.credential,
+            self.repositories,
+        )
+    }
+}
+
+impl GithubRepositoryProfile {
+    pub(super) fn into_parts(self) -> (String, MutationGrants) {
+        (self.name, grants_or_default(self.grants))
+    }
+}
+
+impl SshSourceProfile {
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        String,
+        bool,
+        MutationGrants,
+        CommandProfile,
+        Vec<SshHostProfile>,
+    ) {
+        (
+            self.id,
+            self.required,
+            grants_or_default(self.grants),
+            self.command,
+            self.hosts,
+        )
+    }
+}
+
+impl SshHostProfile {
+    pub(super) fn into_parts(self) -> (String, Vec<String>) {
+        (self.alias, self.remote_roots)
+    }
+}
+
+impl DownstreamMcpSourceProfile {
+    pub(super) fn into_parts(self) -> (String, bool, MutationGrants, Vec<DownstreamServerProfile>) {
+        (
+            self.id,
+            self.required,
+            grants_or_default(self.grants),
+            self.servers,
+        )
+    }
+}
+
+impl DownstreamServerProfile {
+    pub(super) fn into_parts(self) -> (String, Vec<String>, DownstreamTransportProfile) {
+        (self.id, self.schemes, self.transport)
+    }
+}
+
+impl CommandProfile {
+    pub(super) fn into_parts(self) -> (Vec<String>, BTreeMap<String, EnvironmentValueProfile>) {
+        (self.argv, self.environment.unwrap_or_default())
+    }
 }
 
 impl WorkspaceProfile {
@@ -848,16 +964,6 @@ impl SourceProfile {
             | Self::DownstreamMcp(_) => {}
         }
         Ok(())
-    }
-
-    pub(super) fn visit_scheme_claims(&self, mut visit: impl FnMut(&str)) {
-        if let Self::DownstreamMcp(source) = self {
-            for server in &source.servers {
-                for scheme in &server.schemes {
-                    visit(scheme);
-                }
-            }
-        }
     }
 }
 

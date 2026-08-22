@@ -42,7 +42,6 @@ fn validate_sources(sources: &[super::model::SourceProfile]) -> Result<(), Profi
 
     let mut seen_kinds = HashSet::with_capacity(sources.len());
     let mut seen_ids = HashSet::with_capacity(sources.len());
-    let mut seen_claims = HashSet::new();
     for source in sources {
         validate_configuration_id(source.id())
             .map_err(|error| ProfileError::invalid(format!("source ID: {error}")))?;
@@ -59,16 +58,6 @@ fn validate_sources(sources: &[super::model::SourceProfile]) -> Result<(), Profi
         source
             .validate_grants()
             .map_err(|error| ProfileError::invalid(format!("source grants: {error}")))?;
-
-        let mut duplicate_claim = false;
-        source.visit_scheme_claims(|claim| {
-            duplicate_claim |= !seen_claims.insert(claim.to_ascii_lowercase());
-        });
-        if duplicate_claim {
-            return Err(ProfileError::invalid(
-                "native scheme claims must be globally unique after lowercase normalization",
-            ));
-        }
     }
     Ok(())
 }

@@ -1,6 +1,9 @@
 use std::fs;
 
 use resourcefs_mcp::{MAX_ALLOWLIST_ENTRIES, MAX_PROFILE_BYTES, ProfileDocument, ProfileErrorKind};
+use resourcefs_sources::{
+    MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMAND_ARGUMENTS, MAX_COMMAND_ENVIRONMENT_ENTRIES,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tempfile::tempdir;
@@ -436,7 +439,13 @@ fn nested_allowlist_cardinality_matrix() {
         "agentExport",
         "downstreamMcp",
     ] {
-        for (count, accepted) in [(0, true), (1, true), (4_096, true), (4_097, false)] {
+        for count in [0, 1, 4_096, 4_097] {
+            let accepted = match count {
+                0 => !matches!(kind, "https" | "github" | "ssh" | "downstreamMcp"),
+                1 | 4_096 => true,
+                4_097 => false,
+                _ => unreachable!("fixed cardinality matrix"),
+            };
             let profile = json!({
                 "schemaVersion":1,
                 "sources":[source_with_entries(kind, count)]
@@ -524,6 +533,287 @@ fn grant_matrix() {
     set_source_grants(&mut vault_superset, json!({"update":true}));
     vault_superset["vaults"][0]["grants"] = json!({"delete":true});
     assert!(parse(&profile_with_source(vault_superset)).is_err());
+}
+
+#[test]
+fn network_source_configuration_matches_constructors() {
+    let https = |origins: Value| source("https", json!({"origins":origins}));
+    let github = |repositories: Value| {
+        source(
+            "github",
+            json!({
+                "allowPrivateNetwork":false,
+                "credential":{"kind":"environment","name":"GITHUB_TOKEN"},
+                "repositories":repositories
+            }),
+        )
+    };
+    let ssh = |hosts: Value| source("ssh", json!({"command":{"argv":["ssh"]},"hosts":hosts}));
+    let downstream = |servers: Value| source("downstreamMcp", json!({"servers":servers}));
+
+    for (name, source, accepted) in [
+        (
+            "https-valid",
+            https(json!([{
+                "baseUrl":"https://example.test/api",
+                "allowPrivateNetwork":false,
+                "credential":{
+                    "header":"Authorization",
+                    "scheme":"Bearer",
+                    "secret":{"kind":"environment","name":"TOKEN"}
+                }
+            }])),
+            true,
+        ),
+        (
+            "https-userinfo",
+            https(json!([{
+                "baseUrl":"https://user@example.test/api",
+                "allowPrivateNetwork":false
+            }])),
+            false,
+        ),
+        (
+            "https-overlap",
+            https(json!([
+                {"baseUrl":"https://example.test/api","allowPrivateNetwork":false},
+                {"baseUrl":"https://example.test/api/v1","allowPrivateNetwork":false}
+            ])),
+            false,
+        ),
+        (
+            "https-routing-header",
+            https(json!([{
+                "baseUrl":"https://example.test/api",
+                "allowPrivateNetwork":false,
+                "credential":{
+                    "header":"Host",
+                    "secret":{"kind":"environment","name":"TOKEN"}
+                }
+            }])),
+            false,
+        ),
+        (
+            "github-valid",
+            github(json!([{"name":"owner/repository"}])),
+            true,
+        ),
+        (
+            "github-duplicate",
+            github(json!([
+                {"name":"Owner/Repository"},
+                {"name":"owner/repository"}
+            ])),
+            false,
+        ),
+        (
+            "github-recursive-secret-helper",
+            source(
+                "github",
+                json!({
+                    "allowPrivateNetwork":false,
+                    "credential":{
+                        "kind":"command",
+                        "command":{
+                            "argv":["helper"],
+                            "environment":{
+                                "TOKEN":{
+                                    "kind":"secret",
+                                    "secret":{"kind":"environment","name":"TOKEN"}
+                                }
+                            }
+                        }
+                    },
+                    "repositories":[{"name":"owner/repository"}]
+                }),
+            ),
+            false,
+        ),
+        (
+            "ssh-empty-command",
+            source(
+                "ssh",
+                json!({
+                    "command":{"argv":[]},
+                    "hosts":[{"alias":"host","remoteRoots":["/srv"]}]
+                }),
+            ),
+            false,
+        ),
+        (
+            "ssh-invalid-environment-name",
+            source(
+                "ssh",
+                json!({
+                    "command":{
+                        "argv":["ssh"],
+                        "environment":{"BAD=NAME":{"kind":"literal","value":"x"}}
+                    },
+                    "hosts":[{"alias":"host","remoteRoots":["/srv"]}]
+                }),
+            ),
+            false,
+        ),
+        (
+            "ssh-case-colliding-environment-names",
+            source(
+                "ssh",
+                json!({
+                    "command":{
+                        "argv":["ssh"],
+                        "environment":{
+                            "Path":{"kind":"literal","value":"one"},
+                            "PATH":{"kind":"literal","value":"two"}
+                        }
+                    },
+                    "hosts":[{"alias":"host","remoteRoots":["/srv"]}]
+                }),
+            ),
+            false,
+        ),
+        (
+            "ssh-valid",
+            ssh(json!([{"alias":"host","remoteRoots":["/srv","/srv2"]}])),
+            true,
+        ),
+        (
+            "ssh-relative-root",
+            ssh(json!([{"alias":"host","remoteRoots":["srv"]}])),
+            false,
+        ),
+        (
+            "downstream-stdio-valid",
+            downstream(json!([{
+                "id":"docs",
+                "schemes":["docs"],
+                "transport":{"kind":"stdio","command":{"argv":["docs-server"]}}
+            }])),
+            true,
+        ),
+        (
+            "downstream-claim-collision",
+            downstream(json!([
+                {
+                    "id":"one",
+                    "schemes":["Docs"],
+                    "transport":{"kind":"stdio","command":{"argv":["docs-server"]}}
+                },
+                {
+                    "id":"two",
+                    "schemes":["docs"],
+                    "transport":{"kind":"stdio","command":{"argv":["docs-server"]}}
+                }
+            ])),
+            false,
+        ),
+        (
+            "downstream-built-in-claim",
+            downstream(json!([{
+                "id":"docs",
+                "schemes":["artifact"],
+                "transport":{"kind":"stdio","command":{"argv":["docs-server"]}}
+            }])),
+            false,
+        ),
+        (
+            "downstream-http-userinfo",
+            downstream(json!([{
+                "id":"docs",
+                "schemes":["docs"],
+                "transport":{
+                    "kind":"http",
+                    "endpoint":"https://user@example.test/mcp",
+                    "allowPrivateNetwork":false
+                }
+            }])),
+            false,
+        ),
+    ] {
+        let result = parse(&profile_with_source(source));
+        assert_eq!(
+            result.is_ok(),
+            accepted,
+            "network conversion row {name}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn command_cardinality_matches_typed_configuration() {
+    let command_source = |argv: Value, environment: Option<Value>| {
+        let mut command = json!({"argv":argv});
+        if let Some(environment) = environment {
+            command["environment"] = environment;
+        }
+        source(
+            "downstreamMcp",
+            json!({
+                "servers":[{
+                    "id":"docs",
+                    "schemes":["docs"],
+                    "transport":{"kind":"stdio","command":command}
+                }]
+            }),
+        )
+    };
+
+    for (name, argv, accepted) in [
+        (
+            "exact-argument-count",
+            json!(vec!["x"; MAX_COMMAND_ARGUMENTS]),
+            true,
+        ),
+        (
+            "over-argument-count",
+            json!(vec!["x"; MAX_COMMAND_ARGUMENTS + 1]),
+            false,
+        ),
+        (
+            "exact-argument-bytes",
+            json!(["x".repeat(MAX_COMMAND_ARGUMENT_BYTES)]),
+            true,
+        ),
+        (
+            "over-argument-bytes",
+            json!(["x".repeat(MAX_COMMAND_ARGUMENT_BYTES + 1)]),
+            false,
+        ),
+    ] {
+        let result = parse(&profile_with_source(command_source(argv, None)));
+        assert_eq!(
+            result.is_ok(),
+            accepted,
+            "command argv row {name}: {result:?}"
+        );
+    }
+
+    for (name, count, accepted) in [
+        ("empty-environment", 0, true),
+        ("exact-environment", MAX_COMMAND_ENVIRONMENT_ENTRIES, true),
+        (
+            "over-environment",
+            MAX_COMMAND_ENVIRONMENT_ENTRIES + 1,
+            false,
+        ),
+    ] {
+        let environment = (0..count)
+            .map(|index| {
+                (
+                    format!("NAME_{index}"),
+                    json!({"kind":"inherit","name":"PATH"}),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let result = parse(&profile_with_source(command_source(
+            json!(["server"]),
+            Some(Value::Object(environment)),
+        )));
+        assert_eq!(
+            result.is_ok(),
+            accepted,
+            "command environment row {name}: {result:?}"
+        );
+    }
 }
 
 #[test]

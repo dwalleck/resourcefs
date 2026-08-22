@@ -9,8 +9,12 @@ mod session_storage;
 pub use artifact::ArtifactSource;
 pub use compiled::CompiledSources;
 pub use configuration::{
-    ConfigurationError, MAX_CONFIGURATION_ID_BYTES, MutationGrants, MutationSupport,
-    validate_configuration_id,
+    ChildEnvironment, CommandSpec, ConfigurationError, CredentialHeader, DownstreamMcpConfig,
+    DownstreamServer, DownstreamTransport, EnvironmentValue, GithubConfig, GithubRepository,
+    HttpsConfig, HttpsOrigin, MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMAND_ARGUMENTS,
+    MAX_COMMAND_ENVIRONMENT_ENTRIES, MAX_CONFIGURATION_ENTRIES, MAX_CONFIGURATION_ID_BYTES,
+    MAX_SCHEME_CLAIM_BYTES, MutationGrants, MutationSupport, SchemeClaim, SecretReference,
+    SshConfig, SshHost, validate_configuration_id,
 };
 
 #[cfg(feature = "test-support")]

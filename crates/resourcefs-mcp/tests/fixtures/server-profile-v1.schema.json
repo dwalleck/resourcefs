@@ -23,13 +23,14 @@
           "items": {
             "type": "string"
           },
-          "maxItems": 4096,
+          "maxItems": 256,
           "type": "array"
         },
         "environment": {
           "additionalProperties": {
             "$ref": "#/$defs/EnvironmentValueProfile"
           },
+          "maxProperties": 256,
           "type": "object"
         }
       },
