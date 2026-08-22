@@ -629,10 +629,10 @@ mod tests {
             .await
             .expect("render fixture session");
         let filesystem = FilesystemSource::new(
-            LaunchRootSource::Cli(vec![LaunchRoot {
-                id: WorkspaceRootId::new("workspace").expect("render fixture root ID"),
-                path: root,
-            }]),
+            LaunchRootSource::Cli(vec![LaunchRoot::read_only(
+                WorkspaceRootId::new("workspace").expect("render fixture root ID"),
+                root,
+            )]),
             None,
             BackingPathVisibility::Hidden,
         )

@@ -29,10 +29,10 @@ async fn fixture() -> Fixture {
     )
     .expect("adversarial workspace file");
     let filesystem = FilesystemSource::new(
-        LaunchRootSource::Cli(vec![LaunchRoot {
-            id: WorkspaceRootId::new("workspace").expect("root ID"),
-            path: workspace.path().to_owned(),
-        }]),
+        LaunchRootSource::Cli(vec![LaunchRoot::read_only(
+            WorkspaceRootId::new("workspace").expect("root ID"),
+            workspace.path().to_owned(),
+        )]),
         Some("workspace".to_owned()),
         BackingPathVisibility::Hidden,
     )

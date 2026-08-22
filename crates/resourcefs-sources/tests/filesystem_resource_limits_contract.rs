@@ -76,10 +76,10 @@ fn measured_peak_bytes(baseline: usize) -> usize {
 
 async fn filesystem(root: &std::path::Path) -> FilesystemSource {
     FilesystemSource::new(
-        LaunchRootSource::Cli(vec![LaunchRoot {
-            id: WorkspaceRootId::new("workspace").expect("C4 root ID"),
-            path: root.to_owned(),
-        }]),
+        LaunchRootSource::Cli(vec![LaunchRoot::read_only(
+            WorkspaceRootId::new("workspace").expect("C4 root ID"),
+            root.to_owned(),
+        )]),
         Some("workspace".to_owned()),
         BackingPathVisibility::Hidden,
     )

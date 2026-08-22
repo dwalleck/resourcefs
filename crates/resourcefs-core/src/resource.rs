@@ -245,6 +245,11 @@ impl SourceResource {
         Ok(self)
     }
 
+    pub fn with_mutability(mut self, mutable: bool) -> Self {
+        self.mutable = mutable;
+        self
+    }
+
     pub fn with_backing_file_uri(
         mut self,
         backing_file_uri: impl Into<String>,

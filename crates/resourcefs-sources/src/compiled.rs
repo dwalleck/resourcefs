@@ -138,10 +138,10 @@ mod tests {
         let root = temporary.path().join("workspace");
         fs::create_dir(&root).expect("workspace root");
         let filesystem = FilesystemSource::new(
-            LaunchRootSource::Cli(vec![LaunchRoot {
-                id: WorkspaceRootId::new("workspace").expect("root ID"),
-                path: root,
-            }]),
+            LaunchRootSource::Cli(vec![LaunchRoot::read_only(
+                WorkspaceRootId::new("workspace").expect("root ID"),
+                root,
+            )]),
             None,
             BackingPathVisibility::Hidden,
         )

@@ -446,14 +446,8 @@ mod tests {
         fs::create_dir(&z_last).expect("z-last root");
         let filesystem = FilesystemSource::new(
             LaunchRootSource::Cli(vec![
-                LaunchRoot {
-                    id: WorkspaceRootId::new("z-last").expect("z-last ID"),
-                    path: z_last,
-                },
-                LaunchRoot {
-                    id: WorkspaceRootId::new("alpha").expect("alpha ID"),
-                    path: alpha,
-                },
+                LaunchRoot::read_only(WorkspaceRootId::new("z-last").expect("z-last ID"), z_last),
+                LaunchRoot::read_only(WorkspaceRootId::new("alpha").expect("alpha ID"), alpha),
             ]),
             Some("z-last".to_owned()),
             BackingPathVisibility::Hidden,

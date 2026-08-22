@@ -26,14 +26,17 @@ use sha2::{Digest, Sha256};
 #[cfg(feature = "test-support")]
 use tokio::sync::Notify;
 use tokio::{
-    sync::{Mutex, RwLock},
+    sync::{Mutex, OwnedRwLockReadGuard, RwLock},
     time::Instant,
 };
 use url::Url;
 
 use crate::{
     catalog::{SourceCatalogEntry, SourceCatalogMetadata},
-    configuration::paths::{normalize_platform_path, strip_beneath},
+    configuration::{
+        MutationGrants,
+        paths::{normalize_platform_path, strip_beneath},
+    },
     pattern::{GlobMatcher, SearchMatcher},
 };
 
@@ -257,8 +260,31 @@ fn retained_names_state_bytes(
 
 #[derive(Debug, Clone)]
 pub struct LaunchRoot {
-    pub id: WorkspaceRootId,
-    pub path: PathBuf,
+    id: WorkspaceRootId,
+    path: PathBuf,
+    grants: MutationGrants,
+}
+
+impl LaunchRoot {
+    pub fn new(id: WorkspaceRootId, path: PathBuf, grants: MutationGrants) -> Self {
+        Self { id, path, grants }
+    }
+
+    pub fn read_only(id: WorkspaceRootId, path: PathBuf) -> Self {
+        Self::new(id, path, MutationGrants::default())
+    }
+
+    pub const fn id(&self) -> &WorkspaceRootId {
+        &self.id
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub const fn grants(&self) -> MutationGrants {
+        self.grants
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -268,9 +294,15 @@ pub enum LaunchRootSource {
 }
 
 impl LaunchRootSource {
-    fn into_roots(self) -> Vec<LaunchRoot> {
+    fn into_roots(self) -> (Vec<LaunchRoot>, bool) {
         match self {
-            Self::Cli(roots) | Self::Profile(roots) => roots,
+            Self::Cli(mut roots) => {
+                for root in &mut roots {
+                    root.grants = MutationGrants::default();
+                }
+                (roots, false)
+            }
+            Self::Profile(roots) => (roots, true),
         }
     }
 }
@@ -293,6 +325,7 @@ struct FilesystemRoot {
     metadata: WorkspaceRoot,
     canonical_path: PathBuf,
     directory: Dir,
+    grants: MutationGrants,
 }
 
 #[derive(Debug)]
@@ -335,6 +368,15 @@ impl AuthorityState {
             | Self::Disabled { generation, .. } => *generation,
         }
     }
+}
+
+pub(super) struct MutationAuthorityGuard {
+    _guard: OwnedRwLockReadGuard<AuthorityState>,
+}
+
+#[cfg(feature = "test-support")]
+pub struct TestAuthorityGuard {
+    _guard: MutationAuthorityGuard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,9 +437,10 @@ struct ArmedDeliveryGate {
 #[derive(Debug)]
 struct FilesystemSourceInner {
     launch_view: Arc<WorkspaceView>,
+    profile_grants: Arc<HashMap<PathBuf, MutationGrants>>,
     primary_selector: Option<String>,
     visibility: BackingPathVisibility,
-    authority: RwLock<AuthorityState>,
+    authority: Arc<RwLock<AuthorityState>>,
     identity_history: Mutex<HashMap<WorkspaceRootId, String>>,
     #[cfg(feature = "test-support")]
     delivery_gate: RwLock<Option<ArmedDeliveryGate>>,
@@ -415,13 +458,22 @@ impl FilesystemSource {
         primary_selector: Option<String>,
         visibility: BackingPathVisibility,
     ) -> Result<Self, ResourceError> {
-        let roots = root_source.into_roots();
+        let (roots, inherit_profile_grants) = root_source.into_roots();
         if roots.len() > MAX_WORKSPACE_ROOTS {
             return Err(limit_error("Workspace Root count exceeds 256"));
         }
         let selector = primary_selector.clone();
         let view = construct_launch_view(roots, selector).await?;
         let launch_view = Arc::new(view);
+        let profile_grants = if inherit_profile_grants {
+            launch_view
+                .filesystems
+                .values()
+                .map(|root| (root.canonical_path.clone(), root.grants))
+                .collect()
+        } else {
+            HashMap::new()
+        };
         let identity_history = launch_view
             .roots
             .roots()
@@ -431,18 +483,38 @@ impl FilesystemSource {
         Ok(Self {
             inner: Arc::new(FilesystemSourceInner {
                 launch_view: Arc::clone(&launch_view),
+                profile_grants: Arc::new(profile_grants),
                 primary_selector,
                 visibility,
-                authority: RwLock::new(AuthorityState::Active {
+                authority: Arc::new(RwLock::new(AuthorityState::Active {
                     epoch: 0,
                     generation: 1,
                     view: launch_view,
-                }),
+                })),
                 identity_history: Mutex::new(identity_history),
                 #[cfg(feature = "test-support")]
                 delivery_gate: RwLock::new(None),
             }),
         })
+    }
+
+    pub(super) async fn mutation_authority_guard(
+        &self,
+    ) -> Result<MutationAuthorityGuard, ResourceError> {
+        let guard = Arc::clone(&self.inner.authority).read_owned().await;
+        if !matches!(&*guard, AuthorityState::Active { .. }) {
+            return Err(authority_unavailable(
+                "Workspace authority is not active for mutation",
+            ));
+        }
+        Ok(MutationAuthorityGuard { _guard: guard })
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn hold_test_authority(&self) -> Result<TestAuthorityGuard, ResourceError> {
+        self.mutation_authority_guard()
+            .await
+            .map(|guard| TestAuthorityGuard { _guard: guard })
     }
 
     #[cfg(feature = "test-support")]
@@ -506,6 +578,7 @@ impl FilesystemSource {
             construct_client_view(
                 roots,
                 self.inner.primary_selector.clone(),
+                Arc::clone(&self.inner.profile_grants),
                 acquisition.remaining(),
             )
             .await
@@ -2113,13 +2186,14 @@ async fn construct_launch_view(
 async fn construct_client_view(
     roots: Vec<ClientRoot>,
     primary_selector: Option<String>,
+    profile_grants: Arc<HashMap<PathBuf, MutationGrants>>,
     timeout: Duration,
 ) -> Result<WorkspaceView, ResourceError> {
     if roots.len() > MAX_WORKSPACE_ROOTS {
         return Err(limit_error("Workspace Root count exceeds 256"));
     }
     construct_view(timeout, move || {
-        build_client_workspace_view(roots, primary_selector.as_deref())
+        build_client_workspace_view(roots, primary_selector.as_deref(), profile_grants.as_ref())
     })
     .await
 }
@@ -2168,6 +2242,7 @@ fn build_launch_workspace_view(
             metadata,
             canonical_path,
             directory,
+            grants: root.grants,
         }));
     }
     workspace_view(opened, primary_selector)
@@ -2176,6 +2251,7 @@ fn build_launch_workspace_view(
 fn build_client_workspace_view(
     roots: Vec<ClientRoot>,
     primary_selector: Option<&str>,
+    profile_grants: &HashMap<PathBuf, MutationGrants>,
 ) -> Result<WorkspaceView, ResourceError> {
     let mut opened = Vec::with_capacity(roots.len());
     for root in roots {
@@ -2211,6 +2287,10 @@ fn build_client_workspace_view(
             final_directory_path(&directory)
                 .map_err(|error| client_root_error("resolve final path for", error))?,
         )?;
+        let grants = profile_grants
+            .get(&canonical_path)
+            .copied()
+            .unwrap_or_default();
         let canonical_uri = directory_uri(&canonical_path, None)?;
         let id = client_root_id(&canonical_uri)?;
         let metadata = WorkspaceRoot::new(id, canonical_uri, root.name).map_err(|_| {
@@ -2222,6 +2302,7 @@ fn build_client_workspace_view(
             metadata,
             canonical_path,
             directory,
+            grants,
         }));
     }
     workspace_view(opened, primary_selector)
@@ -2372,10 +2453,12 @@ fn read_address(
             }
         }
     }
+    let mutable = resolved.root.grants.update() && relative_path == resolved.path;
     let canonical_reference =
         PathReference::canonical(resolved.root.metadata.id().clone(), relative_path);
     let selected = select_utf8(&mut file, projection)?;
-    let mut resource = SourceResource::selected_text(canonical_reference, selected)?;
+    let mut resource =
+        SourceResource::selected_text(canonical_reference, selected)?.with_mutability(mutable);
     if visibility == BackingPathVisibility::Visible {
         let backing_uri = Url::from_file_path(&final_path)
             .map_err(|()| {
@@ -2752,10 +2835,10 @@ mod tests {
             fs::create_dir(root).expect("root fixture");
         }
         let source = FilesystemSource::new(
-            LaunchRootSource::Cli(vec![LaunchRoot {
-                id: WorkspaceRootId::new("launch").expect("launch root ID"),
-                path: launch,
-            }]),
+            LaunchRootSource::Cli(vec![LaunchRoot::read_only(
+                WorkspaceRootId::new("launch").expect("launch root ID"),
+                launch,
+            )]),
             None,
             BackingPathVisibility::Hidden,
         )

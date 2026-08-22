@@ -295,6 +295,7 @@ impl ProfileDocument {
                     .unwrap_or_default()
                     .into_iter()
                     .map(|root| {
+                        let grants = root.grants();
                         let configured = PathBuf::from(root.path);
                         if configured.as_os_str().is_empty() {
                             return Err(ProfileError::invalid(
@@ -309,7 +310,7 @@ impl ProfileDocument {
                         let id = WorkspaceRootId::new(root.id).map_err(|error| {
                             ProfileError::invalid(format!("workspace root ID: {error}"))
                         })?;
-                        Ok(LaunchRoot { id, path })
+                        Ok(LaunchRoot::new(id, path, grants))
                     })
                     .collect::<Result<Vec<_>, ProfileError>>()?;
                 (
@@ -1676,6 +1677,7 @@ fn grants_or_default(grants: Option<MutationGrantsProfile>) -> MutationGrants {
 mod tests {
     use super::ProfileDocument;
     use crate::logging::{LogDestinationKind, LogLevel};
+    use resourcefs_sources::{LaunchRootSource, MutationGrants};
 
     #[test]
     fn logging_paths_resolve_from_the_profile_directory() {
@@ -1715,5 +1717,22 @@ mod tests {
             absolute.logging_config().path(),
             Some(absolute_path.as_path())
         );
+    }
+
+    #[test]
+    fn workspace_grants_reach_launch_roots() {
+        let fixture = tempfile::tempdir().expect("profile directory");
+        let profile = ProfileDocument::from_slice_in(
+            br#"{"schemaVersion":1,"workspace":{"roots":[{"id":"workspace","path":".","grants":{"create":true,"update":true,"delete":false}}]}}"#,
+            fixture.path(),
+        )
+        .expect("workspace profile");
+
+        let components = profile.into_launch_components().expect("launch components");
+        let LaunchRootSource::Profile(roots) = components.root_source else {
+            panic!("profile roots must retain profile authority kind");
+        };
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].grants(), MutationGrants::new(true, true, false));
     }
 }

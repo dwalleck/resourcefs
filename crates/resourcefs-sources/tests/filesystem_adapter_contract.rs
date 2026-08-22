@@ -13,7 +13,7 @@ use resourcefs_core::{
 };
 use resourcefs_sources::{
     BackingPathVisibility, ClientRoot, FilesystemSource, LaunchRoot, LaunchRootSource,
-    RootRefreshOutcome, SessionStore, StoredSession,
+    MutationGrants, RootRefreshOutcome, SessionStore, StoredSession,
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -181,10 +181,7 @@ async fn rejects_invalid_root_configuration() {
     ))
     .expect("derived client ID");
     let source = launch_source(
-        vec![LaunchRoot {
-            id: colliding_id,
-            path: alpha,
-        }],
+        vec![LaunchRoot::read_only(colliding_id, alpha)],
         None,
         BackingPathVisibility::Hidden,
     )
@@ -204,6 +201,117 @@ async fn rejects_invalid_root_configuration() {
     assert_eq!(collision.category(), ErrorCategory::InvalidReference);
 }
 
+#[tokio::test]
+async fn mutable_matches_profile_and_exact_client_root_authority() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path().join("workspace");
+    let nested = root.join("nested");
+    fs::create_dir_all(&nested).expect("workspace roots");
+    fs::write(root.join("fixture.txt"), "root\n").expect("root fixture");
+    fs::write(nested.join("fixture.txt"), "nested\n").expect("nested fixture");
+    let grants = MutationGrants::new(true, true, true);
+    let configured = LaunchRoot::new(
+        WorkspaceRootId::new("workspace").expect("root ID"),
+        root.clone(),
+        grants,
+    );
+    assert_eq!(configured.id().as_str(), "workspace");
+    assert_eq!(configured.path(), root);
+    assert_eq!(configured.grants(), grants);
+    let source = FilesystemSource::new(
+        LaunchRootSource::Profile(vec![configured]),
+        Some("workspace".to_owned()),
+        BackingPathVisibility::Hidden,
+    )
+    .await
+    .expect("profile source");
+
+    assert!(
+        source
+            .read(&reference("fixture.txt"))
+            .await
+            .expect("granted profile read")
+            .is_mutable()
+    );
+
+    let refresh = source.begin_client_root_refresh().await;
+    source
+        .complete_client_root_refresh(
+            source.start_client_root_acquisition(refresh),
+            vec![client_root(&root, "workspace")],
+        )
+        .await
+        .expect("exact client refresh");
+    assert!(
+        source
+            .read(&reference("fixture.txt"))
+            .await
+            .expect("exact client read")
+            .is_mutable(),
+        "exact canonical path inherits profile grants"
+    );
+
+    let refresh = source.begin_client_root_refresh().await;
+    source
+        .complete_client_root_refresh(
+            source.start_client_root_acquisition(refresh),
+            vec![client_root(&nested, "workspace")],
+        )
+        .await
+        .expect("nested client refresh");
+    assert!(
+        !source
+            .read(&reference("fixture.txt"))
+            .await
+            .expect("nested client read")
+            .is_mutable(),
+        "subdirectory client root must not inherit broader grants"
+    );
+
+    let cli = FilesystemSource::new(
+        LaunchRootSource::Cli(vec![LaunchRoot::new(
+            WorkspaceRootId::new("workspace").expect("CLI root ID"),
+            root,
+            grants,
+        )]),
+        Some("workspace".to_owned()),
+        BackingPathVisibility::Hidden,
+    )
+    .await
+    .expect("CLI source");
+    assert!(
+        !cli.read(&reference("fixture.txt"))
+            .await
+            .expect("CLI read")
+            .is_mutable(),
+        "CLI roots remain read-only even when constructed with grants"
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn refresh_cannot_race_held_mutation_authority() {
+    let (_temporary, root) = create_root();
+    let source = single_source(&root).await.expect("filesystem source");
+    let guard = source
+        .hold_test_authority()
+        .await
+        .expect("active mutation authority");
+    let refresh_source = source.clone();
+    let refresh = tokio::spawn(async move { refresh_source.begin_client_root_refresh().await });
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !refresh.is_finished(),
+        "authority refresh must wait for the mutation read guard"
+    );
+    drop(guard);
+    tokio::time::timeout(Duration::from_millis(100), refresh)
+        .await
+        .expect("refresh proceeds after mutation authority release")
+        .expect("refresh task");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn permits_contained_symlink() {
@@ -218,7 +326,24 @@ async fn permits_contained_symlink() {
         root.join("normalized-link.txt"),
     )
     .expect("contained normalizing symlink");
-    let source = single_source(&root).await.expect("filesystem source");
+    let source = FilesystemSource::new(
+        LaunchRootSource::Profile(vec![LaunchRoot::new(
+            WorkspaceRootId::new("workspace").expect("root ID"),
+            root,
+            MutationGrants::new(false, true, false),
+        )]),
+        Some("workspace".to_owned()),
+        BackingPathVisibility::Hidden,
+    )
+    .await
+    .expect("granted filesystem source");
+    assert!(
+        source
+            .read(&reference("target.txt"))
+            .await
+            .expect("direct target read")
+            .is_mutable()
+    );
 
     for link in ["link.txt", "normalized-link.txt"] {
         let resource = source
@@ -226,6 +351,10 @@ async fn permits_contained_symlink() {
             .await
             .expect("contained link read");
         assert_eq!(resource.content(), "inside");
+        assert!(
+            !resource.is_mutable(),
+            "linked Resources are not directly mutable"
+        );
     }
 }
 
@@ -417,10 +546,10 @@ async fn stale_stream_delivery_is_rejected() {
 }
 
 fn launch_root(id: &str, path: &std::path::Path) -> LaunchRoot {
-    LaunchRoot {
-        id: WorkspaceRootId::new(id).expect("fixture root ID"),
-        path: path.to_owned(),
-    }
+    LaunchRoot::read_only(
+        WorkspaceRootId::new(id).expect("fixture root ID"),
+        path.to_owned(),
+    )
 }
 
 async fn launch_source(

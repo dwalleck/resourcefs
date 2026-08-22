@@ -110,10 +110,7 @@ impl FromStr for RootIdArgument {
 
 impl From<RootArgument> for LaunchRoot {
     fn from(root: RootArgument) -> Self {
-        Self {
-            id: root.id,
-            path: root.path,
-        }
+        Self::read_only(root.id, root.path)
     }
 }
 
