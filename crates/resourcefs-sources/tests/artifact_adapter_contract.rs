@@ -81,9 +81,15 @@ struct Fixture {
 
 async fn fixture() -> Fixture {
     let temporary = TempDir::new().expect("temporary session cache");
-    let store = SessionStore::open(temporary.path())
-        .await
-        .expect("session store");
+    let store = SessionStore::open_with(
+        resourcefs_sources::SessionStorageConfig::new(
+            temporary.path(),
+            resourcefs_sources::SESSION_CLEANUP_TTL.as_secs() as i64,
+        )
+        .expect("default session storage config"),
+    )
+    .await
+    .expect("session store");
     let session = store
         .create_session(resourcefs_core::ServerLimits::default())
         .await
@@ -260,9 +266,15 @@ fn canonical_artifact(address: resourcefs_core::ArtifactAddress) -> PathReferenc
 #[tokio::test]
 async fn search_and_glob_are_session_isolated() {
     let temporary = TempDir::new().expect("C8 temporary cache");
-    let store = SessionStore::open(temporary.path())
-        .await
-        .expect("C8 session store");
+    let store = SessionStore::open_with(
+        resourcefs_sources::SessionStorageConfig::new(
+            temporary.path(),
+            resourcefs_sources::SESSION_CLEANUP_TTL.as_secs() as i64,
+        )
+        .expect("default session storage config"),
+    )
+    .await
+    .expect("C8 session store");
     let first = store
         .create_session(resourcefs_core::ServerLimits::default())
         .await
@@ -484,9 +496,15 @@ async fn searches_selected_artifact_text() {
 #[tokio::test]
 async fn glob_lists_session_artifacts() {
     let temporary = TempDir::new().expect("C7 temporary cache");
-    let store = SessionStore::open(temporary.path())
-        .await
-        .expect("C7 session store");
+    let store = SessionStore::open_with(
+        resourcefs_sources::SessionStorageConfig::new(
+            temporary.path(),
+            resourcefs_sources::SESSION_CLEANUP_TTL.as_secs() as i64,
+        )
+        .expect("default session storage config"),
+    )
+    .await
+    .expect("C7 session store");
     let session = store
         .create_session(resourcefs_core::ServerLimits::default())
         .await
@@ -565,9 +583,15 @@ async fn glob_lists_session_artifacts() {
 #[tokio::test]
 async fn glob_snapshot_excludes_its_recovery_artifact() {
     let temporary = TempDir::new().expect("C8 temporary cache");
-    let store = SessionStore::open(temporary.path())
-        .await
-        .expect("C8 session store");
+    let store = SessionStore::open_with(
+        resourcefs_sources::SessionStorageConfig::new(
+            temporary.path(),
+            resourcefs_sources::SESSION_CLEANUP_TTL.as_secs() as i64,
+        )
+        .expect("default session storage config"),
+    )
+    .await
+    .expect("C8 session store");
     let session = store
         .create_session(resourcefs_core::ServerLimits::default())
         .await

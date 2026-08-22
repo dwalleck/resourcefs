@@ -518,7 +518,7 @@ fn receive_response_fields(
 
 #[cfg(feature = "test-support")]
 fn session_directory(session_root: &Path) -> PathBuf {
-    let sessions = session_root.join("sessions");
+    let sessions = session_root.join("resourcefs");
     let mut directories: Vec<PathBuf> = fs::read_dir(&sessions)
         .expect("sessions directory")
         .map(|entry| entry.expect("session entry").path())

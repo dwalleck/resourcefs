@@ -15,8 +15,8 @@ use resourcefs_core::{
 #[cfg(feature = "test-support")]
 use resourcefs_sources::StorageFailurePoint;
 use resourcefs_sources::{
-    ArtifactSource, ClientRoot, CompiledSources, FilesystemSource, RootRefresh, SessionStore,
-    StoredSession,
+    ArtifactSource, ClientRoot, CompiledSources, FilesystemSource, RootRefresh,
+    SessionStorageConfig, SessionStore, StoredSession,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -1001,16 +1001,19 @@ fn notification_supports_roots(context: &NotificationContext<RoleServer>) -> boo
 }
 
 #[cfg(feature = "test-support")]
-async fn open_session_store() -> Result<SessionStore, ResourceError> {
+async fn open_session_store(config: SessionStorageConfig) -> Result<SessionStore, ResourceError> {
     match std::env::var_os("RESOURCEFS_TEST_SESSION_ROOT") {
-        Some(root) => SessionStore::open(root).await,
-        None => SessionStore::open_default().await,
+        Some(root) => {
+            let ttl_seconds = config.retention_ttl().as_secs() as i64;
+            SessionStore::open_with(SessionStorageConfig::new(root, ttl_seconds)?).await
+        }
+        None => SessionStore::open_with(config).await,
     }
 }
 
 #[cfg(not(feature = "test-support"))]
-async fn open_session_store() -> Result<SessionStore, ResourceError> {
-    SessionStore::open_default().await
+async fn open_session_store(config: SessionStorageConfig) -> Result<SessionStore, ResourceError> {
+    SessionStore::open_with(config).await
 }
 
 #[cfg(feature = "test-support")]
@@ -1093,10 +1096,14 @@ async fn heartbeat_session(
     }
 }
 
-pub(crate) async fn serve(source: FilesystemSource, limits: ServerLimits) -> Result<(), BoxError> {
+pub(crate) async fn serve(
+    source: FilesystemSource,
+    limits: ServerLimits,
+    session_storage: SessionStorageConfig,
+) -> Result<(), BoxError> {
     #[cfg(feature = "test-support")]
     let test_delivery_gate = start_test_delivery_gate(&source).await?;
-    let session_store = open_session_store().await?;
+    let session_store = open_session_store(session_storage).await?;
     let stored_session = session_store.create_session(limits).await?;
     #[cfg(feature = "test-support")]
     configure_test_storage_failure(&stored_session).await?;
@@ -1126,8 +1133,14 @@ pub(crate) async fn serve(source: FilesystemSource, limits: ServerLimits) -> Res
             heartbeat_shutdown.send_replace(true);
             let heartbeat_result = heartbeat.await;
             let disconnect_result = disconnect.finish().await;
+            let retention_result = if disconnect_result.is_ok() {
+                stored_session.mark_disconnected().await
+            } else {
+                Ok(())
+            };
             heartbeat_result??;
             disconnect_result?;
+            retention_result?;
             return Err(error.into());
         }
     };
@@ -1145,6 +1158,11 @@ pub(crate) async fn serve(source: FilesystemSource, limits: ServerLimits) -> Res
         }
     };
     let disconnect_result = disconnect.finish().await;
+    let retention_result = if disconnect_result.is_ok() {
+        stored_session.mark_disconnected().await
+    } else {
+        Ok(())
+    };
     #[cfg(feature = "test-support")]
     let delivery_gate_result = match test_delivery_gate {
         Some(task) => task.await?,
@@ -1153,6 +1171,7 @@ pub(crate) async fn serve(source: FilesystemSource, limits: ServerLimits) -> Res
     service_result?;
     heartbeat_result??;
     disconnect_result?;
+    retention_result?;
     #[cfg(feature = "test-support")]
     delivery_gate_result?;
     Ok(())

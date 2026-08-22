@@ -396,9 +396,15 @@ async fn single_source(
 
 async fn discovery_fixture(source: FilesystemSource) -> (TempDir, StoredSession, DiscoveryEngine) {
     let cache = TempDir::new().expect("discovery cache");
-    let store = SessionStore::open(cache.path())
-        .await
-        .expect("discovery session store");
+    let store = SessionStore::open_with(
+        resourcefs_sources::SessionStorageConfig::new(
+            cache.path(),
+            resourcefs_sources::SESSION_CLEANUP_TTL.as_secs() as i64,
+        )
+        .expect("default session storage config"),
+    )
+    .await
+    .expect("discovery session store");
     let session = store
         .create_session(resourcefs_core::ServerLimits::default())
         .await

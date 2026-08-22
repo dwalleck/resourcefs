@@ -1,5 +1,4 @@
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path, time::Duration};
 
 use resourcefs_core::{
     DiscoveryLimitInput, MAX_ARTIFACT_BYTES, MAX_DISCOVERY_RESULTS, MAX_IMAGE_BYTES,
@@ -359,6 +358,75 @@ fn nested_limits_map_to_the_core_aggregate_without_clamping() {
             assert_eq!(profile.process_concurrency(), value as usize);
         }
     }
+}
+
+#[test]
+fn session_configuration_resolves_paths_and_validates_the_signed_ttl_interval() {
+    let fixture = local_fixture();
+    let relative = parse_in(
+        &json!({
+            "schemaVersion":1,
+            "session":{"cacheDirectory":"cache","retentionTtlSeconds":0}
+        }),
+        fixture.path(),
+    )
+    .expect("relative session configuration");
+    assert_eq!(
+        relative.session_storage_config().cache_root(),
+        fixture.path().join("cache")
+    );
+    assert_eq!(
+        relative.session_storage_config().retention_ttl(),
+        Duration::ZERO
+    );
+
+    let absolute_cache = tempdir().expect("absolute session cache");
+    let absolute = parse_in(
+        &json!({
+            "schemaVersion":1,
+            "session":{
+                "cacheDirectory":absolute_cache.path(),
+                "retentionTtlSeconds":86_400
+            }
+        }),
+        fixture.path(),
+    )
+    .expect("absolute session configuration");
+    assert_eq!(
+        absolute.session_storage_config().cache_root(),
+        absolute_cache.path()
+    );
+    assert_eq!(
+        absolute.session_storage_config().retention_ttl(),
+        Duration::from_secs(86_400)
+    );
+
+    for (seconds, accepted) in [(-1_i64, false), (0, true), (86_400, true), (86_401, false)] {
+        let result = parse_in(
+            &json!({
+                "schemaVersion":1,
+                "session":{"cacheDirectory":"cache","retentionTtlSeconds":seconds}
+            }),
+            fixture.path(),
+        );
+        assert_eq!(result.is_ok(), accepted, "retentionTtlSeconds={seconds}");
+        if let Err(error) = result {
+            assert!(
+                error.to_string().contains("session.retentionTtlSeconds"),
+                "retentionTtlSeconds={seconds} diagnostic must identify the field: {error}"
+            );
+        }
+    }
+
+    let empty_cache = parse_in(
+        &json!({
+            "schemaVersion":1,
+            "session":{"cacheDirectory":""}
+        }),
+        fixture.path(),
+    )
+    .expect_err("empty cacheDirectory");
+    assert!(empty_cache.to_string().contains("session.cacheDirectory"));
 }
 
 fn profile_with_limit(field: &str, value: i64) -> Value {

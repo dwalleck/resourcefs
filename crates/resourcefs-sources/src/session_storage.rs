@@ -2,25 +2,73 @@ use std::{
     fs::{self, File, OpenOptions},
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
 use async_trait::async_trait;
 use directories::BaseDirs;
 use resourcefs_core::{
-    ArtifactId, PathSession, ResourceError, ServerLimits, SessionStorage, SessionToken,
+    ArtifactId, ErrorCategory, PathSession, ResourceError, ServerLimits, SessionStorage,
+    SessionToken,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-#[cfg(feature = "test-support")]
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard};
 
 const LEASE_FILE: &str = "session.lock";
 const LIVE_MARKER: &str = "last-live";
 const DISCONNECTED_MARKER: &str = "disconnected";
 const OBJECTS_DIRECTORY: &str = "objects";
+const CACHE_NAMESPACE: &str = "resourcefs";
 pub const SESSION_CLEANUP_TTL: Duration = Duration::from_secs(86_400);
+
+/// Validated retained-session cache authority and elapsed cleanup window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionStorageConfig {
+    cache_root: PathBuf,
+    retention_ttl: Duration,
+}
+
+impl SessionStorageConfig {
+    pub fn new(
+        cache_root: impl Into<PathBuf>,
+        retention_ttl_seconds: i64,
+    ) -> Result<Self, ResourceError> {
+        let cache_root = cache_root.into();
+        if cache_root.as_os_str().is_empty() {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "session.cacheDirectory must not be empty",
+            ));
+        }
+        let retention_ttl_seconds =
+            u64::try_from(retention_ttl_seconds).map_err(|_| retention_ttl_error())?;
+        if retention_ttl_seconds > SESSION_CLEANUP_TTL.as_secs() {
+            return Err(retention_ttl_error());
+        }
+        Ok(Self {
+            cache_root,
+            retention_ttl: Duration::from_secs(retention_ttl_seconds),
+        })
+    }
+
+    pub fn for_current_user(retention_ttl_seconds: i64) -> Result<Self, ResourceError> {
+        let base = BaseDirs::new().ok_or_else(|| storage_failure("locate account cache", None))?;
+        Self::new(base.cache_dir(), retention_ttl_seconds)
+    }
+
+    pub fn cache_root(&self) -> &Path {
+        &self.cache_root
+    }
+
+    pub const fn retention_ttl(&self) -> Duration {
+        self.retention_ttl
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CleanupReport {
@@ -32,24 +80,22 @@ pub struct CleanupReport {
 #[derive(Debug, Clone)]
 pub struct SessionStore {
     sessions_root: Arc<PathBuf>,
+    retention_ttl: Duration,
 }
 
 impl SessionStore {
-    pub async fn open(cache_root: impl AsRef<Path>) -> Result<Self, ResourceError> {
-        let cache_root = cache_root.as_ref().to_owned();
+    pub async fn open_with(config: SessionStorageConfig) -> Result<Self, ResourceError> {
+        let retention_ttl = config.retention_ttl;
+        let cache_root = config.cache_root;
         let sessions_root = tokio::task::spawn_blocking(move || prepare_sessions_root(&cache_root))
             .await
             .map_err(join_error)??;
         let store = Self {
             sessions_root: Arc::new(sessions_root),
+            retention_ttl,
         };
         store.cleanup_expired().await?;
         Ok(store)
-    }
-
-    pub async fn open_default() -> Result<Self, ResourceError> {
-        let base = BaseDirs::new().ok_or_else(|| storage_failure("locate account cache", None))?;
-        Self::open(base.cache_dir().join("resourcefs")).await
     }
 
     pub async fn create_session(
@@ -62,7 +108,11 @@ impl SessionStore {
         );
         let trait_storage: Arc<dyn SessionStorage> = storage.clone();
         let session = PathSession::new(token, trait_storage, limits);
-        Ok(StoredSession { session, storage })
+        Ok(StoredSession {
+            session,
+            storage,
+            retention_ttl: self.retention_ttl,
+        })
     }
 
     pub async fn cleanup_expired(&self) -> Result<CleanupReport, ResourceError> {
@@ -71,7 +121,8 @@ impl SessionStore {
 
     async fn cleanup_expired_at(&self, now: SystemTime) -> Result<CleanupReport, ResourceError> {
         let root = self.sessions_root.as_ref().clone();
-        tokio::task::spawn_blocking(move || cleanup_sessions(&root, now))
+        let retention_ttl = self.retention_ttl;
+        tokio::task::spawn_blocking(move || cleanup_sessions(&root, now, retention_ttl))
             .await
             .map_err(join_error)?
     }
@@ -94,6 +145,7 @@ impl SessionStore {
 pub struct StoredSession {
     session: PathSession,
     storage: Arc<DiskSessionStorage>,
+    retention_ttl: Duration,
 }
 
 impl StoredSession {
@@ -106,7 +158,10 @@ impl StoredSession {
     }
 
     pub async fn mark_disconnected(&self) -> Result<(), ResourceError> {
-        self.session.mark_disconnected().await
+        self.session.mark_disconnected().await?;
+        self.storage
+            .finish_disconnect(self.retention_ttl.is_zero())
+            .await
     }
 
     #[cfg(feature = "test-support")]
@@ -118,7 +173,9 @@ impl StoredSession {
 pub struct DiskSessionStorage {
     session_dir: PathBuf,
     objects_dir: PathBuf,
-    _lease: SessionLease,
+    lease: Mutex<Option<SessionLease>>,
+    activity: RwLock<()>,
+    closed: AtomicBool,
     #[cfg(feature = "test-support")]
     failure: Mutex<Option<StorageFailurePoint>>,
 }
@@ -139,7 +196,9 @@ impl DiskSessionStorage {
                 Ok(Self {
                     session_dir,
                     objects_dir,
-                    _lease: lease,
+                    lease: Mutex::new(Some(lease)),
+                    activity: RwLock::new(()),
+                    closed: AtomicBool::new(false),
                     #[cfg(feature = "test-support")]
                     failure: Mutex::new(None),
                 })
@@ -160,11 +219,35 @@ impl DiskSessionStorage {
         .map_err(join_error)?
     }
 
+    async fn begin_io(&self) -> Result<RwLockReadGuard<'_, ()>, ResourceError> {
+        let activity = self.activity.read().await;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(storage_failure("access disconnected session storage", None));
+        }
+        Ok(activity)
+    }
+
     pub async fn heartbeat(&self) -> Result<(), ResourceError> {
+        let _activity = self.begin_io().await?;
         let marker = self.session_dir.join(LIVE_MARKER);
         tokio::task::spawn_blocking(move || write_marker_sync(&marker, b"live\n"))
             .await
             .map_err(join_error)?
+    }
+
+    async fn finish_disconnect(&self, remove: bool) -> Result<(), ResourceError> {
+        let _activity = self.activity.write().await;
+        self.closed.store(true, Ordering::Release);
+        let lease = self.lease.lock().await.take();
+        drop(lease);
+        if !remove {
+            return Ok(());
+        }
+        match tokio::fs::remove_dir_all(&self.session_dir).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(storage_io_error("remove disconnected session", error)),
+        }
     }
 
     #[cfg(feature = "test-support")]
@@ -254,6 +337,7 @@ impl StorageFailurePoint {
 #[async_trait]
 impl SessionStorage for DiskSessionStorage {
     async fn content_equals(&self, id: ArtifactId, content: &[u8]) -> Result<bool, ResourceError> {
+        let _activity = self.begin_io().await?;
         let mut file = tokio::fs::File::open(object_path(&self.objects_dir, id))
             .await
             .map_err(|error| storage_io_error("open object for comparison", error))?;
@@ -278,6 +362,7 @@ impl SessionStorage for DiskSessionStorage {
     }
 
     async fn write_atomic(&self, id: ArtifactId, content: &[u8]) -> Result<(), ResourceError> {
+        let _activity = self.begin_io().await?;
         self.inject(StorageFailurePoint::Open).await?;
         let temporary = temporary_object_path(&self.objects_dir, id);
         let final_path = object_path(&self.objects_dir, id);
@@ -331,12 +416,14 @@ impl SessionStorage for DiskSessionStorage {
     }
 
     async fn read(&self, id: ArtifactId) -> Result<String, ResourceError> {
+        let _activity = self.begin_io().await?;
         tokio::fs::read_to_string(object_path(&self.objects_dir, id))
             .await
             .map_err(|error| storage_io_error("read object", error))
     }
 
     async fn remove(&self, id: ArtifactId) -> Result<(), ResourceError> {
+        let _activity = self.begin_io().await?;
         self.inject(StorageFailurePoint::Remove).await?;
         tokio::fs::remove_file(object_path(&self.objects_dir, id))
             .await
@@ -344,6 +431,7 @@ impl SessionStorage for DiskSessionStorage {
         sync_directory(self.objects_dir.clone()).await
     }
     async fn mark_disconnected(&self) -> Result<(), ResourceError> {
+        let _activity = self.begin_io().await?;
         self.inject(StorageFailurePoint::Disconnect).await?;
         let marker = self.session_dir.join(DISCONNECTED_MARKER);
         tokio::task::spawn_blocking(move || write_marker_sync(&marker, b"disconnected\n"))
@@ -390,13 +478,39 @@ fn prepare_sessions_root(cache_root: &Path) -> Result<PathBuf, ResourceError> {
     fs::create_dir_all(cache_root).map_err(|error| storage_io_error("create cache root", error))?;
     let canonical_root = fs::canonicalize(cache_root)
         .map_err(|error| storage_io_error("canonicalize cache root", error))?;
-    let sessions_root = canonical_root.join("sessions");
-    fs::create_dir_all(&sessions_root)
-        .map_err(|error| storage_io_error("create sessions root", error))?;
+    let sessions_root = canonical_root.join(CACHE_NAMESPACE);
+    match fs::symlink_metadata(&sessions_root) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => {
+            return Err(storage_failure(
+                "session cache namespace is not a directory",
+                None,
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir(&sessions_root)
+                .map_err(|error| storage_io_error("create session cache namespace", error))?;
+        }
+        Err(error) => {
+            return Err(storage_io_error("inspect session cache namespace", error));
+        }
+    }
+    let sessions_root = fs::canonicalize(&sessions_root)
+        .map_err(|error| storage_io_error("canonicalize session cache namespace", error))?;
+    if sessions_root.parent() != Some(canonical_root.as_path()) {
+        return Err(storage_failure(
+            "session cache namespace escaped its configured cache root",
+            None,
+        ));
+    }
     Ok(sessions_root)
 }
 
-fn cleanup_sessions(root: &Path, now: SystemTime) -> Result<CleanupReport, ResourceError> {
+fn cleanup_sessions(
+    root: &Path,
+    now: SystemTime,
+    retention_ttl: Duration,
+) -> Result<CleanupReport, ResourceError> {
     let mut report = CleanupReport {
         removed: 0,
         live: 0,
@@ -439,7 +553,7 @@ fn cleanup_sessions(root: &Path, now: SystemTime) -> Result<CleanupReport, Resou
             .and_then(|metadata| metadata.modified())
             .map_err(|error| storage_io_error("inspect retained session age", error))?;
         let age = now.duration_since(modified).unwrap_or(Duration::ZERO);
-        if age < SESSION_CLEANUP_TTL {
+        if age < retention_ttl {
             report.fresh += 1;
             continue;
         }
@@ -558,6 +672,16 @@ fn join_error(error: tokio::task::JoinError) -> ResourceError {
 
 fn storage_io_error(operation: &str, error: io::Error) -> ResourceError {
     storage_failure(operation, Some(error.kind()))
+}
+
+fn retention_ttl_error() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::LimitExceeded,
+        format!(
+            "session.retentionTtlSeconds must be between 0 and {}",
+            SESSION_CLEANUP_TTL.as_secs()
+        ),
+    )
 }
 
 fn storage_failure(operation: &str, kind: Option<io::ErrorKind>) -> ResourceError {

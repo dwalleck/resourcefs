@@ -542,9 +542,15 @@ mod tests {
         let temporary = TempDir::new().expect("render fixture temporary directory");
         let root = temporary.path().join("workspace");
         fs::create_dir(&root).expect("render fixture workspace root");
-        let store = SessionStore::open(temporary.path().join("cache"))
-            .await
-            .expect("render fixture session store");
+        let store = SessionStore::open_with(
+            resourcefs_sources::SessionStorageConfig::new(
+                temporary.path().join("cache"),
+                resourcefs_sources::SESSION_CLEANUP_TTL.as_secs() as i64,
+            )
+            .expect("default session storage config"),
+        )
+        .await
+        .expect("render fixture session store");
         let session = store
             .create_session(resourcefs_core::ServerLimits::default())
             .await

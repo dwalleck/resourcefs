@@ -130,9 +130,15 @@ async fn newline_free_files_are_rejected_before_unbounded_allocation() {
         .expect("C5 sparse oversized gitignore");
     fs::write(root.join("visible.txt"), "needle\n").expect("C5 visible fixture");
     let cache = TempDir::new().expect("C5 session cache");
-    let store = SessionStore::open(cache.path())
-        .await
-        .expect("C5 session store");
+    let store = SessionStore::open_with(
+        resourcefs_sources::SessionStorageConfig::new(
+            cache.path(),
+            resourcefs_sources::SESSION_CLEANUP_TTL.as_secs() as i64,
+        )
+        .expect("default session storage config"),
+    )
+    .await
+    .expect("C5 session store");
     let session = store
         .create_session(resourcefs_core::ServerLimits::default())
         .await

@@ -9,7 +9,9 @@ use std::{
 use resourcefs_core::{
     ArtifactId, ErrorCategory, MAX_ARTIFACT_BYTES, OperationGuard, SessionStorage,
 };
-use resourcefs_sources::{SESSION_CLEANUP_TTL, SessionStore, StorageFailurePoint, StoredSession};
+use resourcefs_sources::{
+    SESSION_CLEANUP_TTL, SessionStorageConfig, SessionStore, StorageFailurePoint, StoredSession,
+};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
@@ -46,12 +48,160 @@ fn directory_snapshot(root: &Path) -> Vec<(PathBuf, [u8; 32])> {
     snapshot
 }
 
+fn config(cache_root: impl Into<PathBuf>, retention_ttl_seconds: i64) -> SessionStorageConfig {
+    SessionStorageConfig::new(cache_root, retention_ttl_seconds)
+        .expect("valid session storage config")
+}
+
 async fn store() -> (TempDir, SessionStore) {
     let temporary = TempDir::new().expect("temporary cache");
-    let store = SessionStore::open(temporary.path())
-        .await
-        .expect("session store");
+    let store = SessionStore::open_with(config(
+        temporary.path(),
+        SESSION_CLEANUP_TTL.as_secs() as i64,
+    ))
+    .await
+    .expect("session store");
     (temporary, store)
+}
+
+#[test]
+fn storage_configuration_ttl_boundaries_are_exact() {
+    let cache_root = PathBuf::from("cache");
+    for (seconds, accepted) in [(-1, false), (0, true), (86_400, true), (86_401, false)] {
+        let result = SessionStorageConfig::new(cache_root.clone(), seconds);
+        assert_eq!(result.is_ok(), accepted, "retentionTtlSeconds={seconds}");
+        match result {
+            Ok(config) => assert_eq!(
+                config.retention_ttl(),
+                Duration::from_secs(seconds as u64),
+                "retentionTtlSeconds={seconds}"
+            ),
+            Err(error) => {
+                assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+                assert!(error.message().contains("session.retentionTtlSeconds"));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn relative_and_absolute_cache_bases_use_one_owned_namespace() {
+    let current = std::env::current_dir().expect("current directory");
+    let relative_temporary = TempDir::new_in(&current).expect("relative cache parent");
+    let relative_root = relative_temporary
+        .path()
+        .strip_prefix(&current)
+        .expect("relative cache path")
+        .to_owned();
+    assert!(relative_root.is_relative());
+    let relative_store =
+        SessionStore::open_with(config(relative_root, SESSION_CLEANUP_TTL.as_secs() as i64))
+            .await
+            .expect("relative session store");
+    assert_eq!(
+        relative_store.sessions_root_for_test(),
+        relative_temporary
+            .path()
+            .canonicalize()
+            .expect("canonical relative cache")
+            .join("resourcefs")
+    );
+
+    let absolute_temporary = TempDir::new().expect("absolute cache parent");
+    let absolute_store = SessionStore::open_with(config(
+        absolute_temporary.path(),
+        SESSION_CLEANUP_TTL.as_secs() as i64,
+    ))
+    .await
+    .expect("absolute session store");
+    assert_eq!(
+        absolute_store.sessions_root_for_test(),
+        absolute_temporary
+            .path()
+            .canonicalize()
+            .expect("canonical absolute cache")
+            .join("resourcefs")
+    );
+}
+
+#[tokio::test]
+async fn cleanup_never_traverses_the_operator_cache_base() {
+    let temporary = TempDir::new().expect("operator cache base");
+    let sibling = temporary.path().join("abcdef0123456789abcdef0123456789");
+    fs::create_dir(&sibling).expect("sibling session-shaped directory");
+    fs::write(sibling.join("session.lock"), "operator-owned\n").expect("sibling lease");
+    let marker = sibling.join("disconnected");
+    fs::write(&marker, "operator-owned\n").expect("sibling marker");
+    fs::File::open(&marker)
+        .expect("open sibling marker")
+        .set_times(
+            fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+        )
+        .expect("age sibling marker");
+    let before = directory_snapshot(&sibling);
+
+    let store = SessionStore::open_with(config(
+        temporary.path(),
+        SESSION_CLEANUP_TTL.as_secs() as i64,
+    ))
+    .await
+    .expect("contained session store");
+
+    assert_eq!(directory_snapshot(&sibling), before);
+    assert_eq!(
+        store.sessions_root_for_test(),
+        temporary
+            .path()
+            .canonicalize()
+            .expect("canonical cache base")
+            .join("resourcefs")
+    );
+}
+
+#[tokio::test]
+async fn zero_ttl_deletes_at_disconnect_after_releasing_the_lease() {
+    let temporary = TempDir::new().expect("zero-TTL cache");
+    let sibling = temporary.path().join("operator-sibling");
+    fs::create_dir(&sibling).expect("operator sibling");
+    fs::write(sibling.join("sentinel"), "untouched\n").expect("operator sentinel");
+    let before = directory_snapshot(&sibling);
+    let store = SessionStore::open_with(config(temporary.path(), 0))
+        .await
+        .expect("zero-TTL store");
+    let session = store
+        .create_session(resourcefs_core::ServerLimits::default())
+        .await
+        .expect("zero-TTL session");
+    let session_directory = session.storage_for_test().session_dir_for_test().to_owned();
+    retain(&session, "retained until disconnect").await;
+
+    session
+        .mark_disconnected()
+        .await
+        .expect("zero-TTL disconnect");
+
+    assert!(!session_directory.exists());
+    assert_eq!(directory_snapshot(&sibling), before);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn namespace_creation_propagates_permission_denial() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = TempDir::new().expect("permission cache");
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o500))
+        .expect("deny namespace creation");
+    let result = SessionStore::open_with(config(
+        temporary.path(),
+        SESSION_CLEANUP_TTL.as_secs() as i64,
+    ))
+    .await;
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700))
+        .expect("restore cache permissions");
+
+    let error = result.expect_err("permission denial must fail");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
 }
 
 async fn retain(session: &StoredSession, content: &str) -> resourcefs_core::ArtifactAddress {

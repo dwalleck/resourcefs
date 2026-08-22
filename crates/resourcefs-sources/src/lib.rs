@@ -42,5 +42,6 @@ pub use secret::{SecretResolutionError, SecretResolutionErrorKind};
 #[cfg(feature = "test-support")]
 pub use session_storage::StorageFailurePoint;
 pub use session_storage::{
-    CleanupReport, DiskSessionStorage, SESSION_CLEANUP_TTL, SessionStore, StoredSession,
+    CleanupReport, DiskSessionStorage, SESSION_CLEANUP_TTL, SessionStorageConfig, SessionStore,
+    StoredSession,
 };

@@ -472,10 +472,12 @@
       "description": "Retained Path Session configuration.",
       "properties": {
         "cacheDirectory": {
+          "minLength": 1,
           "type": "string"
         },
         "retentionTtlSeconds": {
           "format": "uint64",
+          "maximum": 86400,
           "minimum": 0,
           "type": "integer"
         }

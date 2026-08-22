@@ -4,10 +4,12 @@
 )]
 
 use resourcefs_core::{
-    DiscoveryLimitInput, ServerLimits, ServerLimitsInput, StorageLimitInput, TextLimitInput,
+    DiscoveryLimitInput, ErrorCategory, ServerLimits, ServerLimitsInput, StorageLimitInput,
+    TextLimitInput,
 };
 use resourcefs_sources::{
     ConfigurationDirectory, ConfigurationError, MutationGrants, MutationSupport,
+    SESSION_CLEANUP_TTL, SessionStorageConfig,
 };
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
@@ -118,6 +120,9 @@ pub struct ProfileDocument {
     #[serde(skip)]
     #[schemars(skip)]
     process_concurrency: usize,
+    #[serde(skip)]
+    #[schemars(skip)]
+    session_storage_config: Option<SessionStorageConfig>,
 }
 
 impl ProfileDocument {
@@ -194,6 +199,13 @@ impl ProfileDocument {
         let limits = profile.limits.unwrap_or_default();
         profile.server_limits = limits.server_limits()?;
         profile.process_concurrency = limits.validated_process_concurrency()?;
+        profile.session_storage_config = Some(
+            profile
+                .session
+                .take()
+                .unwrap_or_default()
+                .storage_config(base)?,
+        );
         super::validate::validate_profile(&profile)?;
         profile.static_sources = profile
             .sources()
@@ -232,6 +244,12 @@ impl ProfileDocument {
 
     pub const fn process_concurrency(&self) -> usize {
         self.process_concurrency
+    }
+
+    pub fn session_storage_config(&self) -> &SessionStorageConfig {
+        self.session_storage_config
+            .as_ref()
+            .expect("decoded profile contains validated session storage configuration")
     }
 }
 
@@ -558,15 +576,69 @@ impl LimitsProfile {
 }
 
 /// Retained Path Session configuration.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct SessionProfile {
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-    #[schemars(with = "String")]
+    #[schemars(with = "String", length(min = 1))]
     cache_directory: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
-    #[schemars(with = "u64")]
+    #[schemars(with = "u64", range(max = 86_400))]
     retention_ttl_seconds: Option<u64>,
+}
+
+impl SessionProfile {
+    fn storage_config(
+        self,
+        base: &ConfigurationDirectory,
+    ) -> Result<SessionStorageConfig, ProfileError> {
+        let retention_ttl_seconds = self
+            .retention_ttl_seconds
+            .unwrap_or(SESSION_CLEANUP_TTL.as_secs());
+        let retention_ttl_seconds =
+            i64::try_from(retention_ttl_seconds).map_err(|_| session_ttl_profile_error())?;
+        let config = match self.cache_directory {
+            Some(cache_directory) => {
+                if cache_directory.is_empty() {
+                    return Err(ProfileError::new(
+                        ProfileErrorKind::InvalidProfile,
+                        "invalid session configuration: session.cacheDirectory must not be empty",
+                    ));
+                }
+                let configured = std::path::PathBuf::from(cache_directory);
+                let cache_root = if configured.is_absolute() {
+                    configured
+                } else {
+                    base.path().join(configured)
+                };
+                SessionStorageConfig::new(cache_root, retention_ttl_seconds)
+            }
+            None => SessionStorageConfig::for_current_user(retention_ttl_seconds),
+        };
+        config.map_err(session_storage_profile_error)
+    }
+}
+
+fn session_ttl_profile_error() -> ProfileError {
+    ProfileError::new(
+        ProfileErrorKind::LimitExceeded,
+        format!(
+            "invalid session configuration: session.retentionTtlSeconds must be between 0 and {}",
+            SESSION_CLEANUP_TTL.as_secs()
+        ),
+    )
+}
+
+fn session_storage_profile_error(error: resourcefs_core::ResourceError) -> ProfileError {
+    let kind = match error.category() {
+        ErrorCategory::LimitExceeded => ProfileErrorKind::LimitExceeded,
+        ErrorCategory::SourceUnavailable => ProfileErrorKind::Io,
+        _ => ProfileErrorKind::InvalidProfile,
+    };
+    ProfileError::new(
+        kind,
+        format!("invalid session configuration: {}", error.message()),
+    )
 }
 
 /// Bounded off-protocol logging configuration.
