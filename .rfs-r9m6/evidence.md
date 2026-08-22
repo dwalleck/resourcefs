@@ -64,6 +64,7 @@
 - P4: validated prior understanding — pinned tokio drains both pipes concurrently to limit+1 without deadlock and supports bounded kill/reap.
 - P5: validated prior understanding — Linux process groups contain the direct child and grandchild for the selected one-second grace/force cleanup sequence.
 - P6: validated prior understanding — native Windows direct argv preserves the configured metacharacters, cleared child environments omit the ambient secret, and a kill-on-close Win32 Job can force-terminate the full resistant descendant tree within the bounded cleanup window.
+- P6 implementation learning — reopening a reported grandchild PID immediately after Job accounting completed was unsignaled in 5 of 20 native runs. Retaining synchronization handles obtained from `JobObjectBasicProcessIdList` before `TerminateJobObject` and waiting on those exact process objects removed the race: the complete Windows contract passed and 20 repeated cleanup runs had zero failures.
 
 ## Related issues
 

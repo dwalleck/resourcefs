@@ -8,7 +8,7 @@ use std::{
 
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use crate::{ArtifactAddress, ErrorCategory, MAX_ARTIFACT_BYTES, ResourceError};
 
@@ -82,21 +82,38 @@ pub trait SessionStorage: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct OperationGuard {
     active: Arc<AtomicBool>,
+    cancelled: Arc<Notify>,
 }
 
 impl OperationGuard {
     pub fn new() -> Self {
         Self {
             active: Arc::new(AtomicBool::new(true)),
+            cancelled: Arc::new(Notify::new()),
         }
     }
 
     pub fn cancel(&self) {
-        self.active.store(false, Ordering::Release);
+        if self.active.swap(false, Ordering::AcqRel) {
+            self.cancelled.notify_waiters();
+        }
     }
 
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire)
+    }
+
+    /// Waits until this operation is cancelled without polling.
+    pub async fn cancelled(&self) {
+        loop {
+            let notified = self.cancelled.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.is_active() {
+                return;
+            }
+            notified.await;
+        }
     }
 }
 

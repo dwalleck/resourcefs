@@ -47,11 +47,11 @@ impl CommandSpec {
         Ok(Self { argv, environment })
     }
 
-    pub(super) fn argv(&self) -> &[String] {
+    pub(crate) fn argv(&self) -> &[String] {
         &self.argv
     }
 
-    pub(super) const fn environment(&self) -> &ChildEnvironment {
+    pub(crate) const fn environment(&self) -> &ChildEnvironment {
         &self.environment
     }
 }
@@ -90,6 +90,10 @@ impl ChildEnvironment {
         self.entries
             .values()
             .any(|value| matches!(value, EnvironmentValue::Secret(_)))
+    }
+
+    pub(crate) const fn entries(&self) -> &BTreeMap<String, EnvironmentValue> {
+        &self.entries
     }
 }
 

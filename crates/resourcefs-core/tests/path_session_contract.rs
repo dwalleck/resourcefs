@@ -321,6 +321,27 @@ async fn storage_failure_publishes_nothing() {
 }
 
 #[tokio::test]
+async fn operation_cancellation_wait_is_lossless() {
+    let cancelled_first = OperationGuard::new();
+    cancelled_first.cancel();
+    tokio::time::timeout(Duration::from_millis(100), cancelled_first.cancelled())
+        .await
+        .expect("a prior cancellation must remain observable");
+
+    let cancelled_later = OperationGuard::new();
+    let waiter_guard = cancelled_later.clone();
+    let waiter = tokio::spawn(async move {
+        waiter_guard.cancelled().await;
+    });
+    tokio::task::yield_now().await;
+    cancelled_later.cancel();
+    tokio::time::timeout(Duration::from_millis(100), waiter)
+        .await
+        .expect("a waiting operation must be notified")
+        .expect("cancellation waiter");
+}
+
+#[tokio::test]
 async fn request_cancel_prevents_commit() {
     let storage = Arc::new(FakeStorage::default());
     let session = session(5, Arc::clone(&storage));

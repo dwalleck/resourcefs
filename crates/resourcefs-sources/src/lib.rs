@@ -5,6 +5,7 @@ mod compiled;
 mod configuration;
 mod filesystem;
 mod pattern;
+mod process;
 mod session_storage;
 pub use artifact::ArtifactSource;
 pub use compiled::CompiledSources;
@@ -25,6 +26,12 @@ pub use filesystem::TestDeliveryGate;
 pub use filesystem::{
     BackingPathVisibility, ClientRoot, FilesystemSource, LaunchRoot, LaunchRootSource,
     RootAcquisition, RootRefresh, RootRefreshOutcome,
+};
+pub use process::{
+    CommandError, CommandErrorKind, CommandExecutor, CommandInput, CommandLimits, CommandOutput,
+    CommandRole, DOWNSTREAM_CALL_TIMEOUT, DOWNSTREAM_FRAME_BYTES, DOWNSTREAM_STARTUP_TIMEOUT,
+    DOWNSTREAM_STDERR_LINE_BYTES, MAX_LIVE_COMMAND_TREES, ONE_SHOT_STDERR_BYTES,
+    ONE_SHOT_STDOUT_BYTES, ONE_SHOT_TIMEOUT, SECRET_HELPER_STREAM_BYTES, SECRET_HELPER_TIMEOUT,
 };
 #[cfg(feature = "test-support")]
 pub use session_storage::StorageFailurePoint;
