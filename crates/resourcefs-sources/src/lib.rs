@@ -2,11 +2,16 @@
 
 mod artifact;
 mod compiled;
+mod configuration;
 mod filesystem;
 mod pattern;
 mod session_storage;
 pub use artifact::ArtifactSource;
 pub use compiled::CompiledSources;
+pub use configuration::{
+    ConfigurationError, MAX_CONFIGURATION_ID_BYTES, MutationGrants, MutationSupport,
+    validate_configuration_id,
+};
 
 #[cfg(feature = "test-support")]
 pub use filesystem::TestDeliveryGate;

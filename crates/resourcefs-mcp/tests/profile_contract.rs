@@ -95,32 +95,35 @@ fn minimal_sources() -> Vec<Value> {
 }
 
 fn source_with_entries(kind: &str, count: usize) -> Value {
-    let entries = match kind {
-        "https" => {
-            vec![json!({"baseUrl":"https://example.test/","allowPrivateNetwork":false}); count]
-        }
-        "github" => vec![json!({"name":"owner/repository"}); count],
-        "ssh" => vec![json!({"alias":"host","remoteRoots":["/srv"]}); count],
-        "documents" => vec![
-            json!({
-                "extensions":["txt"],
+    let entries = (0..count)
+        .map(|index| match kind {
+            "https" => json!({
+                "baseUrl":format!("https://host{index}.example.test/"),
+                "allowPrivateNetwork":false
+            }),
+            "github" => json!({"name":format!("owner/repository-{index}")}),
+            "ssh" => json!({
+                "alias":format!("host-{index}"),
+                "remoteRoots":[format!("/srv/root-{index}")]
+            }),
+            "documents" => json!({
+                "extensions":[format!("ext{index}")],
                 "input":"stdin",
                 "command":{"argv":["converter"]}
-            });
-            count
-        ],
-        "skills" | "rules" | "agentExport" => vec![json!("entry"); count],
-        "memory" | "vault" => vec![json!({"name":"entry","path":"entry"}); count],
-        "downstreamMcp" => vec![
-            json!({
-                "id":"server",
-                "schemes":["example"],
+            }),
+            "skills" | "rules" | "agentExport" => json!(format!("entry-{index}")),
+            "memory" | "vault" => json!({
+                "name":format!("entry-{index}"),
+                "path":format!("entry-{index}")
+            }),
+            "downstreamMcp" => json!({
+                "id":format!("server-{index}"),
+                "schemes":[format!("example{index}")],
                 "transport":{"kind":"stdio","command":{"argv":["server"]}}
-            });
-            count
-        ],
-        _ => panic!("unknown fixture source kind {kind}"),
-    };
+            }),
+            _ => panic!("unknown fixture source kind {kind}"),
+        })
+        .collect::<Vec<_>>();
     match kind {
         "https" => source(kind, json!({"origins":entries})),
         "github" => source(
@@ -139,6 +142,23 @@ fn source_with_entries(kind: &str, count: usize) -> Value {
         "downstreamMcp" => source(kind, json!({"servers":entries})),
         _ => unreachable!("fixture source kind checked above"),
     }
+}
+fn set_source_id(source: &mut Value, id: &str) {
+    source
+        .as_object_mut()
+        .expect("source fixture must be an object")
+        .insert("id".to_owned(), Value::String(id.to_owned()));
+}
+
+fn set_source_grants(source: &mut Value, grants: Value) {
+    source
+        .as_object_mut()
+        .expect("source fixture must be an object")
+        .insert("grants".to_owned(), grants);
+}
+
+fn profile_with_source(source: Value) -> Value {
+    json!({"schemaVersion":1,"sources":[source]})
 }
 
 #[test]
@@ -429,4 +449,172 @@ fn nested_allowlist_cardinality_matrix() {
             );
         }
     }
+}
+
+#[test]
+fn grant_matrix() {
+    let supported = [
+        ("https", [false, false, false]),
+        ("github", [true, true, false]),
+        ("ssh", [false, false, false]),
+        ("documents", [false, false, false]),
+        ("skills", [true, true, true]),
+        ("rules", [true, true, true]),
+        ("memory", [false, false, false]),
+        ("vault", [true, true, true]),
+        ("agentExport", [false, false, false]),
+        ("downstreamMcp", [false, false, false]),
+    ];
+    let operations = ["create", "update", "delete"];
+
+    for (kind, expected) in supported {
+        let source = source_with_entries(kind, 1);
+        parse(&profile_with_source(source.clone()))
+            .unwrap_or_else(|error| panic!("{kind}: absent grants must be accepted: {error}"));
+
+        let mut false_grants = source.clone();
+        set_source_grants(
+            &mut false_grants,
+            json!({"create":false,"update":false,"delete":false}),
+        );
+        parse(&profile_with_source(false_grants))
+            .unwrap_or_else(|error| panic!("{kind}: false grants must be accepted: {error}"));
+
+        for ((operation, accepted), index) in operations.into_iter().zip(expected).zip(0..) {
+            let mut granted = source.clone();
+            set_source_grants(&mut granted, json!({operation:true}));
+            assert_eq!(
+                parse(&profile_with_source(granted)).is_ok(),
+                accepted,
+                "{kind} operation {operation} at index {index}"
+            );
+        }
+    }
+
+    for (name, grants) in [
+        ("null", json!({"create":null})),
+        ("number", json!({"create":1})),
+        ("string", json!({"create":"true"})),
+        ("writable-shorthand", json!({"writable":true})),
+    ] {
+        let mut source = source_with_entries("skills", 1);
+        set_source_grants(&mut source, grants);
+        assert!(
+            parse(&profile_with_source(source)).is_err(),
+            "malformed grant row {name}"
+        );
+    }
+
+    let mut github_subset = source_with_entries("github", 1);
+    set_source_grants(&mut github_subset, json!({"create":true}));
+    github_subset["repositories"][0]["grants"] = json!({"create":true});
+    assert!(parse(&profile_with_source(github_subset)).is_ok());
+
+    let mut github_superset = source_with_entries("github", 1);
+    set_source_grants(&mut github_superset, json!({"create":true}));
+    github_superset["repositories"][0]["grants"] = json!({"update":true});
+    assert!(parse(&profile_with_source(github_superset)).is_err());
+
+    let mut vault_subset = source_with_entries("vault", 1);
+    set_source_grants(&mut vault_subset, json!({"update":true}));
+    vault_subset["vaults"][0]["grants"] = json!({"update":true});
+    assert!(parse(&profile_with_source(vault_subset)).is_ok());
+
+    let mut vault_superset = source_with_entries("vault", 1);
+    set_source_grants(&mut vault_superset, json!({"update":true}));
+    vault_superset["vaults"][0]["grants"] = json!({"delete":true});
+    assert!(parse(&profile_with_source(vault_superset)).is_err());
+}
+
+#[test]
+fn source_catalog_matrix() {
+    let kinds = [
+        "https",
+        "github",
+        "ssh",
+        "documents",
+        "skills",
+        "rules",
+        "memory",
+        "vault",
+        "agentExport",
+        "downstreamMcp",
+    ];
+    for kind in kinds {
+        parse(&profile_with_source(source_with_entries(kind, 1)))
+            .unwrap_or_else(|error| panic!("single {kind} source must be accepted: {error}"));
+    }
+    parse(&json!({"schemaVersion":1,"sources":minimal_sources()}))
+        .expect("the complete ten-kind catalog must be accepted");
+
+    let first = source_with_entries("https", 1);
+    let mut duplicate_kind = source_with_entries("https", 1);
+    set_source_id(&mut duplicate_kind, "second-https");
+    assert!(parse(&json!({"schemaVersion":1,"sources":[first,duplicate_kind]})).is_err());
+
+    let mut first = source_with_entries("https", 1);
+    let mut second = source_with_entries("github", 1);
+    set_source_id(&mut first, "shared");
+    set_source_id(&mut second, "shared");
+    assert!(parse(&json!({"schemaVersion":1,"sources":[first,second]})).is_err());
+
+    let mut upper = source_with_entries("https", 1);
+    let mut lower = source_with_entries("github", 1);
+    set_source_id(&mut upper, "CaseSensitive");
+    set_source_id(&mut lower, "casesensitive");
+    parse(&json!({"schemaVersion":1,"sources":[upper,lower]}))
+        .expect("source IDs are case-sensitive");
+
+    for (name, id, accepted) in [
+        ("empty", String::new(), false),
+        ("one-byte", "a".to_owned(), true),
+        ("valid-punctuation", "a.b_c-d9".to_owned(), true),
+        ("invalid-first", "-source".to_owned(), false),
+        ("invalid-rest", "source/name".to_owned(), false),
+        ("unicode", "sourcé".to_owned(), false),
+        ("exact-128", format!("a{}", "b".repeat(127)), true),
+        ("over-128", format!("a{}", "b".repeat(128)), false),
+    ] {
+        let mut source = source_with_entries("https", 1);
+        set_source_id(&mut source, &id);
+        assert_eq!(
+            parse(&profile_with_source(source)).is_ok(),
+            accepted,
+            "source ID row {name}"
+        );
+    }
+
+    let roots = (0..256)
+        .map(|index| json!({"id":format!("root-{index}"),"path":format!("root-{index}")}))
+        .collect::<Vec<_>>();
+    parse(&json!({"schemaVersion":1,"workspace":{"roots":roots}}))
+        .expect("256 roots must be accepted at the catalog ceiling");
+    let roots = (0..257)
+        .map(|index| json!({"id":format!("root-{index}"),"path":format!("root-{index}")}))
+        .collect::<Vec<_>>();
+    assert!(parse(&json!({"schemaVersion":1,"workspace":{"roots":roots}})).is_err());
+
+    let sources = (0..257)
+        .map(|index| {
+            let mut source = source_with_entries("https", 1);
+            set_source_id(&mut source, &format!("source-{index}"));
+            source
+        })
+        .collect::<Vec<_>>();
+    let error = parse(&json!({"schemaVersion":1,"sources":sources}))
+        .expect_err("257 sources must fail the defensive catalog ceiling");
+    assert!(
+        error.to_string().contains("sources"),
+        "source ceiling must fail before duplicate-kind validation: {error}"
+    );
+
+    let mut claims = source_with_entries("downstreamMcp", 2);
+    claims["servers"][0]["id"] = json!("first");
+    claims["servers"][0]["schemes"] = json!(["Docs"]);
+    claims["servers"][1]["id"] = json!("second");
+    claims["servers"][1]["schemes"] = json!(["docs"]);
+    assert!(
+        parse(&profile_with_source(claims)).is_err(),
+        "scheme claims must collide after lowercase normalization"
+    );
 }

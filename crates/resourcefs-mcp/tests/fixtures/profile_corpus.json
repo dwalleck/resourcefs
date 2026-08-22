@@ -109,5 +109,71 @@
     },
     "accepted": false,
     "error": "invalidProfile"
+  },
+  {
+    "name": "invalid-source-id",
+    "profile": {
+      "schemaVersion": 1,
+      "sources": [{
+        "kind": "skills",
+        "id": "-skills",
+        "required": false,
+        "roots": ["skills"]
+      }]
+    },
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "https-unsupported-create",
+    "profile": {
+      "schemaVersion": 1,
+      "sources": [{
+        "kind": "https",
+        "id": "web",
+        "required": false,
+        "grants": { "create": true },
+        "origins": [{
+          "baseUrl": "https://example.test/",
+          "allowPrivateNetwork": false
+        }]
+      }]
+    },
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "github-create-supported",
+    "profile": {
+      "schemaVersion": 1,
+      "sources": [{
+        "kind": "github",
+        "id": "github",
+        "required": false,
+        "grants": { "create": true },
+        "allowPrivateNetwork": false,
+        "credential": { "kind": "environment", "name": "GITHUB_TOKEN" },
+        "repositories": [{ "name": "owner/repository" }]
+      }]
+    },
+    "accepted": true,
+    "error": null
+  },
+  {
+    "name": "github-delete-unsupported",
+    "profile": {
+      "schemaVersion": 1,
+      "sources": [{
+        "kind": "github",
+        "id": "github",
+        "required": false,
+        "grants": { "delete": true },
+        "allowPrivateNetwork": false,
+        "credential": { "kind": "environment", "name": "GITHUB_TOKEN" },
+        "repositories": [{ "name": "owner/repository" }]
+      }]
+    },
+    "accepted": false,
+    "error": "invalidProfile"
   }
 ]

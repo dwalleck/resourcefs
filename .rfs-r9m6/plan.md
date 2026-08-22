@@ -107,13 +107,13 @@ Mergeability is defined against the repository's default upstream branch; each i
 
 **Oracle:** Hand-authored permission lattice independent of the validator (C6); independent sets built by the test from literal IDs and normalized schemes (C7).
 
-**Stress fixture:** Every kind × operation grant row including nested subset/superset pairs; 256 distinct sources plus 256 roots accepted at the exact ceiling, 257 rejected; case-sensitive IDs accepted and case-folded claim collisions rejected where the upstream namespace is case-insensitive; null/non-boolean/`writable` grant spellings rejected. Expected: accept/reject per lattice row, written now.
+**Stress fixture:** Every kind × operation grant row including nested subset/superset pairs; the complete ten-kind source catalog and 256 roots accepted, an eleventh duplicate-kind source and 257 roots rejected; the otherwise-unreachable 257-source defensive ceiling is exercised as a rejection before duplicate-kind validation. Case-sensitive IDs are accepted; null/non-boolean/`writable` grant spellings are rejected. Expected: accept/reject per lattice row, written now. The earlier “256 distinct sources accepted” wording was impossible under the approved exactly-one-entry-per-ten-kinds invariant; this correction preserves the approved spec rather than fabricating extra source kinds.
 
 **Regression fence:** `crates/resourcefs-mcp/tests/profile_contract.rs::{grant_matrix,source_catalog_matrix}` (extended in THIS slice) and `crates/resourcefs-sources/tests/configuration_contract.rs::nested_grants_are_subsets` (created in THIS slice).
 
 **Named mutation:** C6 — permit GitHub delete in `configuration::MutationSupport`; the named github-delete row must fail. C7 — remove seen-kind insertion in `profile::validate_sources`; the duplicate-kind row must fail. Both restored → green.
 
-**Complexity/production scale:** Catalog validation is O(sources + roots + claims) with 256/256 caps and ≤4,096 entries per nested list (byte-capped by S1); uniqueness uses hash sets, O(n); grant lattice checks are O(1) per entry. Production scale: 256 sources each carrying 4,096-entry lists inside the 1 MiB profile cap. Maximum accepted cost: under 1 second debug for the exact-ceiling catalog; rationale: linear hash-set membership over byte-bounded input with no I/O.
+**Complexity/production scale:** Catalog validation is O(sources + roots + claims) with defensive 256/256 caps, an effective ten-source maximum under version 1's unique-kind catalog, and ≤4,096 entries per nested list (all byte-capped by S1); uniqueness uses hash sets, O(n); grant lattice checks are O(1) per entry. Production scale: the complete ten-kind source catalog, 256 roots, and the largest nested lists that fit inside the 1 MiB profile cap; a synthetic 257-source duplicate-kind list exercises cap-first rejection. Maximum accepted cost: under 1 second debug for the complete catalog plus 256-root boundary; rationale: linear hash-set membership over byte-bounded input with no I/O.
 
 **Wall budget/phase:** N/A — reason: one-off phase; no wall budget (validation runs once per load/check).
 

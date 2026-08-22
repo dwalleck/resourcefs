@@ -223,7 +223,24 @@
       "description": "One allowlisted GitHub repository.",
       "properties": {
         "grants": {
-          "$ref": "#/$defs/MutationGrantsProfile"
+          "additionalProperties": false,
+          "description": "Independent create, update, and delete grants supported by this source.",
+          "properties": {
+            "create": {
+              "description": "Permit creation when true.",
+              "type": "boolean"
+            },
+            "delete": {
+              "const": false,
+              "description": "Permit deletion when true.",
+              "type": "boolean"
+            },
+            "update": {
+              "description": "Permit replacement and editing when true.",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
         },
         "name": {
           "type": "string"
@@ -467,9 +484,31 @@
           "description": "HTTPS allowlist source.",
           "properties": {
             "grants": {
-              "$ref": "#/$defs/MutationGrantsProfile"
+              "additionalProperties": false,
+              "description": "Independent create, update, and delete grants supported by this source.",
+              "properties": {
+                "create": {
+                  "const": false,
+                  "description": "Permit creation when true.",
+                  "type": "boolean"
+                },
+                "delete": {
+                  "const": false,
+                  "description": "Permit deletion when true.",
+                  "type": "boolean"
+                },
+                "update": {
+                  "const": false,
+                  "description": "Permit replacement and editing when true.",
+                  "type": "boolean"
+                }
+              },
+              "type": "object"
             },
             "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
               "type": "string"
             },
             "kind": {
@@ -509,9 +548,29 @@
               "$ref": "#/$defs/SecretReferenceProfile"
             },
             "grants": {
-              "$ref": "#/$defs/MutationGrantsProfile"
+              "additionalProperties": false,
+              "description": "Independent create, update, and delete grants supported by this source.",
+              "properties": {
+                "create": {
+                  "description": "Permit creation when true.",
+                  "type": "boolean"
+                },
+                "delete": {
+                  "const": false,
+                  "description": "Permit deletion when true.",
+                  "type": "boolean"
+                },
+                "update": {
+                  "description": "Permit replacement and editing when true.",
+                  "type": "boolean"
+                }
+              },
+              "type": "object"
             },
             "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
               "type": "string"
             },
             "kind": {
@@ -547,7 +606,26 @@
               "$ref": "#/$defs/CommandProfile"
             },
             "grants": {
-              "$ref": "#/$defs/MutationGrantsProfile"
+              "additionalProperties": false,
+              "description": "Independent create, update, and delete grants supported by this source.",
+              "properties": {
+                "create": {
+                  "const": false,
+                  "description": "Permit creation when true.",
+                  "type": "boolean"
+                },
+                "delete": {
+                  "const": false,
+                  "description": "Permit deletion when true.",
+                  "type": "boolean"
+                },
+                "update": {
+                  "const": false,
+                  "description": "Permit replacement and editing when true.",
+                  "type": "boolean"
+                }
+              },
+              "type": "object"
             },
             "hosts": {
               "items": {
@@ -557,6 +635,9 @@
               "type": "array"
             },
             "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
               "type": "string"
             },
             "kind": {
@@ -588,9 +669,31 @@
               "type": "array"
             },
             "grants": {
-              "$ref": "#/$defs/MutationGrantsProfile"
+              "additionalProperties": false,
+              "description": "Independent create, update, and delete grants supported by this source.",
+              "properties": {
+                "create": {
+                  "const": false,
+                  "description": "Permit creation when true.",
+                  "type": "boolean"
+                },
+                "delete": {
+                  "const": false,
+                  "description": "Permit deletion when true.",
+                  "type": "boolean"
+                },
+                "update": {
+                  "const": false,
+                  "description": "Permit replacement and editing when true.",
+                  "type": "boolean"
+                }
+              },
+              "type": "object"
             },
             "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
               "type": "string"
             },
             "kind": {
@@ -617,6 +720,9 @@
               "$ref": "#/$defs/MutationGrantsProfile"
             },
             "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
               "type": "string"
             },
             "kind": {
@@ -650,6 +756,9 @@
               "$ref": "#/$defs/MutationGrantsProfile"
             },
             "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
               "type": "string"
             },
             "kind": {
@@ -680,9 +789,31 @@
           "description": "Named read-only Memory roots.",
           "properties": {
             "grants": {
-              "$ref": "#/$defs/MutationGrantsProfile"
+              "additionalProperties": false,
+              "description": "Independent create, update, and delete grants supported by this source.",
+              "properties": {
+                "create": {
+                  "const": false,
+                  "description": "Permit creation when true.",
+                  "type": "boolean"
+                },
+                "delete": {
+                  "const": false,
+                  "description": "Permit deletion when true.",
+                  "type": "boolean"
+                },
+                "update": {
+                  "const": false,
+                  "description": "Permit replacement and editing when true.",
+                  "type": "boolean"
+                }
+              },
+              "type": "object"
             },
             "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
               "type": "string"
             },
             "kind": {
@@ -716,6 +847,9 @@
               "$ref": "#/$defs/MutationGrantsProfile"
             },
             "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
               "type": "string"
             },
             "kind": {
@@ -746,9 +880,31 @@
           "description": "Imported public Agent Export manifests.",
           "properties": {
             "grants": {
-              "$ref": "#/$defs/MutationGrantsProfile"
+              "additionalProperties": false,
+              "description": "Independent create, update, and delete grants supported by this source.",
+              "properties": {
+                "create": {
+                  "const": false,
+                  "description": "Permit creation when true.",
+                  "type": "boolean"
+                },
+                "delete": {
+                  "const": false,
+                  "description": "Permit deletion when true.",
+                  "type": "boolean"
+                },
+                "update": {
+                  "const": false,
+                  "description": "Permit replacement and editing when true.",
+                  "type": "boolean"
+                }
+              },
+              "type": "object"
             },
             "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
               "type": "string"
             },
             "kind": {
@@ -779,9 +935,31 @@
           "description": "Downstream MCP Resource servers.",
           "properties": {
             "grants": {
-              "$ref": "#/$defs/MutationGrantsProfile"
+              "additionalProperties": false,
+              "description": "Independent create, update, and delete grants supported by this source.",
+              "properties": {
+                "create": {
+                  "const": false,
+                  "description": "Permit creation when true.",
+                  "type": "boolean"
+                },
+                "delete": {
+                  "const": false,
+                  "description": "Permit deletion when true.",
+                  "type": "boolean"
+                },
+                "update": {
+                  "const": false,
+                  "description": "Permit replacement and editing when true.",
+                  "type": "boolean"
+                }
+              },
+              "type": "object"
             },
             "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
               "type": "string"
             },
             "kind": {
@@ -867,7 +1045,7 @@
           "items": {
             "$ref": "#/$defs/WorkspaceRootProfile"
           },
-          "maxItems": 4096,
+          "maxItems": 256,
           "type": "array"
         }
       },
@@ -883,6 +1061,9 @@
         },
         "id": {
           "description": "Stable Workspace Root ID.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
           "type": "string"
         },
         "path": {
@@ -926,7 +1107,7 @@
       "items": {
         "$ref": "#/$defs/SourceProfile"
       },
-      "maxItems": 4096,
+      "maxItems": 256,
       "type": "array"
     },
     "workspace": {
