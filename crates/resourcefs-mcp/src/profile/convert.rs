@@ -6,15 +6,17 @@
 use std::collections::BTreeMap;
 
 use resourcefs_sources::{
-    ChildEnvironment, CommandSpec, CredentialHeader, DownstreamMcpConfig, DownstreamServer,
+    AgentExportConfig, ChildEnvironment, CommandSpec, ConfigurationDirectory, ConverterInput,
+    CredentialHeader, DocumentConverter, DocumentsConfig, DownstreamMcpConfig, DownstreamServer,
     DownstreamTransport, EnvironmentValue, GithubConfig, GithubRepository, HttpsConfig,
-    HttpsOrigin, SchemeClaim, SecretReference, SshConfig, SshHost,
+    HttpsOrigin, MemoryConfig, MemoryRoot, RulesConfig, SchemeClaim, SecretReference, SkillsConfig,
+    SshConfig, SshHost, VaultConfig, VaultRoot,
 };
 
 use super::ProfileError;
 use super::model::{
-    CommandProfile, CredentialHeaderProfile, DownstreamTransportProfile, EnvironmentValueProfile,
-    SecretReferenceProfile, SourceProfile,
+    CommandProfile, ConverterInputProfile, CredentialHeaderProfile, DownstreamTransportProfile,
+    EnvironmentValueProfile, SecretReferenceProfile, SourceProfile,
 };
 
 #[derive(Debug, Clone)]
@@ -22,17 +24,29 @@ pub(super) enum ConfiguredSource {
     Https(HttpsConfig),
     Github(GithubConfig),
     Ssh(SshConfig),
+    Documents(DocumentsConfig),
+    Skills(SkillsConfig),
+    Rules(RulesConfig),
+    Memory(MemoryConfig),
+    Vault(VaultConfig),
+    AgentExport(AgentExportConfig),
     DownstreamMcp(DownstreamMcpConfig),
-    Pending(SourceProfile),
 }
 
 pub(super) fn convert_sources(
     sources: Vec<SourceProfile>,
+    base: &ConfigurationDirectory,
 ) -> Result<Vec<ConfiguredSource>, ProfileError> {
-    sources.into_iter().map(convert_source).collect()
+    sources
+        .into_iter()
+        .map(|source| convert_source(source, base))
+        .collect()
 }
 
-fn convert_source(source: SourceProfile) -> Result<ConfiguredSource, ProfileError> {
+fn convert_source(
+    source: SourceProfile,
+    base: &ConfigurationDirectory,
+) -> Result<ConfiguredSource, ProfileError> {
     match source {
         SourceProfile::Https(source) => {
             let (id, required, grants, origins) = source.into_parts();
@@ -115,12 +129,68 @@ fn convert_source(source: SourceProfile) -> Result<ConfiguredSource, ProfileErro
                 .map(ConfiguredSource::DownstreamMcp)
                 .map_err(source_configuration_error)
         }
-        pending @ (SourceProfile::Documents(_)
-        | SourceProfile::Skills(_)
-        | SourceProfile::Rules(_)
-        | SourceProfile::Memory(_)
-        | SourceProfile::Vault(_)
-        | SourceProfile::AgentExport(_)) => Ok(ConfiguredSource::Pending(pending)),
+        SourceProfile::Documents(source) => {
+            let (id, required, grants, converters) = source.into_parts();
+            let converters = converters
+                .into_iter()
+                .map(|converter| {
+                    let (extensions, input, command) = converter.into_parts();
+                    let input = match input {
+                        ConverterInputProfile::Stdin => ConverterInput::Stdin,
+                        ConverterInputProfile::Path => ConverterInput::Path,
+                    };
+                    DocumentConverter::new(extensions, input, convert_command(command)?)
+                        .map_err(source_configuration_error)
+                })
+                .collect::<Result<Vec<_>, ProfileError>>()?;
+            DocumentsConfig::new(id, required, grants, converters)
+                .map(ConfiguredSource::Documents)
+                .map_err(source_configuration_error)
+        }
+        SourceProfile::Skills(source) => {
+            let (id, required, grants, roots) = source.into_parts();
+            SkillsConfig::new(id, required, grants, base, roots)
+                .map(ConfiguredSource::Skills)
+                .map_err(source_configuration_error)
+        }
+        SourceProfile::Rules(source) => {
+            let (id, required, grants, manifests) = source.into_parts();
+            RulesConfig::new(id, required, grants, base, manifests)
+                .map(ConfiguredSource::Rules)
+                .map_err(source_configuration_error)
+        }
+        SourceProfile::Memory(source) => {
+            let (id, required, grants, roots) = source.into_parts();
+            let roots = roots
+                .into_iter()
+                .map(|root| {
+                    let (name, path) = root.into_parts();
+                    MemoryRoot::new(name, path)
+                })
+                .collect();
+            MemoryConfig::new(id, required, grants, base, roots)
+                .map(ConfiguredSource::Memory)
+                .map_err(source_configuration_error)
+        }
+        SourceProfile::Vault(source) => {
+            let (id, required, grants, vaults) = source.into_parts();
+            let vaults = vaults
+                .into_iter()
+                .map(|vault| {
+                    let (name, path, grants) = vault.into_parts();
+                    VaultRoot::new(name, path, grants)
+                })
+                .collect();
+            VaultConfig::new(id, required, grants, base, vaults)
+                .map(ConfiguredSource::Vault)
+                .map_err(source_configuration_error)
+        }
+        SourceProfile::AgentExport(source) => {
+            let (id, required, grants, manifests) = source.into_parts();
+            AgentExportConfig::new(id, required, grants, base, manifests)
+                .map(ConfiguredSource::AgentExport)
+                .map_err(source_configuration_error)
+        }
     }
 }
 

@@ -9,12 +9,15 @@ mod session_storage;
 pub use artifact::ArtifactSource;
 pub use compiled::CompiledSources;
 pub use configuration::{
-    ChildEnvironment, CommandSpec, ConfigurationError, CredentialHeader, DownstreamMcpConfig,
-    DownstreamServer, DownstreamTransport, EnvironmentValue, GithubConfig, GithubRepository,
-    HttpsConfig, HttpsOrigin, MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMAND_ARGUMENTS,
+    AgentExportConfig, ChildEnvironment, CommandSpec, ConfigurationDirectory, ConfigurationError,
+    ConfigurationTargetKind, ConverterInput, CredentialHeader, DocumentConverter, DocumentsConfig,
+    DownstreamMcpConfig, DownstreamServer, DownstreamTransport, EnvironmentValue, GithubConfig,
+    GithubRepository, HttpsConfig, HttpsOrigin, MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMAND_ARGUMENTS,
     MAX_COMMAND_ENVIRONMENT_ENTRIES, MAX_CONFIGURATION_ENTRIES, MAX_CONFIGURATION_ID_BYTES,
-    MAX_SCHEME_CLAIM_BYTES, MutationGrants, MutationSupport, SchemeClaim, SecretReference,
-    SshConfig, SshHost, validate_configuration_id,
+    MAX_EXTENSION_BYTES, MAX_SCHEME_CLAIM_BYTES, MemoryConfig, MemoryRoot, MemoryTarget,
+    MemoryTargetKind, MutationGrants, MutationSupport, RulesConfig, SchemeClaim, SecretReference,
+    SkillsConfig, SshConfig, SshHost, VaultConfig, VaultRoot, VaultTarget,
+    validate_configuration_id,
 };
 
 #[cfg(feature = "test-support")]

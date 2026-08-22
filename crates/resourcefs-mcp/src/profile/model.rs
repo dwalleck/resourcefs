@@ -3,7 +3,9 @@
     reason = "strict DTO fields are consumed by serde and schemars before every adapter uses their values"
 )]
 
-use resourcefs_sources::{ConfigurationError, MutationGrants, MutationSupport};
+use resourcefs_sources::{
+    ConfigurationDirectory, ConfigurationError, MutationGrants, MutationSupport,
+};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::{
@@ -105,27 +107,48 @@ pub struct ProfileDocument {
 
 impl ProfileDocument {
     /// Loads one profile with a hard `MAX_PROFILE_BYTES` admission ceiling.
+    ///
+    /// Relative local source paths resolve beneath the canonical profile
+    /// directory, never the process working directory.
     pub fn load(path: &Path) -> Result<Self, ProfileError> {
         let canonical = path.canonicalize().map_err(profile_io_error)?;
-        let file = File::open(canonical).map_err(profile_io_error)?;
+        let file = File::open(&canonical).map_err(profile_io_error)?;
         let mut bytes = Vec::with_capacity(MAX_PROFILE_BYTES.saturating_add(1));
         file.take((MAX_PROFILE_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(profile_io_error)?;
-        Self::from_slice(&bytes)
+        let parent = canonical.parent().ok_or_else(|| {
+            ProfileError::new(
+                ProfileErrorKind::Io,
+                "could not determine the Server Profile directory",
+            )
+        })?;
+        Self::from_slice_in(&bytes, parent)
     }
 
-    /// Decodes and validates one already-bounded profile value.
+    /// Decodes and validates one already-bounded profile value, resolving
+    /// local source paths beneath the current working directory.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ProfileError> {
-        if bytes.len() > MAX_PROFILE_BYTES {
-            return Err(ProfileError::new(
-                ProfileErrorKind::LimitExceeded,
-                format!(
-                    "Server Profile is {} bytes; maximum is {MAX_PROFILE_BYTES}",
-                    bytes.len()
-                ),
-            ));
-        }
+        validate_profile_size(bytes)?;
+        let base = std::env::current_dir().map_err(|error| {
+            ProfileError::new(
+                ProfileErrorKind::Io,
+                format!("could not determine the current working directory: {error}"),
+            )
+        })?;
+        let base = configuration_directory(&base)?;
+        Self::decode(bytes, &base)
+    }
+
+    /// Decodes and validates one already-bounded profile value, resolving
+    /// local source paths beneath the explicit base directory.
+    pub fn from_slice_in(bytes: &[u8], base: &Path) -> Result<Self, ProfileError> {
+        validate_profile_size(bytes)?;
+        let base = configuration_directory(base)?;
+        Self::decode(bytes, &base)
+    }
+
+    fn decode(bytes: &[u8], base: &ConfigurationDirectory) -> Result<Self, ProfileError> {
         let mut profile: Self = serde_json::from_slice(bytes).map_err(|error| {
             ProfileError::new(
                 ProfileErrorKind::InvalidProfile,
@@ -143,7 +166,7 @@ impl ProfileDocument {
         }
         super::validate::validate_profile(&profile)?;
         profile.configured_sources =
-            super::convert::convert_sources(profile.sources.take().unwrap_or_default())?;
+            super::convert::convert_sources(profile.sources.take().unwrap_or_default(), base)?;
         Ok(profile)
     }
 
@@ -158,6 +181,28 @@ impl ProfileDocument {
     pub(super) fn sources(&self) -> &[SourceProfile] {
         self.sources.as_deref().unwrap_or_default()
     }
+}
+
+fn validate_profile_size(bytes: &[u8]) -> Result<(), ProfileError> {
+    if bytes.len() > MAX_PROFILE_BYTES {
+        return Err(ProfileError::new(
+            ProfileErrorKind::LimitExceeded,
+            format!(
+                "Server Profile is {} bytes; maximum is {MAX_PROFILE_BYTES}",
+                bytes.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn configuration_directory(base: &Path) -> Result<ConfigurationDirectory, ProfileError> {
+    ConfigurationDirectory::new(base).map_err(|error| {
+        ProfileError::new(
+            ProfileErrorKind::Io,
+            format!("could not establish the configuration base directory: {error}"),
+        )
+    })
 }
 
 fn profile_io_error(error: io::Error) -> ProfileError {
@@ -575,7 +620,7 @@ pub(super) struct DocumentsSourceProfile {
 /// One extension-owned direct converter.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct DocumentConverterProfile {
+pub(super) struct DocumentConverterProfile {
     #[serde(deserialize_with = "deserialize_bounded_vec")]
     #[schemars(length(max = 4096))]
     extensions: Vec<String>,
@@ -586,7 +631,7 @@ struct DocumentConverterProfile {
 /// Converter input delivery mode.
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-enum ConverterInputProfile {
+pub(super) enum ConverterInputProfile {
     Stdin,
     Path,
 }
@@ -639,7 +684,7 @@ pub(super) struct MemorySourceProfile {
 /// A stable Resource name mapped to a contained path.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct NamedPathProfile {
+pub(super) struct NamedPathProfile {
     name: String,
     path: String,
 }
@@ -662,7 +707,7 @@ pub(super) struct VaultSourceProfile {
 /// One named vault with optional narrower grants.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct VaultProfile {
+pub(super) struct VaultProfile {
     name: String,
     path: String,
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
@@ -837,6 +882,92 @@ impl SshSourceProfile {
 impl SshHostProfile {
     pub(super) fn into_parts(self) -> (String, Vec<String>) {
         (self.alias, self.remote_roots)
+    }
+}
+
+impl DocumentsSourceProfile {
+    pub(super) fn into_parts(
+        self,
+    ) -> (String, bool, MutationGrants, Vec<DocumentConverterProfile>) {
+        (
+            self.id,
+            self.required,
+            grants_or_default(self.grants),
+            self.converters,
+        )
+    }
+}
+
+impl DocumentConverterProfile {
+    pub(super) fn into_parts(self) -> (Vec<String>, ConverterInputProfile, CommandProfile) {
+        (self.extensions, self.input, self.command)
+    }
+}
+
+impl SkillsSourceProfile {
+    pub(super) fn into_parts(self) -> (String, bool, MutationGrants, Vec<String>) {
+        (
+            self.id,
+            self.required,
+            grants_or_default(self.grants),
+            self.roots,
+        )
+    }
+}
+
+impl RulesSourceProfile {
+    pub(super) fn into_parts(self) -> (String, bool, MutationGrants, Vec<String>) {
+        (
+            self.id,
+            self.required,
+            grants_or_default(self.grants),
+            self.manifests,
+        )
+    }
+}
+
+impl MemorySourceProfile {
+    pub(super) fn into_parts(self) -> (String, bool, MutationGrants, Vec<NamedPathProfile>) {
+        (
+            self.id,
+            self.required,
+            grants_or_default(self.grants),
+            self.roots,
+        )
+    }
+}
+
+impl NamedPathProfile {
+    pub(super) fn into_parts(self) -> (String, String) {
+        (self.name, self.path)
+    }
+}
+
+impl VaultSourceProfile {
+    pub(super) fn into_parts(self) -> (String, bool, MutationGrants, Vec<VaultProfile>) {
+        (
+            self.id,
+            self.required,
+            grants_or_default(self.grants),
+            self.vaults,
+        )
+    }
+}
+
+impl VaultProfile {
+    pub(super) fn into_parts(self) -> (String, String, MutationGrants) {
+        (self.name, self.path, grants_or_default(self.grants))
+    }
+}
+
+impl AgentExportSourceProfile {
+    pub(super) fn into_parts(self) -> (String, bool, MutationGrants, Vec<String>) {
+        (
+            self.id,
+            self.required,
+            grants_or_default(self.grants),
+            self.manifests,
+        )
     }
 }
 

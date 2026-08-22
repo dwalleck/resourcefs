@@ -1,12 +1,18 @@
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
 
 use resourcefs_sources::{
-    ChildEnvironment, CommandSpec, CredentialHeader, DownstreamMcpConfig, DownstreamServer,
-    DownstreamTransport, EnvironmentValue, GithubConfig, GithubRepository, HttpsConfig,
-    HttpsOrigin, MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMAND_ARGUMENTS,
-    MAX_COMMAND_ENVIRONMENT_ENTRIES, MAX_CONFIGURATION_ID_BYTES, MutationGrants, MutationSupport,
-    SchemeClaim, SecretReference, SshConfig, SshHost, validate_configuration_id,
+    AgentExportConfig, ChildEnvironment, CommandSpec, ConfigurationDirectory,
+    ConfigurationTargetKind, ConverterInput, CredentialHeader, DocumentConverter, DocumentsConfig,
+    DownstreamMcpConfig, DownstreamServer, DownstreamTransport, EnvironmentValue, GithubConfig,
+    GithubRepository, HttpsConfig, HttpsOrigin, MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMAND_ARGUMENTS,
+    MAX_COMMAND_ENVIRONMENT_ENTRIES, MAX_CONFIGURATION_ENTRIES, MAX_CONFIGURATION_ID_BYTES,
+    MAX_EXTENSION_BYTES, MemoryConfig, MemoryRoot, MutationGrants, MutationSupport, RulesConfig,
+    SchemeClaim, SecretReference, SkillsConfig, SshConfig, SshHost, VaultConfig, VaultRoot,
+    validate_configuration_id,
 };
+use tempfile::TempDir;
 
 #[test]
 fn nested_grants_are_subsets() {
@@ -841,4 +847,1401 @@ fn downstream_mcp_matrix() {
             "scheme row {invalid:?}"
         );
     }
+}
+
+fn converter(
+    extensions: &[&str],
+    input: ConverterInput,
+) -> Result<DocumentConverter, resourcefs_sources::ConfigurationError> {
+    DocumentConverter::new(
+        extensions
+            .iter()
+            .map(|extension| (*extension).to_owned())
+            .collect(),
+        input,
+        command("converter"),
+    )
+}
+
+fn documents_config(
+    converters: Vec<DocumentConverter>,
+    grants: MutationGrants,
+) -> Result<DocumentsConfig, resourcefs_sources::ConfigurationError> {
+    DocumentsConfig::new("documents-source", false, grants, converters)
+}
+
+#[test]
+fn document_extensions_are_globally_unique() {
+    // C11 named-mutation fence: removing the global overlap decision in
+    // `DocumentsConfig::new` must flip this row.
+    assert!(
+        documents_config(
+            vec![
+                converter(&["md"], ConverterInput::Stdin).expect("valid converter"),
+                converter(&["md"], ConverterInput::Path).expect("valid converter"),
+            ],
+            MutationGrants::default(),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn document_converter_matrix() {
+    for (name, extensions, input, accepted) in [
+        ("stdin-single", vec!["md"], ConverterInput::Stdin, true),
+        ("path-single", vec!["pdf"], ConverterInput::Path, true),
+        (
+            "multiple",
+            vec!["md", "markdown", "mdown"],
+            ConverterInput::Stdin,
+            true,
+        ),
+        (
+            "uppercase-spelling",
+            vec!["MarkDown"],
+            ConverterInput::Path,
+            false,
+        ),
+        (
+            "operator-punctuation",
+            vec!["c++", "x-1_y"],
+            ConverterInput::Stdin,
+            true,
+        ),
+        ("empty-list", vec![], ConverterInput::Stdin, false),
+        ("empty-extension", vec![""], ConverterInput::Stdin, false),
+        ("leading-dot", vec![".md"], ConverterInput::Stdin, false),
+        ("internal-dot", vec!["tar.gz"], ConverterInput::Stdin, false),
+        ("slash", vec!["a/b"], ConverterInput::Stdin, false),
+        ("backslash", vec!["a\\b"], ConverterInput::Stdin, false),
+        ("wildcard", vec!["m*"], ConverterInput::Stdin, false),
+        ("unicode", vec!["média"], ConverterInput::Stdin, false),
+    ] {
+        assert_eq!(
+            converter(&extensions, input).is_ok(),
+            accepted,
+            "converter row {name}"
+        );
+    }
+
+    let exact = "a".repeat(MAX_EXTENSION_BYTES);
+    assert!(converter(&[exact.as_str()], ConverterInput::Stdin).is_ok());
+    let over = "a".repeat(MAX_EXTENSION_BYTES + 1);
+    assert!(converter(&[over.as_str()], ConverterInput::Stdin).is_err());
+
+    let exact_list: Vec<String> = (0..4_096).map(|index| format!("e{index}")).collect();
+    assert!(
+        DocumentConverter::new(exact_list, ConverterInput::Stdin, command("converter")).is_ok()
+    );
+    let over_list: Vec<String> = (0..4_097).map(|index| format!("e{index}")).collect();
+    assert!(
+        DocumentConverter::new(over_list, ConverterInput::Stdin, command("converter")).is_err()
+    );
+
+    // No argv placeholder mechanism exists; brace spellings stay literal for
+    // other command uses but are rejected on converter commands.
+    let placeholder = CommandSpec::new(
+        vec!["converter".to_owned(), "{path}".to_owned()],
+        ChildEnvironment::default(),
+    )
+    .expect("literal braces remain valid generic argv");
+    assert!(
+        DocumentConverter::new(
+            vec!["md".to_owned()],
+            ConverterInput::Path,
+            placeholder.clone(),
+        )
+        .is_err()
+    );
+    assert!(
+        DocumentConverter::new(vec!["md".to_owned()], ConverterInput::Stdin, placeholder).is_err()
+    );
+
+    assert!(
+        documents_config(
+            vec![
+                converter(&["md"], ConverterInput::Stdin).expect("valid converter"),
+                converter(&["pdf"], ConverterInput::Path).expect("valid converter"),
+                converter(&["epub"], ConverterInput::Stdin).expect("valid converter"),
+            ],
+            MutationGrants::default(),
+        )
+        .is_ok()
+    );
+
+    for (name, converters, accepted) in [
+        ("empty-converters", vec![], false),
+        (
+            "duplicate-within-converter",
+            vec![converter(&["md", "md"], ConverterInput::Stdin).expect("valid converter")],
+            false,
+        ),
+        (
+            "duplicate-across-converters",
+            vec![
+                converter(&["md", "markdown"], ConverterInput::Stdin).expect("valid converter"),
+                converter(&["pdf", "md"], ConverterInput::Path).expect("valid converter"),
+            ],
+            false,
+        ),
+    ] {
+        assert_eq!(
+            documents_config(converters, MutationGrants::default()).is_ok(),
+            accepted,
+            "documents row {name}"
+        );
+    }
+
+    for (operation, grants) in [
+        ("create", MutationGrants::new(true, false, false)),
+        ("update", MutationGrants::new(false, true, false)),
+        ("delete", MutationGrants::new(false, false, true)),
+    ] {
+        assert!(
+            documents_config(
+                vec![converter(&["md"], ConverterInput::Stdin).expect("valid converter")],
+                grants,
+            )
+            .is_err(),
+            "documents must reject {operation} grants"
+        );
+    }
+
+    let exact_converters: Vec<DocumentConverter> = (0..4_096)
+        .map(|index| {
+            let extension = format!("e{index}");
+            converter(&[extension.as_str()], ConverterInput::Stdin).expect("valid converter")
+        })
+        .collect();
+    assert!(documents_config(exact_converters, MutationGrants::default()).is_ok());
+    let over_converters: Vec<DocumentConverter> = (0..4_097)
+        .map(|index| {
+            let extension = format!("e{index}");
+            converter(&[extension.as_str()], ConverterInput::Stdin).expect("valid converter")
+        })
+        .collect();
+    assert!(documents_config(over_converters, MutationGrants::default()).is_err());
+}
+
+struct MemoryVaultTree {
+    _temporary: TempDir,
+    directory: ConfigurationDirectory,
+    base: PathBuf,
+    outside: PathBuf,
+}
+
+impl MemoryVaultTree {
+    fn absolute(&self, relative: &str) -> String {
+        self.base.join(relative).to_string_lossy().into_owned()
+    }
+
+    fn outside_file(&self) -> String {
+        self.outside
+            .join("secret.md")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn outside_directory(&self) -> String {
+        self.outside.to_string_lossy().into_owned()
+    }
+}
+
+fn memory_vault_tree() -> MemoryVaultTree {
+    let temporary = TempDir::new().expect("temporary configuration tree");
+    let base = temporary.path().join("config");
+    fs::create_dir(&base).expect("configuration base");
+    fs::create_dir(base.join("memory")).expect("memory directory");
+    fs::write(base.join("memory").join("notes.md"), "notes").expect("memory file");
+    fs::create_dir(base.join("memory").join("archive")).expect("archive directory");
+    fs::create_dir_all(base.join("vaults").join("personal")).expect("personal vault");
+    fs::create_dir(base.join("vaults").join("team space")).expect("spaced vault");
+    fs::create_dir(base.join("vaults").join("sécrets")).expect("unicode vault");
+    fs::create_dir(base.join("exports")).expect("exports directory");
+    fs::write(base.join("exports").join("agents.json"), "{}").expect("manifest file");
+    fs::write(base.join("exports").join("more agents.json"), "{}").expect("spaced manifest");
+    let outside = temporary.path().join("outside");
+    fs::create_dir(&outside).expect("outside directory");
+    fs::write(outside.join("secret.md"), "outside").expect("outside file");
+    let directory = ConfigurationDirectory::new(&base).expect("configuration directory");
+    MemoryVaultTree {
+        _temporary: temporary,
+        directory,
+        base,
+        outside,
+    }
+}
+
+fn memory_config(
+    tree: &MemoryVaultTree,
+    roots: Vec<MemoryRoot>,
+    grants: MutationGrants,
+) -> Result<MemoryConfig, resourcefs_sources::ConfigurationError> {
+    MemoryConfig::new("memory-source", false, grants, &tree.directory, roots)
+}
+
+fn vault_config(
+    tree: &MemoryVaultTree,
+    vaults: Vec<VaultRoot>,
+    grants: MutationGrants,
+) -> Result<VaultConfig, resourcefs_sources::ConfigurationError> {
+    VaultConfig::new("vault-source", false, grants, &tree.directory, vaults)
+}
+
+fn agent_export_config(
+    tree: &MemoryVaultTree,
+    manifests: Vec<String>,
+    grants: MutationGrants,
+) -> Result<AgentExportConfig, resourcefs_sources::ConfigurationError> {
+    AgentExportConfig::new(
+        "agent-export-source",
+        false,
+        grants,
+        &tree.directory,
+        manifests,
+    )
+}
+
+#[test]
+fn memory_rejects_canonical_alias_targets() {
+    // C14 named-mutation fence: deduplicating by name only in
+    // `MemoryConfig::new` must flip this row.
+    let tree = memory_vault_tree();
+    assert!(
+        memory_config(
+            &tree,
+            vec![
+                MemoryRoot::new("notes", "memory/notes.md"),
+                MemoryRoot::new("alias", "memory/./notes.md"),
+            ],
+            MutationGrants::default(),
+        )
+        .is_err(),
+        "two spellings of one canonical target must fail"
+    );
+}
+
+#[test]
+fn memory_root_matrix() {
+    let tree = memory_vault_tree();
+    let none = MutationGrants::default();
+
+    for (name, roots, accepted) in [
+        (
+            "single-file",
+            vec![MemoryRoot::new("notes", "memory/notes.md")],
+            true,
+        ),
+        (
+            "single-directory",
+            vec![MemoryRoot::new("archive", "memory/archive")],
+            true,
+        ),
+        (
+            "distinct-roots",
+            vec![
+                MemoryRoot::new("notes", "memory/notes.md"),
+                MemoryRoot::new("archive", "memory/archive"),
+            ],
+            true,
+        ),
+        (
+            "unicode-and-spaces",
+            vec![
+                MemoryRoot::new("unicode", "vaults/sécrets"),
+                MemoryRoot::new("spaced", "exports/more agents.json"),
+            ],
+            true,
+        ),
+        (
+            "case-variant-names",
+            vec![
+                MemoryRoot::new("Notes", "memory/notes.md"),
+                MemoryRoot::new("notes", "memory/archive"),
+            ],
+            true,
+        ),
+        (
+            "absolute-contained",
+            vec![MemoryRoot::new("notes", tree.absolute("memory/notes.md"))],
+            true,
+        ),
+        ("empty-roots", vec![], false),
+        (
+            "duplicate-name",
+            vec![
+                MemoryRoot::new("notes", "memory/notes.md"),
+                MemoryRoot::new("notes", "memory/archive"),
+            ],
+            false,
+        ),
+        (
+            "duplicate-target",
+            vec![
+                MemoryRoot::new("notes", "memory/notes.md"),
+                MemoryRoot::new("copy", "memory/notes.md"),
+            ],
+            false,
+        ),
+        (
+            "invalid-name",
+            vec![MemoryRoot::new("bad name", "memory/notes.md")],
+            false,
+        ),
+        (
+            "empty-name",
+            vec![MemoryRoot::new("", "memory/notes.md")],
+            false,
+        ),
+        (
+            "missing-target",
+            vec![MemoryRoot::new("missing", "memory/missing.md")],
+            false,
+        ),
+        (
+            "escaping-relative",
+            vec![MemoryRoot::new("escape", "../outside/secret.md")],
+            false,
+        ),
+        (
+            "absolute-outside",
+            vec![MemoryRoot::new("outside", tree.outside_file())],
+            false,
+        ),
+    ] {
+        assert_eq!(
+            memory_config(&tree, roots, none).is_ok(),
+            accepted,
+            "memory row {name}"
+        );
+    }
+
+    for (operation, grants) in [
+        ("create", MutationGrants::new(true, false, false)),
+        ("update", MutationGrants::new(false, true, false)),
+        ("delete", MutationGrants::new(false, false, true)),
+    ] {
+        assert!(
+            memory_config(
+                &tree,
+                vec![MemoryRoot::new("notes", "memory/notes.md")],
+                grants,
+            )
+            .is_err(),
+            "memory must reject {operation} grants"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn memory_symlink_targets_stay_contained() {
+    let tree = memory_vault_tree();
+    let notes = tree.base.join("memory").join("notes.md");
+    std::os::unix::fs::symlink(&notes, tree.base.join("alias.md")).expect("contained alias");
+    std::os::unix::fs::symlink(tree.outside.join("secret.md"), tree.base.join("escape.md"))
+        .expect("escaping alias");
+
+    assert!(
+        memory_config(
+            &tree,
+            vec![MemoryRoot::new("linked", "alias.md")],
+            MutationGrants::default(),
+        )
+        .is_ok(),
+        "a contained symlink target must be admitted"
+    );
+    assert!(
+        memory_config(
+            &tree,
+            vec![
+                MemoryRoot::new("notes", "memory/notes.md"),
+                MemoryRoot::new("linked", "alias.md"),
+            ],
+            MutationGrants::default(),
+        )
+        .is_err(),
+        "symlink aliases of one canonical target must fail"
+    );
+    assert!(
+        memory_config(
+            &tree,
+            vec![MemoryRoot::new("escape", "escape.md")],
+            MutationGrants::default(),
+        )
+        .is_err(),
+        "symlink targets outside the configuration directory must fail"
+    );
+}
+
+#[test]
+fn memory_roots_enforce_entry_ceiling() {
+    let tree = memory_vault_tree();
+    let none = MutationGrants::default();
+    let many = tree.base.join("many");
+    fs::create_dir(&many).expect("many directory");
+    let exact: Vec<MemoryRoot> = (0..MAX_CONFIGURATION_ENTRIES)
+        .map(|index| {
+            let file = format!("f{index}");
+            fs::write(many.join(&file), "").expect("exact-ceiling file");
+            MemoryRoot::new(file.clone(), format!("many/{file}"))
+        })
+        .collect();
+    assert!(
+        memory_config(&tree, exact, none).is_ok(),
+        "exact-ceiling memory roots must be accepted"
+    );
+
+    let over: Vec<MemoryRoot> = (0..=MAX_CONFIGURATION_ENTRIES)
+        .map(|index| MemoryRoot::new(format!("f{index}"), "missing"))
+        .collect();
+    assert!(
+        memory_config(&tree, over, none).is_err(),
+        "one-over memory roots must be rejected"
+    );
+}
+
+#[test]
+fn vault_rejects_grants_broader_than_source() {
+    // C15 named-mutation fence: dropping the per-vault subset decision in
+    // `VaultConfig::new` must flip this row.
+    let tree = memory_vault_tree();
+    assert!(
+        vault_config(
+            &tree,
+            vec![VaultRoot::new(
+                "personal",
+                "vaults/personal",
+                MutationGrants::new(false, true, false),
+            )],
+            MutationGrants::new(true, false, false),
+        )
+        .is_err(),
+        "per-vault grants broader than source grants must fail"
+    );
+}
+
+#[test]
+fn vault_matrix() {
+    let tree = memory_vault_tree();
+    let none = MutationGrants::default();
+    let create = MutationGrants::new(true, false, false);
+    let update = MutationGrants::new(false, true, false);
+    let full = MutationGrants::new(true, true, true);
+
+    for (name, vaults, source_grants, accepted) in [
+        (
+            "single",
+            vec![VaultRoot::new("personal", "vaults/personal", none)],
+            none,
+            true,
+        ),
+        (
+            "distinct-vaults",
+            vec![
+                VaultRoot::new("personal", "vaults/personal", none),
+                VaultRoot::new("team", "vaults/team space", none),
+            ],
+            none,
+            true,
+        ),
+        (
+            "unicode",
+            vec![VaultRoot::new("secrets", "vaults/sécrets", none)],
+            none,
+            true,
+        ),
+        (
+            "case-variant-names",
+            vec![
+                VaultRoot::new("Personal", "vaults/personal", none),
+                VaultRoot::new("personal", "vaults/team space", none),
+            ],
+            none,
+            true,
+        ),
+        (
+            "absolute-contained",
+            vec![VaultRoot::new(
+                "personal",
+                tree.absolute("vaults/personal"),
+                none,
+            )],
+            none,
+            true,
+        ),
+        (
+            "full-source-and-vault-grants",
+            vec![VaultRoot::new("personal", "vaults/personal", full)],
+            full,
+            true,
+        ),
+        (
+            "subset-vault-grants",
+            vec![VaultRoot::new("personal", "vaults/personal", create)],
+            full,
+            true,
+        ),
+        (
+            "equal-vault-grants",
+            vec![VaultRoot::new("personal", "vaults/personal", create)],
+            create,
+            true,
+        ),
+        (
+            "independent-per-vault-grants",
+            vec![
+                VaultRoot::new("personal", "vaults/personal", create),
+                VaultRoot::new("team", "vaults/team space", update),
+                VaultRoot::new("secrets", "vaults/sécrets", none),
+            ],
+            full,
+            true,
+        ),
+        ("empty-vaults", vec![], none, false),
+        (
+            "duplicate-name",
+            vec![
+                VaultRoot::new("personal", "vaults/personal", none),
+                VaultRoot::new("personal", "vaults/team space", none),
+            ],
+            none,
+            false,
+        ),
+        (
+            "duplicate-directory",
+            vec![
+                VaultRoot::new("personal", "vaults/personal", none),
+                VaultRoot::new("copy", "vaults/personal", none),
+            ],
+            none,
+            false,
+        ),
+        (
+            "dot-spelling-alias",
+            vec![
+                VaultRoot::new("personal", "vaults/personal", none),
+                VaultRoot::new("copy", "vaults/./personal", none),
+            ],
+            none,
+            false,
+        ),
+        (
+            "invalid-name",
+            vec![VaultRoot::new("bad name", "vaults/personal", none)],
+            none,
+            false,
+        ),
+        (
+            "file-target",
+            vec![VaultRoot::new("file", "memory/notes.md", none)],
+            none,
+            false,
+        ),
+        (
+            "missing-target",
+            vec![VaultRoot::new("missing", "vaults/missing", none)],
+            none,
+            false,
+        ),
+        (
+            "escaping-relative",
+            vec![VaultRoot::new("escape", "../outside", none)],
+            none,
+            false,
+        ),
+        (
+            "absolute-outside",
+            vec![VaultRoot::new("outside", tree.outside_directory(), none)],
+            none,
+            false,
+        ),
+        (
+            "superset-vault-grants",
+            vec![VaultRoot::new("personal", "vaults/personal", full)],
+            create,
+            false,
+        ),
+        (
+            "ungranted-vault-operation",
+            vec![VaultRoot::new("personal", "vaults/personal", create)],
+            none,
+            false,
+        ),
+    ] {
+        assert_eq!(
+            vault_config(&tree, vaults, source_grants).is_ok(),
+            accepted,
+            "vault row {name}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn vault_symlink_directories_stay_contained() {
+    let tree = memory_vault_tree();
+    let personal = tree.base.join("vaults").join("personal");
+    std::os::unix::fs::symlink(&personal, tree.base.join("alias-vault")).expect("contained alias");
+    std::os::unix::fs::symlink(&tree.outside, tree.base.join("escape-vault"))
+        .expect("escaping alias");
+
+    assert!(
+        vault_config(
+            &tree,
+            vec![VaultRoot::new(
+                "linked",
+                "alias-vault",
+                MutationGrants::default()
+            )],
+            MutationGrants::default(),
+        )
+        .is_ok(),
+        "a contained symlink target must be admitted"
+    );
+    assert!(
+        vault_config(
+            &tree,
+            vec![
+                VaultRoot::new("personal", "vaults/personal", MutationGrants::default()),
+                VaultRoot::new("linked", "alias-vault", MutationGrants::default()),
+            ],
+            MutationGrants::default(),
+        )
+        .is_err(),
+        "symlink aliases of one canonical directory must fail"
+    );
+    assert!(
+        vault_config(
+            &tree,
+            vec![VaultRoot::new(
+                "escape",
+                "escape-vault",
+                MutationGrants::default()
+            )],
+            MutationGrants::default(),
+        )
+        .is_err(),
+        "symlink targets outside the configuration directory must fail"
+    );
+}
+
+#[test]
+fn vaults_enforce_entry_ceiling() {
+    let tree = memory_vault_tree();
+    let none = MutationGrants::default();
+    let many = tree.base.join("many-vaults");
+    fs::create_dir(&many).expect("many-vaults directory");
+    let exact: Vec<VaultRoot> = (0..MAX_CONFIGURATION_ENTRIES)
+        .map(|index| {
+            let directory = format!("v{index}");
+            fs::create_dir(many.join(&directory)).expect("exact-ceiling vault");
+            VaultRoot::new(directory.clone(), format!("many-vaults/{directory}"), none)
+        })
+        .collect();
+    assert!(
+        vault_config(&tree, exact, none).is_ok(),
+        "exact-ceiling vaults must be accepted"
+    );
+
+    let over: Vec<VaultRoot> = (0..=MAX_CONFIGURATION_ENTRIES)
+        .map(|index| VaultRoot::new(format!("v{index}"), "missing", none))
+        .collect();
+    assert!(
+        vault_config(&tree, over, none).is_err(),
+        "one-over vaults must be rejected"
+    );
+}
+
+#[test]
+fn agent_export_rejects_true_grants() {
+    // C16 named-mutation fence: accepting a true grant in
+    // `AgentExportConfig::new` must flip this row.
+    let tree = memory_vault_tree();
+    let manifests = || vec!["exports/agents.json".to_owned()];
+    for (operation, grants) in [
+        ("create", MutationGrants::new(true, false, false)),
+        ("update", MutationGrants::new(false, true, false)),
+        ("delete", MutationGrants::new(false, false, true)),
+    ] {
+        assert!(
+            agent_export_config(&tree, manifests(), grants).is_err(),
+            "agent export must reject {operation} grants"
+        );
+    }
+    assert!(
+        agent_export_config(&tree, manifests(), MutationGrants::default()).is_ok(),
+        "absent grants keep agent export read-only"
+    );
+}
+
+#[test]
+fn agent_export_path_matrix() {
+    let tree = memory_vault_tree();
+    let none = MutationGrants::default();
+    let manifests = |paths: &[&str]| paths.iter().map(|path| (*path).to_owned()).collect();
+
+    for (name, paths, accepted) in [
+        ("single", vec!["exports/agents.json"], true),
+        (
+            "distinct-manifests",
+            vec!["exports/agents.json", "exports/more agents.json"],
+            true,
+        ),
+        ("unicode-target", vec!["exports/more agents.json"], true),
+        ("empty-manifests", vec![], false),
+        (
+            "duplicate-manifest",
+            vec!["exports/agents.json", "exports/agents.json"],
+            false,
+        ),
+        (
+            "dot-spelling-alias",
+            vec!["exports/agents.json", "exports/./agents.json"],
+            false,
+        ),
+        ("missing-manifest", vec!["exports/missing.json"], false),
+        ("directory-target", vec!["exports"], false),
+        ("escaping-relative", vec!["../outside/secret.md"], false),
+    ] {
+        assert_eq!(
+            agent_export_config(&tree, manifests(&paths), none).is_ok(),
+            accepted,
+            "agent export row {name}"
+        );
+    }
+
+    assert!(
+        agent_export_config(&tree, vec![tree.absolute("exports/agents.json")], none,).is_ok(),
+        "absolute contained manifests must be admitted"
+    );
+    assert!(
+        agent_export_config(&tree, vec![tree.outside_file()], none).is_err(),
+        "absolute manifests outside the configuration directory must fail"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_export_symlink_manifests_stay_contained() {
+    let tree = memory_vault_tree();
+    let manifest = tree.base.join("exports").join("agents.json");
+    std::os::unix::fs::symlink(&manifest, tree.base.join("alias.json")).expect("contained alias");
+    std::os::unix::fs::symlink(
+        tree.outside.join("secret.md"),
+        tree.base.join("escape.json"),
+    )
+    .expect("escaping alias");
+    let none = MutationGrants::default();
+
+    assert!(
+        agent_export_config(&tree, vec!["alias.json".to_owned()], none).is_ok(),
+        "a contained symlink target must be admitted"
+    );
+    assert!(
+        agent_export_config(
+            &tree,
+            vec!["exports/agents.json".to_owned(), "alias.json".to_owned()],
+            none,
+        )
+        .is_err(),
+        "symlink aliases of one canonical manifest must fail"
+    );
+    assert!(
+        agent_export_config(&tree, vec!["escape.json".to_owned()], none).is_err(),
+        "symlink targets outside the configuration directory must fail"
+    );
+}
+
+#[test]
+fn agent_export_manifests_enforce_entry_ceiling() {
+    let tree = memory_vault_tree();
+    let none = MutationGrants::default();
+    let many = tree.base.join("many-exports");
+    fs::create_dir(&many).expect("many-exports directory");
+    let exact: Vec<String> = (0..MAX_CONFIGURATION_ENTRIES)
+        .map(|index| {
+            let file = format!("m{index}.json");
+            fs::write(many.join(&file), "{}").expect("exact-ceiling manifest");
+            format!("many-exports/{file}")
+        })
+        .collect();
+    assert!(
+        agent_export_config(&tree, exact, none).is_ok(),
+        "exact-ceiling manifests must be accepted"
+    );
+
+    let over: Vec<String> = (0..=MAX_CONFIGURATION_ENTRIES)
+        .map(|index| format!("missing-{index}.json"))
+        .collect();
+    assert!(
+        agent_export_config(&tree, over, none).is_err(),
+        "one-over manifests must be rejected"
+    );
+}
+
+fn configuration_tree() -> (TempDir, PathBuf) {
+    let temporary = TempDir::new().expect("temporary directory");
+    let base = temporary.path().join("config");
+    fs::create_dir(&base).expect("configuration base directory");
+    (temporary, base)
+}
+
+#[test]
+fn configuration_directory_requires_an_existing_directory() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let file = temporary.path().join("file.txt");
+    fs::write(&file, "content").expect("file fixture");
+
+    assert!(ConfigurationDirectory::new(temporary.path()).is_ok());
+    assert!(ConfigurationDirectory::new(temporary.path().join("missing")).is_err());
+    assert!(ConfigurationDirectory::new(&file).is_err());
+}
+
+#[test]
+fn configuration_directory_resolves_contained_paths() {
+    let (temporary, base_path) = configuration_tree();
+    fs::create_dir(base_path.join("inner")).expect("inner directory");
+    fs::create_dir_all(base_path.join("nested/deep")).expect("nested directory");
+    fs::write(base_path.join("inner/manifest.toml"), "rules").expect("manifest fixture");
+    fs::create_dir(base_path.join("spaced root")).expect("spaced directory");
+    fs::create_dir(base_path.join("ünïcode")).expect("unicode directory");
+    let outside = temporary.path().join("outside");
+    fs::create_dir(&outside).expect("outside directory");
+    fs::write(outside.join("sentinel.txt"), "sentinel").expect("outside sentinel");
+
+    let base = ConfigurationDirectory::new(&base_path).expect("configuration base");
+    assert!(base.path().is_absolute());
+    assert_eq!(base.path().file_name(), Some("config".as_ref()));
+
+    let absolute = |path: PathBuf| {
+        path.into_os_string()
+            .into_string()
+            .expect("UTF-8 fixture path")
+    };
+    for (name, input, expected, accepted) in [
+        (
+            "empty",
+            String::new(),
+            ConfigurationTargetKind::Directory,
+            false,
+        ),
+        (
+            "directory",
+            "inner".to_owned(),
+            ConfigurationTargetKind::Directory,
+            true,
+        ),
+        (
+            "nested-directory",
+            "nested/deep".to_owned(),
+            ConfigurationTargetKind::Directory,
+            true,
+        ),
+        (
+            "dot-spelling",
+            "./inner".to_owned(),
+            ConfigurationTargetKind::Directory,
+            true,
+        ),
+        (
+            "normalizing-spelling",
+            "nested/../inner".to_owned(),
+            ConfigurationTargetKind::Directory,
+            true,
+        ),
+        (
+            "base-directory",
+            ".".to_owned(),
+            ConfigurationTargetKind::Directory,
+            true,
+        ),
+        (
+            "file",
+            "inner/manifest.toml".to_owned(),
+            ConfigurationTargetKind::File,
+            true,
+        ),
+        (
+            "file-or-directory-file",
+            "inner/manifest.toml".to_owned(),
+            ConfigurationTargetKind::FileOrDirectory,
+            true,
+        ),
+        (
+            "file-or-directory-directory",
+            "inner".to_owned(),
+            ConfigurationTargetKind::FileOrDirectory,
+            true,
+        ),
+        (
+            "file-where-directory",
+            "inner/manifest.toml".to_owned(),
+            ConfigurationTargetKind::Directory,
+            false,
+        ),
+        (
+            "directory-where-file",
+            "inner".to_owned(),
+            ConfigurationTargetKind::File,
+            false,
+        ),
+        (
+            "missing",
+            "missing".to_owned(),
+            ConfigurationTargetKind::FileOrDirectory,
+            false,
+        ),
+        (
+            "relative-escape",
+            "../outside".to_owned(),
+            ConfigurationTargetKind::Directory,
+            false,
+        ),
+        (
+            "absolute-contained",
+            absolute(base_path.join("inner")),
+            ConfigurationTargetKind::Directory,
+            true,
+        ),
+        (
+            "absolute-outside",
+            absolute(outside.clone()),
+            ConfigurationTargetKind::Directory,
+            false,
+        ),
+        (
+            "spaces",
+            "spaced root".to_owned(),
+            ConfigurationTargetKind::Directory,
+            true,
+        ),
+        (
+            "unicode",
+            "ünïcode".to_owned(),
+            ConfigurationTargetKind::Directory,
+            true,
+        ),
+    ] {
+        assert_eq!(
+            base.resolve(&input, expected).is_ok(),
+            accepted,
+            "contained path row {name}"
+        );
+    }
+
+    assert_eq!(
+        fs::read(outside.join("sentinel.txt")).expect("sentinel readable"),
+        b"sentinel",
+        "sibling sentinel must remain untouched"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn configuration_directory_follows_only_contained_links() {
+    use std::os::unix::fs::symlink;
+
+    let temporary = TempDir::new().expect("temporary directory");
+    let real_base = temporary.path().join("real-config");
+    fs::create_dir(&real_base).expect("real base directory");
+    fs::create_dir(real_base.join("inner")).expect("inner directory");
+    fs::write(real_base.join("inner/file.txt"), "content").expect("file fixture");
+    let linked_base = temporary.path().join("config");
+    symlink(&real_base, &linked_base).expect("base symlink");
+
+    let outside = temporary.path().join("outside");
+    fs::create_dir(&outside).expect("outside directory");
+    fs::write(outside.join("secret.txt"), "secret").expect("outside sentinel");
+    symlink(real_base.join("inner"), real_base.join("contained-link")).expect("contained link");
+    symlink(&outside, real_base.join("escaping-link")).expect("escaping link");
+    symlink(outside.join("secret.txt"), real_base.join("escaping-file"))
+        .expect("escaping file link");
+    symlink(
+        real_base.join("missing-target"),
+        real_base.join("dangling-link"),
+    )
+    .expect("dangling link");
+
+    let base = ConfigurationDirectory::new(&linked_base).expect("symlinked base");
+    assert_eq!(
+        base.path(),
+        std::fs::canonicalize(&real_base)
+            .expect("canonical real base")
+            .as_path(),
+        "the base must canonicalize through its symlink"
+    );
+    assert!(
+        base.resolve("contained-link", ConfigurationTargetKind::Directory)
+            .is_ok(),
+        "a link whose target stays contained must resolve"
+    );
+    assert!(
+        base.resolve("escaping-link", ConfigurationTargetKind::Directory)
+            .is_err(),
+        "a link escaping the base must be rejected"
+    );
+    assert!(
+        base.resolve("escaping-file", ConfigurationTargetKind::File)
+            .is_err(),
+        "a file link escaping the base must be rejected"
+    );
+    assert!(
+        base.resolve("dangling-link", ConfigurationTargetKind::FileOrDirectory)
+            .is_err(),
+        "a dangling link must be rejected"
+    );
+}
+
+#[test]
+fn configuration_errors_are_bounded_and_hide_paths() {
+    let (temporary, base_path) = configuration_tree();
+    fs::create_dir(temporary.path().join("outside")).expect("outside directory");
+    let canonical = std::fs::canonicalize(&base_path)
+        .expect("canonical base")
+        .to_string_lossy()
+        .into_owned();
+    let probe = ConfigurationDirectory::new(base_path.join("missing"))
+        .expect_err("missing base must fail")
+        .to_string();
+    assert!(probe.len() <= 128, "base error must be bounded: {probe}");
+    assert!(
+        !probe.contains(canonical.as_str()),
+        "base error must not disclose the canonical path: {probe}"
+    );
+
+    let base = ConfigurationDirectory::new(&base_path).expect("configuration base");
+    for (name, result) in [
+        (
+            "missing",
+            base.resolve("missing", ConfigurationTargetKind::FileOrDirectory),
+        ),
+        (
+            "escape",
+            base.resolve("../outside", ConfigurationTargetKind::FileOrDirectory),
+        ),
+        (
+            "wrong-kind",
+            base.resolve(".", ConfigurationTargetKind::File),
+        ),
+    ] {
+        let message = match result {
+            Ok(_) => panic!("{name} row must fail"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            message.len() <= 128,
+            "{name} error must be bounded: {message}"
+        );
+        assert!(
+            !message.contains(canonical.as_str()),
+            "{name} error must not disclose the canonical path: {message}"
+        );
+    }
+}
+
+fn skills_config(
+    base: &ConfigurationDirectory,
+    roots: Vec<String>,
+) -> Result<SkillsConfig, resourcefs_sources::ConfigurationError> {
+    SkillsConfig::new(
+        "skills-source",
+        false,
+        MutationGrants::default(),
+        base,
+        roots,
+    )
+}
+
+#[test]
+fn skill_root_matrix() {
+    let (temporary, base_path) = configuration_tree();
+    fs::create_dir(base_path.join("alpha")).expect("alpha root");
+    fs::create_dir_all(base_path.join("nested/beta")).expect("beta root");
+    fs::create_dir(base_path.join("spaced root")).expect("spaced root");
+    fs::create_dir(base_path.join("ünïcode")).expect("unicode root");
+    fs::write(base_path.join("file.txt"), "not a directory").expect("file fixture");
+    let outside = temporary.path().join("outside");
+    fs::create_dir(&outside).expect("outside directory");
+
+    let base = ConfigurationDirectory::new(&base_path).expect("configuration base");
+    let absolute = |path: PathBuf| {
+        path.into_os_string()
+            .into_string()
+            .expect("UTF-8 fixture path")
+    };
+
+    for (name, roots, accepted) in [
+        ("single", vec!["alpha".to_owned()], true),
+        (
+            "multiple-distinct",
+            vec!["alpha".to_owned(), "nested/beta".to_owned()],
+            true,
+        ),
+        ("empty", vec![], false),
+        (
+            "duplicate",
+            vec!["alpha".to_owned(), "alpha".to_owned()],
+            false,
+        ),
+        (
+            "canonical-dot-alias",
+            vec!["alpha".to_owned(), "./alpha".to_owned()],
+            false,
+        ),
+        (
+            "canonical-normalizing-alias",
+            vec!["nested/beta".to_owned(), "nested/../nested/beta".to_owned()],
+            false,
+        ),
+        ("missing", vec!["missing".to_owned()], false),
+        ("file-not-directory", vec!["file.txt".to_owned()], false),
+        (
+            "absolute-contained",
+            vec![absolute(base_path.join("alpha"))],
+            true,
+        ),
+        ("absolute-outside", vec![absolute(outside.clone())], false),
+        ("relative-escape", vec!["../outside".to_owned()], false),
+        ("spaces", vec!["spaced root".to_owned()], true),
+        ("unicode", vec!["ünïcode".to_owned()], true),
+        ("base-directory", vec![".".to_owned()], true),
+    ] {
+        assert_eq!(
+            skills_config(&base, roots).is_ok(),
+            accepted,
+            "skill root row {name}"
+        );
+    }
+
+    assert!(
+        SkillsConfig::new(
+            "skills-source",
+            true,
+            MutationGrants::new(true, true, true),
+            &base,
+            vec!["alpha".to_owned()],
+        )
+        .is_ok(),
+        "skills support full source-level grants"
+    );
+    assert!(
+        SkillsConfig::new(
+            "bad id",
+            false,
+            MutationGrants::default(),
+            &base,
+            vec!["alpha".to_owned()],
+        )
+        .is_err(),
+        "skills ID must use configuration-ID syntax"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn skill_roots_reject_canonical_aliases() {
+    use std::os::unix::fs::symlink;
+
+    let (_temporary, base_path) = configuration_tree();
+    let target = base_path.join("skills-real");
+    fs::create_dir(&target).expect("real skill root");
+    symlink(&target, base_path.join("skills-alias")).expect("alias symlink");
+    let base = ConfigurationDirectory::new(&base_path).expect("configuration base");
+
+    assert!(
+        skills_config(&base, vec!["skills-alias".to_owned()]).is_ok(),
+        "a contained alias alone resolves to its canonical target"
+    );
+    assert!(
+        skills_config(
+            &base,
+            vec!["skills-real".to_owned(), "skills-alias".to_owned()]
+        )
+        .is_err(),
+        "C12: two spellings of one canonical root must collide"
+    );
+}
+
+#[test]
+fn skill_roots_enforce_entry_ceiling() {
+    let (_temporary, base_path) = configuration_tree();
+    let names: Vec<String> = (0..MAX_CONFIGURATION_ENTRIES)
+        .map(|index| format!("root-{index}"))
+        .collect();
+    for name in &names {
+        fs::create_dir(base_path.join(name)).expect("ceiling root");
+    }
+    let base = ConfigurationDirectory::new(&base_path).expect("configuration base");
+
+    assert!(
+        skills_config(&base, names.clone()).is_ok(),
+        "the exact entry ceiling must succeed"
+    );
+    let mut over = names;
+    over.push("root-0".to_owned());
+    assert!(
+        skills_config(&base, over).is_err(),
+        "one over the entry ceiling must fail even when every entry resolves"
+    );
+}
+
+fn rules_config(
+    base: &ConfigurationDirectory,
+    manifests: Vec<String>,
+) -> Result<RulesConfig, resourcefs_sources::ConfigurationError> {
+    RulesConfig::new(
+        "rules-source",
+        false,
+        MutationGrants::default(),
+        base,
+        manifests,
+    )
+}
+
+#[test]
+fn rule_path_matrix() {
+    let (temporary, base_path) = configuration_tree();
+    fs::write(base_path.join("rules-a.toml"), "rules a").expect("first manifest");
+    fs::create_dir(base_path.join("nested")).expect("nested directory");
+    fs::write(base_path.join("nested/rules-b.toml"), "rules b").expect("second manifest");
+    fs::write(base_path.join("spaced manifest.toml"), "spaced").expect("spaced manifest");
+    fs::write(base_path.join("ünïcode.toml"), "unicode").expect("unicode manifest");
+    fs::create_dir(base_path.join("subdir")).expect("subdirectory fixture");
+    let outside = temporary.path().join("outside");
+    fs::create_dir(&outside).expect("outside directory");
+    let sentinel = outside.join("sentinel-rules.toml");
+    fs::write(&sentinel, "sibling sentinel").expect("outside sentinel");
+
+    let base = ConfigurationDirectory::new(&base_path).expect("configuration base");
+    let absolute = |path: PathBuf| {
+        path.into_os_string()
+            .into_string()
+            .expect("UTF-8 fixture path")
+    };
+
+    for (name, manifests, accepted) in [
+        ("single", vec!["rules-a.toml".to_owned()], true),
+        (
+            "multiple-distinct",
+            vec!["rules-a.toml".to_owned(), "nested/rules-b.toml".to_owned()],
+            true,
+        ),
+        ("empty", vec![], false),
+        (
+            "duplicate",
+            vec!["rules-a.toml".to_owned(), "rules-a.toml".to_owned()],
+            false,
+        ),
+        (
+            "canonical-dot-alias",
+            vec!["rules-a.toml".to_owned(), "./rules-a.toml".to_owned()],
+            false,
+        ),
+        ("missing", vec!["missing.toml".to_owned()], false),
+        ("directory-not-file", vec!["subdir".to_owned()], false),
+        (
+            "absolute-contained",
+            vec![absolute(base_path.join("rules-a.toml"))],
+            true,
+        ),
+        ("absolute-outside", vec![absolute(sentinel.clone())], false),
+        (
+            "relative-escape",
+            vec!["../outside/sentinel-rules.toml".to_owned()],
+            false,
+        ),
+        ("spaces", vec!["spaced manifest.toml".to_owned()], true),
+        ("unicode", vec!["ünïcode.toml".to_owned()], true),
+    ] {
+        assert_eq!(
+            rules_config(&base, manifests).is_ok(),
+            accepted,
+            "rule path row {name}"
+        );
+    }
+
+    assert_eq!(
+        fs::read(&sentinel).expect("sentinel readable"),
+        b"sibling sentinel",
+        "sibling sentinel must remain untouched"
+    );
+    assert!(
+        RulesConfig::new(
+            "rules-source",
+            true,
+            MutationGrants::new(true, true, true),
+            &base,
+            vec!["rules-a.toml".to_owned()],
+        )
+        .is_ok(),
+        "rules support full source-level grants"
+    );
+    assert!(
+        RulesConfig::new(
+            "bad id",
+            false,
+            MutationGrants::default(),
+            &base,
+            vec!["rules-a.toml".to_owned()],
+        )
+        .is_err(),
+        "rules ID must use configuration-ID syntax"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rule_manifests_reject_escaping_links() {
+    use std::os::unix::fs::symlink;
+
+    let temporary = TempDir::new().expect("temporary directory");
+    let base_path = temporary.path().join("config");
+    fs::create_dir(&base_path).expect("configuration base");
+    let sibling = temporary.path().join("sibling");
+    fs::create_dir(&sibling).expect("sibling directory");
+    let sentinel = sibling.join("sentinel-rules.toml");
+    fs::write(&sentinel, "sibling sentinel").expect("sibling sentinel");
+    symlink(&sentinel, base_path.join("escape.toml")).expect("escaping link");
+
+    let base = ConfigurationDirectory::new(&base_path).expect("configuration base");
+    assert!(
+        rules_config(&base, vec!["escape.toml".to_owned()]).is_err(),
+        "C13: a manifest link escaping the configuration directory must be rejected"
+    );
+    assert_eq!(
+        fs::read(&sentinel).expect("sentinel readable"),
+        b"sibling sentinel",
+        "sibling sentinel must remain untouched"
+    );
+
+    fs::write(base_path.join("contained.toml"), "contained rules").expect("contained manifest");
+    assert!(
+        rules_config(&base, vec!["contained.toml".to_owned()]).is_ok(),
+        "a contained manifest remains accepted"
+    );
+}
+
+#[test]
+fn rule_manifests_enforce_entry_ceiling() {
+    let (_temporary, base_path) = configuration_tree();
+    let names: Vec<String> = (0..MAX_CONFIGURATION_ENTRIES)
+        .map(|index| format!("manifest-{index}.toml"))
+        .collect();
+    for name in &names {
+        fs::write(base_path.join(name), "rules").expect("ceiling manifest");
+    }
+    let base = ConfigurationDirectory::new(&base_path).expect("configuration base");
+
+    assert!(
+        rules_config(&base, names.clone()).is_ok(),
+        "the exact entry ceiling must succeed"
+    );
+    let mut over = names;
+    over.push("manifest-0.toml".to_owned());
+    assert!(
+        rules_config(&base, over).is_err(),
+        "one over the entry ceiling must fail even when every entry resolves"
+    );
 }

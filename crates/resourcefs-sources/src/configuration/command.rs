@@ -47,6 +47,10 @@ impl CommandSpec {
         Ok(Self { argv, environment })
     }
 
+    pub(super) fn argv(&self) -> &[String] {
+        &self.argv
+    }
+
     pub(super) const fn environment(&self) -> &ChildEnvironment {
         &self.environment
     }

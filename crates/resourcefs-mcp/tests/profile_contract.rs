@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 
 use resourcefs_mcp::{MAX_ALLOWLIST_ENTRIES, MAX_PROFILE_BYTES, ProfileDocument, ProfileErrorKind};
 use resourcefs_sources::{
@@ -6,7 +7,7 @@ use resourcefs_sources::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tempfile::tempdir;
+use tempfile::{TempDir, tempdir};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,9 +19,76 @@ struct CorpusRow {
 }
 
 fn parse(value: &Value) -> Result<ProfileDocument, resourcefs_mcp::ProfileError> {
-    ProfileDocument::from_slice(
+    let fixture = local_fixture();
+    parse_in(value, fixture.path())
+}
+
+fn parse_in(value: &Value, base: &Path) -> Result<ProfileDocument, resourcefs_mcp::ProfileError> {
+    ProfileDocument::from_slice_in(
         &serde_json::to_vec(value).expect("serialize hand-authored profile fixture"),
+        base,
     )
+}
+
+/// A configuration base containing every path the valid local fixtures name.
+fn local_fixture() -> TempDir {
+    let directory = tempdir().expect("local profile fixture tempdir");
+    let base = directory.path();
+    for child in [
+        "skills",
+        "skills/skill-0",
+        "notes",
+        "vault",
+        "vaults",
+        "vaults/vault-0",
+    ] {
+        fs::create_dir(base.join(child)).expect("local directory fixture");
+    }
+    fs::create_dir(base.join("rules")).expect("rules directory fixture");
+    fs::write(base.join("rules/main.json"), "{}").expect("rules manifest fixture");
+    fs::write(base.join("rules/rule-0.json"), "{}").expect("rule manifest fixture");
+    fs::create_dir(base.join("memory")).expect("memory directory fixture");
+    fs::write(base.join("memory/memory-0"), "").expect("memory root fixture");
+    fs::create_dir(base.join("agents")).expect("agents directory fixture");
+    fs::write(base.join("agents/export.json"), "[]").expect("agent export fixture");
+    fs::write(base.join("agents/export-0.json"), "[]").expect("agent export fixture");
+    directory
+}
+
+/// A base holding `count` kind-appropriate local entries for cardinality rows.
+fn cardinality_fixture(kind: &str, count: usize) -> TempDir {
+    let directory = tempdir().expect("cardinality fixture tempdir");
+    let base = directory.path();
+    let present = count.min(MAX_ALLOWLIST_ENTRIES);
+    match kind {
+        "skills" | "vault" => {
+            let parent = if kind == "skills" { "skills" } else { "vaults" };
+            let stem = if kind == "skills" { "skill" } else { "vault" };
+            fs::create_dir(base.join(parent)).expect("cardinality parent fixture");
+            for index in 0..present {
+                fs::create_dir(base.join(format!("{parent}/{stem}-{index}")))
+                    .expect("cardinality directory fixture");
+            }
+        }
+        "rules" | "agentExport" | "memory" => {
+            let parent = match kind {
+                "rules" => "rules",
+                "agentExport" => "agents",
+                _ => "memory",
+            };
+            fs::create_dir(base.join(parent)).expect("cardinality parent fixture");
+            for index in 0..present {
+                let name = match kind {
+                    "rules" => format!("{parent}/rule-{index}.json"),
+                    "agentExport" => format!("{parent}/export-{index}.json"),
+                    _ => format!("{parent}/memory-{index}"),
+                };
+                fs::write(base.join(name), "").expect("cardinality file fixture");
+            }
+        }
+        _ => {}
+    }
+    directory
 }
 
 fn corpus() -> Vec<CorpusRow> {
@@ -114,10 +182,16 @@ fn source_with_entries(kind: &str, count: usize) -> Value {
                 "input":"stdin",
                 "command":{"argv":["converter"]}
             }),
-            "skills" | "rules" | "agentExport" => json!(format!("entry-{index}")),
-            "memory" | "vault" => json!({
-                "name":format!("entry-{index}"),
-                "path":format!("entry-{index}")
+            "skills" => json!(format!("skills/skill-{index}")),
+            "rules" => json!(format!("rules/rule-{index}.json")),
+            "agentExport" => json!(format!("agents/export-{index}.json")),
+            "memory" => json!({
+                "name":format!("memory-{index}"),
+                "path":format!("memory/memory-{index}")
+            }),
+            "vault" => json!({
+                "name":format!("vault-{index}"),
+                "path":format!("vaults/vault-{index}")
             }),
             "downstreamMcp" => json!({
                 "id":format!("server-{index}"),
@@ -413,6 +487,15 @@ fn profile_byte_ceiling_is_exact_and_load_is_bounded() {
         ProfileErrorKind::LimitExceeded
     );
 
+    let missing_parent = tempdir().expect("missing base parent");
+    let missing_base = missing_parent.path().join("missing");
+    assert_eq!(
+        ProfileDocument::from_slice_in(&over, &missing_base)
+            .expect_err("profile ceiling must fail before base-directory access")
+            .kind(),
+        ProfileErrorKind::LimitExceeded
+    );
+
     let directory = tempdir().expect("profile tempdir");
     let path = directory.path().join("profile.json");
     fs::write(&path, over).expect("write over-limit profile");
@@ -440,17 +523,13 @@ fn nested_allowlist_cardinality_matrix() {
         "downstreamMcp",
     ] {
         for count in [0, 1, 4_096, 4_097] {
-            let accepted = match count {
-                0 => !matches!(kind, "https" | "github" | "ssh" | "downstreamMcp"),
-                1 | 4_096 => true,
-                4_097 => false,
-                _ => unreachable!("fixed cardinality matrix"),
-            };
+            let accepted = matches!(count, 1 | 4_096);
             let profile = json!({
                 "schemaVersion":1,
                 "sources":[source_with_entries(kind, count)]
             });
-            let result = parse(&profile);
+            let fixture = cardinality_fixture(kind, count);
+            let result = parse_in(&profile, fixture.path());
             assert_eq!(
                 result.is_ok(),
                 accepted,
@@ -735,6 +814,325 @@ fn network_source_configuration_matches_constructors() {
             accepted,
             "network conversion row {name}: {result:?}"
         );
+    }
+}
+
+#[test]
+fn load_resolves_local_paths_beneath_the_profile_directory() {
+    let directory = tempdir().expect("profile tempdir");
+    fs::create_dir(directory.path().join("skills")).expect("skills fixture");
+    let path = directory.path().join("profile.json");
+
+    let valid =
+        json!({"schemaVersion":1,"sources":[source("skills", json!({"roots":["skills"]}))]});
+    fs::write(
+        &path,
+        serde_json::to_vec(&valid).expect("serialize profile"),
+    )
+    .expect("write valid profile");
+    ProfileDocument::load(&path)
+        .expect("relative local roots resolve beneath the profile directory");
+
+    let missing = json!({"schemaVersion":1,"sources":[source("skills", json!({"roots":["missing-skills"]}))]});
+    fs::write(
+        &path,
+        serde_json::to_vec(&missing).expect("serialize profile"),
+    )
+    .expect("write missing-root profile");
+    let error = ProfileDocument::load(&path).expect_err("missing local root must fail");
+    assert_eq!(error.kind(), ProfileErrorKind::InvalidProfile);
+}
+
+#[test]
+fn from_slice_in_rejects_missing_and_non_directory_bases() {
+    let directory = tempdir().expect("base tempdir");
+    let missing = directory.path().join("missing");
+    let error = ProfileDocument::from_slice_in(br#"{"schemaVersion":1}"#, &missing)
+        .expect_err("missing base directory must fail");
+    assert_eq!(error.kind(), ProfileErrorKind::Io);
+
+    let file = directory.path().join("not-a-directory");
+    fs::write(&file, "x").expect("file fixture");
+    let error = ProfileDocument::from_slice_in(br#"{"schemaVersion":1}"#, &file)
+        .expect_err("file base must fail");
+    assert_eq!(error.kind(), ProfileErrorKind::Io);
+}
+
+#[test]
+fn local_source_configuration_matches_constructors() {
+    let fixture = local_fixture();
+    let base = fixture.path();
+    let outside = tempdir().expect("outside tempdir");
+    fs::create_dir(outside.path().join("outside-dir")).expect("outside directory fixture");
+    fs::write(outside.path().join("outside.txt"), "outside").expect("outside file fixture");
+    let outside_dir = outside
+        .path()
+        .join("outside-dir")
+        .to_string_lossy()
+        .into_owned();
+    let outside_file = outside
+        .path()
+        .join("outside.txt")
+        .to_string_lossy()
+        .into_owned();
+    let contained_dir = base.join("skills").to_string_lossy().into_owned();
+
+    let documents = |converters: Value| source("documents", json!({"converters":converters}));
+    let skills = |roots: Value| source("skills", json!({"roots":roots}));
+    let rules = |manifests: Value| source("rules", json!({"manifests":manifests}));
+    let memory = |roots: Value| source("memory", json!({"roots":roots}));
+    let vault = |vaults: Value| source("vault", json!({"vaults":vaults}));
+    let agent_export = |manifests: Value| source("agentExport", json!({"manifests":manifests}));
+
+    let rows: Vec<(String, Value, bool)> = vec![
+        (
+            "documents-valid-stdin".to_owned(),
+            documents(json!([{
+                "extensions":["md"],
+                "input":"stdin",
+                "command":{"argv":["converter"]}
+            }])),
+            true,
+        ),
+        (
+            "documents-valid-path".to_owned(),
+            documents(json!([{
+                "extensions":["md"],
+                "input":"path",
+                "command":{"argv":["converter"]}
+            }])),
+            true,
+        ),
+        (
+            "documents-duplicate-extension".to_owned(),
+            documents(json!([
+                {"extensions":["md"],"input":"stdin","command":{"argv":["converter"]}},
+                {"extensions":["md"],"input":"path","command":{"argv":["converter"]}}
+            ])),
+            false,
+        ),
+        (
+            "documents-uppercase-extension".to_owned(),
+            documents(json!([{
+                "extensions":["MD"],
+                "input":"stdin",
+                "command":{"argv":["converter"]}
+            }])),
+            false,
+        ),
+        (
+            "documents-empty-extension".to_owned(),
+            documents(json!([{
+                "extensions":[""],
+                "input":"stdin",
+                "command":{"argv":["converter"]}
+            }])),
+            false,
+        ),
+        (
+            "documents-unsafe-extension".to_owned(),
+            documents(json!([{
+                "extensions":["md.txt"],
+                "input":"stdin",
+                "command":{"argv":["converter"]}
+            }])),
+            false,
+        ),
+        (
+            "documents-empty-command".to_owned(),
+            documents(json!([{
+                "extensions":["md"],
+                "input":"stdin",
+                "command":{"argv":[]}
+            }])),
+            false,
+        ),
+        (
+            "documents-empty-converters".to_owned(),
+            documents(json!([])),
+            false,
+        ),
+        ("skills-valid".to_owned(), skills(json!(["skills"])), true),
+        (
+            "skills-absolute-contained".to_owned(),
+            skills(json!([contained_dir])),
+            true,
+        ),
+        (
+            "skills-missing".to_owned(),
+            skills(json!(["skills/missing"])),
+            false,
+        ),
+        (
+            "skills-file-target".to_owned(),
+            skills(json!(["rules/main.json"])),
+            false,
+        ),
+        (
+            "skills-relative-escape".to_owned(),
+            skills(json!(["../"])),
+            false,
+        ),
+        (
+            "skills-absolute-escape".to_owned(),
+            skills(json!([outside_dir.clone()])),
+            false,
+        ),
+        (
+            "skills-duplicate-alias".to_owned(),
+            skills(json!(["skills", "./skills"])),
+            false,
+        ),
+        (
+            "rules-valid".to_owned(),
+            rules(json!(["rules/main.json"])),
+            true,
+        ),
+        (
+            "rules-missing".to_owned(),
+            rules(json!(["rules/missing.json"])),
+            false,
+        ),
+        (
+            "rules-directory-target".to_owned(),
+            rules(json!(["skills"])),
+            false,
+        ),
+        (
+            "rules-absolute-escape".to_owned(),
+            rules(json!([outside_file.clone()])),
+            false,
+        ),
+        (
+            "rules-duplicate-alias".to_owned(),
+            rules(json!(["rules/main.json", "./rules/main.json"])),
+            false,
+        ),
+        (
+            "memory-valid-file-and-directory".to_owned(),
+            memory(json!([
+                {"name":"notes","path":"notes"},
+                {"name":"manifest","path":"rules/main.json"}
+            ])),
+            true,
+        ),
+        (
+            "memory-duplicate-name".to_owned(),
+            memory(json!([
+                {"name":"dup","path":"notes"},
+                {"name":"dup","path":"memory/memory-0"}
+            ])),
+            false,
+        ),
+        (
+            "memory-duplicate-target".to_owned(),
+            memory(json!([
+                {"name":"one","path":"notes"},
+                {"name":"two","path":"notes"}
+            ])),
+            false,
+        ),
+        (
+            "memory-missing".to_owned(),
+            memory(json!([{"name":"missing","path":"memory/missing"}])),
+            false,
+        ),
+        (
+            "memory-absolute-escape".to_owned(),
+            memory(json!([{"name":"escape","path":outside_file}])),
+            false,
+        ),
+        (
+            "memory-invalid-name".to_owned(),
+            memory(json!([{"name":"bad/name","path":"notes"}])),
+            false,
+        ),
+        (
+            "vault-valid".to_owned(),
+            vault(json!([{"name":"personal","path":"vault"}])),
+            true,
+        ),
+        (
+            "vault-file-target".to_owned(),
+            vault(json!([{"name":"bad","path":"rules/main.json"}])),
+            false,
+        ),
+        (
+            "vault-duplicate-target".to_owned(),
+            vault(json!([
+                {"name":"one","path":"vault"},
+                {"name":"two","path":"vaults/../vault"}
+            ])),
+            false,
+        ),
+        (
+            "vault-missing".to_owned(),
+            vault(json!([{"name":"missing","path":"vaults/missing"}])),
+            false,
+        ),
+        (
+            "vault-absolute-escape".to_owned(),
+            vault(json!([{"name":"escape","path":outside_dir}])),
+            false,
+        ),
+        (
+            "agent-export-valid".to_owned(),
+            agent_export(json!(["agents/export.json"])),
+            true,
+        ),
+        (
+            "agent-export-missing".to_owned(),
+            agent_export(json!(["agents/missing.json"])),
+            false,
+        ),
+        (
+            "agent-export-directory-target".to_owned(),
+            agent_export(json!(["skills"])),
+            false,
+        ),
+        (
+            "agent-export-duplicate-alias".to_owned(),
+            agent_export(json!(["agents/export.json", "./agents/export.json"])),
+            false,
+        ),
+    ];
+
+    for (name, source, accepted) in rows {
+        let result = parse_in(&profile_with_source(source), base);
+        assert_eq!(
+            result.is_ok(),
+            accepted,
+            "local conversion row {name}: {result:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn local_source_symlink_aliases_and_escapes_are_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = local_fixture();
+    let base = fixture.path();
+    let outside = tempdir().expect("outside tempdir");
+    fs::create_dir(outside.path().join("outside-dir")).expect("outside directory fixture");
+    symlink(base.join("skills"), base.join("skills-alias")).expect("contained alias symlink");
+    symlink(
+        outside.path().join("outside-dir"),
+        base.join("skills-escape"),
+    )
+    .expect("escaping symlink");
+
+    let skills = |roots: Value| source("skills", json!({"roots":roots}));
+    for (name, roots) in [
+        (
+            "alias-collides-with-target",
+            json!(["skills", "skills-alias"]),
+        ),
+        ("symlink-escape", json!(["skills-escape"])),
+    ] {
+        let result = parse_in(&profile_with_source(skills(roots)), base);
+        assert!(result.is_err(), "symlink row {name}: {result:?}");
     }
 }
 

@@ -31,6 +31,7 @@ use tokio::{
 };
 use url::Url;
 
+use crate::configuration::paths::{normalize_platform_path, strip_beneath};
 use crate::pattern::{GlobMatcher, SearchMatcher};
 
 const ROOT_CONSTRUCTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -2582,34 +2583,6 @@ fn contained_workspace_path(target: &Path, root: &Path) -> Result<WorkspacePath,
     WorkspacePath::new(relative)
 }
 
-#[cfg(not(windows))]
-fn strip_beneath(target: &Path, root: &Path) -> Option<PathBuf> {
-    target.strip_prefix(root).ok().map(Path::to_owned)
-}
-
-#[cfg(windows)]
-fn strip_beneath(target: &Path, root: &Path) -> Option<PathBuf> {
-    let target_components = target.components().collect::<Vec<_>>();
-    let root_components = root.components().collect::<Vec<_>>();
-    if target_components.len() < root_components.len()
-        || !target_components
-            .iter()
-            .zip(&root_components)
-            .all(|(left, right)| {
-                left.as_os_str()
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
-            })
-    {
-        return None;
-    }
-    let mut relative = PathBuf::new();
-    for component in &target_components[root_components.len()..] {
-        relative.push(component.as_os_str());
-    }
-    Some(relative)
-}
-
 #[cfg(all(unix, not(target_os = "macos")))]
 fn final_directory_path(directory: &Dir) -> io::Result<PathBuf> {
     use std::os::fd::AsRawFd;
@@ -2704,33 +2677,6 @@ fn normalize_handle_path(path: PathBuf) -> Result<PathBuf, ResourceError> {
         ));
     }
     Ok(normalized)
-}
-
-#[cfg(not(windows))]
-fn normalize_platform_path(path: PathBuf) -> PathBuf {
-    path
-}
-
-#[cfg(windows)]
-fn normalize_platform_path(path: PathBuf) -> PathBuf {
-    use std::{
-        ffi::OsString,
-        os::windows::ffi::{OsStrExt, OsStringExt},
-    };
-
-    let wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
-    let verbatim_unc = "\\\\?\\UNC\\".encode_utf16().collect::<Vec<_>>();
-    let verbatim = "\\\\?\\".encode_utf16().collect::<Vec<_>>();
-    let normalized = if wide.starts_with(&verbatim_unc) {
-        let mut value = "\\\\".encode_utf16().collect::<Vec<_>>();
-        value.extend_from_slice(&wide[verbatim_unc.len()..]);
-        value
-    } else if wide.starts_with(&verbatim) {
-        wide[verbatim.len()..].to_vec()
-    } else {
-        wide
-    };
-    PathBuf::from(OsString::from_wide(&normalized))
 }
 
 fn authority_unavailable(message: &str) -> ResourceError {

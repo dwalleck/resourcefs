@@ -1,22 +1,36 @@
+mod agent_export;
 mod command;
+mod documents;
 mod downstream_mcp;
 mod github;
 mod grants;
 mod https;
+mod memory;
+pub(crate) mod paths;
+mod rules;
 mod secret_reference;
+mod skills;
 mod ssh;
+mod vault;
 
 use std::fmt;
 
+pub use agent_export::AgentExportConfig;
 pub use command::{ChildEnvironment, CommandSpec, EnvironmentValue};
+pub use documents::{ConverterInput, DocumentConverter, DocumentsConfig, MAX_EXTENSION_BYTES};
 pub use downstream_mcp::{
     DownstreamMcpConfig, DownstreamServer, DownstreamTransport, MAX_SCHEME_CLAIM_BYTES, SchemeClaim,
 };
 pub use github::{GithubConfig, GithubRepository};
 pub use grants::{MutationGrants, MutationSupport};
 pub use https::{CredentialHeader, HttpsConfig, HttpsOrigin};
+pub use memory::{MemoryConfig, MemoryRoot, MemoryTarget, MemoryTargetKind};
+pub use paths::{ConfigurationDirectory, ConfigurationTargetKind};
+pub use rules::RulesConfig;
 pub use secret_reference::SecretReference;
+pub use skills::SkillsConfig;
 pub use ssh::{SshConfig, SshHost};
+pub use vault::{VaultConfig, VaultRoot, VaultTarget};
 
 /// Maximum encoded length of an operator-controlled configuration identifier.
 pub const MAX_CONFIGURATION_ID_BYTES: usize = 128;
