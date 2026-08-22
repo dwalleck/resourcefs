@@ -690,7 +690,17 @@ fn initialization_and_all_tool_descriptions_advertise_catalog() {
             .map(|tool| tool["name"].as_str().expect("tool name"))
             .collect::<Vec<_>>();
         names.sort_unstable();
-        assert_eq!(names, ["rfs_glob", "rfs_read", "rfs_search"], "{version}");
+        assert_eq!(
+            names,
+            [
+                "rfs_edit",
+                "rfs_glob",
+                "rfs_read",
+                "rfs_search",
+                "rfs_write"
+            ],
+            "{version}"
+        );
         for tool in tools {
             assert!(
                 tool["description"]
@@ -742,7 +752,16 @@ fn lists_and_calls_discovery_tools() {
         .map(|tool| tool["name"].as_str().expect("tool name"))
         .collect::<Vec<_>>();
     names.sort_unstable();
-    assert_eq!(names, ["rfs_glob", "rfs_read", "rfs_search"]);
+    assert_eq!(
+        names,
+        [
+            "rfs_edit",
+            "rfs_glob",
+            "rfs_read",
+            "rfs_search",
+            "rfs_write"
+        ]
+    );
 
     let tool = |name: &str| {
         tools
@@ -753,10 +772,18 @@ fn lists_and_calls_discovery_tools() {
     let read = tool("rfs_read");
     let search = tool("rfs_search");
     let glob = tool("rfs_glob");
+    let write = tool("rfs_write");
+    let edit = tool("rfs_edit");
     for (name, schema, required) in [
         ("rfs_read", &read["inputSchema"], json!(["path"])),
         ("rfs_search", &search["inputSchema"], json!(["pattern"])),
         ("rfs_glob", &glob["inputSchema"], json!(["path"])),
+        (
+            "rfs_write",
+            &write["inputSchema"],
+            json!(["path", "content"]),
+        ),
+        ("rfs_edit", &edit["inputSchema"], json!(["patch"])),
     ] {
         assert_eq!(schema["type"], "object", "{name} input root");
         assert_eq!(schema["additionalProperties"], false, "{name} strict input");
@@ -836,6 +863,28 @@ fn lists_and_calls_discovery_tools() {
             );
         }
     }
+    for (name, schema) in [
+        ("rfs_write", &write["outputSchema"]),
+        ("rfs_edit", &edit["outputSchema"]),
+    ] {
+        assert_eq!(schema["type"], "object", "{name} output root");
+        assert_eq!(
+            schema["additionalProperties"], false,
+            "{name} output strict"
+        );
+        for member in [
+            "operation",
+            "canonicalReference",
+            "versionTag",
+            "displayedRanges",
+            "displayedEof",
+        ] {
+            assert!(
+                schema["properties"].get(member).is_some(),
+                "{name} output must expose {member}: {schema}"
+            );
+        }
+    }
 
     let search_response = process.request(
         "tools/call",
@@ -891,6 +940,129 @@ fn lists_and_calls_discovery_tools() {
         json!({"name": "rfs_missing", "arguments": {}}),
     );
     assert_eq!(unknown["error"]["code"], -32602);
+    process.finish();
+}
+
+#[test]
+fn versioned_write_receipts_and_catalog_policy_work_over_stdio() {
+    let fixture = WorkspaceFixture::new();
+    let profile = fixture.root.join("mutation-profile.json");
+    fs::write(
+        &profile,
+        serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "workspace": {
+                "roots": [{
+                    "id": "workspace",
+                    "path": fixture.root,
+                    "grants": {"create": true, "update": true, "delete": true}
+                }],
+                "primaryRoot": "workspace"
+            }
+        }))
+        .expect("profile JSON"),
+    )
+    .expect("mutation profile");
+    let mut process = McpProcess::start_profile(&profile, &fixture.root);
+    process.initialize(VERSION_2026);
+
+    let created = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_write",
+            "arguments": {"path": "created.txt", "content": "secret authored body\n"}
+        }),
+    );
+    assert!(created.get("error").is_none(), "{created}");
+    let created = &created["result"];
+    assert_eq!(created["isError"], false);
+    assert_eq!(created["structuredContent"]["operation"], "created");
+    assert_eq!(
+        created["structuredContent"]["canonicalReference"],
+        "rfs://workspace/workspace/created.txt"
+    );
+    assert_eq!(
+        created["structuredContent"]["displayedRanges"],
+        json!([{"startLine": 1, "endLine": 1}])
+    );
+    assert_eq!(created["structuredContent"]["displayedEof"], true);
+    let first_tag = created["structuredContent"]["versionTag"]
+        .as_str()
+        .expect("created Version Tag")
+        .to_owned();
+    assert!(
+        !created["content"][0]["text"]
+            .as_str()
+            .expect("receipt text")
+            .contains("secret authored body"),
+        "receipt must not echo Resource content"
+    );
+    assert_eq!(
+        process.call_read("created.txt")["structuredContent"]["content"],
+        "secret authored body\n"
+    );
+
+    let replaced = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_write",
+            "arguments": {
+                "path": "created.txt",
+                "content": "replacement\n",
+                "ifVersion": first_tag
+            }
+        }),
+    );
+    assert!(replaced.get("error").is_none(), "{replaced}");
+    let replaced = &replaced["result"];
+    assert_eq!(replaced["isError"], false);
+    assert_eq!(replaced["structuredContent"]["operation"], "replaced");
+    let replacement_tag = replaced["structuredContent"]["versionTag"]
+        .as_str()
+        .expect("replacement Version Tag");
+
+    let stale = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_write",
+            "arguments": {
+                "path": "created.txt",
+                "content": "stale\n",
+                "ifVersion": first_tag
+            }
+        }),
+    );
+    assert!(stale.get("error").is_none(), "{stale}");
+    assert_tool_error(&stale["result"], "version_conflict");
+    assert_eq!(
+        process.call_read("created.txt")["structuredContent"]["content"],
+        "replacement\n"
+    );
+
+    let catalog = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_write",
+            "arguments": {"path": "rfs://", "content": "forbidden"}
+        }),
+    );
+    assert!(catalog.get("error").is_none(), "{catalog}");
+    assert_tool_error(&catalog["result"], "permission_denied");
+
+    let edit = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_edit",
+            "arguments": {
+                "patch": format!(
+                    "[rfs://workspace/workspace/created.txt#{replacement_tag}]\nPUT 1.=1:\n+edited"
+                )
+            }
+        }),
+    );
+    assert!(edit.get("error").is_none(), "{edit}");
+    assert_tool_error(&edit["result"], "unsupported_mutation");
+
     process.finish();
 }
 

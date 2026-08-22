@@ -9,8 +9,9 @@ use std::{
 
 use resourcefs_core::{
     DiscoveryEngine, ErrorCategory, GlobLimits, GlobOptions, GlobRequest, GlobTarget,
-    OperationGuard, PathReference, PathSession, ReadEngine, ReadRequest, ResourceError,
-    SearchLimits, SearchOptions, SearchRequest, SearchTarget, ServerLimits, TextLimits,
+    MutationAccess, MutationEngine, OperationGuard, PatchOperationRef, PathReference, PathSession,
+    ReadEngine, ReadRequest, ResourceError, SearchLimits, SearchOptions, SearchRequest,
+    SearchTarget, ServerLimits, TextLimits, VersionTag, WriteRequest,
 };
 #[cfg(feature = "test-support")]
 use resourcefs_sources::StorageFailurePoint;
@@ -44,7 +45,7 @@ use crate::{
     BoxError,
     launch::LaunchPlan,
     logging::{LogLevel, LogSink},
-    render::{self, GlobToolOutput, ReadToolOutput, SearchToolOutput},
+    render::{self, GlobToolOutput, MutationToolOutput, ReadToolOutput, SearchToolOutput},
 };
 
 const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] =
@@ -126,6 +127,21 @@ struct ReadInput {
     numbered: bool,
     #[serde(default, deserialize_with = "deserialize_object_limits")]
     limits: ReadLimitsInput,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WriteInput {
+    path: String,
+    content: String,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    if_version: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EditInput {
+    patch: String,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -412,6 +428,7 @@ struct ResourceFsServer {
     source: FilesystemSource,
     read_engine: ReadEngine,
     discovery_engine: DiscoveryEngine,
+    mutation_engine: MutationEngine,
     root_sync: Arc<RootSync>,
     cancellations: Arc<RequestCancellations>,
     tool_router: ToolRouter<Self>,
@@ -430,12 +447,14 @@ impl ResourceFsServer {
     fn new(
         source: FilesystemSource,
         read_engine: ReadEngine,
+        mutation_engine: MutationEngine,
         discovery_engine: DiscoveryEngine,
         cancellations: Arc<RequestCancellations>,
     ) -> Self {
         Self {
             read_engine,
             discovery_engine,
+            mutation_engine,
             source,
             root_sync: Arc::new(RootSync {
                 state: Mutex::new(RootSyncState::Unseen),
@@ -582,6 +601,93 @@ impl ResourceFsServer {
         let request = GlobRequest::new(target, options, input.skip, limits);
         let operation = OperationGuard::new();
         self.execute_glob(request, &input.path, &operation).await
+    }
+
+    #[tool(
+        name = "rfs_write",
+        description = "Start with rfs_read of rfs:// to discover mounted sources. Create one UTF-8 text Resource when create is granted and the parent exists; replace existing text only when update is granted and ifVersion matches its current content-derived Version Tag. Mutation policy remains authoritative. Returns a compact receipt without repeating Resource content.",
+        output_schema = schema_for_type::<MutationToolOutput>()
+    )]
+    async fn write(
+        &self,
+        Parameters(input): Parameters<WriteInput>,
+    ) -> Result<CallToolResult, String> {
+        self.execute_write(input, &OperationGuard::new()).await
+    }
+
+    #[tool(
+        name = "rfs_edit",
+        description = "Start with rfs_read of rfs:// to discover mounted sources. Apply one [canonical-reference#Version-Tag] hashline document using PUT N.=M:, PUT <N:, PUT >N:, PUT >$:, CUT N.=M, sole REM, or sole MV <destination>. Coordinates must come from same-session displayed regions; block-star and register forms are reserved and rejected with the accepted grammar.",
+        output_schema = schema_for_type::<MutationToolOutput>()
+    )]
+    async fn edit(
+        &self,
+        Parameters(input): Parameters<EditInput>,
+    ) -> Result<CallToolResult, String> {
+        self.execute_edit(&input.patch, &OperationGuard::new())
+            .await
+    }
+
+    async fn execute_write(
+        &self,
+        input: WriteInput,
+        operation: &OperationGuard,
+    ) -> Result<CallToolResult, String> {
+        let reference = match PathReference::parse(&input.path) {
+            Ok(reference) => reference,
+            Err(error) => return render::mutation_failure(&input.path, &error),
+        };
+        let if_version = match input.if_version {
+            Some(version) => match VersionTag::parse(version) {
+                Ok(version) => Some(version),
+                Err(error) => return render::mutation_failure(&input.path, &error),
+            },
+            None => None,
+        };
+        let request = match WriteRequest::new(reference, input.content, if_version) {
+            Ok(request) => request,
+            Err(error) => return render::mutation_failure(&input.path, &error),
+        };
+        match self.mutation_engine.write(request, operation).await {
+            Ok(receipt) => render::mutation_success(receipt),
+            Err(error) => render::mutation_failure(&input.path, &error),
+        }
+    }
+
+    async fn execute_edit(
+        &self,
+        document: &str,
+        operation: &OperationGuard,
+    ) -> Result<CallToolResult, String> {
+        let patch = match self.mutation_engine.parse_edit(document) {
+            Ok(patch) => patch,
+            Err(error) => return render::mutation_failure("", &error),
+        };
+        let access = match patch.operations()[0].kind() {
+            PatchOperationRef::Put { .. } | PatchOperationRef::Cut { .. } => MutationAccess::Update,
+            PatchOperationRef::Remove | PatchOperationRef::Move { .. } => MutationAccess::Delete,
+        };
+        if let Err(error) = self
+            .mutation_engine
+            .adapter()
+            .resolve(patch.target(), access)
+            .await
+        {
+            return render::mutation_failure(patch.target().requested(), &error);
+        }
+        if !operation.is_active() {
+            return render::mutation_failure(
+                patch.target().requested(),
+                &ResourceError::new(ErrorCategory::Cancelled, "rfs_edit was cancelled"),
+            );
+        }
+        render::mutation_failure(
+            patch.target().requested(),
+            &ResourceError::new(
+                ErrorCategory::UnsupportedMutation,
+                "PUT/CUT/REM/MV execution is not enabled in this increment",
+            ),
+        )
     }
 
     async fn execute_read(
@@ -778,6 +884,86 @@ impl ResourceFsServer {
         .map_err(|error| McpError::internal_error(error, None))?;
         Ok(result.into())
     }
+    async fn dispatch_write(
+        &self,
+        request: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+        cancellation: watch::Receiver<bool>,
+    ) -> Result<CallToolResponse, McpError> {
+        let input: WriteInput = deserialize_input(request).map_err(|error| {
+            McpError::invalid_params(format!("invalid rfs_write arguments: {error}"), None)
+        })?;
+        let requested_path = input.path.clone();
+        let operation = OperationGuard::new();
+        let cancelled_result = || {
+            render::mutation_failure(
+                &requested_path,
+                &ResourceError::new(ErrorCategory::Cancelled, "rfs_write was cancelled"),
+            )
+        };
+        if !self
+            .refresh_client_roots_with_cancellation(
+                context,
+                cancellation_received(cancellation.clone()),
+            )
+            .await
+        {
+            operation.cancel();
+            return cancelled_result()
+                .map(CallToolResponse::from)
+                .map_err(|error| McpError::internal_error(error, None));
+        }
+        let pending = self.execute_write(input, &operation);
+        let result = run_under_cancellation(
+            &operation,
+            cancellation_received(cancellation),
+            pending,
+            cancelled_result,
+        )
+        .await
+        .map_err(|error| McpError::internal_error(error, None))?;
+        Ok(result.into())
+    }
+
+    async fn dispatch_edit(
+        &self,
+        request: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+        cancellation: watch::Receiver<bool>,
+    ) -> Result<CallToolResponse, McpError> {
+        let input: EditInput = deserialize_input(request).map_err(|error| {
+            McpError::invalid_params(format!("invalid rfs_edit arguments: {error}"), None)
+        })?;
+        let operation = OperationGuard::new();
+        let cancelled_result = || {
+            render::mutation_failure(
+                "",
+                &ResourceError::new(ErrorCategory::Cancelled, "rfs_edit was cancelled"),
+            )
+        };
+        if !self
+            .refresh_client_roots_with_cancellation(
+                context,
+                cancellation_received(cancellation.clone()),
+            )
+            .await
+        {
+            operation.cancel();
+            return cancelled_result()
+                .map(CallToolResponse::from)
+                .map_err(|error| McpError::internal_error(error, None));
+        }
+        let pending = self.execute_edit(&input.patch, &operation);
+        let result = run_under_cancellation(
+            &operation,
+            cancellation_received(cancellation),
+            pending,
+            cancelled_result,
+        )
+        .await
+        .map_err(|error| McpError::internal_error(error, None))?;
+        Ok(result.into())
+    }
 }
 
 async fn cancellation_received(mut cancellation: watch::Receiver<bool>) {
@@ -949,6 +1135,8 @@ impl ServerHandler for ResourceFsServer {
             "rfs_read" => self.dispatch_read(request, &context, cancellation).await,
             "rfs_search" => self.dispatch_search(request, &context, cancellation).await,
             "rfs_glob" => self.dispatch_glob(request, &context, cancellation).await,
+            "rfs_write" => self.dispatch_write(request, &context, cancellation).await,
+            "rfs_edit" => self.dispatch_edit(request, &context, cancellation).await,
             _ => Err(McpError::invalid_params("tool not found", None)),
         }
     }
@@ -1174,15 +1362,22 @@ async fn serve_inner(
     let read_sources = Arc::clone(&compiled_sources);
     let discovery_sources = Arc::clone(&compiled_sources);
     let read_engine = ReadEngine::new(read_sources, session.clone(), limits);
+    let mutation_engine = MutationEngine::new(compiled_sources, session.clone());
     let discovery_engine = DiscoveryEngine::new(discovery_sources, session, limits);
     let (stdin, stdout) = rmcp::transport::stdio();
     let stdio = rmcp::transport::async_rw::AsyncRwTransport::<RoleServer, _, _>::new(stdin, stdout);
     let cancellations = Arc::new(RequestCancellations::default());
     let transport =
         DisconnectTransport::new(stdio, Arc::clone(&disconnect), Arc::clone(&cancellations));
-    let running = match ResourceFsServer::new(source, read_engine, discovery_engine, cancellations)
-        .serve(transport)
-        .await
+    let running = match ResourceFsServer::new(
+        source,
+        read_engine,
+        mutation_engine,
+        discovery_engine,
+        cancellations,
+    )
+    .serve(transport)
+    .await
     {
         Ok(running) => running,
         Err(error) => {

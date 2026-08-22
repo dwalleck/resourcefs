@@ -14,6 +14,7 @@ test-support = ["resourcefs-core/test-support"]
 async-trait.workspace = true
 cap-std.workspace = true
 directories.workspace = true
+getrandom.workspace = true
 globset.workspace = true
 ignore.workspace = true
 pcre2-sys.workspace = true

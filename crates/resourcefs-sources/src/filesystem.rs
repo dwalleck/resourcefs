@@ -1,3 +1,6 @@
+#[path = "filesystem_mutation.rs"]
+mod mutation;
+
 use std::{
     collections::{HashMap, HashSet},
     io::{self, BufRead, BufReader},

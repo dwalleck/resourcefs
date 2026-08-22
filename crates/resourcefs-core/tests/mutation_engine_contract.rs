@@ -10,9 +10,9 @@ use std::{
 use async_trait::async_trait;
 use resourcefs_core::{
     ArtifactId, DisplayedLineRange, ErrorCategory, MutationAccess, MutationAdapter, MutationEngine,
-    MutationOutcome, MutationSourceKey, MutationState, MutationTarget, OperationGuard,
+    MutationOperation, MutationSourceKey, MutationState, MutationTarget, OperationGuard,
     PathReference, PathSession, ResourceError, ServerLimits, SessionStorage, SessionToken,
-    SourceMutation, VersionSelector, VersionTag,
+    SourceMutation, VersionSelector, VersionTag, WriteRequest,
 };
 use tokio::sync::Mutex;
 
@@ -88,11 +88,107 @@ impl MutationAdapter for FakeAdapter {
         &self,
         _mutation: SourceMutation,
         _operation: &OperationGuard,
-    ) -> Result<MutationOutcome, ResourceError> {
+    ) -> Result<(), ResourceError> {
         Err(ResourceError::new(
             ErrorCategory::UnsupportedMutation,
             "fake adapter does not commit",
         ))
+    }
+}
+
+struct StatefulAdapter {
+    state: Mutex<MutationState>,
+    fail_commit: AtomicBool,
+}
+
+impl StatefulAdapter {
+    fn new(state: MutationState) -> Self {
+        Self {
+            state: Mutex::new(state),
+            fail_commit: AtomicBool::new(false),
+        }
+    }
+
+    fn fail_next_commit(&self) {
+        self.fail_commit.store(true, Ordering::Release);
+    }
+}
+
+#[async_trait]
+impl MutationAdapter for StatefulAdapter {
+    async fn resolve(
+        &self,
+        reference: &PathReference,
+        _access: MutationAccess,
+    ) -> Result<MutationTarget, ResourceError> {
+        MutationTarget::new(
+            reference.clone(),
+            MutationSourceKey::new("stateful").expect("source key"),
+        )
+    }
+
+    async fn load(
+        &self,
+        _target: &MutationTarget,
+        _access: MutationAccess,
+        _operation: &OperationGuard,
+    ) -> Result<MutationState, ResourceError> {
+        Ok(self.state.lock().await.clone())
+    }
+
+    async fn commit(
+        &self,
+        mutation: SourceMutation,
+        _operation: &OperationGuard,
+    ) -> Result<(), ResourceError> {
+        if self.fail_commit.swap(false, Ordering::AcqRel) {
+            return Err(ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                "injected commit failure",
+            ));
+        }
+        let mut state = self.state.lock().await;
+        match mutation {
+            SourceMutation::Create { content, .. } => {
+                if !matches!(*state, MutationState::Missing) {
+                    return Err(ResourceError::new(
+                        ErrorCategory::VersionConflict,
+                        "destination exists",
+                    ));
+                }
+                *state = MutationState::Text {
+                    version_tag: VersionTag::from_content(content.as_bytes()),
+                    content,
+                };
+            }
+            SourceMutation::Replace {
+                expected, content, ..
+            } => {
+                let MutationState::Text { version_tag, .. } = &*state else {
+                    return Err(ResourceError::new(
+                        ErrorCategory::VersionConflict,
+                        "destination is missing",
+                    ));
+                };
+                if version_tag != &expected {
+                    return Err(ResourceError::new(
+                        ErrorCategory::VersionConflict,
+                        "stale destination",
+                    ));
+                }
+                *state = MutationState::Text {
+                    version_tag: VersionTag::from_content(content.as_bytes()),
+                    content,
+                };
+            }
+            SourceMutation::Delete { .. } | SourceMutation::Move { .. } => {
+                return Err(ResourceError::new(
+                    ErrorCategory::UnsupportedMutation,
+                    "unsupported fake mutation",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -106,6 +202,113 @@ fn session(value: u8) -> PathSession {
 
 fn engine() -> MutationEngine {
     MutationEngine::new(Arc::new(FakeAdapter), session(1))
+}
+
+#[tokio::test]
+async fn write_state_matrix_and_receipt_coverage() {
+    let adapter = Arc::new(StatefulAdapter::new(MutationState::Missing));
+    let path =
+        PathReference::parse("rfs://workspace/workspace/fixture.txt").expect("canonical reference");
+    let session = session(3);
+    let engine = MutationEngine::new(adapter, session.clone());
+
+    let created = engine
+        .write(
+            WriteRequest::new(path.clone(), "one\ntwo\n".to_owned(), None).expect("create request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("create");
+    assert_eq!(created.operation(), MutationOperation::Created);
+    assert_eq!(created.canonical_reference(), &path);
+    assert_eq!(created.source_reference(), None);
+    let created_tag = created.version_tag().expect("created Version Tag").clone();
+    assert_eq!(
+        created.displayed_ranges(),
+        &[DisplayedLineRange::new(1, 2).expect("created coverage")]
+    );
+    assert!(created.displayed_eof());
+    let snapshot = session
+        .resolve_seen_for_test(
+            path.requested(),
+            &VersionSelector::full(created_tag.clone()),
+        )
+        .await
+        .expect("created receipt snapshot");
+    assert_eq!(snapshot.1, created.displayed_ranges());
+    assert!(snapshot.2);
+
+    let duplicate = engine
+        .write(
+            WriteRequest::new(path.clone(), "duplicate".to_owned(), None)
+                .expect("duplicate request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("create over existing");
+    assert_eq!(duplicate.category(), ErrorCategory::VersionConflict);
+
+    let stale = engine
+        .write(
+            WriteRequest::new(
+                path.clone(),
+                "replacement".to_owned(),
+                Some(VersionTag::from_content(b"stale")),
+            )
+            .expect("stale request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("stale replacement");
+    assert_eq!(stale.category(), ErrorCategory::VersionConflict);
+
+    let replaced = engine
+        .write(
+            WriteRequest::new(path.clone(), "replacement".to_owned(), Some(created_tag))
+                .expect("replace request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("replace");
+    assert_eq!(replaced.operation(), MutationOperation::Replaced);
+    assert_eq!(
+        replaced.displayed_ranges(),
+        &[DisplayedLineRange::new(1, 1).expect("replacement coverage")]
+    );
+}
+#[test]
+fn mutation_operation_spellings_are_stable() {
+    assert_eq!(
+        [
+            MutationOperation::Created.as_str(),
+            MutationOperation::Replaced.as_str(),
+            MutationOperation::Edited.as_str(),
+            MutationOperation::Deleted.as_str(),
+            MutationOperation::Moved.as_str(),
+        ],
+        ["created", "replaced", "edited", "deleted", "moved"]
+    );
+}
+
+#[tokio::test]
+async fn failed_commit_releases_seen_reservation() {
+    let adapter = Arc::new(StatefulAdapter::new(MutationState::Missing));
+    adapter.fail_next_commit();
+    let session = session(4);
+    let engine = MutationEngine::new(adapter, session.clone());
+    let path =
+        PathReference::parse("rfs://workspace/workspace/fixture.txt").expect("canonical reference");
+
+    let error = engine
+        .write(
+            WriteRequest::new(path, "content".to_owned(), None).expect("write request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("injected failure");
+
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    assert_eq!(session.used_bytes().await, 0);
 }
 
 #[tokio::test]

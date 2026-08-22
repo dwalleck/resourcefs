@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 
 use resourcefs_core::{
     BEHAVIOR_CONTRACT_VERSION, DiscoveryDiagnostic, DisplayedLineRange, GlobKind, GlobResult,
-    ReadResource, ResourceError, SearchEngine, SearchResult,
+    MutationReceipt, ReadResource, ResourceError, SearchEngine, SearchResult,
 };
 use rmcp::model::{CallToolResult, ContentBlock};
 use schemars::JsonSchema;
@@ -61,6 +61,34 @@ impl From<DisplayedLineRange> for DisplayedRangeOutput {
             end_line: range.end_line(),
         }
     }
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct MutationToolOutput {
+    ok: bool,
+    contract_version: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    canonical_reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    displayed_ranges: Option<Vec<DisplayedRangeOutput>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    displayed_eof: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<MutationErrorOutput>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct MutationErrorOutput {
+    category: String,
+    message: String,
 }
 
 pub(crate) fn success(
@@ -203,6 +231,89 @@ pub(crate) fn failure(
     };
     let structured = serde_json::to_value(output).map_err(|serialization_error| {
         format!("failed to serialize rfs_read error: {serialization_error}")
+    })?;
+    let mut result = CallToolResult::error(vec![ContentBlock::text(text)]);
+    result.structured_content = Some(structured);
+    Ok(result)
+}
+
+pub(crate) fn mutation_success(receipt: MutationReceipt) -> Result<CallToolResult, String> {
+    let operation = receipt.operation().as_str();
+    let canonical_reference = receipt.canonical_reference().requested();
+    let mut text = String::with_capacity(canonical_reference.len() + 192);
+    writeln!(text, "[rfs_mutation]").expect("writing mutation receipt to String cannot fail");
+    writeln!(text, "operation: {operation}")
+        .expect("writing mutation operation to String cannot fail");
+    writeln!(text, "canonicalReference: {canonical_reference}")
+        .expect("writing mutation reference to String cannot fail");
+    if let Some(source) = receipt.source_reference() {
+        writeln!(text, "sourceReference: {}", source.requested())
+            .expect("writing mutation source to String cannot fail");
+    }
+    if let Some(version_tag) = receipt.version_tag() {
+        writeln!(text, "versionTag: {version_tag}")
+            .expect("writing mutation Version Tag to String cannot fail");
+    }
+    write_displayed_metadata(
+        &mut text,
+        receipt.displayed_ranges(),
+        receipt.displayed_eof(),
+    );
+    if text.ends_with('\n') {
+        text.truncate(text.len() - 1);
+    }
+    let output = MutationToolOutput {
+        ok: true,
+        contract_version: BEHAVIOR_CONTRACT_VERSION,
+        operation: Some(operation.to_owned()),
+        canonical_reference: Some(canonical_reference.to_owned()),
+        source_reference: receipt
+            .source_reference()
+            .map(|reference| reference.requested().to_owned()),
+        version_tag: receipt.version_tag().map(ToString::to_string),
+        displayed_ranges: Some(
+            receipt
+                .displayed_ranges()
+                .iter()
+                .copied()
+                .map(DisplayedRangeOutput::from)
+                .collect(),
+        ),
+        displayed_eof: Some(receipt.displayed_eof()),
+        error: None,
+    };
+    let structured = serde_json::to_value(output)
+        .map_err(|error| format!("failed to serialize mutation result: {error}"))?;
+    let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
+    result.structured_content = Some(structured);
+    Ok(result)
+}
+
+pub(crate) fn mutation_failure(
+    requested_path: &str,
+    error: &ResourceError,
+) -> Result<CallToolResult, String> {
+    let text = format!(
+        "[rfs_error]\ncategory: {}\npath: {requested_path}\nmessage: {}",
+        error.category(),
+        error.message()
+    );
+    let output = MutationToolOutput {
+        ok: false,
+        contract_version: BEHAVIOR_CONTRACT_VERSION,
+        operation: None,
+        canonical_reference: None,
+        source_reference: None,
+        version_tag: None,
+        displayed_ranges: None,
+        displayed_eof: None,
+        error: Some(MutationErrorOutput {
+            category: error.category().as_str().to_owned(),
+            message: error.message().to_owned(),
+        }),
+    };
+    let structured = serde_json::to_value(output).map_err(|serialization_error| {
+        format!("failed to serialize mutation error: {serialization_error}")
     })?;
     let mut result = CallToolResult::error(vec![ContentBlock::text(text)]);
     result.structured_content = Some(structured);

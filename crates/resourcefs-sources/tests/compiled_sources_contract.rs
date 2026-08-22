@@ -2,8 +2,9 @@ use std::{fs, sync::Arc};
 
 use resourcefs_core::{
     DiscoveryEngine, ErrorCategory, GlobKind, GlobLimits, GlobOptions, GlobRequest, GlobTarget,
-    OperationGuard, PathReference, ProjectionSelector, SearchLimits, SearchOptions, SearchRequest,
-    SearchTarget, SourceAdapter, WorkspacePath, WorkspaceRootId,
+    MutationAccess, MutationAdapter, OperationGuard, PathReference, ProjectionSelector,
+    SearchLimits, SearchOptions, SearchRequest, SearchTarget, SourceAdapter, WorkspacePath,
+    WorkspaceRootId,
 };
 use resourcefs_sources::{
     ArtifactSource, BackingPathVisibility, ClientRoot, CompiledSources, FilesystemSource,
@@ -86,6 +87,24 @@ fn artifact_projection(root: &str, selector: &str) -> PathReference {
         Some(ProjectionSelector::parse(selector).expect("selector")),
     )
     .expect("artifact projection")
+}
+
+#[tokio::test]
+async fn catalogs_and_artifacts_are_immutable_mutation_targets() {
+    let fixture = fixture().await;
+    for spelling in ["rfs://", "rfs://workspace", fixture.artifact_root.as_str()] {
+        let reference = PathReference::parse(spelling).expect("immutable reference");
+        let error = fixture
+            .compiled
+            .resolve(&reference, MutationAccess::Update)
+            .await
+            .expect_err("immutable mutation target");
+        assert_eq!(
+            error.category(),
+            ErrorCategory::PermissionDenied,
+            "{spelling}"
+        );
+    }
 }
 
 #[tokio::test]

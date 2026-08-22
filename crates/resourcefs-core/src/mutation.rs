@@ -409,6 +409,16 @@ fn validate_operation_conflicts(operations: &[PatchOperation]) -> Result<(), Res
     Ok(())
 }
 
+fn complete_content_ranges(content: &str) -> Result<Vec<crate::DisplayedLineRange>, ResourceError> {
+    let lines = content.bytes().filter(|byte| *byte == b'\n').count() as u64
+        + u64::from(!content.is_empty() && !content.ends_with('\n'));
+    if lines == 0 {
+        Ok(Vec::new())
+    } else {
+        crate::DisplayedLineRange::new(1, lines).map(|range| vec![range])
+    }
+}
+
 fn invalid_patch(message: impl Into<String>) -> ResourceError {
     ResourceError::new(ErrorCategory::InvalidPatch, message)
 }
@@ -418,6 +428,89 @@ pub enum MutationAccess {
     Create,
     Update,
     Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteRequest {
+    reference: PathReference,
+    content: String,
+    if_version: Option<VersionTag>,
+}
+
+impl WriteRequest {
+    pub fn new(
+        reference: PathReference,
+        content: String,
+        if_version: Option<VersionTag>,
+    ) -> Result<Self, ResourceError> {
+        if content.len() > MAX_ARTIFACT_BYTES {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!("mutation content exceeds the {MAX_ARTIFACT_BYTES}-byte ceiling"),
+            ));
+        }
+        Ok(Self {
+            reference,
+            content,
+            if_version,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationOperation {
+    Created,
+    Replaced,
+    Edited,
+    Deleted,
+    Moved,
+}
+impl MutationOperation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Replaced => "replaced",
+            Self::Edited => "edited",
+            Self::Deleted => "deleted",
+            Self::Moved => "moved",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutationReceipt {
+    operation: MutationOperation,
+    canonical_reference: PathReference,
+    source_reference: Option<PathReference>,
+    version_tag: Option<VersionTag>,
+    displayed_ranges: Vec<crate::DisplayedLineRange>,
+    displayed_eof: bool,
+}
+
+impl MutationReceipt {
+    pub const fn operation(&self) -> MutationOperation {
+        self.operation
+    }
+
+    pub const fn canonical_reference(&self) -> &PathReference {
+        &self.canonical_reference
+    }
+
+    pub const fn source_reference(&self) -> Option<&PathReference> {
+        self.source_reference.as_ref()
+    }
+
+    pub const fn version_tag(&self) -> Option<&VersionTag> {
+        self.version_tag.as_ref()
+    }
+
+    pub fn displayed_ranges(&self) -> &[crate::DisplayedLineRange] {
+        &self.displayed_ranges
+    }
+
+    pub const fn displayed_eof(&self) -> bool {
+        self.displayed_eof
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -472,6 +565,16 @@ impl MutationTarget {
     pub const fn source_key(&self) -> &MutationSourceKey {
         &self.source_key
     }
+
+    fn lock_key(&self) -> String {
+        let mut key = String::with_capacity(
+            self.source_key.as_str().len() + self.canonical_reference.requested().len() + 1,
+        );
+        key.push_str(self.source_key.as_str());
+        key.push('\0');
+        key.push_str(self.canonical_reference.requested());
+        key
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -505,26 +608,6 @@ pub enum SourceMutation {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MutationOutcome {
-    Created {
-        target: MutationTarget,
-        version_tag: VersionTag,
-    },
-    Replaced {
-        target: MutationTarget,
-        version_tag: VersionTag,
-    },
-    Deleted {
-        target: MutationTarget,
-    },
-    Moved {
-        source: MutationTarget,
-        destination: Box<MutationTarget>,
-        version_tag: VersionTag,
-    },
-}
-
 #[async_trait]
 pub trait MutationAdapter: Send + Sync {
     async fn resolve(
@@ -544,7 +627,7 @@ pub trait MutationAdapter: Send + Sync {
         &self,
         mutation: SourceMutation,
         operation: &OperationGuard,
-    ) -> Result<MutationOutcome, ResourceError>;
+    ) -> Result<(), ResourceError>;
 }
 
 #[derive(Clone)]
@@ -569,6 +652,95 @@ impl MutationEngine {
             session,
             locks: Arc::new(MutationLocks::default()),
         }
+    }
+
+    pub async fn write(
+        &self,
+        request: WriteRequest,
+        operation: &OperationGuard,
+    ) -> Result<MutationReceipt, ResourceError> {
+        let WriteRequest {
+            reference,
+            content,
+            if_version,
+        } = request;
+        let access = if if_version.is_some() {
+            MutationAccess::Update
+        } else {
+            MutationAccess::Create
+        };
+        let target = self.adapter.resolve(&reference, access).await?;
+        let _locks = self.lock_resources([target.lock_key()]).await?;
+        let state = self.adapter.load(&target, access, operation).await?;
+        let operation_kind = match (&if_version, &state) {
+            (None, MutationState::Missing) => MutationOperation::Created,
+            (None, MutationState::Text { .. }) => {
+                return Err(ResourceError::new(
+                    ErrorCategory::VersionConflict,
+                    "create requires a missing destination",
+                ));
+            }
+            (Some(_), MutationState::Missing) => {
+                return Err(ResourceError::new(
+                    ErrorCategory::VersionConflict,
+                    "replacement requires an existing Resource",
+                ));
+            }
+            (Some(expected), MutationState::Text { version_tag, .. })
+                if expected != version_tag =>
+            {
+                return Err(ResourceError::new(
+                    ErrorCategory::VersionConflict,
+                    "replacement Version Tag does not match authoritative content",
+                ));
+            }
+            (Some(_), MutationState::Text { .. }) => MutationOperation::Replaced,
+        };
+        let version_tag = VersionTag::from_content(content.as_bytes());
+        let displayed_ranges = complete_content_ranges(&content)?;
+        let reservation = self
+            .session
+            .reserve_seen(
+                target.canonical_reference().requested(),
+                &version_tag,
+                &displayed_ranges,
+                true,
+            )
+            .await?;
+        if let Err(error) = operation.begin_commit() {
+            self.session.cancel_seen(reservation).await;
+            return Err(error);
+        }
+        let mutation = match (&if_version, operation_kind) {
+            (None, MutationOperation::Created) => SourceMutation::Create {
+                target: target.clone(),
+                content,
+            },
+            (Some(expected), MutationOperation::Replaced) => SourceMutation::Replace {
+                target: target.clone(),
+                expected: expected.clone(),
+                content,
+            },
+            _ => unreachable!("write state matrix chooses one matching mutation"),
+        };
+        let committed = self.adapter.commit(mutation, operation).await;
+        debug_assert!(
+            operation.finish_commit(),
+            "write commit transition must complete"
+        );
+        if let Err(error) = committed {
+            self.session.cancel_seen(reservation).await;
+            return Err(error);
+        }
+        self.session.publish_seen(reservation).await;
+        Ok(MutationReceipt {
+            operation: operation_kind,
+            canonical_reference: target.canonical_reference().clone(),
+            source_reference: None,
+            version_tag: Some(version_tag),
+            displayed_ranges,
+            displayed_eof: true,
+        })
     }
 
     pub fn parse_edit(&self, document: &str) -> Result<HashlinePatch, ResourceError> {

@@ -1146,6 +1146,7 @@ dependencies = [
  "async-trait",
  "cap-std",
  "directories",
+ "getrandom 0.4.3",
  "globset",
  "ignore",
  "pcre2-sys",

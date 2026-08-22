@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use resourcefs_core::{
-    CatalogAddress, DiscoveryAdapter, GlobOptions, GlobSource, GlobTarget, OperationGuard,
-    PathReference, ResourceAddress, ResourceError, SearchOptions, SearchSourceResult, SearchTarget,
-    SourceAdapter, SourceGlobResult, SourceResource, catalog_discovery_unsupported,
+    CatalogAddress, DiscoveryAdapter, GlobOptions, GlobSource, GlobTarget, MutationAccess,
+    MutationAdapter, MutationState, MutationTarget, OperationGuard, PathReference, ResourceAddress,
+    ResourceError, SearchOptions, SearchSourceResult, SearchTarget, SourceAdapter,
+    SourceGlobResult, SourceMutation, SourceResource, catalog_discovery_unsupported,
 };
 
 use crate::{
@@ -74,6 +75,42 @@ impl SourceAdapter for CompiledSources {
             ResourceAddress::Workspace(_) => self.filesystem.read(reference).await,
             ResourceAddress::Artifact(_) => self.artifacts.read(reference).await,
         }
+    }
+}
+
+#[async_trait]
+impl MutationAdapter for CompiledSources {
+    async fn resolve(
+        &self,
+        reference: &PathReference,
+        access: MutationAccess,
+    ) -> Result<MutationTarget, ResourceError> {
+        match reference.address() {
+            ResourceAddress::Workspace(_) => self.filesystem.resolve(reference, access).await,
+            ResourceAddress::Catalog(_) | ResourceAddress::Artifact(_) => {
+                Err(resourcefs_core::ResourceError::new(
+                    resourcefs_core::ErrorCategory::PermissionDenied,
+                    "catalog and Artifact Resources are immutable",
+                ))
+            }
+        }
+    }
+
+    async fn load(
+        &self,
+        target: &MutationTarget,
+        access: MutationAccess,
+        operation: &OperationGuard,
+    ) -> Result<MutationState, ResourceError> {
+        self.filesystem.load(target, access, operation).await
+    }
+
+    async fn commit(
+        &self,
+        mutation: SourceMutation,
+        operation: &OperationGuard,
+    ) -> Result<(), ResourceError> {
+        self.filesystem.commit(mutation, operation).await
     }
 }
 

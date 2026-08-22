@@ -201,6 +201,7 @@ struct SessionState {
     digest_index: HashMap<[u8; 32], Vec<ArtifactId>>,
     snapshots: HashMap<SnapshotKey, SeenSnapshot>,
     snapshot_bytes: usize,
+    reserved_snapshot_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -235,6 +236,25 @@ struct SnapshotUpdate {
     next_snapshot_bytes: usize,
 }
 
+pub(crate) struct SeenReservation {
+    session: PathSession,
+    update: Option<SnapshotUpdate>,
+    reserved_bytes: usize,
+}
+
+impl Drop for SeenReservation {
+    fn drop(&mut self) {
+        if self.reserved_bytes == 0 {
+            return;
+        }
+        let session = self.session.clone();
+        let reserved_bytes = self.reserved_bytes;
+        tokio::spawn(async move {
+            session.release_seen_reservation(reserved_bytes).await;
+        });
+    }
+}
+
 impl PathSession {
     pub fn new(
         token: SessionToken,
@@ -252,6 +272,7 @@ impl PathSession {
                     digest_index: HashMap::new(),
                     snapshots: HashMap::new(),
                     snapshot_bytes: 0,
+                    reserved_snapshot_bytes: 0,
                 }),
                 storage,
                 limits,
@@ -451,6 +472,94 @@ impl PathSession {
         apply_snapshot_update(&mut state, Some(update));
         state.used_bytes = next_used_bytes;
         Ok(())
+    }
+
+    pub(crate) async fn reserve_seen(
+        &self,
+        canonical_reference: &str,
+        version_tag: &VersionTag,
+        ranges: &[DisplayedLineRange],
+        displayed_eof: bool,
+    ) -> Result<SeenReservation, ResourceError> {
+        let mut state = self.inner.admission.lock().await;
+        let key = SnapshotKey {
+            canonical_reference: canonical_reference.to_owned(),
+            version_tag: version_tag.clone(),
+        };
+        let key_bytes = if state.snapshots.contains_key(&key) {
+            0
+        } else {
+            canonical_reference
+                .len()
+                .checked_add(version_tag.as_str().len())
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<bool>()))
+                .ok_or_else(|| session_quota_error(self.inner.limits.session_bytes()))?
+        };
+        let reserved_bytes = ranges
+            .len()
+            .checked_mul(std::mem::size_of::<DisplayedLineRange>())
+            .and_then(|bytes| bytes.checked_add(key_bytes))
+            .ok_or_else(|| session_quota_error(self.inner.limits.session_bytes()))?;
+        let projected = state
+            .used_bytes
+            .checked_add(state.reserved_snapshot_bytes)
+            .and_then(|bytes| bytes.checked_add(reserved_bytes))
+            .ok_or_else(|| session_quota_error(self.inner.limits.session_bytes()))?;
+        if projected > self.inner.limits.session_bytes() {
+            return Err(session_quota_error(self.inner.limits.session_bytes()));
+        }
+        let update = prepare_snapshot_update(
+            &state,
+            SeenRecord {
+                canonical_reference,
+                version_tag,
+                ranges,
+                displayed_eof,
+            },
+            self.inner.limits.session_bytes(),
+        )?;
+        state.reserved_snapshot_bytes += reserved_bytes;
+        Ok(SeenReservation {
+            session: self.clone(),
+            update: Some(update),
+            reserved_bytes,
+        })
+    }
+
+    pub(crate) async fn publish_seen(&self, mut reservation: SeenReservation) {
+        let mut state = self.inner.admission.lock().await;
+        state.reserved_snapshot_bytes = state
+            .reserved_snapshot_bytes
+            .checked_sub(reservation.reserved_bytes)
+            .expect("published reservation must remain charged");
+        let update = reservation
+            .update
+            .take()
+            .expect("unpublished reservation carries one snapshot update");
+        let artifact_bytes = state
+            .used_bytes
+            .checked_sub(state.snapshot_bytes)
+            .expect("session snapshot accounting cannot exceed used bytes");
+        state.used_bytes = artifact_bytes
+            .checked_add(update.next_snapshot_bytes)
+            .expect("reserved snapshot update fits the session byte ceiling");
+        apply_snapshot_update(&mut state, Some(update));
+        reservation.reserved_bytes = 0;
+    }
+
+    pub(crate) async fn cancel_seen(&self, mut reservation: SeenReservation) {
+        self.release_seen_reservation(reservation.reserved_bytes)
+            .await;
+        reservation.update.take();
+        reservation.reserved_bytes = 0;
+    }
+
+    async fn release_seen_reservation(&self, reserved_bytes: usize) {
+        let mut state = self.inner.admission.lock().await;
+        state.reserved_snapshot_bytes = state
+            .reserved_snapshot_bytes
+            .checked_sub(reserved_bytes)
+            .expect("seen reservation release matches its charge");
     }
 
     #[cfg(feature = "test-support")]
@@ -654,7 +763,10 @@ fn combined_session_bytes(
         .checked_add(added_artifact_bytes)
         .and_then(|bytes| bytes.checked_add(next_snapshot_bytes))
         .ok_or_else(|| session_quota_error(session_limit))?;
-    if resulting > session_limit {
+    let with_reservations = resulting
+        .checked_add(state.reserved_snapshot_bytes)
+        .ok_or_else(|| session_quota_error(session_limit))?;
+    if with_reservations > session_limit {
         return Err(session_quota_error(session_limit));
     }
     Ok(resulting)
