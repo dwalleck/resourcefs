@@ -227,6 +227,10 @@ impl CommandOutput {
         &self.stderr
     }
 
+    pub(crate) fn into_stdout(self) -> Vec<u8> {
+        self.stdout
+    }
+
     pub const fn success(&self) -> bool {
         self.success
     }

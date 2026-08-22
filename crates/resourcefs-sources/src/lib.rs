@@ -6,6 +6,7 @@ mod configuration;
 mod filesystem;
 mod pattern;
 mod process;
+pub mod secret;
 mod session_storage;
 pub use artifact::ArtifactSource;
 pub use compiled::CompiledSources;
@@ -33,6 +34,7 @@ pub use process::{
     DOWNSTREAM_STDERR_LINE_BYTES, MAX_LIVE_COMMAND_TREES, ONE_SHOT_STDERR_BYTES,
     ONE_SHOT_STDOUT_BYTES, ONE_SHOT_TIMEOUT, SECRET_HELPER_STREAM_BYTES, SECRET_HELPER_TIMEOUT,
 };
+pub use secret::{SecretResolutionError, SecretResolutionErrorKind};
 #[cfg(feature = "test-support")]
 pub use session_storage::StorageFailurePoint;
 pub use session_storage::{

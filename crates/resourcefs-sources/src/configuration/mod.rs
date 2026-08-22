@@ -28,6 +28,7 @@ pub use memory::{MemoryConfig, MemoryRoot, MemoryTarget, MemoryTargetKind};
 pub use paths::{ConfigurationDirectory, ConfigurationTargetKind};
 pub use rules::RulesConfig;
 pub use secret_reference::SecretReference;
+pub(crate) use secret_reference::SecretReferenceKind;
 pub use skills::SkillsConfig;
 pub use ssh::{SshConfig, SshHost};
 pub use vault::{VaultConfig, VaultRoot, VaultTarget};

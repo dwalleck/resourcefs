@@ -252,7 +252,7 @@ Mergeability is defined against the repository's default upstream branch; each i
 **Commands and expected results:**
 - `cargo test -p resourcefs-sources --all-features --test secret_contract` → every `helper_output_matrix` row agrees item-by-item with the literal byte table (including `value\n\n` → `value\n`, 65,536 accepted, 65,537 rejected); absent/empty environment, nonzero, timeout, cancellation, and recursion rows return bounded typed redacted errors; the ambient sentinel appears in zero captured sinks.
 - `cargo test -p resourcefs-core --test secret_opacity_contract` → Display/Debug/Serialize attempts on `Secret` fail compilation; `Redactor::scrub` removes every registered sentinel, deduplicates equal values, and removes the longer prefix-overlapping value without leaking its suffix.
-- `cargo check -p resourcefs-core -p resourcefs-sources --all-features --target x86_64-pc-windows-gnu` → cross-target green.
+- `cargo xwin clippy -p resourcefs-core -p resourcefs-sources --all-targets --all-features --target x86_64-pc-windows-msvc -- -D warnings` → the complete secret substrate and native helper contract compile warning-free against the downloaded MSVC CRT/SDK.
 - Mutation: swap `normalize_helper_stdout` to `.trim()`, re-run `helper_output_matrix` → the repeated-newline row is red; restore → green.
 
 ## Slice 7: Complete check — static offline validation and one-attempt probing with deterministic reports

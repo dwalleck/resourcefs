@@ -5,7 +5,7 @@ use super::{CommandSpec, ConfigurationError, command::validate_environment_name}
 pub struct SecretReference(SecretReferenceKind);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum SecretReferenceKind {
+pub(crate) enum SecretReferenceKind {
     Environment(String),
     Command(CommandSpec),
 }
@@ -26,5 +26,9 @@ impl SecretReference {
             ));
         }
         Ok(Self(SecretReferenceKind::Command(command)))
+    }
+
+    pub(crate) const fn kind(&self) -> &SecretReferenceKind {
+        &self.0
     }
 }

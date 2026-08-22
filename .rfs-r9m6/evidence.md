@@ -65,6 +65,7 @@
 - P5: validated prior understanding — Linux process groups contain the direct child and grandchild for the selected one-second grace/force cleanup sequence.
 - P6: validated prior understanding — native Windows direct argv preserves the configured metacharacters, cleared child environments omit the ambient secret, and a kill-on-close Win32 Job can force-terminate the full resistant descendant tree within the bounded cleanup window.
 - P6 implementation learning — reopening a reported grandchild PID immediately after Job accounting completed was unsignaled in 5 of 20 native runs. Retaining synchronization handles obtained from `JobObjectBasicProcessIdList` before `TerminateJobObject` and waiting on those exact process objects removed the race: the complete Windows contract passed and 20 repeated cleanup runs had zero failures.
+- C18 implementation validation — the environment/helper byte matrix passed every exact boundary and error row; trybuild rejected Display, Debug, and Serialize for `Secret`; the leftmost-longest redactor removed duplicate and prefix-overlapping sentinels; MSVC cross-target clippy passed. Replacing exactly-one-ending normalization with `.trim()` failed the `value\n\n` row (`value` observed versus required `value\n`); restoration passed.
 
 ## Related issues
 

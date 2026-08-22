@@ -5,6 +5,7 @@ mod error;
 mod read;
 mod reference;
 mod resource;
+mod secret;
 mod selector;
 mod session;
 mod source;
@@ -29,6 +30,7 @@ pub use resource::{
     ArtifactProjectionOrigin, BEHAVIOR_CONTRACT_VERSION, MAX_ARTIFACT_BYTES, MAX_TEXT_BYTES,
     MAX_TEXT_COLUMNS, MAX_TEXT_LINES, ReadResource, SourceResource, TEXT_CONTENT_TYPE,
 };
+pub use secret::{Redactor, Secret, SecretError};
 pub use selector::{SelectedText, select_utf8};
 pub use session::{
     ArtifactId, MAX_SESSION_ARTIFACTS, MAX_SESSION_BYTES, OperationGuard, PathSession,
