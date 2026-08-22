@@ -512,7 +512,7 @@ impl ResourceFsServer {
 
     #[tool(
         name = "rfs_read",
-        description = "Read one Resource by Path Reference. Relative paths resolve only under the configured Primary Workspace Root. Optional limits may only lower the 49,152-byte, 3,000-line, and 512-column text ceilings. Follow continuationReference for the next page; recoveryReference names the complete immutable selected projection. Returns complete non-empty text and equivalent structured content; operational failures are tool errors with stable categories.",
+        description = "Start with rfs_read of rfs:// to discover mounted sources. Read one Resource by Path Reference. Relative paths resolve only under the configured Primary Workspace Root. Optional limits may only lower the 49,152-byte, 3,000-line, and 512-column text ceilings. Follow continuationReference for the next page; recoveryReference names the complete immutable selected projection. Returns complete non-empty text and equivalent structured content; operational failures are tool errors with stable categories.",
         output_schema = schema_for_type::<ReadToolOutput>()
     )]
     async fn read(
@@ -529,7 +529,7 @@ impl ResourceFsServer {
 
     #[tool(
         name = "rfs_search",
-        description = "Search Workspace files and Artifact Resources for matching lines. Omit path to search the Primary Workspace Root recursively; one optional exact Workspace file/directory or Artifact path limits the scan to that target and its descendants, and a concrete target is attempted exactly as named. Defaults: caseSensitive=true, gitignore=true, hidden=false, skip=0; caseSensitive=false selects Unicode-aware case-insensitive matching, gitignore=false includes ignored entries, hidden=true includes hidden entries. The pattern is matched literally when it has no metacharacters, otherwise with Rust regex first and PCRE2 when Rust rejects the syntax; a pattern both engines reject is an invalid_pattern tool error, and a pattern over 65,536 UTF-8 bytes is limit_exceeded. Optional limits may only lower the 1,000-record, 49,152-byte, 3,000-line, and 512-column ceilings. Follow continuationReference for the next page; recoveryReference names the complete immutable result. Returns complete non-empty text and equivalent structured content; operational failures are tool errors with stable categories.",
+        description = "Start with rfs_read of rfs:// to discover mounted sources. Search Workspace files and Artifact Resources for matching lines. Omit path to search the Primary Workspace Root recursively; one optional exact Workspace file/directory or Artifact path limits the scan to that target and its descendants, and a concrete target is attempted exactly as named. Defaults: caseSensitive=true, gitignore=true, hidden=false, skip=0; caseSensitive=false selects Unicode-aware case-insensitive matching, gitignore=false includes ignored entries, hidden=true includes hidden entries. The pattern is matched literally when it has no metacharacters, otherwise with Rust regex first and PCRE2 when Rust rejects the syntax; a pattern both engines reject is an invalid_pattern tool error, and a pattern over 65,536 UTF-8 bytes is limit_exceeded. Optional limits may only lower the 1,000-record, 49,152-byte, 3,000-line, and 512-column ceilings. Follow continuationReference for the next page; recoveryReference names the complete immutable result. Returns complete non-empty text and equivalent structured content; operational failures are tool errors with stable categories.",
         output_schema = schema_for_type::<SearchToolOutput>()
     )]
     async fn search(
@@ -561,7 +561,7 @@ impl ResourceFsServer {
 
     #[tool(
         name = "rfs_glob",
-        description = "Enumerate Workspace files and directories and Artifact Resources matching a glob. path is one required glob pattern using canonical / separators: * ? and character classes match within one component, ** crosses directories, {a,b} alternates, and backslash escapes on every platform. Defaults: caseSensitive=true, gitignore=true, hidden=false, skip=0; caseSensitive=false selects ASCII-only case-insensitive matching, gitignore=false includes ignored entries, hidden=true includes hidden entries. An empty or invalid glob is an invalid_pattern tool error, and a pattern over 65,536 UTF-8 bytes is limit_exceeded. Optional limits may only lower the 1,000-entry ceiling. Follow continuationReference for the next page; recoveryReference names the complete immutable result. Returns complete non-empty text and equivalent structured content; operational failures are tool errors with stable categories.",
+        description = "Start with rfs_read of rfs:// to discover mounted sources. Enumerate Workspace files and directories and Artifact Resources matching a glob. path is one required glob pattern using canonical / separators: * ? and character classes match within one component, ** crosses directories, {a,b} alternates, and backslash escapes on every platform. Defaults: caseSensitive=true, gitignore=true, hidden=false, skip=0; caseSensitive=false selects ASCII-only case-insensitive matching, gitignore=false includes ignored entries, hidden=true includes hidden entries. An empty or invalid glob is an invalid_pattern tool error, and a pattern over 65,536 UTF-8 bytes is limit_exceeded. Optional limits may only lower the 1,000-entry ceiling. Follow continuationReference for the next page; recoveryReference names the complete immutable result. Returns complete non-empty text and equivalent structured content; operational failures are tool errors with stable categories.",
         output_schema = schema_for_type::<GlobToolOutput>()
     )]
     async fn glob(
@@ -978,7 +978,7 @@ impl ServerHandler for ResourceFsServer {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-                "Use rfs_read with a relative path under the Primary Workspace Root or a canonical rfs://workspace/<root>/<path> reference. Optional limits only lower the binary ceilings. Follow continuationReference to page; retain recoveryReference for the complete immutable projection.",
+                "Start with rfs_read of rfs:// to discover mounted sources. Use rfs_read with a relative path under the Primary Workspace Root or a canonical rfs://workspace/<root>/<path> reference. Optional limits only lower the binary ceilings. Follow continuationReference to page; retain recoveryReference for the complete immutable projection.",
             )
     }
 

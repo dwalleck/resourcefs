@@ -670,6 +670,41 @@ fn negotiates_required_revisions() {
 }
 
 #[test]
+fn initialization_and_all_tool_descriptions_advertise_catalog() {
+    const CUE: &str = "Start with rfs_read of rfs:// to discover mounted sources.";
+    let fixture = WorkspaceFixture::new();
+
+    for version in [VERSION_2026, VERSION_2025] {
+        let mut process = McpProcess::start(&fixture.root);
+        let initialized = process.initialize(version);
+        assert!(
+            initialized["instructions"]
+                .as_str()
+                .is_some_and(|instructions| instructions.starts_with(CUE)),
+            "{version}: {initialized}"
+        );
+        let response = process.request("tools/list", json!({}));
+        let tools = response["result"]["tools"].as_array().expect("tools array");
+        let mut names = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("tool name"))
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(names, ["rfs_glob", "rfs_read", "rfs_search"], "{version}");
+        for tool in tools {
+            assert!(
+                tool["description"]
+                    .as_str()
+                    .is_some_and(|description| description.starts_with(CUE)),
+                "{version} {}: {tool}",
+                tool["name"]
+            );
+        }
+        process.finish();
+    }
+}
+
+#[test]
 fn catalog_root_lines_parse_and_teach() {
     let fixture = WorkspaceFixture::new();
     let mut process = McpProcess::start(&fixture.root);
