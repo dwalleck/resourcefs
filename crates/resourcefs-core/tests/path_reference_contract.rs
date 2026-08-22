@@ -249,6 +249,13 @@ fn workspace_root_rejects_invalid_selector_name() {
 }
 
 #[test]
+fn malformed_unicode_artifact_token_returns_error_instead_of_panicking() {
+    let input = format!("artifact://{}՞-1", "6".repeat(31));
+    let error = PathReference::parse(input).expect_err("non-ASCII artifact token");
+    assert_eq!(error.category(), ErrorCategory::InvalidReference);
+}
+
+#[test]
 fn parses_production_shaped_reference_within_budget() {
     let file_name = format!("{} file.txt", "é".repeat(2_000));
     let started = Instant::now();

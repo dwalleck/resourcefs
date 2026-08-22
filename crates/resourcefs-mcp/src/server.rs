@@ -797,11 +797,11 @@ where
     ))
 }
 
-/// One biased cancellation race shared by every tool: when the transport's
-/// per-request cancellation signal fires, the operation guard is cancelled and
-/// the already-rendered cancelled tool error is returned without awaiting the
-/// blocking worker. The worker future is dropped, so a retained artifact cannot
-/// be published after cancellation.
+/// One biased cancellation race shared by every tool. Cancellation invalidates
+/// ordinary read/discovery work and drops its pending future. Mutation work can
+/// transition its guard to committing; once that happens cancellation is masked
+/// and this helper awaits the authoritative result instead of reporting an
+/// outcome that may disagree with committed state.
 async fn run_under_cancellation<T, F, C>(
     operation: &OperationGuard,
     cancelled: C,
@@ -816,8 +816,11 @@ where
     tokio::select! {
         biased;
         _ = cancelled => {
-            operation.cancel();
-            cancelled_result()
+            if operation.cancel() {
+                cancelled_result()
+            } else {
+                pending.as_mut().await
+            }
         }
         result = &mut pending => result,
     }

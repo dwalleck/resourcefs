@@ -52,6 +52,26 @@ fn enforces_dependency_direction() {
 }
 
 #[test]
+fn mutation_engine_dependency_direction() {
+    let metadata = MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .expect("workspace cargo metadata");
+    let core = metadata
+        .workspace_packages()
+        .into_iter()
+        .find(|package| package.name == "resourcefs-core")
+        .expect("resourcefs-core package");
+    let dependencies = dependency_names(core);
+    for forbidden in ["cap-std", "rmcp", "rustix", "windows-sys"] {
+        assert!(
+            !dependencies.contains(forbidden),
+            "forbidden edge resourcefs-core -> {forbidden}: mutation platform mechanics belong to Source Adapters"
+        );
+    }
+}
+
+#[test]
 fn forbids_telemetry_dependencies() {
     let metadata = MetadataCommand::new()
         .exec()

@@ -3,6 +3,7 @@
 mod discovery;
 mod error;
 mod limits;
+mod mutation;
 mod probe;
 mod read;
 mod reference;
@@ -26,6 +27,12 @@ pub use error::{ErrorCategory, ResourceError};
 pub use limits::{
     DiscoveryLimitInput, MAX_IMAGE_BYTES, ServerLimits, ServerLimitsInput, StorageLimitInput,
     TextLimitInput,
+};
+pub use mutation::{
+    HashlinePatch, LineNumber, MAX_HASHLINE_PATCH_BYTES, MIN_VERSION_PREFIX_HEX, MutationAccess,
+    MutationAdapter, MutationEngine, MutationLockSet, MutationOutcome, MutationSourceKey,
+    MutationState, MutationTarget, OriginalLineRange, PatchOperation, PatchOperationRef, PutTarget,
+    SourceMutation, VersionSelector,
 };
 pub use probe::{
     MAX_PROBE_DIAGNOSTIC_BYTES, ProbeDiagnostic, ProbeDiagnosticError, ProbeOutcome, ProbeState,

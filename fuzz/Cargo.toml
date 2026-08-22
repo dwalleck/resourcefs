@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-resourcefs-core = { path = "../crates/resourcefs-core" }
+resourcefs-core = { path = "../crates/resourcefs-core", features = ["test-support"] }
 resourcefs-mcp = { path = "../crates/resourcefs-mcp" }
 
 [[bin]]
@@ -22,6 +22,13 @@ bench = false
 [[bin]]
 name = "server_profile"
 path = "fuzz_targets/server_profile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hashline_patch"
+path = "fuzz_targets/hashline_patch.rs"
 test = false
 doc = false
 bench = false

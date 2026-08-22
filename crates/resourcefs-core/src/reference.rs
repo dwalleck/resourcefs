@@ -826,7 +826,20 @@ fn parse_artifact_address(input: &str) -> Result<ArtifactAddress, ResourceError>
     if body.len() < 34 {
         return Err(invalid_reference("malformed artifact reference"));
     }
-    let (session_token, object) = body.split_at(32);
+    let session_bytes = &body.as_bytes()[..32];
+    if !session_bytes
+        .iter()
+        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(invalid_reference(
+            "artifact session token must be 128-bit lowercase hexadecimal",
+        ));
+    }
+    let session_token =
+        std::str::from_utf8(session_bytes).expect("validated ASCII session token must be UTF-8");
+    let object = body
+        .get(32..)
+        .ok_or_else(|| invalid_reference("malformed artifact reference"))?;
     validate_session_token(session_token)?;
     let object = object
         .strip_prefix('-')

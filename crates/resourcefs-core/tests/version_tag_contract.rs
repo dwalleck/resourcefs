@@ -25,6 +25,29 @@ fn matches_published_sha256_vectors() {
 }
 
 #[test]
+fn parses_only_canonical_full_tags() {
+    let canonical = VersionTag::from_content(b"abc").to_string();
+    assert_eq!(
+        VersionTag::parse(&canonical)
+            .expect("canonical tag")
+            .as_str(),
+        canonical
+    );
+    for invalid in [
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "sha256:abc",
+        "sha256:BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD",
+    ] {
+        let error = VersionTag::parse(invalid).expect_err("noncanonical Version Tag");
+        assert_eq!(
+            error.category(),
+            ErrorCategory::InvalidReference,
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
 fn ignores_path_and_metadata() {
     let left = ReadResource::text(reference("left.txt"), "same bytes".to_owned())
         .expect("canonical reference");

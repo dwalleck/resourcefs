@@ -7,6 +7,26 @@ use sha2::{Digest, Sha256};
 pub struct VersionTag(String);
 
 impl VersionTag {
+    pub fn parse(value: impl Into<String>) -> Result<Self, crate::ResourceError> {
+        let value = value.into();
+        let Some(hex) = value.strip_prefix("sha256:") else {
+            return Err(crate::ResourceError::new(
+                crate::ErrorCategory::InvalidReference,
+                "Version Tag must begin with sha256:",
+            ));
+        };
+        if hex.len() != 64
+            || !hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(crate::ResourceError::new(
+                crate::ErrorCategory::InvalidReference,
+                "Version Tag must contain exactly 64 lowercase hexadecimal digest characters",
+            ));
+        }
+        Ok(Self(value))
+    }
     pub fn from_content(content: &[u8]) -> Self {
         let digest = Sha256::digest(content);
         Self(format!("sha256:{digest:x}"))
@@ -18,6 +38,11 @@ impl VersionTag {
             write!(tag, "{byte:02x}").expect("writing to a String cannot fail");
         }
         Self(tag)
+    }
+    pub(crate) fn from_sha256_hex(hex: &str) -> Self {
+        debug_assert_eq!(hex.len(), 64);
+        debug_assert!(hex.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        Self(format!("sha256:{hex}"))
     }
 
     pub fn as_str(&self) -> &str {

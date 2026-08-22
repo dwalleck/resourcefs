@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
 
@@ -11,7 +11,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
 
 use crate::{
-    ArtifactAddress, DisplayedLineRange, ErrorCategory, ResourceError, ServerLimits, VersionTag,
+    ArtifactAddress, DisplayedLineRange, ErrorCategory, ResourceError, ServerLimits,
+    VersionSelector, VersionTag,
 };
 
 pub const MAX_SESSION_BYTES: usize = 256 * 1024 * 1024;
@@ -81,28 +82,82 @@ pub trait SessionStorage: Send + Sync {
     async fn mark_disconnected(&self) -> Result<(), ResourceError>;
 }
 
+const OPERATION_ACTIVE: u8 = 0;
+const OPERATION_CANCELLED: u8 = 1;
+const OPERATION_COMMITTING: u8 = 2;
+const OPERATION_COMPLETE: u8 = 3;
+
 #[derive(Debug, Clone)]
 pub struct OperationGuard {
-    active: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
     cancelled: Arc<Notify>,
 }
 
 impl OperationGuard {
     pub fn new() -> Self {
         Self {
-            active: Arc::new(AtomicBool::new(true)),
+            state: Arc::new(AtomicU8::new(OPERATION_ACTIVE)),
             cancelled: Arc::new(Notify::new()),
         }
     }
 
-    pub fn cancel(&self) {
-        if self.active.swap(false, Ordering::AcqRel) {
+    pub fn cancel(&self) -> bool {
+        if self
+            .state
+            .compare_exchange(
+                OPERATION_ACTIVE,
+                OPERATION_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
             self.cancelled.notify_waiters();
+            true
+        } else {
+            false
         }
     }
 
+    pub fn begin_commit(&self) -> Result<(), ResourceError> {
+        self.state
+            .compare_exchange(
+                OPERATION_ACTIVE,
+                OPERATION_COMMITTING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|state| {
+                let message = if state == OPERATION_CANCELLED {
+                    "Resource operation was cancelled before commit"
+                } else {
+                    "Resource operation commit transition is no longer available"
+                };
+                ResourceError::new(ErrorCategory::Cancelled, message)
+            })
+    }
+
+    pub fn finish_commit(&self) -> bool {
+        self.state
+            .compare_exchange(
+                OPERATION_COMMITTING,
+                OPERATION_COMPLETE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
     pub fn is_active(&self) -> bool {
-        self.active.load(Ordering::Acquire)
+        matches!(
+            self.state.load(Ordering::Acquire),
+            OPERATION_ACTIVE | OPERATION_COMMITTING
+        )
+    }
+
+    pub fn is_committing(&self) -> bool {
+        self.state.load(Ordering::Acquire) == OPERATION_COMMITTING
     }
 
     /// Waits until this operation is cancelled without polling.
@@ -111,7 +166,7 @@ impl OperationGuard {
             let notified = self.cancelled.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if !self.is_active() {
+            if self.state.load(Ordering::Acquire) == OPERATION_CANCELLED {
                 return;
             }
             notified.await;
@@ -165,6 +220,13 @@ struct SeenRecord<'a> {
     version_tag: &'a VersionTag,
     ranges: &'a [DisplayedLineRange],
     displayed_eof: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SeenSnapshotData {
+    pub version_tag: VersionTag,
+    pub ranges: Vec<DisplayedLineRange>,
+    pub displayed_eof: bool,
 }
 
 struct SnapshotUpdate {
@@ -426,6 +488,59 @@ impl PathSession {
 
     pub async fn artifact_count(&self) -> usize {
         self.inner.admission.lock().await.records.len()
+    }
+
+    pub(crate) async fn resolve_seen(
+        &self,
+        canonical_reference: &str,
+        selector: &VersionSelector,
+    ) -> Result<SeenSnapshotData, ResourceError> {
+        if !self.is_active() {
+            return Err(ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                "Path Session is inactive",
+            ));
+        }
+        let state = self.inner.admission.lock().await;
+        let matches = state
+            .snapshots
+            .iter()
+            .filter(|(key, _)| key.canonical_reference == canonical_reference)
+            .filter(|(key, _)| selector.matches(&key.version_tag))
+            .collect::<Vec<_>>();
+        let [(key, snapshot)] = matches.as_slice() else {
+            let error = if matches.is_empty() {
+                ResourceError::new(
+                    ErrorCategory::VersionConflict,
+                    "no read snapshot matches the Resource and Version Tag",
+                )
+            } else {
+                ResourceError::new(
+                    ErrorCategory::InvalidPatch,
+                    "Version Tag prefix is ambiguous in this Path Session",
+                )
+            };
+            return Err(error);
+        };
+        Ok(SeenSnapshotData {
+            version_tag: key.version_tag.clone(),
+            ranges: snapshot.ranges.clone(),
+            displayed_eof: snapshot.displayed_eof,
+        })
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn resolve_seen_for_test(
+        &self,
+        canonical_reference: &str,
+        selector: &VersionSelector,
+    ) -> Result<(VersionTag, Vec<DisplayedLineRange>, bool), ResourceError> {
+        let snapshot = self.resolve_seen(canonical_reference, selector).await?;
+        Ok((
+            snapshot.version_tag,
+            snapshot.ranges,
+            snapshot.displayed_eof,
+        ))
     }
 
     pub async fn artifact_catalog(&self) -> Result<Vec<ArtifactAddress>, ResourceError> {
