@@ -10,10 +10,18 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 resourcefs-core = { path = "../crates/resourcefs-core" }
+resourcefs-mcp = { path = "../crates/resourcefs-mcp" }
 
 [[bin]]
 name = "path_reference"
 path = "fuzz_targets/path_reference.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "server_profile"
+path = "fuzz_targets/server_profile.rs"
 test = false
 doc = false
 bench = false

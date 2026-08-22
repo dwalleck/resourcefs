@@ -1,0 +1,113 @@
+[
+  {
+    "name": "minimal",
+    "profile": { "schemaVersion": 1 },
+    "accepted": true,
+    "error": null
+  },
+  {
+    "name": "missing-schema-version",
+    "profile": {},
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "null-schema-version",
+    "profile": { "schemaVersion": null },
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "wrong-schema-version",
+    "profile": { "schemaVersion": 2 },
+    "accepted": false,
+    "error": "unsupportedVersion"
+  },
+  {
+    "name": "zero-schema-version",
+    "profile": { "schemaVersion": 0 },
+    "accepted": false,
+    "error": "unsupportedVersion"
+  },
+  {
+    "name": "boolean-schema-version",
+    "profile": { "schemaVersion": true },
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "string-schema-version",
+    "profile": { "schemaVersion": "1" },
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "fraction-schema-version",
+    "profile": { "schemaVersion": 1.5 },
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "unknown-top-level-field",
+    "profile": { "schemaVersion": 1, "unknown": true },
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "unknown-source-kind",
+    "profile": {
+      "schemaVersion": 1,
+      "sources": [{ "kind": "unknown", "id": "unknown", "required": false }]
+    },
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "source-required-missing",
+    "profile": {
+      "schemaVersion": 1,
+      "sources": [{ "kind": "skills", "id": "skills", "roots": ["skills"] }]
+    },
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "source-required-null",
+    "profile": {
+      "schemaVersion": 1,
+      "sources": [{ "kind": "skills", "id": "skills", "required": null, "roots": ["skills"] }]
+    },
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "kind-inappropriate-field",
+    "profile": {
+      "schemaVersion": 1,
+      "sources": [{
+        "kind": "skills",
+        "id": "skills",
+        "required": false,
+        "roots": ["skills"],
+        "repositories": ["owner/repository"]
+      }]
+    },
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "null-workspace-roots",
+    "profile": { "schemaVersion": 1, "workspace": { "roots": null } },
+    "accepted": false,
+    "error": "invalidProfile"
+  },
+  {
+    "name": "writable-shorthand",
+    "profile": {
+      "schemaVersion": 1,
+      "workspace": { "roots": [{ "id": "root", "path": ".", "writable": true }] }
+    },
+    "accepted": false,
+    "error": "invalidProfile"
+  }
+]

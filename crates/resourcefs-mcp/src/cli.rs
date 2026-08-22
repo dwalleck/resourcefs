@@ -1,10 +1,14 @@
-use std::{path::PathBuf, str::FromStr};
+use std::{
+    io::{self, Write},
+    path::PathBuf,
+    str::FromStr,
+};
 
 use clap::{Args, Parser, Subcommand};
 use resourcefs_core::WorkspaceRootId;
 use resourcefs_sources::{BackingPathVisibility, FilesystemSource, LaunchRoot, LaunchRootSource};
 
-use crate::{BoxError, server};
+use crate::{BoxError, profile_schema_json, server};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -21,6 +25,8 @@ struct Cli {
 enum Command {
     /// Serve ResourceFS over standard input and standard output.
     Serve(ServeArgs),
+    /// Print the current strict Server Profile JSON Schema.
+    Schema,
 }
 
 #[derive(Debug, Args)]
@@ -84,7 +90,17 @@ pub async fn run_cli() -> Result<(), BoxError> {
     let cli = Cli::parse();
     match cli.command {
         Command::Serve(arguments) => serve(arguments).await,
+        Command::Schema => write_schema(),
     }
+}
+
+fn write_schema() -> Result<(), BoxError> {
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    output.write_all(profile_schema_json().as_bytes())?;
+    output.write_all(b"\n")?;
+    output.flush()?;
+    Ok(())
 }
 
 async fn serve(arguments: ServeArgs) -> Result<(), BoxError> {

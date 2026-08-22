@@ -1,0 +1,942 @@
+{
+  "$defs": {
+    "BackingPathVisibilityProfile": {
+      "description": "Backing-path disclosure policy.",
+      "oneOf": [
+        {
+          "const": "hidden",
+          "description": "Keep backing filesystem paths private.",
+          "type": "string"
+        },
+        {
+          "const": "visible",
+          "description": "Include backing file URI metadata.",
+          "type": "string"
+        }
+      ]
+    },
+    "CommandProfile": {
+      "additionalProperties": false,
+      "description": "Strict direct-argv subprocess definition.",
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "environment": {
+          "additionalProperties": {
+            "$ref": "#/$defs/EnvironmentValueProfile"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "argv"
+      ],
+      "type": "object"
+    },
+    "ConverterInputProfile": {
+      "description": "Converter input delivery mode.",
+      "enum": [
+        "stdin",
+        "path"
+      ],
+      "type": "string"
+    },
+    "CredentialHeaderProfile": {
+      "additionalProperties": false,
+      "description": "Credential header resolved at process startup.",
+      "properties": {
+        "header": {
+          "type": "string"
+        },
+        "scheme": {
+          "type": "string"
+        },
+        "secret": {
+          "$ref": "#/$defs/SecretReferenceProfile"
+        }
+      },
+      "required": [
+        "header",
+        "secret"
+      ],
+      "type": "object"
+    },
+    "DocumentConverterProfile": {
+      "additionalProperties": false,
+      "description": "One extension-owned direct converter.",
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/CommandProfile"
+        },
+        "extensions": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "input": {
+          "$ref": "#/$defs/ConverterInputProfile"
+        }
+      },
+      "required": [
+        "extensions",
+        "input",
+        "command"
+      ],
+      "type": "object"
+    },
+    "DownstreamServerProfile": {
+      "additionalProperties": false,
+      "description": "One downstream server and its native URI scheme claims.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "schemes": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "transport": {
+          "$ref": "#/$defs/DownstreamTransportProfile"
+        }
+      },
+      "required": [
+        "id",
+        "schemes",
+        "transport"
+      ],
+      "type": "object"
+    },
+    "DownstreamTransportProfile": {
+      "description": "Supported downstream MCP transport.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "$ref": "#/$defs/CommandProfile"
+            },
+            "kind": {
+              "const": "stdio",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "allowPrivateNetwork": {
+              "type": "boolean"
+            },
+            "credential": {
+              "$ref": "#/$defs/CredentialHeaderProfile"
+            },
+            "endpoint": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "http",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "endpoint",
+            "allowPrivateNetwork"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EnvironmentValueProfile": {
+      "description": "Explicit subprocess environment mapping.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "literal",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "inherit",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "secret",
+              "type": "string"
+            },
+            "secret": {
+              "$ref": "#/$defs/SecretReferenceProfile"
+            }
+          },
+          "required": [
+            "kind",
+            "secret"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "GithubRepositoryProfile": {
+      "additionalProperties": false,
+      "description": "One allowlisted GitHub repository.",
+      "properties": {
+        "grants": {
+          "$ref": "#/$defs/MutationGrantsProfile"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "HttpsOriginProfile": {
+      "additionalProperties": false,
+      "description": "One authorized HTTPS base URL prefix.",
+      "properties": {
+        "allowPrivateNetwork": {
+          "type": "boolean"
+        },
+        "baseUrl": {
+          "type": "string"
+        },
+        "credential": {
+          "$ref": "#/$defs/CredentialHeaderProfile"
+        }
+      },
+      "required": [
+        "baseUrl",
+        "allowPrivateNetwork"
+      ],
+      "type": "object"
+    },
+    "LimitsProfile": {
+      "additionalProperties": false,
+      "description": "Lower-only server ceilings.",
+      "properties": {
+        "imageBytes": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "listingEntries": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "objectBytes": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "processConcurrency": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessionBytes": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "textBytes": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "textColumns": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "textLines": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "LogDestinationProfile": {
+      "description": "Diagnostic output destination.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "stderr",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "file",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "retainFiles": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rotationBytes": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "LogLevelProfile": {
+      "description": "Diagnostic severity floor.",
+      "enum": [
+        "error",
+        "warn",
+        "info",
+        "debug"
+      ],
+      "type": "string"
+    },
+    "LoggingProfile": {
+      "additionalProperties": false,
+      "description": "Bounded off-protocol logging configuration.",
+      "properties": {
+        "destination": {
+          "$ref": "#/$defs/LogDestinationProfile"
+        },
+        "level": {
+          "$ref": "#/$defs/LogLevelProfile"
+        }
+      },
+      "type": "object"
+    },
+    "MutationGrantsProfile": {
+      "additionalProperties": false,
+      "description": "Independent create, update, and delete grants.",
+      "properties": {
+        "create": {
+          "description": "Permit creation when true.",
+          "type": "boolean"
+        },
+        "delete": {
+          "description": "Permit deletion when true.",
+          "type": "boolean"
+        },
+        "update": {
+          "description": "Permit replacement and editing when true.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "NamedPathProfile": {
+      "additionalProperties": false,
+      "description": "A stable Resource name mapped to a contained path.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "type": "object"
+    },
+    "SecretReferenceProfile": {
+      "description": "Opaque environment or helper-command secret reference.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "environment",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "$ref": "#/$defs/CommandProfile"
+            },
+            "kind": {
+              "const": "command",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "command"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SessionProfile": {
+      "additionalProperties": false,
+      "description": "Retained Path Session configuration.",
+      "properties": {
+        "cacheDirectory": {
+          "type": "string"
+        },
+        "retentionTtlSeconds": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "SourceProfile": {
+      "description": "One strict Portable Source configuration.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "HTTPS allowlist source.",
+          "properties": {
+            "grants": {
+              "$ref": "#/$defs/MutationGrantsProfile"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "https",
+              "type": "string"
+            },
+            "origins": {
+              "items": {
+                "$ref": "#/$defs/HttpsOriginProfile"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "required": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "required",
+            "origins"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitHub repository source.",
+          "properties": {
+            "allowPrivateNetwork": {
+              "type": "boolean"
+            },
+            "apiBaseUrl": {
+              "type": "string"
+            },
+            "credential": {
+              "$ref": "#/$defs/SecretReferenceProfile"
+            },
+            "grants": {
+              "$ref": "#/$defs/MutationGrantsProfile"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "github",
+              "type": "string"
+            },
+            "repositories": {
+              "items": {
+                "$ref": "#/$defs/GithubRepositoryProfile"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "required": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "required",
+            "allowPrivateNetwork",
+            "credential",
+            "repositories"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read-only SSH source.",
+          "properties": {
+            "command": {
+              "$ref": "#/$defs/CommandProfile"
+            },
+            "grants": {
+              "$ref": "#/$defs/MutationGrantsProfile"
+            },
+            "hosts": {
+              "items": {
+                "$ref": "#/$defs/SshHostProfile"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "ssh",
+              "type": "string"
+            },
+            "required": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "required",
+            "command",
+            "hosts"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Document converter source.",
+          "properties": {
+            "converters": {
+              "items": {
+                "$ref": "#/$defs/DocumentConverterProfile"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "grants": {
+              "$ref": "#/$defs/MutationGrantsProfile"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "documents",
+              "type": "string"
+            },
+            "required": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "required",
+            "converters"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Agent Skills roots.",
+          "properties": {
+            "grants": {
+              "$ref": "#/$defs/MutationGrantsProfile"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "skills",
+              "type": "string"
+            },
+            "required": {
+              "type": "boolean"
+            },
+            "roots": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "required",
+            "roots"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native rules manifests.",
+          "properties": {
+            "grants": {
+              "$ref": "#/$defs/MutationGrantsProfile"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "rules",
+              "type": "string"
+            },
+            "manifests": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "required": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "required",
+            "manifests"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Named read-only Memory roots.",
+          "properties": {
+            "grants": {
+              "$ref": "#/$defs/MutationGrantsProfile"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "memory",
+              "type": "string"
+            },
+            "required": {
+              "type": "boolean"
+            },
+            "roots": {
+              "items": {
+                "$ref": "#/$defs/NamedPathProfile"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "required",
+            "roots"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Named Obsidian vaults.",
+          "properties": {
+            "grants": {
+              "$ref": "#/$defs/MutationGrantsProfile"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "vault",
+              "type": "string"
+            },
+            "required": {
+              "type": "boolean"
+            },
+            "vaults": {
+              "items": {
+                "$ref": "#/$defs/VaultProfile"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "required",
+            "vaults"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Imported public Agent Export manifests.",
+          "properties": {
+            "grants": {
+              "$ref": "#/$defs/MutationGrantsProfile"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "agentExport",
+              "type": "string"
+            },
+            "manifests": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "required": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "required",
+            "manifests"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Downstream MCP Resource servers.",
+          "properties": {
+            "grants": {
+              "$ref": "#/$defs/MutationGrantsProfile"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "downstreamMcp",
+              "type": "string"
+            },
+            "required": {
+              "type": "boolean"
+            },
+            "servers": {
+              "items": {
+                "$ref": "#/$defs/DownstreamServerProfile"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "required",
+            "servers"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SshHostProfile": {
+      "additionalProperties": false,
+      "description": "One SSH config alias and its contained remote roots.",
+      "properties": {
+        "alias": {
+          "type": "string"
+        },
+        "remoteRoots": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        }
+      },
+      "required": [
+        "alias",
+        "remoteRoots"
+      ],
+      "type": "object"
+    },
+    "VaultProfile": {
+      "additionalProperties": false,
+      "description": "One named vault with optional narrower grants.",
+      "properties": {
+        "grants": {
+          "$ref": "#/$defs/MutationGrantsProfile"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "type": "object"
+    },
+    "WorkspaceProfile": {
+      "additionalProperties": false,
+      "description": "Workspace Roots supplied by the operator profile.",
+      "properties": {
+        "backingPathVisibility": {
+          "$ref": "#/$defs/BackingPathVisibilityProfile",
+          "description": "Whether normal results may expose backing file URIs."
+        },
+        "primaryRoot": {
+          "description": "Stable ID of the Primary Workspace Root.",
+          "type": "string"
+        },
+        "roots": {
+          "description": "Launch roots; an absent list means no launch Workspace authority.",
+          "items": {
+            "$ref": "#/$defs/WorkspaceRootProfile"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "WorkspaceRootProfile": {
+      "additionalProperties": false,
+      "description": "One operator-granted Workspace Root.",
+      "properties": {
+        "grants": {
+          "$ref": "#/$defs/MutationGrantsProfile",
+          "description": "Independent mutation grants."
+        },
+        "id": {
+          "description": "Stable Workspace Root ID.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Directory path, resolved relative to the profile directory.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://resourcefs.dev/schema/server-profile-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Strict operator configuration for one ResourceFS stdio server process.",
+  "properties": {
+    "limits": {
+      "$ref": "#/$defs/LimitsProfile",
+      "description": "Optional lower-only runtime ceilings."
+    },
+    "logging": {
+      "$ref": "#/$defs/LoggingProfile",
+      "description": "Optional bounded diagnostic destination."
+    },
+    "schemaVersion": {
+      "const": 1,
+      "description": "Profile schema version. Version 1 is the only supported value.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "session": {
+      "$ref": "#/$defs/SessionProfile",
+      "description": "Optional retained-session settings."
+    },
+    "sources": {
+      "description": "Optional catalog of configured Portable Sources.",
+      "items": {
+        "$ref": "#/$defs/SourceProfile"
+      },
+      "maxItems": 4096,
+      "type": "array"
+    },
+    "workspace": {
+      "$ref": "#/$defs/WorkspaceProfile",
+      "description": "Optional launch Workspace authority."
+    }
+  },
+  "required": [
+    "schemaVersion"
+  ],
+  "title": "ResourceFS Server Profile v1",
+  "type": "object"
+}

@@ -37,6 +37,12 @@ fn enforces_dependency_direction() {
     assert!(sources.contains("resourcefs-core"));
     assert!(!sources.contains("rmcp"));
     assert!(!sources.contains("clap"));
+    for forbidden in ["serde", "serde_json", "schemars"] {
+        assert!(
+            !sources.contains(forbidden),
+            "forbidden edge resourcefs-sources -> {forbidden}: operator profile syntax and schema belong to resourcefs-mcp"
+        );
+    }
 
     let mcp = dependency_names(packages["resourcefs-mcp"]);
     assert!(mcp.contains("resourcefs-core"));
