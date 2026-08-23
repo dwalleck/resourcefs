@@ -40,6 +40,8 @@ pub use filesystem::{
     BackingPathVisibility, ClientRoot, FilesystemSource, LaunchRoot, LaunchRootSource,
     RootAcquisition, RootRefresh, RootRefreshOutcome,
 };
+#[cfg(feature = "test-support")]
+pub use probe::saturate_accept_queue;
 pub use probe::{
     NetworkProbe, ProbeEndpoint, ProbeRecord, ProbeRun, ProbeRunner, ProbeTarget,
     ValidatedLocalProbe,

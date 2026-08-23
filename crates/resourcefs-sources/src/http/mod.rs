@@ -281,6 +281,13 @@ pub struct HttpSubstrate {
     /// predicate the allowlist uses so two origins sharing a host cannot be
     /// confused for one another.
     credentials: Vec<OriginCredential>,
+    /// Origins belonging to a source whose startup probe reported Degraded.
+    ///
+    /// These are *configured* — the operator declared them — so refusing them
+    /// as "not allowlisted" would misdescribe the profile. They are held apart
+    /// from the allowlist and refused as `source_unavailable`, which is the
+    /// state that is actually true: the source exists and is unreachable.
+    degraded: Vec<AllowedOrigin>,
     #[cfg(feature = "test-support")]
     extractions: ExtractionCounter,
 }
@@ -359,6 +366,17 @@ impl HttpSubstrate {
         credentials: Vec<OriginCredential>,
     ) -> Result<Self, ResourceError> {
         Self::build(allowlist, ceilings, system_lookup(), &[], credentials)
+    }
+
+    /// Records origins whose source reported Degraded at startup.
+    ///
+    /// Builder-style rather than a constructor parameter: degradation is a
+    /// launch-time observation, not part of what the substrate *is*, and every
+    /// existing construction site describes a profile with no degraded source.
+    #[must_use]
+    pub fn with_degraded_origins(mut self, origins: Vec<AllowedOrigin>) -> Self {
+        self.degraded = origins;
+        self
     }
 
     /// Builds the substrate over an injected host lookup, for contract tests.
@@ -456,9 +474,28 @@ impl HttpSubstrate {
             ceilings,
             policies,
             credentials,
+            degraded: Vec::new(),
             #[cfg(feature = "test-support")]
             extractions: ExtractionCounter::default(),
         })
+    }
+
+    /// Refuses a URL belonging to a source that reported Degraded at startup.
+    ///
+    /// Uses the origin's own `authorizes` predicate, the same matcher the
+    /// allowlist and the credential lookup use, so a degraded origin sharing a
+    /// host with a healthy one is distinguished by path prefix rather than by
+    /// host alone — a healthy source keeps serving when a sibling degrades.
+    fn refuse_degraded(&self, url: &Url) -> Result<(), ResourceError> {
+        if self.degraded.iter().any(|origin| origin.authorizes(url)) {
+            return Err(ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                format!(
+                    "'{url}' belongs to a configured HTTPS source that was unreachable at startup"
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// Builds the GET, attaching the credential of the origin that owns this
@@ -517,6 +554,11 @@ impl HttpSubstrate {
                 "request was cancelled before egress",
             ));
         }
+        // A degraded source's origins are configured but unreachable. This runs
+        // before allowlist scoping so the refusal names the true state rather
+        // than falling through to "not allowlisted", which would tell an
+        // operator their profile lacks an origin it actually declares.
+        self.refuse_degraded(request.url())?;
         // Origin scoping runs before any egress: a URL outside every declared
         // `base_url` never reaches the resolver, let alone a socket.
         self.allowlist.authorize(request.url())?;

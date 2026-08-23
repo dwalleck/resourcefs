@@ -6,8 +6,8 @@ use resourcefs_core::{
 };
 use resourcefs_sources::{
     BackingPathVisibility, CommandExecutor, HttpSubstrate, HttpsConfig, HttpsSource,
-    LaunchRootSource, MAX_LIVE_COMMAND_TREES, OriginCredential, ProbeRunner, SessionStorageConfig,
-    secret,
+    LaunchRootSource, MAX_LIVE_COMMAND_TREES, OriginCredential, ProbeRun, ProbeRunner,
+    SessionStorageConfig, secret,
 };
 
 use crate::logging::LogConfig;
@@ -60,10 +60,20 @@ impl CheckOutput {
     }
 }
 
-pub(crate) fn load_for_serve(path: &Path) -> Result<CheckedLaunchProfile, ProfileError> {
-    let checked = check::check_profile(path, |name| std::env::var_os(name))?;
-    #[cfg(feature = "test-support")]
-    let mut checked = checked;
+/// Loads a profile for serving and probes every configured source once.
+///
+/// The `ProbeRun` is returned rather than acted on here: whether an
+/// unreachable source is fatal depends on its `required` flag, and mapping
+/// that to an exit class is the launch path's job. Startup probes exactly once
+/// — the same run decides both fatality and which sources mount degraded — so
+/// no probe fires on the read path.
+pub(crate) async fn load_for_serve(
+    path: &Path,
+    mountable: &[&str],
+) -> Result<(CheckedLaunchProfile, ProbeRun), ProfileError> {
+    // Mutable in every configuration: `probe_targets` records resolved secrets
+    // on the profile as it builds them.
+    let mut checked = check::check_profile(path, |name| std::env::var_os(name))?;
     #[cfg(feature = "test-support")]
     if let Some(value) = std::env::var_os("RESOURCEFS_TEST_REDACTION_SECRET") {
         let value = value
@@ -71,7 +81,10 @@ pub(crate) fn load_for_serve(path: &Path) -> Result<CheckedLaunchProfile, Profil
             .map_err(|_| ProfileError::invalid("test credential injection was not Unicode"))?;
         checked.register_test_secret(value)?;
     }
-    checked.into_launch_profile()
+    let operation = OperationGuard::new();
+    let targets = checked.probe_targets(&operation, Some(mountable)).await?;
+    let run = ProbeRunner::new().run(&targets, &operation).await;
+    Ok((checked.into_launch_profile()?, run))
 }
 
 pub(crate) async fn check(path: &Path, probe: bool) -> Result<CheckOutput, ProfileError> {
@@ -83,7 +96,7 @@ pub(crate) async fn check(path: &Path, probe: bool) -> Result<CheckOutput, Profi
     }
 
     let operation = OperationGuard::new();
-    let targets = checked.probe_targets(&operation).await?;
+    let targets = checked.probe_targets(&operation, None).await?;
     let run = ProbeRunner::new().run(&targets, &operation).await;
     let redactor = checked.redactor()?;
     let report = report::render_probe(checked.schema_version(), &run, &redactor)
@@ -104,6 +117,7 @@ pub(crate) async fn check(path: &Path, probe: bool) -> Result<CheckOutput, Profi
 pub(crate) async fn mount_https(
     configs: Vec<HttpsConfig>,
     base: &std::path::Path,
+    degraded_ids: &std::collections::HashSet<String>,
 ) -> Result<Option<HttpsSource>, ProfileError> {
     if configs.is_empty() {
         return Ok(None);
@@ -113,11 +127,20 @@ pub(crate) async fn mount_https(
     let operation = OperationGuard::new();
 
     let mut origins = Vec::new();
+    let mut degraded = Vec::new();
     let mut credentials = Vec::new();
     for config in &configs {
+        let is_degraded = degraded_ids.contains(config.id());
         for origin in config.origins() {
             let allowed = AllowedOrigin::new(origin.base_url(), origin.allow_private_network())
                 .map_err(|error| ProfileError::invalid(format!("{error}")))?;
+            if is_degraded {
+                // Held apart from the allowlist so its references are refused
+                // as unreachable rather than as undeclared, and so no
+                // credential is resolved for a source that cannot be reached.
+                degraded.push(allowed);
+                continue;
+            }
             if let Some(credential) = origin.credential() {
                 let secret = secret::resolve(credential.secret(), &executor, &operation, |name| {
                     std::env::var_os(name)
@@ -148,6 +171,7 @@ pub(crate) async fn mount_https(
     let allowlist = OriginAllowlist::new(origins);
     // The signed ceilings: 8 MiB fetch, 5 redirect hops, 30-second timeout.
     let substrate = HttpSubstrate::new(allowlist, HttpCeilings::default(), credentials)
-        .map_err(|error| ProfileError::invalid(format!("{error}")))?;
+        .map_err(|error| ProfileError::invalid(format!("{error}")))?
+        .with_degraded_origins(degraded);
     Ok(Some(HttpsSource::new(Arc::new(substrate))))
 }

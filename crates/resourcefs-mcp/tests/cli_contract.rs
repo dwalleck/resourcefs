@@ -449,10 +449,11 @@ fn exit_and_channel_matrix() {
     assert!(missing.stdout.is_empty());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("could not read Server Profile"));
 
-    let listener = TcpListener::bind("127.0.0.1:0").expect("unavailable-source listener");
-    listener
-        .set_nonblocking(true)
-        .expect("nonblocking unavailable-source listener");
+    // A configured kind with no compiled adapter still stops startup at exit 3.
+    // `memory` stands in for that class now that `https` mounts; the assertion
+    // is unchanged, only the kind that exercises it.
+    let memory_root = temporary.path().join("memory-root");
+    fs::create_dir(&memory_root).expect("memory root");
     let unsupported_profile = write_profile(
         temporary.path(),
         "unsupported.json",
@@ -460,16 +461,10 @@ fn exit_and_channel_matrix() {
             "schemaVersion":1,
             "session":{"cacheDirectory":"unsupported-cache"},
             "sources":[{
-                "kind":"https",
-                "id":"web",
+                "kind":"memory",
+                "id":"notes",
                 "required":true,
-                "origins":[{
-                    "baseUrl":format!(
-                        "https://127.0.0.1:{}/",
-                        listener.local_addr().expect("listener address").port()
-                    ),
-                    "allowPrivateNetwork":true
-                }]
+                "roots":[{"name":"notes","path":"memory-root"}]
             }]
         }),
     );
@@ -477,13 +472,6 @@ fn exit_and_channel_matrix() {
     assert_eq!(unsupported.status.code(), Some(3));
     assert!(unsupported.stdout.is_empty());
     assert!(String::from_utf8_lossy(&unsupported.stderr).contains("not supported"));
-    assert_eq!(
-        listener
-            .accept()
-            .expect_err("serve must stay offline")
-            .kind(),
-        std::io::ErrorKind::WouldBlock
-    );
 
     let log_directory = temporary.path().join("log-directory");
     fs::create_dir(&log_directory).expect("log directory");
@@ -538,8 +526,10 @@ fn profile_serve_matrix() {
     fs::write(temporary.path().join("rules.json"), b"{}").expect("rules manifest");
     fs::write(temporary.path().join("agents.json"), b"{}").expect("agent manifest");
 
+    // `https` is absent because this binary now mounts it; the kinds below are
+    // the ones that remain declared-but-uncompiled. Its startup behaviour is
+    // covered by `required_https_fails_startup` and the degradation fences.
     for kind in [
-        "https",
         "github",
         "ssh",
         "documents",
@@ -1224,4 +1214,390 @@ fn assert_bytes_exclude(bytes: &[u8], sentinel: &str) {
             "observable bytes contained a secret sentinel fragment"
         );
     }
+}
+
+/// C14 — a `required` source that cannot be reached stops startup at exit 3,
+/// and the diagnostic names the source id so an operator knows which one.
+///
+/// Both rows below produce the same `Degraded`/`Failed` shape from the probe's
+/// point of view, because `connect_policed` collapses its causes into one bool
+/// (giving probe failures a real diagnostic is tracked at rfs-0p7j). They are
+/// told apart here by a **server-side** observation instead: the policy row
+/// keeps a live listener and asserts it accepted nothing, which is only true if
+/// the address policy refused before egress. The unreachable row grants
+/// private-network access, so policy cannot be the refuser and only the closed
+/// port can explain the failure. Neither fence depends on the missing
+/// diagnostic.
+#[test]
+fn required_https_fails_startup() {
+    let temporary = TempDir::new().expect("temporary directory");
+
+    // Unreachable: the grant is present, so the closed port is the only cause.
+    let closed = TcpListener::bind("127.0.0.1:0").expect("closed-port listener");
+    let closed_port = closed.local_addr().expect("closed address").port();
+    drop(closed);
+    let unreachable = write_profile(
+        temporary.path(),
+        "required-unreachable.json",
+        &json!({
+            "schemaVersion":1,
+            "session":{"cacheDirectory":"unreachable-cache"},
+            "sources":[{
+                "kind":"https","id":"web","required":true,
+                "origins":[{
+                    "baseUrl":format!("https://127.0.0.1:{closed_port}/"),
+                    "allowPrivateNetwork":true
+                }]
+            }]
+        }),
+    );
+    let run = run_serve_profile(&unreachable, temporary.path(), &[]);
+    assert_eq!(
+        run.status.code(),
+        Some(3),
+        "a required source must stop startup"
+    );
+    assert!(run.stdout.is_empty(), "MCP stdout carries no diagnostics");
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+    assert!(
+        stderr.contains("web"),
+        "the diagnostic must name the source id; got: {stderr}"
+    );
+    // Without this, the row passes for the wrong reason: before `https` became
+    // a compiled kind, *every* https profile also exited 3 — with "not
+    // supported", a message that likewise contains the source id. Only the
+    // startup probe produces this phrasing.
+    assert!(
+        stderr.contains("unavailable at startup"),
+        "exit 3 must come from the startup probe, not the uncompiled-kind gate; got: {stderr}"
+    );
+
+    // Policy: something *is* listening, but the grant is withheld. The listener
+    // is the oracle — a refusal that happens before egress accepts nothing.
+    let live = TcpListener::bind("127.0.0.1:0").expect("policy-row listener");
+    live.set_nonblocking(true).expect("nonblocking listener");
+    let live_port = live.local_addr().expect("live address").port();
+    let ungranted = write_profile(
+        temporary.path(),
+        "required-ungranted.json",
+        &json!({
+            "schemaVersion":1,
+            "session":{"cacheDirectory":"ungranted-cache"},
+            "sources":[{
+                "kind":"https","id":"intranet","required":true,
+                "origins":[{
+                    "baseUrl":format!("https://127.0.0.1:{live_port}/"),
+                    "allowPrivateNetwork":false
+                }]
+            }]
+        }),
+    );
+    let refused = run_serve_profile(&ungranted, temporary.path(), &[]);
+    assert_eq!(
+        refused.status.code(),
+        Some(3),
+        "a withheld private-network grant also stops a required source"
+    );
+    let refused_stderr = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(
+        refused_stderr.contains("intranet"),
+        "the diagnostic must name the source id"
+    );
+    assert!(
+        refused_stderr.contains("unavailable at startup"),
+        "exit 3 must come from the startup probe; got: {refused_stderr}"
+    );
+    assert_eq!(
+        live.accept()
+            .expect_err("policy must refuse before egress")
+            .kind(),
+        std::io::ErrorKind::WouldBlock,
+        "the probe must not connect to an address its origin does not grant"
+    );
+}
+
+/// C14 — `resourcefs check --probe` reports reachability, and does so without
+/// mutating the origin it probes.
+///
+/// Both rows are optional sources, so both are *acceptable* and both exit 0.
+/// Holding the exit code constant is deliberate: it forces the fence onto the
+/// reported `state`, which is the thing that actually carries reachability. The
+/// two profiles differ in one variable — whether the port is open — so the
+/// available/degraded split is attributable to reachability and nothing else.
+///
+/// Non-mutation is proved server-side rather than asserted. The probe stops at
+/// a TCP connect, so the accepted socket must yield end-of-stream with zero
+/// bytes; a connection that carries no application bytes cannot have changed
+/// anything on the far side under any protocol. Reading the socket is also what
+/// confirms the probe genuinely connected, so the reachable row cannot pass by
+/// never dialling at all.
+#[test]
+fn check_probe_reports_reachability_without_mutating() {
+    let temporary = TempDir::new().expect("temporary directory");
+
+    let live = TcpListener::bind("127.0.0.1:0").expect("reachable listener");
+    let live_port = live.local_addr().expect("live address").port();
+    let reachable = write_profile(
+        temporary.path(),
+        "probe-reachable.json",
+        &json!({
+            "schemaVersion":1,
+            "session":{"cacheDirectory":"probe-reachable-cache"},
+            "sources":[{
+                "kind":"https","id":"web","required":false,
+                "origins":[{
+                    "baseUrl":format!("https://127.0.0.1:{live_port}/"),
+                    "allowPrivateNetwork":true
+                }]
+            }]
+        }),
+    );
+    let output = run_check(&reachable, true, &[]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a reachable source is acceptable"
+    );
+    let report = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        report.contains("\"probe\":true") && report.contains("\"state\":\"available\""),
+        "a reachable origin must be reported available; got: {report}"
+    );
+
+    // Non-blocking: `run_check` has already returned, so the connection is
+    // either in the backlog or it never happened. Blocking here would hang
+    // instead of failing when the probe stops dialling.
+    live.set_nonblocking(true).expect("nonblocking listener");
+    let (mut accepted, _) = live
+        .accept()
+        .expect("the probe must connect to a granted origin");
+    accepted
+        .set_nonblocking(false)
+        .expect("blocking accepted stream");
+    accepted
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .expect("read timeout");
+    let mut received = Vec::new();
+    accepted
+        .read_to_end(&mut received)
+        .expect("the probe must close its connection");
+    assert!(
+        received.is_empty(),
+        "the probe must not send a request; it sent {} byte(s)",
+        received.len()
+    );
+
+    // One variable changes: the port is closed. Same shape, same exit code.
+    let closed = TcpListener::bind("127.0.0.1:0").expect("closed-port listener");
+    let closed_port = closed.local_addr().expect("closed address").port();
+    drop(closed);
+    let unreachable = write_profile(
+        temporary.path(),
+        "probe-unreachable.json",
+        &json!({
+            "schemaVersion":1,
+            "session":{"cacheDirectory":"probe-unreachable-cache"},
+            "sources":[{
+                "kind":"https","id":"web","required":false,
+                "origins":[{
+                    "baseUrl":format!("https://127.0.0.1:{closed_port}/"),
+                    "allowPrivateNetwork":true
+                }]
+            }]
+        }),
+    );
+    let degraded = run_check(&unreachable, true, &[]);
+    assert_eq!(
+        degraded.status.code(),
+        Some(0),
+        "an unreachable *optional* source is still acceptable"
+    );
+    let degraded_report = String::from_utf8_lossy(&degraded.stdout).into_owned();
+    assert!(
+        degraded_report.contains("\"state\":\"degraded\""),
+        "an unreachable origin must be reported degraded; got: {degraded_report}"
+    );
+}
+
+/// C14 budget — probing is bounded by the shared five-second startup deadline,
+/// and one unresponsive origin cannot starve a healthy sibling of its window.
+///
+/// A *refused* port answers instantly, so every other fence in this file
+/// measures the cheap failure. This one builds the expensive one: a listener
+/// whose accept queue is saturated drops further SYNs, so a connect neither
+/// succeeds nor is refused — it hangs until the probe's own 30-second timeout.
+/// That is what a firewalled origin does in production, and it is the only
+/// shape that can breach the budget.
+///
+/// The blackholed source is deliberately **first** in profile order. That makes
+/// the starvation assertion real rather than decorative: probing sequentially
+/// under one shared budget would spend all five seconds on it and report the
+/// healthy sibling unavailable for a failure that was not its own. Asserting
+/// the sibling is `available` is therefore what distinguishes a concurrent run
+/// under a deadline from a sequential one, and no wall-clock bound alone can
+/// tell those two apart.
+#[test]
+fn probing_is_bounded_and_does_not_starve_a_healthy_source() {
+    let temporary = TempDir::new().expect("temporary directory");
+
+    let blackhole = TcpListener::bind("127.0.0.1:0").expect("blackhole listener");
+    let blackhole_port = blackhole.local_addr().expect("blackhole address").port();
+    // Saturating is delegated to the probe module, the one place the
+    // architecture contract permits raw TCP egress. These connections must
+    // outlive the run, hence the binding.
+    let _saturation = resourcefs_sources::saturate_accept_queue(blackhole_port);
+    assert!(
+        !_saturation.is_empty(),
+        "the blackhole listener must accept some connections before saturating"
+    );
+
+    fs::create_dir(temporary.path().join("memory-root")).expect("memory root");
+
+    let profile = write_profile(
+        temporary.path(),
+        "probe-budget.json",
+        &json!({
+            "schemaVersion":1,
+            "session":{"cacheDirectory":"probe-budget-cache"},
+            "sources":[
+                {
+                    "kind":"https","id":"blackholed","required":false,
+                    "origins":[{
+                        "baseUrl":format!("https://127.0.0.1:{blackhole_port}/"),
+                        "allowPrivateNetwork":true
+                    }]
+                },
+                // A different kind, because a profile admits each kind once.
+                // `memory` probes locally and instantly, which sharpens rather
+                // than weakens the claim: if even the cheapest probe in the
+                // system is reported unavailable, it can only be because the
+                // run never reached it.
+                {
+                    "kind":"memory","id":"notes","required":false,
+                    "roots":[{"name":"notes","path":"memory-root"}]
+                }
+            ]
+        }),
+    );
+
+    let started = std::time::Instant::now();
+    let output = run_check(&profile, true, &[]);
+    let elapsed = started.elapsed();
+
+    assert_eq!(output.status.code(), Some(0), "both sources are optional");
+    // The deadline is 5s and an unbounded run is 30s; 20s separates them with
+    // room for a loaded machine without ever admitting the unbounded case.
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "probing must be bounded by the startup deadline; took {elapsed:?}"
+    );
+
+    let report: Value =
+        serde_json::from_slice(&output.stdout).expect("the probe report must be JSON");
+    let state = |id: &str| -> String {
+        report["sources"]
+            .as_array()
+            .expect("sources array")
+            .iter()
+            .find(|source| source["id"] == id)
+            .unwrap_or_else(|| panic!("no report row for source '{id}'"))["state"]
+            .as_str()
+            .expect("state string")
+            .to_owned()
+    };
+    assert_eq!(
+        state("blackholed"),
+        "degraded",
+        "an origin that never answers is unavailable at startup"
+    );
+    assert_eq!(
+        state("notes"),
+        "available",
+        "a healthy source must not be starved of the window by an unresponsive sibling"
+    );
+}
+
+/// C14 — a source whose kind this binary cannot mount is refused *before* it is
+/// probed, so startup neither dials its origin nor runs its credential helper.
+///
+/// Startup probing made this reachable: the launch path now probes every
+/// configured source, and probing resolves deferred secrets. Without ordering
+/// the kind gate first, `serve` would dial GitHub and execute an operator's
+/// credential command on the way to refusing the source outright — work done on
+/// behalf of something that can never serve a byte.
+///
+/// Two server-side oracles, because the two costs are independent and a fix for
+/// one does not imply the other. The listener proves no egress: it stays live,
+/// so accepting nothing is only possible if nothing dialled. The marker proves
+/// no execution: the helper creates it when run, so its absence is positive
+/// evidence the credential was never resolved rather than merely unused.
+#[test]
+fn an_unmountable_kind_is_refused_before_it_is_probed() {
+    let temporary = TempDir::new().expect("temporary directory");
+    // The helper is resolved through the command's own `PATH`, which is how
+    // this profile schema locates credential commands; an absolute argv fails
+    // to resolve, and a credential that never resolves would make both oracles
+    // below pass for the wrong reason.
+    let command_directory = temporary.path().join("command-bin");
+    fs::create_dir(&command_directory).expect("command directory");
+    create_executable(&command_directory.join("credential-helper"));
+    let marker = temporary.path().join("credential-was-executed");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("origin listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let port = listener.local_addr().expect("listener address").port();
+
+    let profile = write_profile(
+        temporary.path(),
+        "unmountable.json",
+        &json!({
+            "schemaVersion":1,
+            "session":{"cacheDirectory":"unmountable-cache"},
+            "sources":[{
+                "kind":"github","id":"forge","required":false,
+                "apiBaseUrl":format!("https://127.0.0.1:{port}/"),
+                "allowPrivateNetwork":true,
+                "credential":{
+                    "kind":"command",
+                    "command":{
+                        "argv":["credential-helper"],
+                        "environment":{
+                            "PATH":{"kind":"literal","value":"command-bin"},
+                            "RFS_CHECK_MARKER":{
+                                "kind":"literal",
+                                "value":marker.display().to_string()
+                            }
+                        }
+                    }
+                },
+                "repositories":[{"name":"owner/repository"}]
+            }]
+        }),
+    );
+
+    let output = run_serve_profile(&profile, temporary.path(), &[]);
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "an uncompiled kind still stops startup"
+    );
+    let diagnostic = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        diagnostic.contains("not supported"),
+        "the refusal must name the missing adapter, not a reachability verdict; got: {diagnostic}"
+    );
+    assert_eq!(
+        listener
+            .accept()
+            .expect_err("startup must not dial a source it cannot mount")
+            .kind(),
+        std::io::ErrorKind::WouldBlock,
+        "no connection may be made on behalf of an unmountable source"
+    );
+    assert!(
+        !marker.exists(),
+        "the credential helper must not run for a source that cannot mount"
+    );
 }

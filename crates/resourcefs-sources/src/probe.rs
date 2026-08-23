@@ -10,6 +10,19 @@ use crate::{ConfigurationError, MAX_CONFIGURATION_ENTRIES};
 
 const NETWORK_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Total wall time one probe run may consume, matching the five-second root
+/// construction deadline so probing cannot push a launch past the startup
+/// budget it shares.
+///
+/// This is a *run* deadline rather than a shorter per-probe timeout because the
+/// two fail differently. A refused port answers immediately; a blackholed one
+/// answers neither RST nor SYN-ACK and burns the full `NETWORK_PROBE_TIMEOUT`.
+/// Probing sequentially under a shared budget would let the first such origin
+/// consume all of it and leave healthy siblings reported unavailable for a
+/// failure that was not theirs, so probes run concurrently and each gets the
+/// whole window.
+const PROBE_RUN_DEADLINE: Duration = Duration::from_secs(5);
+
 /// Probe for a local source whose paths were opened during profile validation.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ValidatedLocalProbe;
@@ -212,7 +225,11 @@ impl ProbeRun {
     }
 }
 
-/// Executes each configured probe adapter exactly once in profile order.
+/// Executes each configured probe adapter exactly once, reporting in profile
+/// order and bounded by [`PROBE_RUN_DEADLINE`] overall.
+///
+/// Adapters run concurrently, but records are emitted in profile order so the
+/// report does not depend on which probe finished first.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ProbeRunner;
 
@@ -223,13 +240,46 @@ impl ProbeRunner {
     }
 
     pub async fn run(&self, targets: &[ProbeTarget], operation: &OperationGuard) -> ProbeRun {
+        let mut outcomes: Vec<Option<ProbeOutcome>> = vec![None; targets.len()];
+        let mut running = tokio::task::JoinSet::new();
+        for (index, target) in targets.iter().enumerate() {
+            match &target.probe {
+                Some(probe) => {
+                    let probe = Arc::clone(probe);
+                    let operation = operation.clone();
+                    running.spawn(async move { (index, probe.probe(&operation).await) });
+                }
+                // No adapter means nothing to wait for; there is no network
+                // call to time out and no reason to spend a task on it.
+                None => outcomes[index] = Some(ProbeOutcome::new(ProbeState::Unsupported, None)),
+            }
+        }
+
+        let collect = async {
+            while let Some(joined) = running.join_next().await {
+                if let Ok((index, outcome)) = joined {
+                    outcomes[index] = Some(outcome);
+                }
+            }
+        };
+        // Whatever has not answered by the deadline is unavailable *at startup*,
+        // which is the question being asked. Dropping the set aborts the
+        // stragglers so no probe outlives the run that owns it.
+        let _ = timeout(PROBE_RUN_DEADLINE, collect).await;
+
         let mut ok = true;
         let mut records = Vec::with_capacity(targets.len());
-        for target in targets {
-            let outcome = match &target.probe {
-                Some(probe) => probe.probe(operation).await,
-                None => ProbeOutcome::new(ProbeState::Unsupported, None),
-            };
+        for (index, target) in targets.iter().enumerate() {
+            let outcome = outcomes[index].clone().unwrap_or_else(|| {
+                ProbeOutcome::new(
+                    if target.required {
+                        ProbeState::Failed
+                    } else {
+                        ProbeState::Degraded
+                    },
+                    None,
+                )
+            });
             ok &= outcome_is_acceptable(outcome.state(), target.required);
             records.push(ProbeRecord {
                 id: target.id.clone(),
@@ -240,6 +290,37 @@ impl ProbeRunner {
         }
         ProbeRun { ok, records }
     }
+}
+
+/// Saturates a loopback listener's accept queue so that further connections are
+/// neither completed nor refused, and returns the connections holding it full.
+///
+/// This is the only shape that can breach the startup probe budget: a refused
+/// port answers instantly, while a firewalled one silently drops the SYN and
+/// costs a full [`NETWORK_PROBE_TIMEOUT`]. Fixtures need to reproduce it to
+/// fence [`PROBE_RUN_DEADLINE`].
+///
+/// It lives here rather than in the fixture that uses it because the
+/// architecture contract confines raw TCP egress to this module — a fixture
+/// opening its own sockets would breach the invariant the probe exists to
+/// uphold. Dropping the returned connections releases the queue.
+///
+/// Each attempt is bounded, since connecting is itself what blocks once the
+/// queue is full, and the loop stops at the first attempt that cannot complete.
+#[cfg(feature = "test-support")]
+#[must_use]
+pub fn saturate_accept_queue(port: u16) -> Vec<std::net::TcpStream> {
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut held = Vec::new();
+    // Rust listens with a backlog of 128; the ceiling only bounds the loop if
+    // the queue somehow never fills.
+    for _ in 0..512 {
+        match std::net::TcpStream::connect_timeout(&address, Duration::from_millis(250)) {
+            Ok(stream) => held.push(stream),
+            Err(_) => break,
+        }
+    }
+    held
 }
 
 const fn outcome_is_acceptable(state: ProbeState, required: bool) -> bool {

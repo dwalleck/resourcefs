@@ -1,8 +1,8 @@
-use std::{fmt, path::Path};
+use std::{collections::HashSet, fmt, path::Path};
 
-use resourcefs_core::{Redactor, Secret, ServerLimits};
+use resourcefs_core::{ProbeState, Redactor, Secret, ServerLimits};
 use resourcefs_sources::{
-    BackingPathVisibility, FilesystemSource, HttpsSource, LaunchRoot, LaunchRootSource,
+    BackingPathVisibility, FilesystemSource, HttpsSource, LaunchRoot, LaunchRootSource, ProbeRun,
     SESSION_CLEANUP_TTL, SessionStorageConfig,
 };
 
@@ -11,7 +11,13 @@ use crate::{
     profile::{self, CheckedLaunchProfile},
 };
 
-const COMPILED_PROFILE_SOURCE_KINDS: &[&str] = &[];
+/// Source kinds this binary can actually mount from a profile.
+///
+/// A configured kind absent here fails startup rather than being ignored, so a
+/// profile never silently serves less than it declares. `https` joined the list
+/// when the launch path gained `mount_https`; every other kind remains a
+/// declared-but-uncompiled adapter tracked by its own issue.
+const COMPILED_PROFILE_SOURCE_KINDS: &[&str] = &["https"];
 
 pub(crate) struct LaunchPlan {
     source: FilesystemSource,
@@ -24,11 +30,48 @@ pub(crate) struct LaunchPlan {
 
 impl LaunchPlan {
     pub(crate) async fn from_profile(path: &Path) -> Result<Self, LaunchError> {
-        let checked = profile::load_for_serve(path).map_err(LaunchError::configuration)?;
-        Self::from_checked_profile(checked).await
+        let (checked, run) = profile::load_for_serve(path, COMPILED_PROFILE_SOURCE_KINDS)
+            .await
+            .map_err(LaunchError::configuration)?;
+        Self::from_checked_profile(checked, &run).await
     }
 
-    async fn from_checked_profile(checked: CheckedLaunchProfile) -> Result<Self, LaunchError> {
+    /// Classifies one startup probe run into the launch outcome.
+    ///
+    /// A required source that is unreachable or has no compiled adapter stops
+    /// startup; an optional one degrades. The two are distinguished by the
+    /// source's own `required` flag rather than by the failure's shape, so a
+    /// host that is down and a grant that is withheld degrade identically —
+    /// which is the intended contract, and why the diagnostic names the source
+    /// id rather than guessing at a cause. Giving probe failures a real
+    /// diagnostic is tracked at rfs-0p7j.
+    fn degraded_ids(run: &ProbeRun) -> Result<HashSet<String>, LaunchError> {
+        let mut degraded = HashSet::new();
+        for record in run.records() {
+            match record.outcome().state() {
+                ProbeState::Available => {}
+                ProbeState::Degraded if !record.required() => {
+                    degraded.insert(record.id().to_owned());
+                }
+                state => {
+                    return Err(LaunchError::required_unavailable(format!(
+                        "required source '{}' of kind '{}' is unavailable at startup ({state:?})",
+                        record.id(),
+                        record.kind()
+                    )));
+                }
+            }
+        }
+        Ok(degraded)
+    }
+
+    async fn from_checked_profile(
+        checked: CheckedLaunchProfile,
+        run: &ProbeRun,
+    ) -> Result<Self, LaunchError> {
+        // Ordered before the probe verdict on purpose. A kind this binary
+        // cannot mount is not a reachability question, and answering it as one
+        // would replace an exact diagnostic with a vaguer "unavailable".
         if let Some(source) = checked
             .sources
             .iter()
@@ -39,6 +82,7 @@ impl LaunchPlan {
                 source.id, source.kind
             )));
         }
+        let degraded = Self::degraded_ids(run)?;
         let source = FilesystemSource::new(
             checked.root_source,
             checked.primary_selector,
@@ -46,7 +90,7 @@ impl LaunchPlan {
         )
         .await
         .map_err(LaunchError::configuration)?;
-        let https = profile::mount_https(checked.https, &checked.configuration_base)
+        let https = profile::mount_https(checked.https, &checked.configuration_base, &degraded)
             .await
             .map_err(LaunchError::configuration)?;
         Ok(Self {

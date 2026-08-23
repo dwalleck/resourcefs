@@ -3003,3 +3003,206 @@ fn https_is_read_only() {
     assert!(edit.get("error").is_none(), "{edit}");
     assert_tool_error(&edit["result"], "unsupported_mutation");
 }
+
+/// C14 — an optional source that fails its startup probe degrades: the server
+/// starts, every other source keeps serving, and only that source's references
+/// fail with `source_unavailable`.
+///
+/// Anchored at the tool, not at the launch helper: the claim is about what an
+/// `rfs_read` returns, and the hops between a mounted source and the tool are
+/// exactly where a degradation could be lost.
+///
+/// Three assertions carry it, none sufficient alone. The workspace read is the
+/// **positive control** — it proves the server genuinely started and serves, so
+/// the HTTPS refusal cannot be "nothing works".
+///
+/// The refusal **message** is asserted, not just its category, and that is
+/// load-bearing rather than belt-and-braces. Deleting degradation and letting
+/// the origin mount normally still yields `source_unavailable` here — the fetch
+/// simply leaves and fails against the closed port with "request failed: error
+/// sending request". Category alone is therefore not a unique explanation: a
+/// dead port and a refused-before-egress degradation are indistinguishable at
+/// that granularity, so a category-only fence would pass with the whole feature
+/// removed. Only the startup-specific phrasing separates the two.
+///
+/// The final block is the controlled comparison: the same profile with the port
+/// open, differing in one variable, must not produce the degraded message —
+/// which is what rules out the degraded assertion being satisfied by the source
+/// simply never mounting.
+#[test]
+fn optional_https_degrades_while_other_sources_serve() {
+    let fixture = WorkspaceFixture::new();
+    fs::write(fixture.root.join("local.txt"), "workspace still serves\n").expect("workspace file");
+
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("closed-port listener");
+    let closed_port = closed.local_addr().expect("closed address").port();
+    drop(closed);
+
+    let profile = fixture.root.join("degraded.json");
+    fs::write(
+        &profile,
+        serde_json::to_vec(&json!({
+            "schemaVersion":1,
+            "workspace":{
+                "roots":[{"id":"workspace","path":"."}],
+                "primaryRoot":"workspace"
+            },
+            "session":{"cacheDirectory":"degraded-cache","retentionTtlSeconds":0},
+            "sources":[{
+                "kind":"https","id":"web","required":false,
+                "origins":[{
+                    "baseUrl":format!("https://127.0.0.1:{closed_port}/"),
+                    "allowPrivateNetwork":true
+                }]
+            }]
+        }))
+        .expect("serialize degraded profile"),
+    )
+    .expect("write degraded profile");
+
+    let mut process = McpProcess::start_profile(&profile, &fixture.root);
+    process.initialize_with_roots(VERSION_2026, Vec::new());
+
+    // Positive control: the server is alive and another source serves.
+    assert_eq!(
+        process.call_read("local.txt")["structuredContent"]["content"],
+        "workspace still serves\n",
+        "a degraded optional source must not stop other sources serving"
+    );
+
+    let refused = process.call_read(&format!("https://127.0.0.1:{closed_port}/doc"));
+    assert_tool_error(&refused, "source_unavailable");
+    let text = refused["content"][0]["text"]
+        .as_str()
+        .expect("error TextContent")
+        .to_owned();
+    assert!(
+        text.contains("unreachable at startup"),
+        "the refusal must name degradation, not absence of configuration; got: {text}"
+    );
+    process.finish();
+
+    // Controlled comparison: identical profile, port open. One variable differs,
+    // so the degraded message above is attributable to unreachability rather
+    // than to the source never mounting.
+    let open = std::net::TcpListener::bind("127.0.0.1:0").expect("open-port listener");
+    let open_port = open.local_addr().expect("open address").port();
+    let reachable = fixture.root.join("reachable.json");
+    fs::write(
+        &reachable,
+        serde_json::to_vec(&json!({
+            "schemaVersion":1,
+            "workspace":{
+                "roots":[{"id":"workspace","path":"."}],
+                "primaryRoot":"workspace"
+            },
+            "session":{"cacheDirectory":"reachable-cache","retentionTtlSeconds":0},
+            "sources":[{
+                "kind":"https","id":"web","required":false,
+                "origins":[{
+                    "baseUrl":format!("https://127.0.0.1:{open_port}/"),
+                    "allowPrivateNetwork":true
+                }]
+            }]
+        }))
+        .expect("serialize reachable profile"),
+    )
+    .expect("write reachable profile");
+
+    let mut healthy = McpProcess::start_profile(&reachable, &fixture.root);
+    healthy.initialize_with_roots(VERSION_2026, Vec::new());
+    // Startup probing completes before the server answers initialize, so the
+    // origin has already been observed reachable and mounted. Closing the port
+    // now keeps the read fast — it fails at connect rather than waiting out the
+    // 30-second TLS timeout — without changing what mounted.
+    drop(open);
+    let mounted = healthy.call_read(&format!("https://127.0.0.1:{open_port}/doc"));
+    let mounted_text = mounted["content"][0]["text"]
+        .as_str()
+        .expect("error TextContent")
+        .to_owned();
+    assert!(
+        !mounted_text.contains("unreachable at startup"),
+        "a reachable origin must mount; it failed as degraded instead: {mounted_text}"
+    );
+    healthy.finish();
+}
+
+/// C14 — probing happens once at startup and never on the read path.
+///
+/// The listener is the oracle. A startup probe is a bare TCP connect, so it
+/// shows up as exactly one accepted connection before the server answers
+/// `initialize`; ordinary reads must add none. Counting accepts rather than
+/// timing anything makes the claim observable from outside the process.
+///
+/// The reads here are of a workspace file, which never touches the network on
+/// its own. That is the point: nothing about a local read *should* reach the
+/// listener, so any connection it produces is a re-probe — which is exactly the
+/// regression this guards, since re-validating source health per request is a
+/// natural thing to add and would be invisible from inside the read's result.
+#[test]
+fn probing_happens_once_at_startup_not_per_read() {
+    let fixture = WorkspaceFixture::new();
+    fs::write(fixture.root.join("local.txt"), "served locally\n").expect("workspace file");
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("probe listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let port = listener.local_addr().expect("listener address").port();
+
+    let profile = fixture.root.join("probe-once.json");
+    fs::write(
+        &profile,
+        serde_json::to_vec(&json!({
+            "schemaVersion":1,
+            "workspace":{
+                "roots":[{"id":"workspace","path":"."}],
+                "primaryRoot":"workspace"
+            },
+            "session":{"cacheDirectory":"probe-once-cache","retentionTtlSeconds":0},
+            "sources":[{
+                // `required` here also makes this the plan's fourth stress
+                // profile — required + reachable — whose expected outcome is a
+                // server that starts and serves normally.
+                "kind":"https","id":"web","required":true,
+                "origins":[{
+                    "baseUrl":format!("https://127.0.0.1:{port}/"),
+                    "allowPrivateNetwork":true
+                }]
+            }]
+        }))
+        .expect("serialize probe-once profile"),
+    )
+    .expect("write probe-once profile");
+
+    let drain = |listener: &std::net::TcpListener| {
+        let mut count = 0;
+        while let Ok((stream, _)) = listener.accept() {
+            drop(stream);
+            count += 1;
+        }
+        count
+    };
+
+    let mut process = McpProcess::start_profile(&profile, &fixture.root);
+    process.initialize_with_roots(VERSION_2026, Vec::new());
+    assert_eq!(
+        drain(&listener),
+        1,
+        "startup must probe the configured origin exactly once"
+    );
+
+    for _ in 0..3 {
+        assert_eq!(
+            process.call_read("local.txt")["structuredContent"]["content"],
+            "served locally\n"
+        );
+    }
+    assert_eq!(
+        drain(&listener),
+        0,
+        "an ordinary read must not re-probe a configured source"
+    );
+    process.finish();
+}

@@ -81,9 +81,18 @@ impl CheckedProfile {
         })
     }
 
+    /// Builds one probe target per configured source.
+    ///
+    /// `mountable` restricts which kinds are actually probed. `None` probes
+    /// everything, which is what an explicit `check` wants — the operator asked
+    /// about the profile as written. The launch path passes the kinds this
+    /// binary can mount, because a source it is about to refuse must not have
+    /// its origin dialled or, worse, its credential helper executed on the way
+    /// to that refusal.
     pub(super) async fn probe_targets(
         &mut self,
         operation: &OperationGuard,
+        mountable: Option<&[&str]>,
     ) -> Result<Vec<ProbeTarget>, ProfileError> {
         let executor = CommandExecutor::new(MAX_LIVE_COMMAND_TREES, &self.configuration_base)
             .map_err(|_| {
@@ -91,6 +100,14 @@ impl CheckedProfile {
             })?;
         let mut targets = Vec::with_capacity(self.sources.len());
         for source in &self.sources {
+            if mountable.is_some_and(|kinds| !kinds.contains(&source.kind)) {
+                targets.push(ProbeTarget::unsupported(
+                    &source.id,
+                    source.kind,
+                    source.required,
+                ));
+                continue;
+            }
             let mut dependency_available = true;
             if !matches!(source.probe, StaticProbe::Unsupported) {
                 for deferred in &source.deferred_secrets {
