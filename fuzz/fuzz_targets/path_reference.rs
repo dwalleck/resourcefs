@@ -25,30 +25,32 @@ fuzz_target!(|data: &[u8]| {
     let Ok(reference) = first else {
         return;
     };
-    assert_address_is_contained(reference.literal());
+    if let Some(address) = reference.workspace_address() {
+        assert_address_is_contained(address);
+    }
     if let Some(selected) = reference.selector_candidate() {
         assert_address_is_contained(selected.base());
     }
 
-    match reference.literal() {
-        WorkspaceAddress::Relative(path) => {
+    match reference.workspace_address() {
+        Some(WorkspaceAddress::Relative(path)) => {
             let canonical = PathReference::canonical(
                 WorkspaceRootId::new("fuzz-root").expect("static root ID"),
                 path.clone(),
             );
             assert_eq!(PathReference::parse(canonical.requested()), Ok(canonical));
         }
-        WorkspaceAddress::Canonical { root, path } => {
+        Some(WorkspaceAddress::Canonical { root, path }) => {
             let canonical = PathReference::canonical(root.clone(), path.clone());
             assert_eq!(PathReference::parse(canonical.requested()), Ok(canonical));
         }
-        WorkspaceAddress::Absolute(_) | WorkspaceAddress::FileUri(_) => {}
+        Some(WorkspaceAddress::Absolute(_) | WorkspaceAddress::FileUri(_)) | None => {}
     }
 });
 
 fn assert_known_boundaries() {
     let single_pass = PathReference::parse("notes%253A2").expect("single-pass fixture");
-    let WorkspaceAddress::Relative(path) = single_pass.literal() else {
+    let Some(WorkspaceAddress::Relative(path)) = single_pass.workspace_address() else {
         panic!("single-pass fixture must stay relative");
     };
     assert_eq!(path.as_path(), Path::new("notes%3A2"));
