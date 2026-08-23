@@ -207,3 +207,157 @@ fn workspace_passes_the_gate() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// Writes `path` and every parent directory it needs.
+fn write(path: &Path, contents: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap_or_else(|error| {
+            panic!("create {}: {error}", parent.display());
+        });
+    }
+    std::fs::write(path, contents)
+        .unwrap_or_else(|error| panic!("write {}: {error}", path.display()));
+}
+
+/// Runs one cargo-deny check in `dir` against the *committed* `deny.toml`, so
+/// these fixtures exercise the real policy rather than a copy that could drift
+/// from it.
+/// `--config` belongs to the `check` subcommand, not to `cargo deny` itself:
+/// placing it first is a usage error that exits non-zero, which would let a
+/// "did it fail?" assertion pass without the gate ever running.
+fn deny_check_in(dir: &Path, which: &str) -> std::process::Output {
+    Command::new("cargo")
+        .arg("deny")
+        .arg("check")
+        .arg("--config")
+        .arg(workspace_root().join("deny.toml"))
+        .arg(which)
+        .current_dir(dir)
+        .output()
+        .expect("run cargo-deny against the fixture graph")
+}
+
+/// Asserts cargo-deny rejected the fixture *for the reason under test*.
+///
+/// Checking only the exit status is not enough: a malformed invocation, an
+/// unresolvable manifest, or a missing config all exit non-zero too, so a
+/// bare `!success` assertion can pass while the gate never ran. Requiring the
+/// specific `<check> FAILED` diagnostic pins the failure to the real cause.
+fn assert_rejected_by(output: &std::process::Output, which: &str, why: &str) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        !output.status.success(),
+        "{why}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        combined.contains(&format!("{which} FAILED")),
+        "expected cargo-deny to report `{which} FAILED`; a non-zero exit without it means the \
+         fixture failed for some other reason (usage error, unresolvable manifest) and the gate \
+         was never exercised.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// C2 — the license gate bites. A disallowed license anywhere in the graph
+/// must fail, including on a transitive package while the root is compliant:
+/// a root-only check would pass this fixture.
+#[test]
+fn license_gate_rejects_copyleft() {
+    let fixture = tempfile::tempdir().expect("temp dir for the license fixture");
+    let root = fixture.path();
+
+    write(
+        &root.join("Cargo.toml"),
+        "[package]\n\
+         name = \"license-fixture-root\"\n\
+         version = \"0.1.0\"\n\
+         edition = \"2021\"\n\
+         license = \"MIT\"\n\
+         \n\
+         [dependencies]\n\
+         copyleft-dep = { path = \"copyleft-dep\" }\n",
+    );
+    write(&root.join("src/lib.rs"), "");
+    write(
+        &root.join("copyleft-dep/Cargo.toml"),
+        "[package]\n\
+         name = \"copyleft-dep\"\n\
+         version = \"0.1.0\"\n\
+         edition = \"2021\"\n\
+         license = \"GPL-3.0\"\n",
+    );
+    write(&root.join("copyleft-dep/src/lib.rs"), "");
+
+    let output = deny_check_in(root, "licenses");
+    assert_rejected_by(
+        &output,
+        "licenses",
+        "a GPL-3.0 package must fail the license gate, otherwise the allow-list is decorative",
+    );
+}
+
+/// C3 — the source gate bites. Uses a local repository reached by a `file://`
+/// URL so the fixture is a genuine cargo-resolved git source while needing no
+/// network.
+#[test]
+fn source_gate_rejects_git() {
+    let fixture = tempfile::tempdir().expect("temp dir for the source fixture");
+    let root = fixture.path();
+    let dependency = root.join("git-dep");
+
+    write(
+        &dependency.join("Cargo.toml"),
+        "[package]\n\
+         name = \"git-dep\"\n\
+         version = \"0.1.0\"\n\
+         edition = \"2021\"\n\
+         license = \"MIT\"\n",
+    );
+    write(&dependency.join("src/lib.rs"), "");
+
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(&dependency)
+            .status()
+            .expect("git is required to build the source fixture");
+        assert!(status.success(), "git {args:?} failed");
+    };
+    git(&["init", "--quiet", "."]);
+    git(&["add", "-A"]);
+    git(&[
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "user.name=fixture",
+        "commit",
+        "--quiet",
+        "-m",
+        "fixture",
+    ]);
+
+    write(
+        &root.join("Cargo.toml"),
+        &format!(
+            "[package]\n\
+             name = \"source-fixture-root\"\n\
+             version = \"0.1.0\"\n\
+             edition = \"2021\"\n\
+             license = \"MIT\"\n\
+             \n\
+             [dependencies]\n\
+             git-dep = {{ git = \"file://{}\" }}\n",
+            dependency.display()
+        ),
+    );
+    write(&root.join("src/lib.rs"), "");
+
+    let output = deny_check_in(root, "sources");
+    assert_rejected_by(
+        &output,
+        "sources",
+        "a git-sourced dependency must fail the source gate, otherwise the crates.io pin is \
+         decorative",
+    );
+}
