@@ -56,6 +56,16 @@ impl CompiledSources {
     }
 }
 
+/// Session Scratch parses as a Path Reference before its Source Adapter is
+/// compiled in, so every routing arm reports the source as unavailable rather
+/// than misrouting a `local://` reference to another adapter.
+fn local_source_unavailable() -> resourcefs_core::ResourceError {
+    resourcefs_core::ResourceError::new(
+        resourcefs_core::ErrorCategory::SourceUnavailable,
+        "local scratch source not mounted",
+    )
+}
+
 #[async_trait]
 impl SourceAdapter for CompiledSources {
     async fn read(&self, reference: &PathReference) -> Result<SourceResource, ResourceError> {
@@ -74,6 +84,7 @@ impl SourceAdapter for CompiledSources {
             }
             ResourceAddress::Workspace(_) => self.filesystem.read(reference).await,
             ResourceAddress::Artifact(_) => self.artifacts.read(reference).await,
+            ResourceAddress::Local(_) => Err(local_source_unavailable()),
         }
     }
 }
@@ -93,6 +104,7 @@ impl MutationAdapter for CompiledSources {
                     "catalog and Artifact Resources are immutable",
                 ))
             }
+            ResourceAddress::Local(_) => Err(local_source_unavailable()),
         }
     }
 
@@ -140,6 +152,7 @@ impl DiscoveryAdapter for CompiledSources {
                     .search(target, pattern, options, operation)
                     .await
             }
+            Some(ResourceAddress::Local(_)) => Err(local_source_unavailable()),
         }
     }
 

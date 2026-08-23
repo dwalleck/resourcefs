@@ -114,7 +114,9 @@ impl ReadEngine {
 
         let requested_artifact = match request.reference.address() {
             ResourceAddress::Artifact(address) => Some(address.clone()),
-            ResourceAddress::Catalog(_) | ResourceAddress::Workspace(_) => None,
+            ResourceAddress::Catalog(_)
+            | ResourceAddress::Workspace(_)
+            | ResourceAddress::Local(_) => None,
         };
         let requested_artifact_projection = request.reference.projection().is_some();
         let requested_workspace =

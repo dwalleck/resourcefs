@@ -13,6 +13,7 @@ const WORKSPACE_PREFIX: &str = "rfs://workspace/";
 pub(crate) const SOURCE_CATALOG_REFERENCE: &str = "rfs://";
 pub(crate) const WORKSPACE_CATALOG_REFERENCE: &str = "rfs://workspace";
 pub(crate) const ARTIFACT_PREFIX: &str = "artifact://";
+pub(crate) const LOCAL_PREFIX: &str = "local://";
 pub const MAX_PATH_REFERENCE_BYTES: usize = 64 * 1024;
 pub const MAX_WORKSPACE_ROOTS: usize = 256;
 
@@ -188,12 +189,73 @@ impl CatalogAddress {
     }
 }
 
+/// Maximum length of a Session Scratch name, in UTF-8 bytes after percent-decoding.
+pub const MAX_LOCAL_NAME_BYTES: usize = 255;
+
+/// Validated flat Session Scratch name.
+///
+/// Session Scratch has no hierarchy: a name is one filename-like segment, so a
+/// scratch reference cannot address anything outside its Path Session by
+/// construction. The stored value is the percent-decoded name; rendering a
+/// canonical reference re-encodes it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LocalName(String);
+
+impl LocalName {
+    pub fn new(value: impl Into<String>) -> Result<Self, ResourceError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(invalid_reference("Session Scratch name must not be empty"));
+        }
+        if value.len() > MAX_LOCAL_NAME_BYTES {
+            return Err(invalid_reference(format!(
+                "Session Scratch name must not exceed {MAX_LOCAL_NAME_BYTES} UTF-8 bytes"
+            )));
+        }
+        if value == "." || value == ".." {
+            return Err(invalid_reference(
+                "Session Scratch name must not be '.' or '..'",
+            ));
+        }
+        if value.contains(['/', '\\']) {
+            return Err(invalid_reference(
+                "Session Scratch names are flat and must not contain a path separator",
+            ));
+        }
+        if value.chars().any(char::is_control) {
+            return Err(invalid_reference(
+                "Session Scratch name must not contain control characters",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Renders the canonical `local://<name>` reference for this name.
+    pub(crate) fn canonical_reference(&self) -> String {
+        let mut rendered = String::with_capacity(LOCAL_PREFIX.len() + self.0.len());
+        rendered.push_str(LOCAL_PREFIX);
+        encode_component(&self.0, &mut rendered);
+        rendered
+    }
+}
+
+impl fmt::Display for LocalName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// Parsed source identity independent of its optional projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceAddress {
     Catalog(CatalogAddress),
     Workspace(WorkspaceAddress),
     Artifact(ArtifactAddress),
+    Local(LocalName),
 }
 
 /// One validated 1-indexed line range in request order.
@@ -383,6 +445,17 @@ impl PathReference {
             });
         }
 
+        if let Some(raw_name) = requested.strip_prefix(LOCAL_PREFIX) {
+            let name = LocalName::new(percent_decode(raw_name)?)?;
+            return Ok(Self {
+                requested: name.canonical_reference(),
+                address: ResourceAddress::Local(name),
+                projection: None,
+                selector_candidate: None,
+                selector_error: None,
+            });
+        }
+
         let literal = parse_workspace_address(&requested)?;
         let (selector_candidate, selector_error) =
             projection_candidate_split(&requested).map_or((None, None), |(base, selector)| {
@@ -427,6 +500,18 @@ impl PathReference {
         }
     }
 
+    /// Builds the canonical reference for one Session Scratch Resource.
+    pub fn local(name: impl Into<String>) -> Result<Self, ResourceError> {
+        let name = LocalName::new(name)?;
+        Ok(Self {
+            requested: name.canonical_reference(),
+            address: ResourceAddress::Local(name),
+            projection: None,
+            selector_candidate: None,
+            selector_error: None,
+        })
+    }
+
     pub fn artifact(
         address: ArtifactAddress,
         projection: Option<ProjectionSelector>,
@@ -454,7 +539,9 @@ impl PathReference {
     pub fn workspace_address(&self) -> Option<&WorkspaceAddress> {
         match &self.address {
             ResourceAddress::Workspace(address) => Some(address),
-            ResourceAddress::Catalog(_) | ResourceAddress::Artifact(_) => None,
+            ResourceAddress::Catalog(_)
+            | ResourceAddress::Artifact(_)
+            | ResourceAddress::Local(_) => None,
         }
     }
 

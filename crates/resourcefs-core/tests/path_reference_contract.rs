@@ -272,6 +272,152 @@ fn parses_production_shaped_reference_within_budget() {
     );
 }
 
+/// Expected outcome for one row of the hand-authored `local://` grammar oracle.
+///
+/// The oracle is written by hand from the approved spec, never computed from the
+/// parser: each row states the family the reference must land in, or the exact
+/// error category it must produce.
+#[derive(Debug, PartialEq, Eq)]
+enum GrammarExpectation {
+    /// Parses to `ResourceAddress::Local` whose decoded name is exactly this string.
+    LocalNamed(String),
+    /// Parses to a non-local family; the label names it for failure reporting.
+    OtherFamily(&'static str),
+    Rejected(ErrorCategory),
+}
+
+/// Classifies a parse result without consulting the parser's own branch logic.
+fn classify(input: &str) -> GrammarExpectation {
+    match PathReference::parse(input.to_owned()) {
+        Ok(reference) => match reference.address() {
+            ResourceAddress::Local(name) => {
+                GrammarExpectation::LocalNamed(name.as_str().to_owned())
+            }
+            ResourceAddress::Workspace(_) => GrammarExpectation::OtherFamily("workspace"),
+            ResourceAddress::Artifact(_) => GrammarExpectation::OtherFamily("artifact"),
+            ResourceAddress::Catalog(_) => GrammarExpectation::OtherFamily("catalog"),
+        },
+        Err(error) => GrammarExpectation::Rejected(error.category()),
+    }
+}
+
+#[test]
+fn local_name_grammar() {
+    let two_hundred_fifty_five = "n".repeat(255);
+    let two_hundred_fifty_six = "n".repeat(256);
+    let accepted_unicode = "设计.md";
+
+    // Hand-authored accept/reject table: input -> expected outcome, from the
+    // approved spec's name grammar (printable UTF-8; no separator, decoded or
+    // literal; not `.`/`..`/empty; at most 255 UTF-8 bytes).
+    let expected: Vec<(String, GrammarExpectation)> = vec![
+        // Accepted scratch names.
+        (
+            "local://plan.md".to_owned(),
+            GrammarExpectation::LocalNamed("plan.md".to_owned()),
+        ),
+        (
+            "local://review notes.md".to_owned(),
+            GrammarExpectation::LocalNamed("review notes.md".to_owned()),
+        ),
+        (
+            format!("local://{accepted_unicode}"),
+            GrammarExpectation::LocalNamed(accepted_unicode.to_owned()),
+        ),
+        (
+            format!("local://{two_hundred_fifty_five}"),
+            GrammarExpectation::LocalNamed(two_hundred_fifty_five.clone()),
+        ),
+        // A percent-encoded literal `%` decodes back to the intended name.
+        (
+            "local://100%25.md".to_owned(),
+            GrammarExpectation::LocalNamed("100%.md".to_owned()),
+        ),
+        // Rejected scratch names.
+        (
+            format!("local://{two_hundred_fifty_six}"),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        (
+            "local://a%2Fb".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        (
+            "local://a%5Cb".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        // Literal separators are owned solely by the scratch-name check.
+        (
+            "local://a/b".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        (
+            "local://a\\b".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        (
+            "local://..".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        (
+            "local://.".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        (
+            "local://".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        (
+            "local://bell\u{7}.md".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        // Every existing family keeps its prior parse result.
+        (
+            "rfs://workspace/root/notes.md".to_owned(),
+            GrammarExpectation::OtherFamily("workspace"),
+        ),
+        (
+            "artifact://0123456789abcdef0123456789abcdef-1".to_owned(),
+            GrammarExpectation::OtherFamily("artifact"),
+        ),
+        (
+            "rfs://".to_owned(),
+            GrammarExpectation::OtherFamily("catalog"),
+        ),
+        (
+            "rfs://workspace".to_owned(),
+            GrammarExpectation::OtherFamily("catalog"),
+        ),
+        (
+            "notes/plan.md".to_owned(),
+            GrammarExpectation::OtherFamily("workspace"),
+        ),
+        (
+            "file:///tmp/plan.md".to_owned(),
+            GrammarExpectation::OtherFamily("workspace"),
+        ),
+    ];
+
+    for (input, want) in &expected {
+        assert_eq!(&classify(input), want, "grammar row for {input:?}");
+    }
+}
+
+#[test]
+fn local_references_render_canonically_and_round_trip() {
+    for name in ["plan.md", "review notes.md", "设计.md", "100%.md"] {
+        let reference = PathReference::local(name).expect("valid scratch name");
+        let ResourceAddress::Local(parsed) = reference.address() else {
+            panic!("{name} must parse as a Session Scratch Resource");
+        };
+        assert_eq!(parsed.as_str(), name);
+
+        let reparsed =
+            PathReference::parse(reference.requested().to_owned()).expect("canonical round-trip");
+        assert_eq!(&reparsed, &reference, "round-trip for {name:?}");
+    }
+}
+
 #[test]
 fn maximum_reference_parses_within_boundary_budget() {
     let input = "a".repeat(MAX_PATH_REFERENCE_BYTES);

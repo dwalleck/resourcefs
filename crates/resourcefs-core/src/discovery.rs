@@ -373,6 +373,8 @@ impl GlobEntry {
             ResourceAddress::Catalog(_) => false,
             ResourceAddress::Workspace(_) => !matches!(kind, GlobKind::Artifact),
             ResourceAddress::Artifact(_) => matches!(kind, GlobKind::Artifact),
+            // Session Scratch has no glob source until the Local adapter mounts.
+            ResourceAddress::Local(_) => false,
         };
         if !kind_matches_source {
             return Err(ResourceError::new(
@@ -1172,6 +1174,9 @@ fn canonical_identity(reference: &PathReference) -> Result<String, ResourceError
             reference.projection().is_none()
                 && canonical_artifact_reference(address)
                     .is_ok_and(|canonical| canonical == reference.requested())
+        }
+        ResourceAddress::Local(name) => {
+            reference.projection().is_none() && reference.requested() == name.canonical_reference()
         }
         ResourceAddress::Workspace(_) => false,
     };

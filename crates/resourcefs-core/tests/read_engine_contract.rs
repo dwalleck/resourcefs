@@ -97,6 +97,10 @@ impl SourceAdapter for SessionBackedSource {
                 }
             }
             ResourceAddress::Artifact(address) => self.read_artifact(reference, address).await,
+            ResourceAddress::Local(_) => Err(ResourceError::new(
+                ErrorCategory::UnsupportedProjection,
+                "test source does not implement Session Scratch Resources",
+            )),
         }
     }
 }

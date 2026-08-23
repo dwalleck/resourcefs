@@ -765,7 +765,8 @@ fn windows_rename_file(
             destination.len(),
         );
     }
-    let length = u32::try_from(bytes).map_err(|_| io::Error::other("rename buffer is too large"))?;
+    let length =
+        u32::try_from(bytes).map_err(|_| io::Error::other("rename buffer is too large"))?;
     let mut io_status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
     let status = unsafe {
         NtSetInformationFile(
