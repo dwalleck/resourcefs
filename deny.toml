@@ -1,0 +1,65 @@
+# Supply-chain policy for the ResourceFS workspace.
+#
+# Owned by rfs-q12y. Every value here is fixed by `.rfs-q12y/spec.md`
+# (signed 2026-08-23, Revision 1) and fenced by
+# `crates/resourcefs-mcp/tests/supply_chain_contract.rs`, so changing a
+# setting without changing the spec turns that contract red.
+#
+# Run the whole gate with: cargo deny check
+
+[graph]
+# Vet the same graph the project builds and tests: `test-support` gates test
+# helpers, so a features-off graph would under-report dependencies.
+all-features = true
+
+[licenses]
+# Allow-list headroom is intentional: several approved permissive licenses are
+# not currently present in the tree, and an unused allowance is not a defect.
+unused-allowed-license = "allow"
+# The approved set. A blanket allow-list with no per-package exceptions:
+# MPL-2.0 is file-level copyleft, so linking it carries no obligation on our
+# own sources, and allowing it outright avoids exception churn for
+# `option-ext` (reached through `directories`).
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[advisories]
+# Vulnerabilities are always denied by cargo-deny and need no setting here.
+yanked = "deny"
+# Examine every crate. `unmaintained` is a scope selector, not a severity:
+# any in-scope unmaintained advisory is a hard error. Clearing one is done
+# ONLY by adding an `ignore` entry below with its RUSTSEC id and a written
+# rationale -- never by weakening this to "transitive" or "none".
+unmaintained = "all"
+# Baseline is deliberately empty, so the first use of this escape hatch is a
+# visible, reviewable change rather than an edit to an existing list.
+ignore = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[bans]
+# Duplicate versions are reported by `cargo deny check bans` output but do not
+# fail the gate; the workspace pins external versions in
+# `[workspace.dependencies]`, several with `=` exact requirements.
+multiple-versions = "allow"
+# The three workspace-internal crates depend on each other by bare `path`
+# without a version requirement, which cargo-deny classifies as a wildcard.
+# `allow-wildcard-paths` does not help: cargo-deny excludes publishable crates
+# from that exemption because crates.io rejects path dependencies. Fixing the
+# manifests is tracked at rfs-58r1 (cargo install distribution); until then
+# this must stay "allow" or the gate fails on our own crates.
+wildcards = "allow"
