@@ -654,7 +654,7 @@ async fn artifact_catalog_is_ordered_and_live() {
     );
 }
 
-/// C7 (rfs-60g1 Slice 3) — the seen-region snapshot key admits canonical
+/// C7 (rfs-60g1) — the seen-region snapshot key admits canonical
 /// `local://` Session Scratch references alongside canonical workspace
 /// references, and still refuses every non-canonical spelling and every other
 /// address family.
