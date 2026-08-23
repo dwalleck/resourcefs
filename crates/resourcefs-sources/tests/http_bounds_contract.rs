@@ -1,5 +1,6 @@
 //! Body-bound, cancellation, and timeout contracts for the substrate
-//! (rfs-g2z9 C16).
+//! (rfs-g2z9 C16), plus the reader-mode fetch ceiling and its guarantee that
+//! extraction never runs over a truncated document (C8).
 //!
 //! The ceiling here bounds what ResourceFS **accepts and retains**, not what
 //! the peer transmits. `prove-it-prototype` measured a server flushing roughly
@@ -336,4 +337,111 @@ async fn odd_body_framings_stay_bounded() {
         "a body with no declared length must still stop at the ceiling"
     );
     assert!(response.truncated(), "and must report itself truncated");
+}
+
+/// C8 — a body at exactly the ceiling succeeds; one byte over is refused.
+///
+/// The boundary is the whole point: the signed spec says a document at the
+/// ceiling must be readable, so an off-by-one that treats "filled the buffer"
+/// as "there was more" would silently refuse a legal document.
+#[tokio::test]
+async fn fetch_ceiling_boundary() {
+    const CEILING: usize = 8 * 1024;
+
+    for (size, expect_ok) in [(CEILING, true), (CEILING + 1, false)] {
+        let listener = TlsListener::serve_router(LOOPBACK, 0, MATCH_CERT, move |_path| {
+            FixtureResponse::sized(size)
+        })
+        .await;
+        let port = listener.address.port();
+        let substrate = tls_substrate_with_ceilings(
+            fixture_allowlist(port, true),
+            vec![IpAddr::V4(LOOPBACK)],
+            ceilings(CEILING, 30_000),
+        );
+
+        let outcome = substrate
+            .fetch_reader_mode(HttpRequest::get(fixture_url(port)), &OperationGuard::new())
+            .await;
+
+        if expect_ok {
+            assert!(
+                outcome.is_ok(),
+                "a document of exactly {CEILING} bytes must be accepted, got {:?}",
+                outcome.err()
+            );
+        } else {
+            let error = outcome.expect_err("a document past the ceiling must be refused");
+            assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+            // Message, not just category: a cancellation, a redirect bound and
+            // a body bound can all surface as a limit. Only the text says
+            // which ceiling fired, and only it names the documented escape.
+            assert!(
+                error.message().contains("fetch ceiling") && error.message().contains(":raw"),
+                "the refusal must name the fetch ceiling and the :raw escape: {}",
+                error.message()
+            );
+        }
+        settle().await;
+    }
+}
+
+/// C8 — extraction never runs over a document that exceeded the ceiling.
+///
+/// Asserting only that the call failed would be satisfied by any refusal, so
+/// it cannot tell "refused before extracting" from "extracted, then failed".
+/// The invocation counter is the positive evidence, and the control row proves
+/// the counter moves at all — without it, a permanently broken extractor would
+/// pass this fence.
+#[tokio::test]
+async fn over_ceiling_never_extracts() {
+    const CEILING: usize = 4 * 1024;
+
+    // Control: an in-ceiling document must move the counter.
+    let listener = TlsListener::serve_router(LOOPBACK, 0, MATCH_CERT, |_path| {
+        FixtureResponse::Body("<html><body><p>ok</p></body></html>".to_owned())
+    })
+    .await;
+    let port = listener.address.port();
+    let substrate = tls_substrate_with_ceilings(
+        fixture_allowlist(port, true),
+        vec![IpAddr::V4(LOOPBACK)],
+        ceilings(CEILING, 30_000),
+    );
+    let before_control = resourcefs_sources::extraction_count();
+    substrate
+        .fetch_reader_mode(HttpRequest::get(fixture_url(port)), &OperationGuard::new())
+        .await
+        .expect("an in-ceiling document extracts");
+    assert!(
+        resourcefs_sources::extraction_count() > before_control,
+        "the control row must move the extraction counter, otherwise this \
+         fence would pass with the extractor never wired up at all"
+    );
+    settle().await;
+
+    // The claim: an over-ceiling document must not reach the extractor.
+    let listener = TlsListener::serve_router(LOOPBACK, 0, MATCH_CERT, |_path| {
+        FixtureResponse::sized(CEILING * 4)
+    })
+    .await;
+    let port = listener.address.port();
+    let substrate = tls_substrate_with_ceilings(
+        fixture_allowlist(port, true),
+        vec![IpAddr::V4(LOOPBACK)],
+        ceilings(CEILING, 30_000),
+    );
+    let before = resourcefs_sources::extraction_count();
+    let error = substrate
+        .fetch_reader_mode(HttpRequest::get(fixture_url(port)), &OperationGuard::new())
+        .await
+        .expect_err("an over-ceiling document must be refused");
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+    assert_eq!(
+        resourcefs_sources::extraction_count(),
+        before,
+        "extraction must not run over a truncated document: a partial parse \
+         can drop or mangle structure and the caller cannot tell"
+    );
+    settle().await;
 }

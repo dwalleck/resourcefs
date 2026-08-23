@@ -188,7 +188,15 @@ fn discovery_dependencies_stay_in_owning_modules() {
     // capability sandbox, and FFI binding: discovery machinery belongs to
     // resourcefs-sources alone.
     let core = dependency_names(packages["resourcefs-core"]);
-    for forbidden in ["rmcp", "cap-std", "regex", "pcre2-sys", "globset", "ignore"] {
+    for forbidden in [
+        "rmcp",
+        "cap-std",
+        "regex",
+        "pcre2-sys",
+        "globset",
+        "ignore",
+        "html5ever",
+    ] {
         assert!(
             !core.contains(forbidden),
             "forbidden edge resourcefs-core -> {forbidden}: discovery machinery must stay in resourcefs-sources"
@@ -198,7 +206,14 @@ fn discovery_dependencies_stay_in_owning_modules() {
     // The MCP server owns rmcp/clap but must not reach into compiled-pattern
     // engines or capability sandboxes.
     let mcp = dependency_names(packages["resourcefs-mcp"]);
-    for forbidden in ["cap-std", "regex", "pcre2-sys", "globset", "ignore"] {
+    for forbidden in [
+        "cap-std",
+        "regex",
+        "pcre2-sys",
+        "globset",
+        "ignore",
+        "html5ever",
+    ] {
         assert!(
             !mcp.contains(forbidden),
             "forbidden edge resourcefs-mcp -> {forbidden}: discovery machinery must stay in resourcefs-sources"

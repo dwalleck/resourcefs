@@ -24,6 +24,8 @@
 //! no HTTPS-source type, so the GitHub and downstream-MCP sources can consume
 //! the same audited egress path instead of building a second client.
 
+mod extract;
+
 use std::{
     collections::HashMap,
     future::Future,
@@ -164,6 +166,63 @@ impl BoundedHttpResponse {
     #[must_use]
     pub const fn truncated(&self) -> bool {
         self.truncated
+    }
+}
+
+/// Counts extractor invocations so a contract test can prove extraction did
+/// **not** run for an over-ceiling document.
+///
+/// Asserting only that the call failed would be satisfied by any refusal — the
+/// allowlist, the resolver, a transport error — so it cannot distinguish "we
+/// refused before extracting" from "we extracted and then something else went
+/// wrong". Four fixtures in this change passed for the wrong reason on exactly
+/// that class of assertion; this counter is the positive evidence.
+#[cfg(feature = "test-support")]
+static EXTRACTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(feature = "test-support")]
+fn record_extraction() {
+    EXTRACTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "test-support"))]
+const fn record_extraction() {}
+
+/// Extracts reader-mode Markdown, for contract tests that exercise the
+/// extractor directly rather than through a network fetch.
+#[cfg(feature = "test-support")]
+pub fn extract_markdown_for_test(html: &str) -> String {
+    extract::extract_markdown(html)
+}
+
+/// Returns how many times the extractor has run in this process.
+#[cfg(feature = "test-support")]
+pub fn extraction_count() -> usize {
+    EXTRACTIONS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A reader-mode rendering of one complete HTML document.
+#[derive(Debug, Clone)]
+pub struct ReaderModeDocument {
+    markdown: String,
+    final_url: Url,
+    status: u16,
+}
+
+impl ReaderModeDocument {
+    /// Returns the extracted Markdown.
+    pub fn markdown(&self) -> &str {
+        &self.markdown
+    }
+
+    /// Returns the URL the document was finally read from.
+    pub const fn final_url(&self) -> &Url {
+        &self.final_url
+    }
+
+    /// Returns the HTTP status the document was served with.
+    pub const fn status(&self) -> u16 {
+        self.status
     }
 }
 
@@ -326,6 +385,40 @@ impl HttpSubstrate {
         })
     }
 
+    /// Performs one authorized request and returns its reader-mode Markdown.
+    ///
+    /// The ceiling check runs **strictly before** extraction. An over-ceiling
+    /// document is refused outright rather than extracted from what arrived,
+    /// because extraction over truncated markup can silently drop or mangle
+    /// structure — an unclosed element swallows the visible content — and the
+    /// caller has no way to tell a faithful rendering from a mangled one. The
+    /// refusal names `:raw` with a selector, which remains available for a
+    /// bounded slice of an oversized document.
+    pub async fn fetch_reader_mode(
+        &self,
+        request: HttpRequest,
+        operation: &OperationGuard,
+    ) -> Result<ReaderModeDocument, ResourceError> {
+        let response = self.fetch(request, operation).await?;
+        if response.truncated() {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!(
+                    "document exceeds the {}-byte fetch ceiling; read it with :raw and a \
+                     selector for a bounded slice",
+                    self.ceilings.fetch_bytes()
+                ),
+            ));
+        }
+        let html = String::from_utf8_lossy(response.body());
+        record_extraction();
+        Ok(ReaderModeDocument {
+            markdown: extract::extract_markdown(&html),
+            final_url: response.final_url,
+            status: response.status,
+        })
+    }
+
     /// Reads a response body, stopping once the accept ceiling is reached or
     /// the operation is cancelled.
     ///
@@ -334,9 +427,9 @@ impl HttpSubstrate {
     /// probe measured a peer flushing well past a smaller client ceiling.
     /// `http_bounds_contract.rs` fences the retained bound (C16) and records
     /// the server's flushed count as an observation rather than asserting the
-    /// stronger guarantee. What remains for C8 is reader-mode's own rule, that
-    /// an over-ceiling document is refused outright so extraction never runs
-    /// over a truncated one.
+    /// stronger guarantee. Reader mode adds its own rule on top: `fetch_reader_mode`
+    /// refuses an over-ceiling document outright, so extraction never runs over
+    /// a truncated one.
     ///
     /// Cancellation is checked per chunk rather than once at the end, so a
     /// caller who gave up stops paying for a body still arriving. Dropping the
@@ -359,8 +452,12 @@ impl HttpSubstrate {
                 chunk = response.chunk() => chunk.map_err(policy_error_or)?,
             };
             let Some(chunk) = chunk else { break };
-            let remaining = ceiling.saturating_sub(body.len());
-            if chunk.len() >= remaining {
+            // Strictly greater, not `>=`: a body of exactly the ceiling was
+            // fully accepted and is not truncated. Treating it as truncated
+            // would refuse a document the signed spec says must succeed, and
+            // the ceiling/ceiling+1 boundary is precisely what C8 fences.
+            if body.len() + chunk.len() > ceiling {
+                let remaining = ceiling.saturating_sub(body.len());
                 body.extend_from_slice(&chunk[..remaining]);
                 truncated = true;
                 break;

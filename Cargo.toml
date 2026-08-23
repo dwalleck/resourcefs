@@ -20,6 +20,11 @@ cap-std = "4.0.2"
 directories = "6.0.0"
 getrandom = "0.4.3"
 globset = "=0.4.20"
+# The reader-mode extractor's tokenizer. Pinned exactly, like every other
+# parser crate here, because extracted Markdown feeds a content-derived
+# Version Tag: a tokenizer upgrade that changed the token stream would churn
+# tags for unchanged upstream documents.
+html5ever = "=0.39.0"
 ignore = "=0.4.33"
 clap = { version = "4.5.47", features = ["derive"] }
 rmcp = { version = "=3.1.3", features = ["macros", "server", "transport-io"] }

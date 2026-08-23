@@ -16,6 +16,7 @@ cap-std.workspace = true
 directories.workspace = true
 getrandom.workspace = true
 globset.workspace = true
+html5ever.workspace = true
 ignore.workspace = true
 pcre2-sys.workspace = true
 regex.workspace = true
