@@ -2,6 +2,7 @@
 
 mod discovery;
 mod error;
+mod http_policy;
 mod limits;
 mod mutation;
 mod probe;
@@ -24,6 +25,10 @@ pub use discovery::{
     catalog_discovery_unsupported,
 };
 pub use error::{ErrorCategory, ResourceError};
+pub use http_policy::{
+    AddressClass, AddressPolicy, AllowedOrigin, HttpCeilings, HttpCeilingsInput,
+    MAX_HTTP_FETCH_BYTES, MAX_HTTP_REDIRECT_DEPTH, MAX_HTTP_TIMEOUT_MILLIS, OriginAllowlist,
+};
 pub use limits::{
     DiscoveryLimitInput, MAX_IMAGE_BYTES, ServerLimits, ServerLimitsInput, StorageLimitInput,
     TextLimitInput,

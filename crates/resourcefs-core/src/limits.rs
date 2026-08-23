@@ -159,7 +159,11 @@ impl Default for ServerLimits {
     }
 }
 
-fn validate_limit(
+/// Validates one lower-only operator override against its contract maximum.
+///
+/// An absent override takes the maximum; zero or an above-maximum value is
+/// refused rather than clamped, so a profile can only ever lower a ceiling.
+pub(crate) fn validate_limit(
     field: &'static str,
     value: Option<usize>,
     maximum: usize,
