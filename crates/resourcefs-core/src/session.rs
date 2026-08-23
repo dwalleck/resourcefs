@@ -237,17 +237,23 @@ fn session_object_count(state: &SessionState) -> usize {
 struct SnapshotResourceKey(String);
 
 impl SnapshotResourceKey {
+    /// Accepts the two families that own mutable, seen-region-bearing content:
+    /// canonical workspace Resources and canonical `local://` Session Scratch.
+    /// Every other family — immutable `artifact://`, synthetic catalogs — and
+    /// every non-canonical spelling is refused, so a snapshot can never be
+    /// keyed by a reference that does not identify exactly one Resource.
     fn parse(value: &str) -> Result<Self, ResourceError> {
         let reference = PathReference::parse(value.to_owned())?;
         if reference.requested() != value
             || !matches!(
                 reference.address(),
                 ResourceAddress::Workspace(WorkspaceAddress::Canonical { .. })
+                    | ResourceAddress::Local(_)
             )
         {
             return Err(ResourceError::new(
                 ErrorCategory::InvalidReference,
-                "snapshot identity must be a canonical workspace reference",
+                "snapshot identity must be a canonical workspace or local:// reference",
             ));
         }
         Ok(Self(value.to_owned()))

@@ -653,3 +653,97 @@ async fn artifact_catalog_is_ordered_and_live() {
         "C15 inactive category"
     );
 }
+
+/// C7 (rfs-60g1 Slice 3) — the seen-region snapshot key admits canonical
+/// `local://` Session Scratch references alongside canonical workspace
+/// references, and still refuses every non-canonical spelling and every other
+/// address family.
+///
+/// The expectation table below is authored from the approved spec, never
+/// computed from `SnapshotResourceKey::parse`: each row states the reference
+/// and whether a snapshot key may be formed from it, so the oracle fails
+/// independently of the parser's branch structure.
+#[tokio::test]
+async fn snapshot_key_accepts_local_rejects_foreign() {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum KeyExpectation {
+        Accepted,
+        Rejected,
+    }
+
+    let artifact_reference = {
+        let session = session(70, Arc::new(FakeStorage::default()));
+        let guard = OperationGuard::new();
+        let address = session
+            .retain("artifact fixture\n", &guard)
+            .await
+            .expect("fixture artifact");
+        PathReference::artifact(address, None)
+            .expect("fixture artifact reference")
+            .requested()
+            .to_owned()
+    };
+
+    // Reference -> may a snapshot key be formed? Authored from the spec.
+    let expected: Vec<(String, KeyExpectation)> = vec![
+        // Canonical workspace identity: the pre-existing accepted family.
+        ("rfs://workspace/r/p".to_owned(), KeyExpectation::Accepted),
+        // Canonical Session Scratch identity: admitted by C7.
+        ("local://plan.md".to_owned(), KeyExpectation::Accepted),
+        // A scratch name whose canonical spelling is itself: still accepted.
+        (
+            "local://review notes.md".to_owned(),
+            KeyExpectation::Accepted,
+        ),
+        // Non-canonical workspace spelling: a relative path is not an identity.
+        ("plan.md".to_owned(), KeyExpectation::Rejected),
+        // Immutable recovery storage is not a snapshot identity.
+        (artifact_reference, KeyExpectation::Rejected),
+        // Catalog roots are synthetic and hold no seen regions.
+        ("rfs://".to_owned(), KeyExpectation::Rejected),
+        ("rfs://workspace".to_owned(), KeyExpectation::Rejected),
+        // A scratch name carrying a decoded separator never parses at all.
+        ("local://a%2Fb".to_owned(), KeyExpectation::Rejected),
+        // A non-canonical scratch spelling: the colon re-encodes, so the
+        // requested form differs from its canonical rendering.
+        ("local://plan.md:1-5".to_owned(), KeyExpectation::Rejected),
+    ];
+
+    let session = session(71, Arc::new(FakeStorage::default()));
+    let version_tag = VersionTag::from_content(b"one\ntwo\n");
+    let ranges = [DisplayedLineRange::new(1, 2).expect("fixture range")];
+
+    for (reference, expectation) in expected {
+        let outcome = session
+            .record_seen_for_test(&reference, &version_tag, &ranges, true)
+            .await;
+
+        match expectation {
+            KeyExpectation::Accepted => {
+                outcome.unwrap_or_else(|error| {
+                    panic!("C7 expected {reference} to form a snapshot key, got {error}")
+                });
+                let stored = session
+                    .seen_snapshot_for_test(&reference, &version_tag)
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("C7 expected {reference} to resolve its snapshot, got {error}")
+                    });
+                assert!(
+                    stored.is_some(),
+                    "C7 expected {reference} to retain its recorded seen region"
+                );
+            }
+            KeyExpectation::Rejected => {
+                let error = outcome.expect_err(&format!(
+                    "C7 expected {reference} to be refused as a snapshot identity"
+                ));
+                assert_eq!(
+                    error.category(),
+                    ErrorCategory::InvalidReference,
+                    "C7 rejection category for {reference}"
+                );
+            }
+        }
+    }
+}
