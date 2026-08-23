@@ -479,3 +479,77 @@ async fn redirect_to_denied_address_is_refused() {
         listener.requests()
     );
 }
+
+/// C2, IP-literal route — an origin declared as an IP literal is authorized
+/// before any connect, so a withheld private-network grant opens no socket.
+///
+/// This route never reaches [`PolicyResolver`]: the connector short-circuits
+/// DNS when the host parses as an address. Relying on the resolver alone left
+/// `allow_private_network` unenforced for every IP-literal origin, and the
+/// server's accept counter — not the client's error — is what proves it.
+///
+/// The granted row runs first and is not decoration. Without it a zero accept
+/// count would be satisfied by a fixture that never worked at all, which is
+/// how four earlier fixtures in this change passed while proving nothing.
+#[tokio::test]
+async fn ip_literal_origin_is_authorized_before_connect() {
+    let granted_listener =
+        tls::TlsListener::serve(Ipv4Addr::LOCALHOST, 0, tls::MATCH_CERT, "ok").await;
+    let granted_port = granted_listener.address.port();
+    let granted = literal_substrate(granted_port, true);
+    let granted_url = Url::parse(&format!("https://127.0.0.1:{granted_port}/doc"))
+        .expect("literal URL is well formed");
+    let _ = granted
+        .fetch(HttpRequest::get(granted_url), &OperationGuard::new())
+        .await;
+    tls::settle().await;
+    assert!(
+        granted_listener.accepts() > 0,
+        "control: a granted IP-literal origin must reach the listener, else the \
+         denial row below proves nothing"
+    );
+
+    let denied_listener =
+        tls::TlsListener::serve(Ipv4Addr::LOCALHOST, 0, tls::MATCH_CERT, "ok").await;
+    let denied_port = denied_listener.address.port();
+    let denied = literal_substrate(denied_port, false);
+    let denied_url = Url::parse(&format!("https://127.0.0.1:{denied_port}/doc"))
+        .expect("literal URL is well formed");
+    let failure = denied
+        .fetch(HttpRequest::get(denied_url), &OperationGuard::new())
+        .await
+        .expect_err("a withheld grant must refuse an IP-literal origin");
+    tls::settle().await;
+
+    assert_denied_by_address_policy(&failure);
+    assert_eq!(
+        denied_listener.accepts(),
+        0,
+        "no socket may be opened to a restricted address when the grant is withheld"
+    );
+}
+
+/// Builds a substrate whose single origin is the loopback IP literal itself.
+///
+/// The injected lookup would resolve the name route, and is deliberately left
+/// in place: if the implementation ever regressed to routing literals through
+/// the resolver, this fixture would still pass, so the accept counter above is
+/// what carries the proof rather than the lookup being unreachable.
+fn literal_substrate(port: u16, allow_private_network: bool) -> HttpSubstrate {
+    let origins = OriginAllowlist::new(vec![
+        resourcefs_core::AllowedOrigin::new(
+            &format!("https://127.0.0.1:{port}/"),
+            allow_private_network,
+        )
+        .expect("IP-literal origin is well formed"),
+    ]);
+    HttpSubstrate::with_host_lookup_and_roots(
+        origins,
+        HttpCeilings::default(),
+        move |_host: String| async move {
+            Ok::<_, io::Error>(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)])
+        },
+        &[tls::FIXTURE_CA],
+    )
+    .expect("substrate builds")
+}

@@ -1,14 +1,28 @@
 //! The bounded HTTP substrate: the workspace's only HTTP client.
 //!
 //! Every network egress ResourceFS performs passes through this module, and
-//! the security control lives in one specific place: the DNS resolver. The
-//! client is built with a [`PolicyResolver`] that classifies each resolved
-//! address through core's [`AddressPolicy`] and returns `Err` to deny, which
-//! prevents any socket being opened. That placement is load-bearing rather
-//! than incidental — `prove-it-prototype` established that this client calls
-//! the resolver once per new connection and connects to exactly the addresses
-//! that call returned, so resolution *is* the authorization point and there is
+//! the security control has **two** entry points because the client reaches a
+//! socket by two different routes.
+//!
+//! For a URL whose host is a **name**, the client is built with a
+//! [`PolicyResolver`] that classifies each resolved address through core's
+//! [`AddressPolicy`] and returns `Err` to deny, which prevents any socket being
+//! opened. That placement is load-bearing rather than incidental —
+//! `prove-it-prototype` established that this client calls the resolver once
+//! per new connection and connects to exactly the addresses that call
+//! returned, so for names resolution *is* the authorization point and there is
 //! no "validate, then connect" window for a rebound name to slip through.
+//!
+//! For a URL whose host is an **IP literal** the resolver is never consulted
+//! at all: the connector short-circuits, parsing the literal and connecting
+//! straight away. An origin may legitimately be declared as an IP literal, so
+//! that class is authorized by [`authorize_literal_host`] in the request path
+//! *before* the client is invoked, and again for every redirect hop. Relying on
+//! the resolver alone left `allow_private_network` silently unenforced for
+//! every IP-literal origin — a socket to restricted space with the grant
+//! withheld. The invariant this module owes its callers is "every address we
+//! connect to was authorized", and it holds only because both routes are
+//! covered. `http_policy_contract.rs` fences the literal route.
 //!
 //! The connection is pinned to a validated **address** while certificate
 //! verification stays bound to the requested **hostname**. Both halves are
@@ -226,11 +240,49 @@ impl ReaderModeDocument {
     }
 }
 
+/// Authorizes a URL whose host is an IP literal, before any connect.
+///
+/// The connector short-circuits DNS when the host parses as an address, so
+/// [`PolicyResolver`] never sees this class and the per-origin
+/// `allow_private_network` grant would go unenforced. A host that is a *name*
+/// returns `Ok` here and is authorized by the resolver instead — this is a
+/// second gate on a second route, never a replacement for the first.
+///
+/// The refusal is deliberately the same [`AddressPolicy`] message the resolver
+/// produces: it is the same control refusing for the same reason, and an
+/// operator reading it should not have to care which internal route reached it.
+fn authorize_literal_host(
+    policies: &HashMap<String, AddressPolicy>,
+    url: &Url,
+) -> Result<(), ResourceError> {
+    let address = match url.host() {
+        Some(url::Host::Ipv4(address)) => IpAddr::V4(address),
+        Some(url::Host::Ipv6(address)) => IpAddr::V6(address),
+        // A domain name, or no host at all: the resolver owns this route.
+        _ => return Ok(()),
+    };
+    // Keyed by `host_str` exactly as `host_policies` builds it, so the two
+    // spellings cannot drift (notably IPv6, which serializes bracketed).
+    let policy = url
+        .host_str()
+        .and_then(|host| policies.get(host).copied())
+        .ok_or_else(|| {
+            ResourceError::new(
+                ErrorCategory::PermissionDenied,
+                "host is not declared by any allowlisted HTTPS origin",
+            )
+        })?;
+    policy.authorize(address)
+}
+
 /// The workspace's single bounded HTTP egress point.
 pub struct HttpSubstrate {
     client: reqwest::Client,
     allowlist: OriginAllowlist,
     ceilings: HttpCeilings,
+    /// The same per-host policies the resolver holds, retained so the
+    /// IP-literal route can apply them before the client is invoked.
+    policies: HashMap<String, AddressPolicy>,
 }
 
 impl std::fmt::Debug for HttpSubstrate {
@@ -302,14 +354,16 @@ impl HttpSubstrate {
         lookup: HostLookup,
         roots: &[&[u8]],
     ) -> Result<Self, ResourceError> {
+        let policies = host_policies(&allowlist);
         let resolver = PolicyResolver {
-            policies: host_policies(&allowlist),
+            policies: policies.clone(),
             lookup,
         };
         let mut builder = reqwest::Client::builder()
             .dns_resolver(Arc::new(resolver))
             .redirect(redirect_policy(
                 allowlist.clone(),
+                policies.clone(),
                 ceilings.redirect_depth(),
             ))
             .timeout(ceilings.timeout());
@@ -332,6 +386,7 @@ impl HttpSubstrate {
             client,
             allowlist,
             ceilings,
+            policies,
         })
     }
 
@@ -356,6 +411,10 @@ impl HttpSubstrate {
         // Origin scoping runs before any egress: a URL outside every declared
         // `base_url` never reaches the resolver, let alone a socket.
         self.allowlist.authorize(request.url())?;
+        // The IP-literal route bypasses the resolver entirely, so the address
+        // policy is applied here instead. Names fall through untouched and are
+        // authorized inside the resolver.
+        authorize_literal_host(&self.policies, request.url())?;
 
         // Cancellation races the connect the same way it races the body: a
         // caller who gave up should not wait on a handshake to a slow peer.
@@ -488,12 +547,28 @@ impl HttpSubstrate {
 /// Depth uses the same boundary as the client's built-in limit — `previous`
 /// holds the original URL plus every hop already followed, so `> depth` admits
 /// exactly `depth` redirects and refuses the next.
-fn redirect_policy(allowlist: OriginAllowlist, depth: usize) -> reqwest::redirect::Policy {
+fn redirect_policy(
+    allowlist: OriginAllowlist,
+    policies: HashMap<String, AddressPolicy>,
+    depth: usize,
+) -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() > depth {
             return attempt.error(ResourceError::new(
                 ErrorCategory::LimitExceeded,
                 format!("redirect chain exceeded the {depth}-hop ceiling"),
+            ));
+        }
+        // A hop onto an IP literal reaches the connector's short-circuit just
+        // as an initial request does, so the address policy is applied to the
+        // hop here. Without this an allowlisted origin could redirect into
+        // restricted space with the grant withheld.
+        if let Err(refusal) = authorize_literal_host(&policies, attempt.url()) {
+            let category = refusal.category();
+            let detail = refusal.message().to_owned();
+            return attempt.error(ResourceError::new(
+                category,
+                format!("redirect was not followed: {detail}"),
             ));
         }
         if let Err(refusal) = allowlist.authorize(attempt.url()) {
