@@ -37,7 +37,7 @@
 {"kind": "parse", "input": "C:\\workspace\\%2E%2E\\secret.txt", "platform": "all", "expected": {"status": "error", "category": "invalid_reference"}},
 {"kind": "parse", "input": "notes?draft", "platform": "all", "expected": {"status": "error", "category": "invalid_reference"}},
 {"kind": "parse", "input": "notes#draft", "platform": "all", "expected": {"status": "error", "category": "invalid_reference"}},
-{"kind": "parse", "input": "https://example.com/file.txt", "platform": "all", "expected": {"status": "error", "category": "invalid_reference"}},
+{"kind": "parse", "input": "ftp://example.com/file.txt", "platform": "all", "expected": {"status": "error", "category": "invalid_reference"}},
 {"kind": "parse", "input": "file://user@example.com/tmp/file.txt", "platform": "all", "expected": {"status": "error", "category": "invalid_reference"}},
 {"kind": "parse", "input": "file:///tmp/file.txt?query", "platform": "all", "expected": {"status": "error", "category": "invalid_reference"}},
 {"kind": "parse", "input": "file:///tmp/file.txt#fragment", "platform": "all", "expected": {"status": "error", "category": "invalid_reference"}},

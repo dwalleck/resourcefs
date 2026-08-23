@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use resourcefs_core::{
-    CatalogAddress, DiscoveryAdapter, GlobOptions, GlobSource, GlobTarget, MutationAccess,
-    MutationAdapter, MutationState, MutationTarget, OperationGuard, PathReference, ResourceAddress,
-    ResourceError, SearchOptions, SearchSourceResult, SearchTarget, SourceAdapter,
+    CatalogAddress, DiscoveryAdapter, ErrorCategory, GlobOptions, GlobSource, GlobTarget,
+    MutationAccess, MutationAdapter, MutationState, MutationTarget, OperationGuard, PathReference,
+    ResourceAddress, ResourceError, SearchOptions, SearchSourceResult, SearchTarget, SourceAdapter,
     SourceGlobResult, SourceMutation, SourceResource, catalog_discovery_unsupported,
 };
 
@@ -80,8 +80,21 @@ impl SourceAdapter for CompiledSources {
             ResourceAddress::Workspace(_) => self.filesystem.read(reference).await,
             ResourceAddress::Artifact(_) => self.artifacts.read(reference).await,
             ResourceAddress::Local(_) => self.local.read(reference).await,
+            ResourceAddress::Https(_) => Err(https_not_mounted()),
         }
     }
+}
+
+/// The `https://` grammar is admitted before its Source Adapter exists.
+///
+/// Returning a stable `source_unavailable` keeps an HTTPS reference from being
+/// misrouted to another adapter while increments B and C build the bounded HTTP
+/// substrate and mount the adapter.
+fn https_not_mounted() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::SourceUnavailable,
+        "https source is not mounted",
+    )
 }
 
 #[async_trait]
@@ -100,6 +113,7 @@ impl MutationAdapter for CompiledSources {
                 ))
             }
             ResourceAddress::Local(_) => self.local.resolve(reference, access).await,
+            ResourceAddress::Https(_) => Err(https_not_mounted()),
         }
     }
 
@@ -189,6 +203,7 @@ impl DiscoveryAdapter for CompiledSources {
             Some(ResourceAddress::Local(_)) => {
                 self.local.search(target, pattern, options, operation).await
             }
+            Some(ResourceAddress::Https(_)) => Err(https_not_mounted()),
         }
     }
 

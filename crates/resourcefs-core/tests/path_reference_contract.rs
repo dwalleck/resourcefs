@@ -283,6 +283,8 @@ enum GrammarExpectation {
     LocalNamed(String),
     /// Parses to the Session Scratch family root.
     LocalRoot,
+    /// Parses to `ResourceAddress::Https` whose canonical URL is exactly this string.
+    Https(String),
     /// Parses to a non-local family; the label names it for failure reporting.
     OtherFamily(&'static str),
     Rejected(ErrorCategory),
@@ -296,11 +298,143 @@ fn classify(input: &str) -> GrammarExpectation {
                 Some(name) => GrammarExpectation::LocalNamed(name.as_str().to_owned()),
                 None => GrammarExpectation::LocalRoot,
             },
+            ResourceAddress::Https(address) => {
+                GrammarExpectation::Https(address.as_str().to_owned())
+            }
             ResourceAddress::Workspace(_) => GrammarExpectation::OtherFamily("workspace"),
             ResourceAddress::Artifact(_) => GrammarExpectation::OtherFamily("artifact"),
             ResourceAddress::Catalog(_) => GrammarExpectation::OtherFamily("catalog"),
         },
         Err(error) => GrammarExpectation::Rejected(error.category()),
+    }
+}
+
+/// C1: `https://` is a first-class address family, and admitting it changes no
+/// existing family's parse result.
+///
+/// The table is authored from `spec.md`'s grammar, never computed by calling the
+/// parser: each expected value is written out by hand so a parser bug cannot
+/// define its own expectation.
+#[test]
+fn https_grammar() {
+    let expected: Vec<(String, GrammarExpectation)> = vec![
+        // Accepted HTTPS URLs.
+        (
+            "https://example.com/doc".to_owned(),
+            GrammarExpectation::Https("https://example.com/doc".to_owned()),
+        ),
+        // Percent-encoded separators are legal in a URL and must survive to the
+        // wire: the encoded-separator guard is a filesystem-containment control
+        // and does not apply to this family.
+        (
+            "https://example.com/search?q=a%2Fb".to_owned(),
+            GrammarExpectation::Https("https://example.com/search?q=a%2Fb".to_owned()),
+        ),
+        (
+            "https://example.com/a%2Fb/doc".to_owned(),
+            GrammarExpectation::Https("https://example.com/a%2Fb/doc".to_owned()),
+        ),
+        (
+            "https://example.com/a%5Cb/doc".to_owned(),
+            GrammarExpectation::Https("https://example.com/a%5Cb/doc".to_owned()),
+        ),
+        // Explicit port, fragment, and bare origin.
+        (
+            "https://example.com:8443/doc".to_owned(),
+            GrammarExpectation::Https("https://example.com:8443/doc".to_owned()),
+        ),
+        (
+            "https://example.com/doc#frag".to_owned(),
+            GrammarExpectation::Https("https://example.com/doc#frag".to_owned()),
+        ),
+        (
+            "https://example.com".to_owned(),
+            GrammarExpectation::Https("https://example.com/".to_owned()),
+        ),
+        // An internationalized host normalizes to its Punycode form.
+        (
+            "https://例え.jp/doc".to_owned(),
+            GrammarExpectation::Https("https://xn--r8jz45g.jp/doc".to_owned()),
+        ),
+        // Rejected: plain HTTP is not an allowlisted transport.
+        (
+            "http://example.com/doc".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        // Rejected: a scheme with no host cannot name an origin.
+        (
+            "https://".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        // Rejected: still an unsupported scheme.
+        (
+            "ftp://example.com/doc".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        // Rejected: credentials come from the Server Profile, never the
+        // reference — embedded userinfo would carry secret material into
+        // canonical references, catalogs, errors, and logs.
+        (
+            "https://user:pass@example.com/doc".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        (
+            "https://user@example.com/doc".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        // Every existing family keeps its prior parse result.
+        (
+            "rfs://workspace/root/notes.md".to_owned(),
+            GrammarExpectation::OtherFamily("workspace"),
+        ),
+        (
+            "artifact://0123456789abcdef0123456789abcdef-1".to_owned(),
+            GrammarExpectation::OtherFamily("artifact"),
+        ),
+        (
+            "rfs://".to_owned(),
+            GrammarExpectation::OtherFamily("catalog"),
+        ),
+        (
+            "rfs://workspace".to_owned(),
+            GrammarExpectation::OtherFamily("catalog"),
+        ),
+        (
+            "local://plan.md".to_owned(),
+            GrammarExpectation::LocalNamed("plan.md".to_owned()),
+        ),
+        ("local://".to_owned(), GrammarExpectation::LocalRoot),
+        (
+            "notes/plan.md".to_owned(),
+            GrammarExpectation::OtherFamily("workspace"),
+        ),
+        (
+            "file:///tmp/plan.md".to_owned(),
+            GrammarExpectation::OtherFamily("workspace"),
+        ),
+        // The narrowed guard still owns the filesystem families: an encoded
+        // separator in a workspace path or a scratch name is still rejected.
+        (
+            "a%2Fb".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        (
+            "a%5Cb".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        (
+            "local://a%2Fb".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+        // A malformed escape in a filesystem reference is still rejected.
+        (
+            "bad%ZZescape".to_owned(),
+            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
+        ),
+    ];
+
+    for (input, want) in &expected {
+        assert_eq!(&classify(input), want, "grammar row for {input:?}");
     }
 }
 

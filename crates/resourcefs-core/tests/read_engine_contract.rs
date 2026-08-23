@@ -101,6 +101,10 @@ impl SourceAdapter for SessionBackedSource {
                 ErrorCategory::UnsupportedProjection,
                 "test source does not implement Session Scratch Resources",
             )),
+            ResourceAddress::Https(_) => Err(ResourceError::new(
+                ErrorCategory::UnsupportedProjection,
+                "test source does not implement HTTPS Resources",
+            )),
         }
     }
 }

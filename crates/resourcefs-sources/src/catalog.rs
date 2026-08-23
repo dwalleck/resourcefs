@@ -278,7 +278,7 @@ mod tests {
             );
         }
         assert_eq!(
-            SourceCatalogEntry::new("fixture://", "grammar", "https://example.com", None,)
+            SourceCatalogEntry::new("fixture://", "grammar", "ftp://example.com", None,)
                 .expect_err("unsupported example")
                 .category(),
             ErrorCategory::InvalidReference

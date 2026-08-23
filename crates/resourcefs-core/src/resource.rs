@@ -474,6 +474,9 @@ fn validate_canonical_identity(reference: &PathReference) -> Result<(), Resource
             reference.projection().is_none()
                 && reference.requested() == address.canonical_reference()
         }
+        ResourceAddress::Https(address) => {
+            reference.projection().is_none() && reference.requested() == address.as_str()
+        }
         ResourceAddress::Workspace(_) => false,
     };
     if !canonical {

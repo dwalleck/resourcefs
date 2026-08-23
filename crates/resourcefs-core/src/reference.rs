@@ -14,6 +14,7 @@ pub(crate) const SOURCE_CATALOG_REFERENCE: &str = "rfs://";
 pub(crate) const WORKSPACE_CATALOG_REFERENCE: &str = "rfs://workspace";
 pub(crate) const ARTIFACT_PREFIX: &str = "artifact://";
 pub(crate) const LOCAL_PREFIX: &str = "local://";
+pub(crate) const HTTPS_PREFIX: &str = "https://";
 pub const MAX_PATH_REFERENCE_BYTES: usize = 64 * 1024;
 pub const MAX_WORKSPACE_ROOTS: usize = 256;
 
@@ -278,6 +279,57 @@ impl LocalAddress {
     }
 }
 
+/// An allowlistable HTTPS document identity.
+///
+/// Wraps a `url::Url` that is known to carry the `https` scheme and a host.
+/// Parsing here establishes *syntax* only: whether the origin is reachable is a
+/// Server Profile allowlist decision made by the HTTPS Source Adapter, and
+/// whether a resolved address may be connected to is an address-policy decision
+/// made inside the resolver. Neither belongs in the grammar.
+///
+/// Percent-encoded separators are preserved verbatim: `%2F` in a URL path or
+/// query is meaningful to the origin, so the filesystem containment guard that
+/// rejects encoded separators deliberately does not apply to this family.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpsAddress(Url);
+
+impl HttpsAddress {
+    /// Parses an `https://` reference, rejecting any other scheme and any URL
+    /// without a host.
+    fn parse(input: &str) -> Result<Self, ResourceError> {
+        let url = Url::parse(input)
+            .map_err(|_| invalid_reference("HTTPS reference must be a well-formed URL"))?;
+        if url.scheme() != "https" {
+            return Err(invalid_reference(
+                "HTTPS reference must use the https scheme",
+            ));
+        }
+        if !url.has_host() {
+            return Err(invalid_reference("HTTPS reference must name a host"));
+        }
+        // Credentials reach an origin from the Server Profile, never from the
+        // reference. Admitting userinfo would carry secret material into
+        // canonical references, catalog entries, error text, and logs — the
+        // exact channels the source's leak-freedom contract closes.
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(invalid_reference(
+                "HTTPS reference must not embed credentials",
+            ));
+        }
+        Ok(Self(url))
+    }
+
+    /// Returns the canonical serialization of this URL.
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    /// Returns the parsed URL.
+    pub const fn url(&self) -> &Url {
+        &self.0
+    }
+}
+
 /// Parsed source identity independent of its optional projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceAddress {
@@ -285,6 +337,7 @@ pub enum ResourceAddress {
     Workspace(WorkspaceAddress),
     Artifact(ArtifactAddress),
     Local(LocalAddress),
+    Https(HttpsAddress),
 }
 
 /// A Session Scratch name paired with the projection selector that follows it.
@@ -500,7 +553,24 @@ impl PathReference {
             });
         }
 
+        // Parsed ahead of the workspace fall-through, whose generic `contains("://")`
+        // arm would otherwise reject every URL as an unsupported scheme.
+        if requested.starts_with(HTTPS_PREFIX) {
+            let address = HttpsAddress::parse(&requested)?;
+            return Ok(Self {
+                requested: address.as_str().to_owned(),
+                address: ResourceAddress::Https(address),
+                projection: None,
+                selector_candidate: None,
+                selector_error: None,
+                local_candidate: None,
+            });
+        }
+
         if let Some(raw_name) = requested.strip_prefix(LOCAL_PREFIX) {
+            // Filesystem-backed family: escapes must be validated before
+            // `percent_decode`, whose contract assumes prior validation.
+            validate_percent_encoding(&requested)?;
             if raw_name.is_empty() {
                 return Ok(Self {
                     requested: LOCAL_PREFIX.to_owned(),
@@ -631,7 +701,8 @@ impl PathReference {
             ResourceAddress::Workspace(address) => Some(address),
             ResourceAddress::Catalog(_)
             | ResourceAddress::Artifact(_)
-            | ResourceAddress::Local(_) => None,
+            | ResourceAddress::Local(_)
+            | ResourceAddress::Https(_) => None,
         }
     }
 
@@ -793,11 +864,15 @@ fn validate_reference_input(input: &str) -> Result<(), ResourceError> {
     if input.contains('\0') {
         return Err(invalid_reference("Path Reference must not contain NUL"));
     }
-    validate_percent_encoding(input)?;
     Ok(())
 }
 
 fn parse_workspace_address(input: &str) -> Result<WorkspaceAddress, ResourceError> {
+    // Filesystem containment: an encoded separator must never survive into a
+    // path component, and every downstream `percent_decode` assumes escapes were
+    // validated here. Non-filesystem families (`https://`, `artifact://`,
+    // catalogs) never reach this function and own their own syntax.
+    validate_percent_encoding(input)?;
     let delimiter_input = input.strip_prefix("\\\\?\\").unwrap_or(input);
     if delimiter_input.contains('?') || delimiter_input.contains('#') {
         return Err(invalid_reference(

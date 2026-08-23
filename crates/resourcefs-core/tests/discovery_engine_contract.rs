@@ -281,7 +281,10 @@ fn artifact_address(reference: &str) -> resourcefs_core::ArtifactAddress {
     let parsed = PathReference::parse(reference).expect("recovery Path Reference");
     match parsed.address() {
         ResourceAddress::Artifact(address) => address.clone(),
-        ResourceAddress::Catalog(_) | ResourceAddress::Workspace(_) | ResourceAddress::Local(_) => {
+        ResourceAddress::Catalog(_)
+        | ResourceAddress::Workspace(_)
+        | ResourceAddress::Local(_)
+        | ResourceAddress::Https(_) => {
             panic!("recovery must name an Artifact")
         }
     }

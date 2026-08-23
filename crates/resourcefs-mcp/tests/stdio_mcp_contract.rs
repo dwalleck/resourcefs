@@ -1420,7 +1420,12 @@ fn renders_complete_success_and_errors() {
             ("directory", "unsupported_projection"),
             ("binary.bin", "unsupported_projection"),
             ("../secret", "permission_denied"),
-            ("https://example.com/file", "invalid_reference"),
+            // `https://` is a parsed address family as of rfs-g2z9 Slice 1, but
+            // its Source Adapter is not mounted until increment C: the stable
+            // placeholder must surface rather than a misrouted read.
+            ("https://example.com/file", "source_unavailable"),
+            // A scheme with no family still fails at the grammar.
+            ("ftp://example.com/file", "invalid_reference"),
         ] {
             assert_tool_error(&process.call_read(path), category);
         }

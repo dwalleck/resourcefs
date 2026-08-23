@@ -378,6 +378,9 @@ impl GlobEntry {
             ResourceAddress::Workspace(_) => !matches!(kind, GlobKind::Artifact),
             ResourceAddress::Artifact(_) => matches!(kind, GlobKind::Artifact),
             ResourceAddress::Local(_) => matches!(kind, GlobKind::LocalScratch),
+            // A remote origin cannot be enumerated, so an HTTPS reference is
+            // never a glob entry.
+            ResourceAddress::Https(_) => false,
         };
         if !kind_matches_source {
             return Err(ResourceError::new(
@@ -1182,6 +1185,9 @@ fn canonical_identity(reference: &PathReference) -> Result<String, ResourceError
         ResourceAddress::Local(address) => {
             reference.projection().is_none()
                 && reference.requested() == address.canonical_reference()
+        }
+        ResourceAddress::Https(address) => {
+            reference.projection().is_none() && reference.requested() == address.as_str()
         }
         ResourceAddress::Workspace(_) => false,
     };
