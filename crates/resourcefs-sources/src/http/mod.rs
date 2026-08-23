@@ -10,6 +10,16 @@
 //! that call returned, so resolution *is* the authorization point and there is
 //! no "validate, then connect" window for a rebound name to slip through.
 //!
+//! The connection is pinned to a validated **address** while certificate
+//! verification stays bound to the requested **hostname**. Both halves are
+//! load-bearing and they pull in opposite directions, so the seam is easy to
+//! break by accident: rewriting the request URL to the resolved address — the
+//! naive reading of "connect to the address we authorized" — moves the
+//! verification target onto the address and dismantles TLS identity, since any
+//! certificate reachable at an authorized address would then be accepted. The
+//! URL handed to the client must keep its hostname; the address is the
+//! resolver's business alone. `http_tls_contract.rs` fences this.
+//!
 //! The request and response types are deliberately source-neutral: they name
 //! no HTTPS-source type, so the GitHub and downstream-MCP sources can consume
 //! the same audited egress path instead of building a second client.
@@ -176,7 +186,7 @@ impl std::fmt::Debug for HttpSubstrate {
 impl HttpSubstrate {
     /// Builds the substrate over the system resolver.
     pub fn new(allowlist: OriginAllowlist, ceilings: HttpCeilings) -> Result<Self, ResourceError> {
-        Self::build(allowlist, ceilings, system_lookup())
+        Self::build(allowlist, ceilings, system_lookup(), &[])
     }
 
     /// Builds the substrate over an injected host lookup, for contract tests.
@@ -193,10 +203,37 @@ impl HttpSubstrate {
         F: Fn(String) -> R + Send + Sync + 'static,
         R: Future<Output = io::Result<Vec<IpAddr>>> + Send + 'static,
     {
+        Self::with_host_lookup_and_roots(allowlist, ceilings, lookup, &[])
+    }
+
+    /// Builds the substrate over an injected host lookup that additionally
+    /// trusts `roots`, for contract tests that terminate TLS locally.
+    ///
+    /// Each entry is one DER-encoded certificate added to the client's trust
+    /// anchors. This exists so a fixture can present a certificate the client
+    /// genuinely validates: trusting a fixture root keeps *chain* verification
+    /// real, which is what makes a name-mismatch rejection attributable to the
+    /// hostname rather than to an untrusted issuer. Certificate verification
+    /// itself is never relaxed — there is deliberately no hook here for
+    /// accepting invalid certificates or invalid hostnames, because the
+    /// property the TLS contracts assert is exactly the one such a hook would
+    /// disable.
+    #[cfg(feature = "test-support")]
+    pub fn with_host_lookup_and_roots<F, R>(
+        allowlist: OriginAllowlist,
+        ceilings: HttpCeilings,
+        lookup: F,
+        roots: &[&[u8]],
+    ) -> Result<Self, ResourceError>
+    where
+        F: Fn(String) -> R + Send + Sync + 'static,
+        R: Future<Output = io::Result<Vec<IpAddr>>> + Send + 'static,
+    {
         Self::build(
             allowlist,
             ceilings,
             Arc::new(move |host| Box::pin(lookup(host)) as LookupFuture),
+            roots,
         )
     }
 
@@ -204,25 +241,34 @@ impl HttpSubstrate {
         allowlist: OriginAllowlist,
         ceilings: HttpCeilings,
         lookup: HostLookup,
+        roots: &[&[u8]],
     ) -> Result<Self, ResourceError> {
         let resolver = PolicyResolver {
             policies: host_policies(&allowlist),
             lookup,
         };
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .dns_resolver(Arc::new(resolver))
             // Redirect authorization is rfs-g2z9 Slice 4's claim (C4/C5).
             // Until it lands the substrate follows no redirect at all, so the
             // interim posture is deny rather than an unauthorized hop.
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(ceilings.timeout())
-            .build()
-            .map_err(|error| {
+            .timeout(ceilings.timeout());
+        for root in roots {
+            let certificate = reqwest::Certificate::from_der(root).map_err(|error| {
                 ResourceError::new(
                     ErrorCategory::SourceUnavailable,
-                    format!("HTTP client could not be constructed: {error}"),
+                    format!("trust anchor could not be parsed: {error}"),
                 )
             })?;
+            builder = builder.tls_certs_merge([certificate]);
+        }
+        let client = builder.build().map_err(|error| {
+            ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                format!("HTTP client could not be constructed: {error}"),
+            )
+        })?;
         Ok(Self {
             client,
             allowlist,

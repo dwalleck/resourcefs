@@ -37,6 +37,11 @@ serde_json = "1.0.143"
 serde_path_to_error = "0.1.20"
 tempfile = "3.22.0"
 tokio = { version = "=1.47.1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+# Test-only TLS server for the loopback fixtures that prove the substrate's
+# address policy and hostname-bound certificate verification. Both crates are
+# already in the tree through `reqwest`, so these are dependency edges rather
+# than new packages, and the versions track what `reqwest` already resolved.
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws-lc-rs"] }
 trybuild = "1.0.111"
 url = "2.5.7"
 rustix = { version = "1.1.4", features = ["fs", "process"] }
