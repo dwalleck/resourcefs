@@ -147,7 +147,7 @@ fn deny_config_matches_signed_policy() {
             .iter()
             .map(|entry| (*entry).to_owned())
             .collect::<Vec<_>>(),
-        "deny.toml's license allow-list must match the eleven identifiers signed in .rfs-q12y/spec.md"
+        "deny.toml's license allow-list must match the identifiers signed in .rfs-q12y/spec.md"
     );
 
     let exceptions = without_comments(&config)
@@ -394,8 +394,8 @@ fn source_gate_rejects_git() {
              license = \"MIT\"\n\
              \n\
              [dependencies]\n\
-             git-dep = {{ git = \"file://{}\" }}\n",
-            dependency.display()
+             git-dep = {{ git = \"{}\" }}\n",
+            file_url(&dependency)
         ),
     );
     write(&root.join("src/lib.rs"), "");
@@ -407,4 +407,19 @@ fn source_gate_rejects_git() {
         "a git-sourced dependency must fail the source gate, otherwise the crates.io pin is \
          decorative",
     );
+}
+
+/// Renders a path as a `file://` URL Cargo can resolve on every platform.
+///
+/// `format!("file://{}", path.display())` is not portable: on Windows it
+/// produces `file://C:\Users\…`, which has backslash separators and is missing
+/// the third slash, so Cargo fails to resolve the dependency at all. The gate
+/// test would then exit non-zero for a manifest error rather than a source
+/// policy violation — passing for the wrong reason on the very check whose
+/// point is that the gate bites. `Url::from_file_path` handles the drive
+/// letter and separators.
+fn file_url(path: &std::path::Path) -> String {
+    url::Url::from_file_path(path)
+        .expect("fixture path is absolute")
+        .to_string()
 }

@@ -31,7 +31,7 @@
 
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -255,7 +255,7 @@ impl TlsListener {
     /// `port` may be reused so two listeners differ only by address — the
     /// client substitutes the URL's port into whatever the resolver returns,
     /// so the address is the only discriminator available to a fixture.
-    pub async fn serve(ip: Ipv4Addr, port: u16, cert: &'static [u8], response_body: &str) -> Self {
+    pub async fn serve(ip: IpAddr, port: u16, cert: &'static [u8], response_body: &str) -> Self {
         let body = response_body.to_owned();
         Self::serve_router(ip, port, cert, move |_path| {
             FixtureResponse::Body(body.clone())
@@ -269,7 +269,7 @@ impl TlsListener {
     /// (the middle field of the request line) and returns the response to
     /// send. This is what lets one listener host a redirect chain, answering
     /// `/hop1` with a hop to `/hop2` and terminating with a body.
-    pub async fn serve_router<R>(ip: Ipv4Addr, port: u16, cert: &'static [u8], router: R) -> Self
+    pub async fn serve_router<R>(ip: IpAddr, port: u16, cert: &'static [u8], router: R) -> Self
     where
         R: Fn(&str) -> FixtureResponse + Send + Sync + 'static,
     {
@@ -287,7 +287,7 @@ impl TlsListener {
             .expect("fixture certificate and key form a valid server config");
         let acceptor = TlsAcceptor::from(Arc::new(config));
 
-        let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(ip), port))
+        let listener = TcpListener::bind(SocketAddr::new(ip, port))
             .await
             .expect("loopback listener binds");
         let address = listener.local_addr().expect("listener reports its address");

@@ -20,7 +20,7 @@
 #[path = "support/tls.rs"]
 mod tls;
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use resourcefs_core::{ErrorCategory, OperationGuard};
 use resourcefs_sources::HttpRequest;
@@ -34,8 +34,16 @@ fn fixture_url(port: u16) -> Url {
     Url::parse(&format!("https://{FIXTURE_HOST}:{port}/doc")).expect("url parses")
 }
 
-const LOOPBACK: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
-const LOOPBACK_ALT: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+/// The second address the rebinding row resolves to.
+///
+/// IPv6 loopback rather than 127.0.0.2: only 127.0.0.1 is assigned to lo0 on
+/// macOS by default, so binding 127.0.0.2 fails there with EADDRNOTAVAIL and
+/// the row would panic on the macOS CI leg. `::1` is present on all three
+/// target platforms and preserves exactly what this row tests — two distinct
+/// addresses reachable at the same port, with the address as the only
+/// discriminator between them.
+const LOOPBACK_ALT: IpAddr = IpAddr::V6(Ipv6Addr::LOCALHOST);
 
 /// C6 — over TLS, the address policy behaves exactly as it does over plain HTTP.
 ///
@@ -49,7 +57,7 @@ async fn tls_address_policy_matches_plain() {
     // proving the fixture is genuinely serving and the trust anchor is real.
     let granted = TlsListener::serve(LOOPBACK, 0, MATCH_CERT, "<html><body>ok</body></html>").await;
     let port = granted.address.port();
-    let substrate = tls_substrate(fixture_allowlist(port, true), vec![IpAddr::V4(LOOPBACK)]);
+    let substrate = tls_substrate(fixture_allowlist(port, true), vec![LOOPBACK]);
     let response = substrate
         .fetch(HttpRequest::get(fixture_url(port)), &OperationGuard::new())
         .await
@@ -71,10 +79,7 @@ async fn tls_address_policy_matches_plain() {
     let denied_listener =
         TlsListener::serve(LOOPBACK, 0, MATCH_CERT, "<html><body>ok</body></html>").await;
     let denied_port = denied_listener.address.port();
-    let denied = tls_substrate(
-        fixture_allowlist(denied_port, false),
-        vec![IpAddr::V4(LOOPBACK)],
-    );
+    let denied = tls_substrate(fixture_allowlist(denied_port, false), vec![LOOPBACK]);
     let failure = denied
         .fetch(
             HttpRequest::get(fixture_url(denied_port)),
@@ -115,7 +120,7 @@ async fn tls_address_policy_matches_plain() {
             let call = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             async move {
                 let address = if call == 0 { LOOPBACK } else { LOOPBACK_ALT };
-                Ok::<_, std::io::Error>(vec![IpAddr::V4(address)])
+                Ok::<_, std::io::Error>(vec![address])
             }
         },
         &[tls::FIXTURE_CA],
@@ -156,10 +161,7 @@ async fn tls_certificate_binds_hostname() {
     let matching =
         TlsListener::serve(LOOPBACK, 0, MATCH_CERT, "<html><body>ok</body></html>").await;
     let matching_port = matching.address.port();
-    let trusted = tls_substrate(
-        fixture_allowlist(matching_port, true),
-        vec![IpAddr::V4(LOOPBACK)],
-    );
+    let trusted = tls_substrate(fixture_allowlist(matching_port, true), vec![LOOPBACK]);
     let response = trusted
         .fetch(
             HttpRequest::get(fixture_url(matching_port)),
@@ -177,10 +179,7 @@ async fn tls_certificate_binds_hostname() {
     let mismatched =
         TlsListener::serve(LOOPBACK, 0, WRONG_CERT, "<html><body>secret</body></html>").await;
     let mismatched_port = mismatched.address.port();
-    let substrate = tls_substrate(
-        fixture_allowlist(mismatched_port, true),
-        vec![IpAddr::V4(LOOPBACK)],
-    );
+    let substrate = tls_substrate(fixture_allowlist(mismatched_port, true), vec![LOOPBACK]);
     let failure = substrate
         .fetch(
             HttpRequest::get(fixture_url(mismatched_port)),

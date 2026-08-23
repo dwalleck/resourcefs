@@ -31,5 +31,13 @@ tokio.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+# Enables this crate's own `test-support` feature for its test targets only.
+# The integration tests call `test-support`-gated helpers, so without this a
+# plain `cargo test` fails to compile; guarding every test file with
+# `#![cfg(feature = "test-support")]` instead would make `cargo test` compile
+# and then silently run nothing, which is worse than failing. A self
+# dev-dependency scopes the feature to tests without changing what the shipped
+# library enables by default.
+resourcefs-mcp = { path = ".", features = ["test-support"] }
 cargo_metadata = "0.23.0"
 tempfile.workspace = true

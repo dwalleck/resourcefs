@@ -12,7 +12,7 @@
 
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -37,8 +37,8 @@ impl CountingListener {
     /// Binds on `ip`, optionally reusing `port` so two listeners can differ
     /// only by address — the client substitutes the URL's port into whatever
     /// the resolver returns, so the address is the only usable discriminator.
-    async fn bind(ip: Ipv4Addr, port: u16) -> Self {
-        let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(ip), port))
+    async fn bind(ip: IpAddr, port: u16) -> Self {
+        let listener = TcpListener::bind(SocketAddr::new(ip, port))
             .await
             .expect("loopback listener binds");
         let address = listener.local_addr().expect("listener reports its address");
@@ -108,7 +108,7 @@ fn substrate(allowlist: OriginAllowlist, addresses: Vec<IpAddr>) -> HttpSubstrat
 /// before any connection is attempted.
 #[tokio::test]
 async fn denied_address_opens_no_socket() {
-    let listener = CountingListener::bind(Ipv4Addr::new(127, 0, 0, 1), 0).await;
+    let listener = CountingListener::bind(IpAddr::V4(Ipv4Addr::LOCALHOST), 0).await;
     let port = listener.address.port();
     let substrate = substrate(
         allowlist("denied.invalid", port, false),
@@ -137,9 +137,14 @@ async fn denied_address_opens_no_socket() {
 /// rebinding window this control closes.
 #[tokio::test]
 async fn rebinding_never_reaches_denied_address() {
-    let first = CountingListener::bind(Ipv4Addr::new(127, 0, 0, 1), 0).await;
+    let first = CountingListener::bind(IpAddr::V4(Ipv4Addr::LOCALHOST), 0).await;
     let port = first.address.port();
-    let second = CountingListener::bind(Ipv4Addr::new(127, 0, 0, 2), port).await;
+    // IPv6 loopback, not 127.0.0.2: macOS assigns only 127.0.0.1 to lo0 by
+    // default, so binding 127.0.0.2 fails there and this row would panic on the
+    // macOS CI leg. `::1` exists on all three targets and keeps the property
+    // intact — two distinct addresses at one port, the address being the only
+    // thing that differs between the two resolutions.
+    let second = CountingListener::bind(IpAddr::V6(Ipv6Addr::LOCALHOST), port).await;
 
     // The grant is present, so both loopback addresses are authorized: what is
     // under test is *which* address each connection reached, not whether it
@@ -153,11 +158,11 @@ async fn rebinding_never_reaches_denied_address() {
             let call = counter.fetch_add(1, Ordering::SeqCst);
             async move {
                 let address = if call == 0 {
-                    Ipv4Addr::new(127, 0, 0, 1)
+                    IpAddr::V4(Ipv4Addr::LOCALHOST)
                 } else {
-                    Ipv4Addr::new(127, 0, 0, 2)
+                    IpAddr::V6(Ipv6Addr::LOCALHOST)
                 };
-                Ok::<_, io::Error>(vec![IpAddr::V4(address)])
+                Ok::<_, io::Error>(vec![address])
             }
         },
     )
@@ -189,7 +194,7 @@ async fn rebinding_never_reaches_denied_address() {
 /// proving no connection state crosses a policy boundary.
 #[tokio::test]
 async fn pooled_reuse_stays_authorized() {
-    let listener = CountingListener::bind(Ipv4Addr::new(127, 0, 0, 1), 0).await;
+    let listener = CountingListener::bind(IpAddr::V4(Ipv4Addr::LOCALHOST), 0).await;
     let port = listener.address.port();
     let address = vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))];
 
@@ -232,7 +237,7 @@ async fn pooled_reuse_stays_authorized() {
 async fn probe_egress_is_policed() {
     use resourcefs_core::{ProbeState, SourceProbe};
 
-    let listener = CountingListener::bind(Ipv4Addr::new(127, 0, 0, 1), 0).await;
+    let listener = CountingListener::bind(IpAddr::V4(Ipv4Addr::LOCALHOST), 0).await;
     let port = listener.address.port();
 
     let withheld = NetworkProbe::new(
@@ -283,15 +288,19 @@ mod tls;
 /// request. The empty log then means exactly what it claims.
 #[tokio::test]
 async fn offsite_redirect_never_requested() {
-    let listener =
-        tls::TlsListener::serve_router(Ipv4Addr::new(127, 0, 0, 1), 0, tls::MATCH_CERT, |path| {
+    let listener = tls::TlsListener::serve_router(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+        tls::MATCH_CERT,
+        |path| {
             if path == "/docs/start" {
                 tls::FixtureResponse::Redirect("/secret".to_owned())
             } else {
                 tls::FixtureResponse::Body("secret".to_owned())
             }
-        })
-        .await;
+        },
+    )
+    .await;
     let port = listener.address.port();
 
     // The grant is present and the origin is scoped to `/docs/`, so `/secret`
@@ -339,8 +348,11 @@ async fn offsite_redirect_never_requested() {
 /// in it.
 #[tokio::test]
 async fn redirect_depth_boundary() {
-    let listener =
-        tls::TlsListener::serve_router(Ipv4Addr::new(127, 0, 0, 1), 0, tls::MATCH_CERT, |path| {
+    let listener = tls::TlsListener::serve_router(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+        tls::MATCH_CERT,
+        |path| {
             let step = |prefix: &str, last: usize| -> Option<tls::FixtureResponse> {
                 let index: usize = path.strip_prefix(prefix)?.parse().ok()?;
                 Some(if index < last {
@@ -357,8 +369,9 @@ async fn redirect_depth_boundary() {
             step("/hop/", 6)
                 .or_else(|| step("/deep/", 7))
                 .unwrap_or_else(|| tls::FixtureResponse::Body("arrived".to_owned()))
-        })
-        .await;
+        },
+    )
+    .await;
     let port = listener.address.port();
     let substrate = tls::tls_substrate(
         tls::fixture_allowlist(port, true),
@@ -426,7 +439,7 @@ async fn redirect_to_denied_address_is_refused() {
     let redirect_port = probe.local_addr().expect("probe reports its port").port();
     drop(probe);
     let listener = tls::TlsListener::serve_router(
-        Ipv4Addr::new(127, 0, 0, 1),
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
         redirect_port,
         tls::MATCH_CERT,
         move |path: &str| {
@@ -494,7 +507,7 @@ async fn redirect_to_denied_address_is_refused() {
 #[tokio::test]
 async fn ip_literal_origin_is_authorized_before_connect() {
     let granted_listener =
-        tls::TlsListener::serve(Ipv4Addr::LOCALHOST, 0, tls::MATCH_CERT, "ok").await;
+        tls::TlsListener::serve(IpAddr::V4(Ipv4Addr::LOCALHOST), 0, tls::MATCH_CERT, "ok").await;
     let granted_port = granted_listener.address.port();
     let granted = literal_substrate(granted_port, true);
     let granted_url = Url::parse(&format!("https://127.0.0.1:{granted_port}/doc"))
@@ -510,7 +523,7 @@ async fn ip_literal_origin_is_authorized_before_connect() {
     );
 
     let denied_listener =
-        tls::TlsListener::serve(Ipv4Addr::LOCALHOST, 0, tls::MATCH_CERT, "ok").await;
+        tls::TlsListener::serve(IpAddr::V4(Ipv4Addr::LOCALHOST), 0, tls::MATCH_CERT, "ok").await;
     let denied_port = denied_listener.address.port();
     let denied = literal_substrate(denied_port, false);
     let denied_url = Url::parse(&format!("https://127.0.0.1:{denied_port}/doc"))

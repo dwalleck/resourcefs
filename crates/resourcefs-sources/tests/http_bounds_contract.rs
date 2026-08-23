@@ -36,7 +36,7 @@ use tls::{
 };
 use url::Url;
 
-const LOOPBACK: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
+const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
 fn fixture_url(port: u16) -> Url {
     Url::parse(&format!("https://{FIXTURE_HOST}:{port}/doc")).expect("url parses")
@@ -76,7 +76,7 @@ async fn cancelled_read_abandons_connection() {
     let control_port = control.address.port();
     let control_substrate = tls_substrate_with_ceilings(
         fixture_allowlist(control_port, true),
-        vec![IpAddr::V4(LOOPBACK)],
+        vec![LOOPBACK],
         ceilings(TRICKLE_LEN * 4, 30_000),
     );
     let served = control_substrate
@@ -101,7 +101,7 @@ async fn cancelled_read_abandons_connection() {
     let port = listener.address.port();
     let substrate = tls_substrate_with_ceilings(
         fixture_allowlist(port, true),
-        vec![IpAddr::V4(LOOPBACK)],
+        vec![LOOPBACK],
         ceilings(TRICKLE_LEN * 4, 30_000),
     );
 
@@ -151,7 +151,7 @@ async fn timeout_returns_source_unavailable() {
     let control_port = control.address.port();
     let control_substrate = tls_substrate_with_ceilings(
         fixture_allowlist(control_port, true),
-        vec![IpAddr::V4(LOOPBACK)],
+        vec![LOOPBACK],
         ceilings(TRICKLE_LEN * 4, 30_000),
     );
     assert_eq!(
@@ -176,7 +176,7 @@ async fn timeout_returns_source_unavailable() {
     let port = listener.address.port();
     let substrate = tls_substrate_with_ceilings(
         fixture_allowlist(port, true),
-        vec![IpAddr::V4(LOOPBACK)],
+        vec![LOOPBACK],
         ceilings(TRICKLE_LEN * 4, 250),
     );
 
@@ -213,7 +213,7 @@ async fn retained_body_never_exceeds_the_ceiling() {
     let port = listener.address.port();
     let substrate = tls_substrate_with_ceilings(
         fixture_allowlist(port, true),
-        vec![IpAddr::V4(LOOPBACK)],
+        vec![LOOPBACK],
         ceilings(CEILING, 30_000),
     );
 
@@ -252,7 +252,7 @@ async fn cancellation_before_egress_opens_no_socket() {
     let port = listener.address.port();
     let substrate = tls_substrate_with_ceilings(
         fixture_allowlist(port, true),
-        vec![IpAddr::V4(LOOPBACK)],
+        vec![LOOPBACK],
         ceilings(64 * 1024, 30_000),
     );
 
@@ -291,7 +291,7 @@ async fn odd_body_framings_stay_bounded() {
     let short_port = short.address.port();
     let short_substrate = tls_substrate_with_ceilings(
         fixture_allowlist(short_port, true),
-        vec![IpAddr::V4(LOOPBACK)],
+        vec![LOOPBACK],
         ceilings(CEILING, 2_000),
     );
     let short_result = short_substrate
@@ -321,7 +321,7 @@ async fn odd_body_framings_stay_bounded() {
     let undeclared_port = undeclared.address.port();
     let undeclared_substrate = tls_substrate_with_ceilings(
         fixture_allowlist(undeclared_port, true),
-        vec![IpAddr::V4(LOOPBACK)],
+        vec![LOOPBACK],
         ceilings(CEILING, 30_000),
     );
     let response = undeclared_substrate
@@ -356,7 +356,7 @@ async fn fetch_ceiling_boundary() {
         let port = listener.address.port();
         let substrate = tls_substrate_with_ceilings(
             fixture_allowlist(port, true),
-            vec![IpAddr::V4(LOOPBACK)],
+            vec![LOOPBACK],
             ceilings(CEILING, 30_000),
         );
 
@@ -405,7 +405,7 @@ async fn over_ceiling_never_extracts() {
     let port = listener.address.port();
     let substrate = tls_substrate_with_ceilings(
         fixture_allowlist(port, true),
-        vec![IpAddr::V4(LOOPBACK)],
+        vec![LOOPBACK],
         ceilings(CEILING, 30_000),
     );
     let before_control = substrate.extraction_count();
@@ -428,7 +428,7 @@ async fn over_ceiling_never_extracts() {
     let port = listener.address.port();
     let substrate = tls_substrate_with_ceilings(
         fixture_allowlist(port, true),
-        vec![IpAddr::V4(LOOPBACK)],
+        vec![LOOPBACK],
         ceilings(CEILING, 30_000),
     );
     let before = substrate.extraction_count();
@@ -483,7 +483,7 @@ async fn reader_mode_refuses_non_html_inputs() {
     let port = listener.address.port();
     let substrate = tls_substrate_with_ceilings(
         fixture_allowlist(port, true),
-        vec![IpAddr::V4(LOOPBACK)],
+        vec![LOOPBACK],
         ceilings(1024 * 1024, 30_000),
     );
 
