@@ -281,6 +281,8 @@ fn parses_production_shaped_reference_within_budget() {
 enum GrammarExpectation {
     /// Parses to `ResourceAddress::Local` whose decoded name is exactly this string.
     LocalNamed(String),
+    /// Parses to the Session Scratch family root.
+    LocalRoot,
     /// Parses to a non-local family; the label names it for failure reporting.
     OtherFamily(&'static str),
     Rejected(ErrorCategory),
@@ -290,9 +292,10 @@ enum GrammarExpectation {
 fn classify(input: &str) -> GrammarExpectation {
     match PathReference::parse(input.to_owned()) {
         Ok(reference) => match reference.address() {
-            ResourceAddress::Local(name) => {
-                GrammarExpectation::LocalNamed(name.as_str().to_owned())
-            }
+            ResourceAddress::Local(address) => match address.name() {
+                Some(name) => GrammarExpectation::LocalNamed(name.as_str().to_owned()),
+                None => GrammarExpectation::LocalRoot,
+            },
             ResourceAddress::Workspace(_) => GrammarExpectation::OtherFamily("workspace"),
             ResourceAddress::Artifact(_) => GrammarExpectation::OtherFamily("artifact"),
             ResourceAddress::Catalog(_) => GrammarExpectation::OtherFamily("catalog"),
@@ -363,10 +366,9 @@ fn local_name_grammar() {
             "local://.".to_owned(),
             GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
         ),
-        (
-            "local://".to_owned(),
-            GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
-        ),
+        // Spec Revision 1: the bare family root is a valid reference addressing
+        // this session's scratch listing, mirroring `rfs://` and `rfs://workspace`.
+        ("local://".to_owned(), GrammarExpectation::LocalRoot),
         (
             "local://bell\u{7}.md".to_owned(),
             GrammarExpectation::Rejected(ErrorCategory::InvalidReference),
@@ -410,7 +412,10 @@ fn local_references_render_canonically_and_round_trip() {
         let ResourceAddress::Local(parsed) = reference.address() else {
             panic!("{name} must parse as a Session Scratch Resource");
         };
-        assert_eq!(parsed.as_str(), name);
+        assert_eq!(
+            parsed.name().expect("a named scratch reference").as_str(),
+            name
+        );
 
         let reparsed =
             PathReference::parse(reference.requested().to_owned()).expect("canonical round-trip");

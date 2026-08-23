@@ -114,7 +114,7 @@ async fn scratch_shares_and_never_evicts() {
 
     for scratch in ["one.md", "two.md", "three.md"] {
         session
-            .scratch_put_for_test(&name(scratch), &"s".repeat(1024), &guard)
+            .scratch_put(&name(scratch), &"s".repeat(1024), &guard)
             .await
             .expect("scratch within the shared ceiling");
         ledger_bytes += 1024;
@@ -136,7 +136,7 @@ async fn scratch_shares_and_never_evicts() {
 
     // One byte past the shared ceiling.
     let error = session
-        .scratch_put_for_test(&name("over.md"), "x", &guard)
+        .scratch_put(&name("over.md"), "x", &guard)
         .await
         .expect_err("one byte over the session ceiling");
     assert_eq!(error.category(), ErrorCategory::LimitExceeded);
@@ -150,7 +150,7 @@ async fn scratch_shares_and_never_evicts() {
     assert_eq!(session.used_bytes().await, ledger_bytes);
     assert!(
         session
-            .scratch_load_for_test(&name("over.md"))
+            .scratch_load(&name("over.md"))
             .await
             .expect("load a rejected name")
             .is_none()
@@ -158,11 +158,12 @@ async fn scratch_shares_and_never_evicts() {
 
     // Every pre-existing scratch Resource still reads back byte-for-byte.
     for scratch in ["one.md", "two.md", "three.md"] {
-        let (content, _) = session
-            .scratch_load_for_test(&name(scratch))
+        let content = session
+            .scratch_load(&name(scratch))
             .await
             .expect("load")
-            .expect("scratch survived the quota failure");
+            .expect("scratch survived the quota failure")
+            .content;
         assert_eq!(content, "s".repeat(1024));
     }
 
@@ -171,14 +172,14 @@ async fn scratch_shares_and_never_evicts() {
     let counting = new_session(2, Arc::clone(&counted), ceilings(1024, 8 * 1024 * 1024));
     for index in 0..MAX_SESSION_ARTIFACTS {
         counting
-            .scratch_put_for_test(&name(&format!("n{index}.md")), "x", &guard)
+            .scratch_put(&name(&format!("n{index}.md")), "x", &guard)
             .await
             .expect("under the object ceiling");
     }
     let before_objects = counted.inventory().await;
     assert_eq!(before_objects.len(), MAX_SESSION_ARTIFACTS);
     let error = counting
-        .scratch_put_for_test(&name("one-too-many.md"), "x", &guard)
+        .scratch_put(&name("one-too-many.md"), "x", &guard)
         .await
         .expect_err("one object over the ceiling");
     assert_eq!(error.category(), ErrorCategory::LimitExceeded);
@@ -188,12 +189,12 @@ async fn scratch_shares_and_never_evicts() {
     let object = Arc::new(FakeStorage::default());
     let object_session = new_session(3, Arc::clone(&object), ceilings(1024, 8 * 1024 * 1024));
     object_session
-        .scratch_put_for_test(&name("exact.md"), &"e".repeat(1024), &guard)
+        .scratch_put(&name("exact.md"), &"e".repeat(1024), &guard)
         .await
         .expect("exact object ceiling");
     let inventory = object.inventory().await;
     let error = object_session
-        .scratch_put_for_test(&name("over.md"), &"e".repeat(1025), &guard)
+        .scratch_put(&name("over.md"), &"e".repeat(1025), &guard)
         .await
         .expect_err("one byte over the object ceiling");
     assert_eq!(error.category(), ErrorCategory::LimitExceeded);
@@ -207,7 +208,7 @@ async fn replacing_scratch_releases_its_previous_bytes() {
     let guard = OperationGuard::new();
 
     session
-        .scratch_put_for_test(&name("plan.md"), &"a".repeat(1024), &guard)
+        .scratch_put(&name("plan.md"), &"a".repeat(1024), &guard)
         .await
         .expect("initial scratch");
     assert_eq!(session.used_bytes().await, 1024);
@@ -215,27 +216,28 @@ async fn replacing_scratch_releases_its_previous_bytes() {
     // Replacing must charge the delta, not the sum: a second 1 KiB write to the
     // same name keeps the session at one object's worth of bytes.
     session
-        .scratch_put_for_test(&name("plan.md"), &"b".repeat(1024), &guard)
+        .scratch_put(&name("plan.md"), &"b".repeat(1024), &guard)
         .await
         .expect("replacement reuses the released bytes");
     assert_eq!(session.used_bytes().await, 1024);
 
-    let (content, _) = session
-        .scratch_load_for_test(&name("plan.md"))
+    let content = session
+        .scratch_load(&name("plan.md"))
         .await
         .expect("load")
-        .expect("replaced scratch");
+        .expect("replaced scratch")
+        .content;
     assert_eq!(content, "b".repeat(1024));
 
     // Removal returns the bytes to the session.
     session
-        .scratch_remove_for_test(&name("plan.md"))
+        .scratch_remove(&name("plan.md"))
         .await
         .expect("remove");
     assert_eq!(session.used_bytes().await, 0);
     assert!(
         session
-            .scratch_load_for_test(&name("plan.md"))
+            .scratch_load(&name("plan.md"))
             .await
             .expect("load")
             .is_none()
@@ -250,13 +252,13 @@ async fn scratch_name_enumeration_fits_its_budget() {
     let guard = OperationGuard::new();
     for index in 0..MAX_SESSION_ARTIFACTS {
         session
-            .scratch_put_for_test(&name(&format!("n{index:04}.md")), "x", &guard)
+            .scratch_put(&name(&format!("n{index:04}.md")), "x", &guard)
             .await
             .expect("scratch put");
     }
 
     let started = std::time::Instant::now();
-    let names = session.scratch_names_for_test().await.expect("names");
+    let names = session.scratch_names().await.expect("names");
     let elapsed = started.elapsed();
 
     assert_eq!(names.len(), MAX_SESSION_ARTIFACTS);

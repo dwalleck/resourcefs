@@ -1,5 +1,5 @@
 #[path = "filesystem_mutation.rs"]
-mod mutation;
+pub(crate) mod mutation;
 
 use std::{
     collections::{HashMap, HashSet},

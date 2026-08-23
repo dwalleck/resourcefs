@@ -16,7 +16,7 @@ const SOURCE_CATALOG_TEXT: &str = concat!(
     "Mounted sources\n",
     "Next discovery step: rfs_read rfs://workspace\n",
     "Selectors: :N | :N-M | :N- | comma-separated ranges | :raw | :page:N\n",
-    "artifact:// — artifact://<session>-<id>[:selector] — artifact://00000000000000000000000000000000-1\n",
+    "artifact:// — artifact://<session>-<id>[:selector] — artifact://00000000000000000000000000000000-1\nlocal:// — local://<name>[:selector] (flat names; bare local:// lists this Path Session\'s scratch) — local://plan.md\n",
     "rfs://workspace — <relative-path> | rfs://workspace/<root>/<path>[:selector] | file://<absolute-path> (relative paths use the Primary Workspace Root) — rfs://workspace/workspace/src/lib.rs\n",
 );
 const WORKSPACE_CATALOG_TEXT: &str = "rfs://workspace/workspace/ (primary)\n";
@@ -2129,6 +2129,74 @@ fn catalogs_use_common_read_result_shape() {
             "{path}"
         );
     }
+    process.finish();
+}
+
+/// C11 — Session Scratch reads report `mutable: true` through the public tools,
+/// and the family root's synthetic listing reports `mutable: false`.
+#[test]
+fn scratch_reads_report_mutability() {
+    let fixture = WorkspaceFixture::new();
+    let mut process = McpProcess::start(&fixture.root);
+    process.initialize(VERSION_2026);
+
+    // The family root is readable and read-only even before any scratch exists.
+    let root = process.call_read("local://");
+    assert_eq!(root["isError"], false);
+    let root_structured = root["structuredContent"]
+        .as_object()
+        .expect("structured root listing");
+    assert_eq!(root_structured["canonicalReference"], "local://");
+    assert_eq!(
+        root_structured["mutable"], false,
+        "the scratch listing is a synthetic projection"
+    );
+    assert!(
+        !root_structured["content"]
+            .as_str()
+            .expect("listing content")
+            .trim()
+            .is_empty(),
+        "an empty scratch session still renders a status line"
+    );
+
+    // A named scratch Resource, created with no Workspace Mutation grant, is
+    // readable and reports itself mutable.
+    let write = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_write",
+            "arguments": {"path": "local://plan.md", "content": "scratch line\n"}
+        }),
+    );
+    assert!(
+        write.get("error").is_none(),
+        "scratch write failed: {write}"
+    );
+    assert_eq!(write["result"]["isError"], false, "{write}");
+
+    let read = process.call_read("local://plan.md");
+    assert_eq!(read["isError"], false);
+    let structured = read["structuredContent"]
+        .as_object()
+        .expect("structured scratch result");
+    assert_eq!(structured["canonicalReference"], "local://plan.md");
+    assert_eq!(
+        structured["mutable"], true,
+        "named Session Scratch is writable under session authority"
+    );
+    assert_eq!(structured["content"], "scratch line\n");
+
+    // The root now lists it, and the entry re-parses to the same Resource.
+    let listed = process.call_read("local://");
+    let listing = listed["structuredContent"]["content"]
+        .as_str()
+        .expect("listing content");
+    assert!(
+        listing.lines().any(|line| line == "local://plan.md"),
+        "the listing must name the created Resource: {listing}"
+    );
+
     process.finish();
 }
 

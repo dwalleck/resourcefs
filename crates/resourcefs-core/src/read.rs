@@ -1,8 +1,8 @@
 use std::{fmt, sync::Arc};
 
 use crate::{
-    ArtifactAddress, ArtifactProjectionOrigin, ErrorCategory, MAX_ARTIFACT_BYTES, MAX_TEXT_BYTES,
-    MAX_TEXT_COLUMNS, MAX_TEXT_LINES, OperationGuard, PathReference, PathSession,
+    ArtifactAddress, ArtifactProjectionOrigin, ErrorCategory, LocalAddress, MAX_ARTIFACT_BYTES,
+    MAX_TEXT_BYTES, MAX_TEXT_COLUMNS, MAX_TEXT_LINES, OperationGuard, PathReference, PathSession,
     ProjectionSelector, ReadResource, ResourceAddress, ResourceError, ServerLimits, SourceAdapter,
 };
 
@@ -119,8 +119,13 @@ impl ReadEngine {
             | ResourceAddress::Local(_) => None,
         };
         let requested_artifact_projection = request.reference.projection().is_some();
-        let requested_workspace =
-            matches!(request.reference.address(), ResourceAddress::Workspace(_));
+        // Seen regions exist for editable Resources: Workspace files and named
+        // Session Scratch. The scratch family root is a synthetic listing and
+        // records nothing.
+        let requested_workspace = matches!(
+            request.reference.address(),
+            ResourceAddress::Workspace(_) | ResourceAddress::Local(LocalAddress::Named(_))
+        );
         let mut parts = source.into_parts();
         if parts.content.len() > MAX_ARTIFACT_BYTES {
             return Err(ResourceError::new(
@@ -207,7 +212,14 @@ impl ReadEngine {
         requested: &PathReference,
         resource: &ReadResource,
     ) -> Result<(), ResourceError> {
-        if matches!(requested.address(), ResourceAddress::Workspace(_)) {
+        // The recorded identity is the RESOLVED Resource's canonical reference,
+        // never the requested spelling: a selector-bearing scratch read
+        // (`local://plan.md:1-5`) must reserve its seen region under
+        // `local://plan.md` so a later edit can find the snapshot.
+        if matches!(
+            requested.address(),
+            ResourceAddress::Workspace(_) | ResourceAddress::Local(LocalAddress::Named(_))
+        ) {
             self.session
                 .record_seen(
                     resource.canonical_reference(),

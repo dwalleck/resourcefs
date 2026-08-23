@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
 
 use crate::{
-    ArtifactAddress, DisplayedLineRange, ErrorCategory, LocalName, PathReference, ResourceAddress,
-    ResourceError, ServerLimits, VersionSelector, VersionTag, WorkspaceAddress,
+    ArtifactAddress, DisplayedLineRange, ErrorCategory, LocalAddress, LocalName, PathReference,
+    ResourceAddress, ResourceError, ServerLimits, VersionSelector, VersionTag, WorkspaceAddress,
 };
 
 pub const MAX_SESSION_BYTES: usize = 256 * 1024 * 1024;
@@ -222,7 +222,7 @@ struct ScratchEntry {
 
 /// Current content and Version Tag of one Session Scratch Resource.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ScratchState {
+pub struct ScratchState {
     pub content: String,
     pub version_tag: VersionTag,
 }
@@ -248,7 +248,7 @@ impl SnapshotResourceKey {
             || !matches!(
                 reference.address(),
                 ResourceAddress::Workspace(WorkspaceAddress::Canonical { .. })
-                    | ResourceAddress::Local(_)
+                    | ResourceAddress::Local(LocalAddress::Named(_))
             )
         {
             return Err(ResourceError::new(
@@ -658,15 +658,7 @@ impl PathSession {
     }
 
     /// Reads one Session Scratch Resource, or `None` when the name is unused.
-    #[cfg_attr(
-        not(feature = "test-support"),
-        expect(
-            dead_code,
-            reason = "the local:// Source Adapter that calls this lands with rfs-60g1 \
-                      Slice 4; this expectation then becomes unfulfilled and must be removed"
-        )
-    )]
-    pub(crate) async fn scratch_load(
+    pub async fn scratch_load(
         &self,
         name: &LocalName,
     ) -> Result<Option<ScratchState>, ResourceError> {
@@ -695,15 +687,7 @@ impl PathSession {
     ///
     /// Quota is checked before any write, so a refused put leaves every existing
     /// Resource — scratch or artifact — byte-for-byte unchanged.
-    #[cfg_attr(
-        not(feature = "test-support"),
-        expect(
-            dead_code,
-            reason = "the local:// Source Adapter that calls this lands with rfs-60g1 \
-                      Slice 4; this expectation then becomes unfulfilled and must be removed"
-        )
-    )]
-    pub(crate) async fn scratch_put(
+    pub async fn scratch_put(
         &self,
         name: &LocalName,
         content: &str,
@@ -773,15 +757,7 @@ impl PathSession {
     }
 
     /// Deletes one Session Scratch Resource and returns its bytes to the session.
-    #[cfg_attr(
-        not(feature = "test-support"),
-        expect(
-            dead_code,
-            reason = "the local:// Source Adapter that calls this lands with rfs-60g1 \
-                      Slice 4; this expectation then becomes unfulfilled and must be removed"
-        )
-    )]
-    pub(crate) async fn scratch_remove(&self, name: &LocalName) -> Result<(), ResourceError> {
+    pub async fn scratch_remove(&self, name: &LocalName) -> Result<(), ResourceError> {
         if !self.is_active() {
             return Err(inactive_scratch_error());
         }
@@ -800,15 +776,7 @@ impl PathSession {
     ///
     /// The backing object is untouched: only the name index moves, so the
     /// Version Tag is unchanged.
-    #[cfg_attr(
-        not(feature = "test-support"),
-        expect(
-            dead_code,
-            reason = "the local:// Source Adapter that calls this lands with rfs-60g1 \
-                      Slice 4; this expectation then becomes unfulfilled and must be removed"
-        )
-    )]
-    pub(crate) async fn scratch_rename(
+    pub async fn scratch_rename(
         &self,
         from: &LocalName,
         to: &LocalName,
@@ -837,15 +805,7 @@ impl PathSession {
     }
 
     /// Enumerates this Path Session's Session Scratch names in sorted order.
-    #[cfg_attr(
-        not(feature = "test-support"),
-        expect(
-            dead_code,
-            reason = "the local:// Source Adapter that calls this lands with rfs-60g1 \
-                      Slice 4; this expectation then becomes unfulfilled and must be removed"
-        )
-    )]
-    pub(crate) async fn scratch_names(&self) -> Result<Vec<LocalName>, ResourceError> {
+    pub async fn scratch_names(&self) -> Result<Vec<LocalName>, ResourceError> {
         if !self.is_active() {
             return Err(inactive_scratch_error());
         }
@@ -853,46 +813,6 @@ impl PathSession {
         let mut names = state.scratch.keys().cloned().collect::<Vec<_>>();
         names.sort_unstable();
         Ok(names)
-    }
-
-    #[cfg(feature = "test-support")]
-    pub async fn scratch_put_for_test(
-        &self,
-        name: &LocalName,
-        content: &str,
-        operation: &OperationGuard,
-    ) -> Result<VersionTag, ResourceError> {
-        self.scratch_put(name, content, operation).await
-    }
-
-    #[cfg(feature = "test-support")]
-    pub async fn scratch_load_for_test(
-        &self,
-        name: &LocalName,
-    ) -> Result<Option<(String, VersionTag)>, ResourceError> {
-        Ok(self
-            .scratch_load(name)
-            .await?
-            .map(|state| (state.content, state.version_tag)))
-    }
-
-    #[cfg(feature = "test-support")]
-    pub async fn scratch_remove_for_test(&self, name: &LocalName) -> Result<(), ResourceError> {
-        self.scratch_remove(name).await
-    }
-
-    #[cfg(feature = "test-support")]
-    pub async fn scratch_rename_for_test(
-        &self,
-        from: &LocalName,
-        to: &LocalName,
-    ) -> Result<(), ResourceError> {
-        self.scratch_rename(from, to).await
-    }
-
-    #[cfg(feature = "test-support")]
-    pub async fn scratch_names_for_test(&self) -> Result<Vec<LocalName>, ResourceError> {
-        self.scratch_names().await
     }
 
     pub async fn used_bytes(&self) -> usize {

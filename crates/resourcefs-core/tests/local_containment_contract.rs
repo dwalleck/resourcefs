@@ -118,7 +118,7 @@ async fn names_cannot_escape() {
 
     for (index, raw) in names.iter().enumerate() {
         session
-            .scratch_put_for_test(&name(raw), &format!("content-{index}"), &guard)
+            .scratch_put(&name(raw), &format!("content-{index}"), &guard)
             .await
             .expect("valid scratch name is storable");
     }
@@ -141,18 +141,19 @@ async fn names_cannot_escape() {
 
     // Every name reads back exactly its own content — no cross-talk.
     for (index, raw) in names.iter().enumerate() {
-        let (content, _) = session
-            .scratch_load_for_test(&name(raw))
+        let content = session
+            .scratch_load(&name(raw))
             .await
             .expect("load")
-            .expect("retained scratch");
+            .expect("retained scratch")
+            .content;
         assert_eq!(content, format!("content-{index}"));
     }
 
     // Renaming moves the name, never the backing object identity.
     let ids_before_rename = storage.written_ids().await;
     session
-        .scratch_rename_for_test(&name("设计.md"), &name("renamed.md"))
+        .scratch_rename(&name("设计.md"), &name("renamed.md"))
         .await
         .expect("same-source rename");
     assert_eq!(
@@ -160,15 +161,16 @@ async fn names_cannot_escape() {
         ids_before_rename,
         "rename must not rewrite the backing object"
     );
-    let (content, _) = session
-        .scratch_load_for_test(&name("renamed.md"))
+    let content = session
+        .scratch_load(&name("renamed.md"))
         .await
         .expect("load")
-        .expect("renamed scratch");
+        .expect("renamed scratch")
+        .content;
     assert_eq!(content, "content-0");
     assert!(
         session
-            .scratch_load_for_test(&name("设计.md"))
+            .scratch_load(&name("设计.md"))
             .await
             .expect("load")
             .is_none(),
@@ -185,16 +187,16 @@ async fn scratch_names_are_sorted_and_session_scoped() {
 
     for raw in ["zebra.md", "alpha.md", "middle.md"] {
         first
-            .scratch_put_for_test(&name(raw), "x", &guard)
+            .scratch_put(&name(raw), "x", &guard)
             .await
             .expect("scratch put");
     }
     second
-        .scratch_put_for_test(&name("alpha.md"), "other", &guard)
+        .scratch_put(&name("alpha.md"), "other", &guard)
         .await
         .expect("scratch put in a second session");
 
-    let names = first.scratch_names_for_test().await.expect("names");
+    let names = first.scratch_names().await.expect("names");
     let rendered = names.iter().map(LocalName::as_str).collect::<Vec<_>>();
     assert_eq!(
         rendered,
@@ -204,16 +206,18 @@ async fn scratch_names_are_sorted_and_session_scoped() {
 
     // The colliding name in the other session is invisible here and holds its
     // own content there.
-    let (content, _) = second
-        .scratch_load_for_test(&name("alpha.md"))
+    let content = second
+        .scratch_load(&name("alpha.md"))
         .await
         .expect("load")
-        .expect("second session scratch");
+        .expect("second session scratch")
+        .content;
     assert_eq!(content, "other");
-    let (content, _) = first
-        .scratch_load_for_test(&name("alpha.md"))
+    let content = first
+        .scratch_load(&name("alpha.md"))
         .await
         .expect("load")
-        .expect("first session scratch");
+        .expect("first session scratch")
+        .content;
     assert_eq!(content, "x");
 }

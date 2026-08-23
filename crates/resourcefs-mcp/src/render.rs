@@ -387,6 +387,7 @@ enum GlobKindOutput {
     File,
     Directory,
     Artifact,
+    Scratch,
 }
 
 impl From<GlobKind> for GlobKindOutput {
@@ -395,6 +396,7 @@ impl From<GlobKind> for GlobKindOutput {
             GlobKind::File => Self::File,
             GlobKind::Directory => Self::Directory,
             GlobKind::Artifact => Self::Artifact,
+            GlobKind::LocalScratch => Self::Scratch,
         }
     }
 }
@@ -752,6 +754,7 @@ mod tests {
             CompiledSources::new(
                 filesystem,
                 ArtifactSource::new(session.path_session().clone()),
+                resourcefs_sources::LocalSource::new(session.path_session().clone()),
             )
             .await
             .expect("render fixture compiled sources"),

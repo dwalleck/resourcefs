@@ -470,8 +470,9 @@ fn validate_canonical_identity(reference: &PathReference) -> Result<(), Resource
         ResourceAddress::Artifact(address) => {
             reference.projection().is_none() && canonical_artifact_reference(reference, address)
         }
-        ResourceAddress::Local(name) => {
-            reference.projection().is_none() && reference.requested() == name.canonical_reference()
+        ResourceAddress::Local(address) => {
+            reference.projection().is_none()
+                && reference.requested() == address.canonical_reference()
         }
         ResourceAddress::Workspace(_) => false,
     };

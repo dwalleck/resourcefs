@@ -40,10 +40,10 @@ pub use probe::{
 };
 pub use read::{ReadEngine, ReadRequest, TextLimits};
 pub use reference::{
-    ArtifactAddress, CatalogAddress, LineRange, LineSelector, LocalName, MAX_LOCAL_NAME_BYTES,
-    MAX_PATH_REFERENCE_BYTES, MAX_WORKSPACE_ROOTS, PathReference, ProjectionSelector,
-    ResourceAddress, SelectedWorkspaceAddress, WorkspaceAddress, WorkspacePath, WorkspaceRoot,
-    WorkspaceRootId, WorkspaceRootSet,
+    ArtifactAddress, CatalogAddress, LineRange, LineSelector, LocalAddress, LocalName,
+    MAX_LOCAL_NAME_BYTES, MAX_PATH_REFERENCE_BYTES, MAX_WORKSPACE_ROOTS, PathReference,
+    ProjectionSelector, ResourceAddress, SelectedLocalAddress, SelectedWorkspaceAddress,
+    WorkspaceAddress, WorkspacePath, WorkspaceRoot, WorkspaceRootId, WorkspaceRootSet,
 };
 pub use resource::{
     ArtifactProjectionOrigin, BEHAVIOR_CONTRACT_VERSION, DisplayedLineRange, MAX_ARTIFACT_BYTES,
@@ -54,7 +54,7 @@ pub use secret::{Redactor, Secret, SecretError};
 pub use selector::{SelectedText, select_utf8};
 pub use session::{
     ArtifactId, MAX_SESSION_ARTIFACTS, MAX_SESSION_BYTES, OperationGuard, PathSession,
-    SessionStorage, SessionToken,
+    ScratchState, SessionStorage, SessionToken,
 };
 pub use source::SourceAdapter;
 pub use version::VersionTag;

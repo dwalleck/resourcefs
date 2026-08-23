@@ -15,7 +15,7 @@ use resourcefs_core::{
 
 use super::*;
 
-const FILESYSTEM_MUTATION_SOURCE_KEY: &str = "workspace-filesystem";
+pub(crate) const FILESYSTEM_MUTATION_SOURCE_KEY: &str = "workspace-filesystem";
 
 struct OpenMutationParent {
     directory: Dir,

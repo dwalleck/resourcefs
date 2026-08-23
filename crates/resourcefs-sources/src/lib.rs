@@ -5,6 +5,7 @@ mod catalog;
 mod compiled;
 mod configuration;
 mod filesystem;
+mod local;
 mod pattern;
 mod probe;
 mod process;
@@ -23,6 +24,7 @@ pub use configuration::{
     SkillsConfig, SshConfig, SshHost, VaultConfig, VaultRoot, VaultTarget,
     validate_configuration_id,
 };
+pub use local::LocalSource;
 
 #[cfg(feature = "test-support")]
 pub use filesystem::TestDeliveryGate;

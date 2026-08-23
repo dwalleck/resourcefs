@@ -8,7 +8,7 @@ use resourcefs_core::{
 };
 use resourcefs_sources::{
     ArtifactSource, BackingPathVisibility, ClientRoot, CompiledSources, FilesystemSource,
-    LaunchRoot, LaunchRootSource, SessionStore,
+    LaunchRoot, LaunchRootSource, LocalSource, SessionStore,
 };
 use tempfile::TempDir;
 
@@ -66,9 +66,13 @@ async fn fixture() -> Fixture {
     let artifacts = ArtifactSource::new(session.path_session().clone());
 
     Fixture {
-        compiled: CompiledSources::new(filesystem.clone(), artifacts)
-            .await
-            .expect("compiled sources"),
+        compiled: CompiledSources::new(
+            filesystem.clone(),
+            artifacts,
+            LocalSource::new(session.path_session().clone()),
+        )
+        .await
+        .expect("compiled sources"),
         filesystem,
         artifact_root,
         session,
@@ -170,7 +174,7 @@ async fn catalog_reads_route_by_typed_address_family() {
             "Mounted sources\n",
             "Next discovery step: rfs_read rfs://workspace\n",
             "Selectors: :N | :N-M | :N- | comma-separated ranges | :raw | :page:N\n",
-            "artifact:// — artifact://<session>-<id>[:selector] — artifact://00000000000000000000000000000000-1\n",
+            "artifact:// — artifact://<session>-<id>[:selector] — artifact://00000000000000000000000000000000-1\nlocal:// — local://<name>[:selector] (flat names; bare local:// lists this Path Session\'s scratch) — local://plan.md\n",
             "rfs://workspace — <relative-path> | rfs://workspace/<root>/<path>[:selector] | file://<absolute-path> (relative paths use the Primary Workspace Root) — rfs://workspace/workspace/src/lib.rs\n",
         )
     );

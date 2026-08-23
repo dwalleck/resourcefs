@@ -715,3 +715,29 @@ fn engine_exposes_the_same_strict_parser_interface() {
     );
     let _adapter = engine.adapter();
 }
+
+/// C2 — the engine drives a **non-workspace** family with no workspace-specific
+/// branch. Every other case here uses a workspace reference, so a workspace-only
+/// guard in `MutationEngine::write` would slip past them; this case is what makes
+/// that mutation observable.
+#[tokio::test]
+async fn engine_drives_non_workspace_families() {
+    let session = session(9);
+    let adapter = Arc::new(StatefulAdapter::new(MutationState::Missing));
+    let engine = MutationEngine::new(adapter.clone(), session.clone());
+    let reference = PathReference::local("plan.md").expect("scratch reference");
+
+    let created = engine
+        .write(
+            WriteRequest::new(reference.clone(), "scratch bytes\n".to_owned(), None)
+                .expect("create request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("the engine must drive a local:// target with no workspace branch");
+    assert_eq!(created.operation(), MutationOperation::Created);
+    assert_eq!(
+        created.canonical_reference().requested(),
+        reference.requested()
+    );
+}

@@ -16,7 +16,7 @@ use resourcefs_core::{
 #[cfg(feature = "test-support")]
 use resourcefs_sources::StorageFailurePoint;
 use resourcefs_sources::{
-    ArtifactSource, ClientRoot, CompiledSources, FilesystemSource, RootRefresh,
+    ArtifactSource, ClientRoot, CompiledSources, FilesystemSource, LocalSource, RootRefresh,
     SessionStorageConfig, SessionStore, StoredSession,
 };
 use rmcp::{
@@ -1332,8 +1332,14 @@ async fn serve_inner(
     let mut heartbeat = tokio::spawn(heartbeat_session(stored_session.clone(), heartbeat_stop));
     let session = stored_session.path_session().clone();
     let disconnect = Arc::new(DisconnectState::new(session.clone()));
-    let compiled_sources =
-        Arc::new(CompiledSources::new(source.clone(), ArtifactSource::new(session.clone())).await?);
+    let compiled_sources = Arc::new(
+        CompiledSources::new(
+            source.clone(),
+            ArtifactSource::new(session.clone()),
+            LocalSource::new(session.clone()),
+        )
+        .await?,
+    );
     let read_sources = Arc::clone(&compiled_sources);
     let discovery_sources = Arc::clone(&compiled_sources);
     let read_engine = ReadEngine::new(read_sources, session.clone(), limits);

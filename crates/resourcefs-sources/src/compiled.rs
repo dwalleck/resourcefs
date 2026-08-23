@@ -7,8 +7,10 @@ use resourcefs_core::{
 };
 
 use crate::{
-    ArtifactSource, FilesystemSource,
+    ArtifactSource, FilesystemSource, LocalSource,
     catalog::{NamespaceCatalog, SourceCatalogEntry, SourceCatalogMetadata},
+    filesystem::mutation::FILESYSTEM_MUTATION_SOURCE_KEY,
+    local::LOCAL_MUTATION_SOURCE_KEY,
 };
 
 /// Composite of the Source Adapters compiled into this ResourceFS build.
@@ -16,16 +18,19 @@ use crate::{
 pub struct CompiledSources {
     filesystem: FilesystemSource,
     artifacts: ArtifactSource,
+    local: LocalSource,
 }
 
 impl CompiledSources {
     pub async fn new(
         filesystem: FilesystemSource,
         artifacts: ArtifactSource,
+        local: LocalSource,
     ) -> Result<Self, ResourceError> {
         let compiled = Self {
             filesystem,
             artifacts,
+            local,
         };
         let source_document = NamespaceCatalog::source_document(compiled.catalog_entries()?)?;
         let workspace_document = NamespaceCatalog::workspace_document(&compiled.filesystem).await?;
@@ -36,8 +41,8 @@ impl CompiledSources {
         Ok(compiled)
     }
 
-    fn catalog_metadata(&self) -> [&dyn SourceCatalogMetadata; 2] {
-        [&self.filesystem, &self.artifacts]
+    fn catalog_metadata(&self) -> [&dyn SourceCatalogMetadata; 3] {
+        [&self.filesystem, &self.artifacts, &self.local]
     }
 
     pub(crate) fn catalog_entries(&self) -> Result<Vec<SourceCatalogEntry>, ResourceError> {
@@ -54,16 +59,6 @@ impl CompiledSources {
         }
         Ok(entries)
     }
-}
-
-/// Session Scratch parses as a Path Reference before its Source Adapter is
-/// compiled in, so every routing arm reports the source as unavailable rather
-/// than misrouting a `local://` reference to another adapter.
-fn local_source_unavailable() -> resourcefs_core::ResourceError {
-    resourcefs_core::ResourceError::new(
-        resourcefs_core::ErrorCategory::SourceUnavailable,
-        "local scratch source not mounted",
-    )
 }
 
 #[async_trait]
@@ -84,7 +79,7 @@ impl SourceAdapter for CompiledSources {
             }
             ResourceAddress::Workspace(_) => self.filesystem.read(reference).await,
             ResourceAddress::Artifact(_) => self.artifacts.read(reference).await,
-            ResourceAddress::Local(_) => Err(local_source_unavailable()),
+            ResourceAddress::Local(_) => self.local.read(reference).await,
         }
     }
 }
@@ -104,17 +99,24 @@ impl MutationAdapter for CompiledSources {
                     "catalog and Artifact Resources are immutable",
                 ))
             }
-            ResourceAddress::Local(_) => Err(local_source_unavailable()),
+            ResourceAddress::Local(_) => self.local.resolve(reference, access).await,
         }
     }
 
+    /// Routes by the target's own source key.
+    ///
+    /// Hardcoding one adapter here would load or commit a `local://` mutation
+    /// against the filesystem — the invariant this dispatch removes.
     async fn load(
         &self,
         target: &MutationTarget,
         access: MutationAccess,
         operation: &OperationGuard,
     ) -> Result<MutationState, ResourceError> {
-        self.filesystem.load(target, access, operation).await
+        match self.mutation_adapter_for(target)? {
+            MutationRoute::Filesystem => self.filesystem.load(target, access, operation).await,
+            MutationRoute::Local => self.local.load(target, access, operation).await,
+        }
     }
 
     async fn commit(
@@ -122,7 +124,39 @@ impl MutationAdapter for CompiledSources {
         mutation: SourceMutation,
         operation: &OperationGuard,
     ) -> Result<(), ResourceError> {
-        self.filesystem.commit(mutation, operation).await
+        let target = match &mutation {
+            SourceMutation::Create { target, .. }
+            | SourceMutation::Replace { target, .. }
+            | SourceMutation::Delete { target, .. } => target,
+            SourceMutation::Move { source, .. } => source,
+        };
+        match self.mutation_adapter_for(target)? {
+            MutationRoute::Filesystem => self.filesystem.commit(mutation, operation).await,
+            MutationRoute::Local => self.local.commit(mutation, operation).await,
+        }
+    }
+}
+
+/// Which compiled adapter owns one mutation target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MutationRoute {
+    Filesystem,
+    Local,
+}
+
+impl CompiledSources {
+    fn mutation_adapter_for(
+        &self,
+        target: &MutationTarget,
+    ) -> Result<MutationRoute, ResourceError> {
+        match target.source_key().as_str() {
+            FILESYSTEM_MUTATION_SOURCE_KEY => Ok(MutationRoute::Filesystem),
+            LOCAL_MUTATION_SOURCE_KEY => Ok(MutationRoute::Local),
+            other => Err(ResourceError::new(
+                resourcefs_core::ErrorCategory::UnsupportedMutation,
+                format!("no compiled Source Adapter owns mutation source '{other}'"),
+            )),
+        }
     }
 }
 
@@ -152,7 +186,9 @@ impl DiscoveryAdapter for CompiledSources {
                     .search(target, pattern, options, operation)
                     .await
             }
-            Some(ResourceAddress::Local(_)) => Err(local_source_unavailable()),
+            Some(ResourceAddress::Local(_)) => {
+                self.local.search(target, pattern, options, operation).await
+            }
         }
     }
 
@@ -165,6 +201,7 @@ impl DiscoveryAdapter for CompiledSources {
         match target.source() {
             GlobSource::Workspace => self.filesystem.glob(target, options, operation).await,
             GlobSource::Artifact => self.artifacts.glob(target, options, operation).await,
+            GlobSource::Local => self.local.glob(target, options, operation).await,
         }
     }
 }
@@ -213,6 +250,7 @@ mod tests {
         let compiled = CompiledSources::new(
             filesystem,
             ArtifactSource::new(session.path_session().clone()),
+            crate::LocalSource::new(session.path_session().clone()),
         )
         .await
         .expect("compiled sources");
@@ -224,8 +262,9 @@ mod tests {
             .lines()
             .filter(|line| line.contains(" — "))
             .collect::<Vec<_>>();
-        assert_eq!(source_lines.len(), 2);
+        assert_eq!(source_lines.len(), 3);
         assert!(source_lines[0].starts_with("artifact:// — "));
-        assert!(source_lines[1].starts_with("rfs://workspace — "));
+        assert!(source_lines[1].starts_with("local:// — "));
+        assert!(source_lines[2].starts_with("rfs://workspace — "));
     }
 }

@@ -249,13 +249,65 @@ impl fmt::Display for LocalName {
     }
 }
 
+/// Session Scratch identity: the family root or one named scratch Resource.
+///
+/// The bare `local://` root is the scratch family's self-describing entry point,
+/// mirroring `rfs://` for mounted sources and `rfs://workspace` for Workspace
+/// Roots. It addresses a synthetic read-only listing, never a stored Resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalAddress {
+    Root,
+    Named(LocalName),
+}
+
+impl LocalAddress {
+    /// Renders the canonical reference for this scratch identity.
+    pub(crate) fn canonical_reference(&self) -> String {
+        match self {
+            Self::Root => LOCAL_PREFIX.to_owned(),
+            Self::Named(name) => name.canonical_reference(),
+        }
+    }
+
+    /// Returns the scratch name, or `None` for the family root.
+    pub const fn name(&self) -> Option<&LocalName> {
+        match self {
+            Self::Root => None,
+            Self::Named(name) => Some(name),
+        }
+    }
+}
+
 /// Parsed source identity independent of its optional projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceAddress {
     Catalog(CatalogAddress),
     Workspace(WorkspaceAddress),
     Artifact(ArtifactAddress),
-    Local(LocalName),
+    Local(LocalAddress),
+}
+
+/// A Session Scratch name paired with the projection selector that follows it.
+///
+/// Scratch names are filename-like, so a colon is a legal name character and
+/// `local://plan.md:1-5` is first a candidate *name*. This records the competing
+/// selector reading, which the Local Source Adapter uses only when no Resource
+/// carries the literal name — the same literal-wins rule the Workspace family
+/// applies through [`SelectedWorkspaceAddress`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedLocalAddress {
+    base: LocalName,
+    selector: ProjectionSelector,
+}
+
+impl SelectedLocalAddress {
+    pub const fn base(&self) -> &LocalName {
+        &self.base
+    }
+
+    pub const fn selector(&self) -> &ProjectionSelector {
+        &self.selector
+    }
 }
 
 /// One validated 1-indexed line range in request order.
@@ -406,6 +458,7 @@ pub struct PathReference {
     projection: Option<ProjectionSelector>,
     selector_candidate: Option<SelectedWorkspaceAddress>,
     selector_error: Option<ResourceError>,
+    local_candidate: Option<SelectedLocalAddress>,
 }
 
 impl PathReference {
@@ -426,6 +479,7 @@ impl PathReference {
                 projection: None,
                 selector_candidate: None,
                 selector_error: None,
+                local_candidate: None,
             });
         }
         if requested.starts_with(ARTIFACT_PREFIX) {
@@ -442,17 +496,38 @@ impl PathReference {
                 projection,
                 selector_candidate: None,
                 selector_error: None,
+                local_candidate: None,
             });
         }
 
         if let Some(raw_name) = requested.strip_prefix(LOCAL_PREFIX) {
-            let name = LocalName::new(percent_decode(raw_name)?)?;
+            if raw_name.is_empty() {
+                return Ok(Self {
+                    requested: LOCAL_PREFIX.to_owned(),
+                    address: ResourceAddress::Local(LocalAddress::Root),
+                    projection: None,
+                    selector_candidate: None,
+                    selector_error: None,
+                    local_candidate: None,
+                });
+            }
+            let decoded = percent_decode(raw_name)?;
+            let name = LocalName::new(decoded.clone())?;
+            // A colon is a legal scratch-name character, so the literal name is
+            // the primary reading and the selector split is only a candidate.
+            let local_candidate =
+                projection_candidate_split(&decoded).and_then(|(base, selector)| {
+                    let base = LocalName::new(base).ok()?;
+                    let selector = ProjectionSelector::parse(selector).ok()?;
+                    Some(SelectedLocalAddress { base, selector })
+                });
             return Ok(Self {
                 requested: name.canonical_reference(),
-                address: ResourceAddress::Local(name),
+                address: ResourceAddress::Local(LocalAddress::Named(name)),
                 projection: None,
                 selector_candidate: None,
                 selector_error: None,
+                local_candidate,
             });
         }
 
@@ -480,6 +555,7 @@ impl PathReference {
             projection: None,
             selector_candidate,
             selector_error,
+            local_candidate: None,
         })
     }
 
@@ -497,6 +573,7 @@ impl PathReference {
             projection: None,
             selector_candidate: None,
             selector_error: None,
+            local_candidate: None,
         }
     }
 
@@ -505,11 +582,24 @@ impl PathReference {
         let name = LocalName::new(name)?;
         Ok(Self {
             requested: name.canonical_reference(),
-            address: ResourceAddress::Local(name),
+            address: ResourceAddress::Local(LocalAddress::Named(name)),
             projection: None,
             selector_candidate: None,
             selector_error: None,
+            local_candidate: None,
         })
+    }
+
+    /// Builds the canonical reference for the Session Scratch family root.
+    pub fn local_root() -> Self {
+        Self {
+            requested: LOCAL_PREFIX.to_owned(),
+            address: ResourceAddress::Local(LocalAddress::Root),
+            projection: None,
+            selector_candidate: None,
+            selector_error: None,
+            local_candidate: None,
+        }
     }
 
     pub fn artifact(
@@ -555,6 +645,15 @@ impl PathReference {
 
     pub const fn selector_error(&self) -> Option<&ResourceError> {
         self.selector_error.as_ref()
+    }
+
+    /// The competing selector reading of a Session Scratch reference.
+    ///
+    /// Present only when the literal scratch name also splits into a valid
+    /// name plus projection selector. The Local Source Adapter consults it only
+    /// after the literal name reports `not_found`.
+    pub const fn local_selector_candidate(&self) -> Option<&SelectedLocalAddress> {
+        self.local_candidate.as_ref()
     }
 }
 

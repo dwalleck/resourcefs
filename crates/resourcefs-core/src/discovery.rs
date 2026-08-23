@@ -42,6 +42,7 @@ impl SearchTarget {
 pub enum GlobSource {
     Workspace,
     Artifact,
+    Local,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +70,8 @@ impl GlobTarget {
         }
         let source = if pattern.starts_with(crate::reference::ARTIFACT_PREFIX) {
             GlobSource::Artifact
+        } else if pattern.starts_with(crate::reference::LOCAL_PREFIX) {
+            GlobSource::Local
         } else {
             GlobSource::Workspace
         };
@@ -359,6 +362,7 @@ pub enum GlobKind {
     File,
     Directory,
     Artifact,
+    LocalScratch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,8 +377,7 @@ impl GlobEntry {
             ResourceAddress::Catalog(_) => false,
             ResourceAddress::Workspace(_) => !matches!(kind, GlobKind::Artifact),
             ResourceAddress::Artifact(_) => matches!(kind, GlobKind::Artifact),
-            // Session Scratch has no glob source until the Local adapter mounts.
-            ResourceAddress::Local(_) => false,
+            ResourceAddress::Local(_) => matches!(kind, GlobKind::LocalScratch),
         };
         if !kind_matches_source {
             return Err(ResourceError::new(
@@ -811,6 +814,7 @@ fn glob_kind_rank(kind: GlobKind) -> u8 {
         GlobKind::File => 0,
         GlobKind::Directory => 1,
         GlobKind::Artifact => 2,
+        GlobKind::LocalScratch => 3,
     }
 }
 
@@ -1175,8 +1179,9 @@ fn canonical_identity(reference: &PathReference) -> Result<String, ResourceError
                 && canonical_artifact_reference(address)
                     .is_ok_and(|canonical| canonical == reference.requested())
         }
-        ResourceAddress::Local(name) => {
-            reference.projection().is_none() && reference.requested() == name.canonical_reference()
+        ResourceAddress::Local(address) => {
+            reference.projection().is_none()
+                && reference.requested() == address.canonical_reference()
         }
         ResourceAddress::Workspace(_) => false,
     };
