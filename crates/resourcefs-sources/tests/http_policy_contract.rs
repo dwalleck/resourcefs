@@ -1,5 +1,5 @@
 //! Egress-policy contracts for the bounded HTTP substrate (rfs-g2z9 C2, C3,
-//! C7, C15).
+//! C4, C5, C7, C15).
 //!
 //! The oracle throughout is **server-side observation**: each listener counts
 //! the TCP connections it actually accepted. That is deliberately not the
@@ -266,5 +266,216 @@ async fn probe_egress_is_policed() {
     assert!(
         listener.accepts() >= 1,
         "the granted probe must reach the listener"
+    );
+}
+
+#[path = "support/tls.rs"]
+mod tls;
+
+/// C4 — a redirect leaving the allowlist is refused and never transmitted.
+///
+/// The off-allowlist target is deliberately a path on the **same** host, not a
+/// foreign host. A foreign host would be refused a second time by the resolver,
+/// which has no policy for it — so its request log would stay empty even with
+/// the redirect control deleted, and the fence would pass while proving
+/// nothing. Scoping by path keeps the host resolvable and the address
+/// authorized, leaving the redirect check as the only thing that can stop the
+/// request. The empty log then means exactly what it claims.
+#[tokio::test]
+async fn offsite_redirect_never_requested() {
+    let listener =
+        tls::TlsListener::serve_router(Ipv4Addr::new(127, 0, 0, 1), 0, tls::MATCH_CERT, |path| {
+            if path == "/docs/start" {
+                tls::FixtureResponse::Redirect("/secret".to_owned())
+            } else {
+                tls::FixtureResponse::Body("secret".to_owned())
+            }
+        })
+        .await;
+    let port = listener.address.port();
+
+    // The grant is present and the origin is scoped to `/docs/`, so `/secret`
+    // is off-allowlist by path alone.
+    let scoped = OriginAllowlist::new(vec![
+        AllowedOrigin::new(&format!("https://{}:{port}/docs/", tls::FIXTURE_HOST), true)
+            .expect("origin is well formed"),
+    ]);
+    let substrate = tls::tls_substrate(scoped, vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))]);
+
+    let url = Url::parse(&format!("https://{}:{port}/docs/start", tls::FIXTURE_HOST))
+        .expect("fixture URL is well formed");
+    let failure = substrate
+        .fetch(HttpRequest::get(url), &OperationGuard::new())
+        .await
+        .expect_err("a redirect off the allowlist must be refused");
+    tls::settle().await;
+
+    assert_eq!(failure.category(), ErrorCategory::PermissionDenied);
+    // Origin scoping refuses the initial URL with the same category, so the
+    // category alone cannot show which control fired.
+    assert!(
+        failure.message().contains("redirect was not followed"),
+        "the refusal must identify the redirect control, got: {}",
+        failure.message()
+    );
+    let received = listener.requests();
+    // The decisive evidence: the refused target was never put on the wire,
+    // even though the host was resolvable and the address authorized.
+    assert!(
+        !received.iter().any(|line| line.contains("/secret")),
+        "the off-allowlist target must never be requested, got: {received:?}"
+    );
+    // The guard against passing for the wrong reason: the exchange did work.
+    assert!(
+        received.iter().any(|line| line.contains("/docs/start")),
+        "the allowlisted hop must have been served, got: {received:?}"
+    );
+}
+
+/// C5 — the redirect chain is bounded, and the bound is observed server-side.
+///
+/// The oracle is the redirecting listener's own request log, independent of
+/// the client's redirect counter: the hop past the ceiling must appear nowhere
+/// in it.
+#[tokio::test]
+async fn redirect_depth_boundary() {
+    let listener =
+        tls::TlsListener::serve_router(Ipv4Addr::new(127, 0, 0, 1), 0, tls::MATCH_CERT, |path| {
+            let step = |prefix: &str, last: usize| -> Option<tls::FixtureResponse> {
+                let index: usize = path.strip_prefix(prefix)?.parse().ok()?;
+                Some(if index < last {
+                    tls::FixtureResponse::Redirect(format!("{prefix}{}", index + 1))
+                } else {
+                    tls::FixtureResponse::Body("arrived".to_owned())
+                })
+            };
+            if path == "/loop" {
+                return tls::FixtureResponse::Redirect("/loop".to_owned());
+            }
+            // `/hop/1` costs five redirects to reach `/hop/6`; `/deep/1` would
+            // cost six to reach `/deep/7`, one past the ceiling.
+            step("/hop/", 6)
+                .or_else(|| step("/deep/", 7))
+                .unwrap_or_else(|| tls::FixtureResponse::Body("arrived".to_owned()))
+        })
+        .await;
+    let port = listener.address.port();
+    let substrate = tls::tls_substrate(
+        tls::fixture_allowlist(port, true),
+        vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))],
+    );
+    let fetch = async |path: &str| {
+        let url = Url::parse(&format!("https://{}:{port}{path}", tls::FIXTURE_HOST))
+            .expect("fixture URL is well formed");
+        substrate
+            .fetch(HttpRequest::get(url), &OperationGuard::new())
+            .await
+    };
+
+    // Depth zero: a request that never redirects is served directly.
+    let plain = fetch("/plain").await.expect("a direct request succeeds");
+    assert_eq!(plain.status(), 200);
+    assert_eq!(
+        listener.requests().len(),
+        1,
+        "a request with no redirect must cost exactly one hop"
+    );
+
+    // Exactly at the ceiling: five redirects are followed and the body lands.
+    let arrived = fetch("/hop/1")
+        .await
+        .expect("a chain at the ceiling succeeds");
+    assert_eq!(arrived.status(), 200);
+    assert_eq!(arrived.body(), b"arrived");
+
+    // One past the ceiling: refused, and the extra hop never leaves the client.
+    let failure = fetch("/deep/1")
+        .await
+        .expect_err("a chain past the ceiling must be refused");
+    tls::settle().await;
+    assert_eq!(failure.category(), ErrorCategory::LimitExceeded);
+    let received = listener.requests();
+    assert!(
+        received.iter().any(|line| line.contains("/deep/6")),
+        "the chain must run up to the ceiling, got: {received:?}"
+    );
+    assert!(
+        !received.iter().any(|line| line.contains("/deep/7")),
+        "the hop past the ceiling must never be requested, got: {received:?}"
+    );
+
+    // A loop terminates at the bound rather than hanging.
+    let looped = fetch("/loop")
+        .await
+        .expect_err("a redirect loop must terminate at the ceiling");
+    assert_eq!(looped.category(), ErrorCategory::LimitExceeded);
+}
+
+/// C4 — a hop the allowlist permits is still subject to the address policy.
+///
+/// Both controls apply to every hop and neither substitutes for the other: the
+/// redirect target here is inside the allowlist, so only the resolver can stop
+/// it. Without this row a fixture could pass with address authorization applied
+/// to the first connection alone.
+#[tokio::test]
+async fn redirect_to_denied_address_is_refused() {
+    // Bind first so the redirect Location can name the listener's real port.
+    let probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("port probe binds");
+    let redirect_port = probe.local_addr().expect("probe reports its port").port();
+    drop(probe);
+    let listener = tls::TlsListener::serve_router(
+        Ipv4Addr::new(127, 0, 0, 1),
+        redirect_port,
+        tls::MATCH_CERT,
+        move |path: &str| {
+            if path == "/start" {
+                tls::FixtureResponse::Redirect(format!(
+                    "https://denied.invalid:{redirect_port}/next"
+                ))
+            } else {
+                tls::FixtureResponse::Body("arrived".to_owned())
+            }
+        },
+    )
+    .await;
+    let port = listener.address.port();
+
+    // Both hosts are allowlisted, so the redirect check passes; they differ
+    // only in the private-network grant, leaving the address policy as the one
+    // control that can refuse the hop.
+    let origins = OriginAllowlist::new(vec![
+        AllowedOrigin::new(&format!("https://{}:{port}/", tls::FIXTURE_HOST), true)
+            .expect("origin is well formed"),
+        AllowedOrigin::new(&format!("https://denied.invalid:{port}/"), false)
+            .expect("origin is well formed"),
+    ]);
+    let substrate = resourcefs_sources::HttpSubstrate::with_host_lookup_and_roots(
+        origins,
+        HttpCeilings::default(),
+        move |_host: String| async move {
+            Ok::<_, io::Error>(vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))])
+        },
+        &[tls::FIXTURE_CA],
+    )
+    .expect("substrate builds");
+
+    let url = Url::parse(&format!("https://{}:{port}/start", tls::FIXTURE_HOST))
+        .expect("fixture URL is well formed");
+    let failure = substrate
+        .fetch(HttpRequest::get(url), &OperationGuard::new())
+        .await
+        .expect_err("a hop into restricted space must be refused");
+    tls::settle().await;
+
+    assert_denied_by_address_policy(&failure);
+    assert!(
+        !listener
+            .requests()
+            .iter()
+            .any(|line| line.contains("/next")),
+        "the denied hop must never be requested, got: {:?}",
+        listener.requests()
     );
 }

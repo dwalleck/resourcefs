@@ -66,6 +66,35 @@ const WRONG_KEY: &[u8] = include_bytes!("../fixtures/tls/wrong.key.der");
 /// reserved by RFC 2606 precisely so it cannot resolve anywhere.
 pub const FIXTURE_HOST: &str = "tls.invalid";
 
+/// One response a fixture listener can serve.
+///
+/// Shaped per request path by [`TlsListener::serve_router`], because a
+/// redirect chain needs each hop to answer differently and a single fixed
+/// response cannot express one. Slices 5 and 7 extend this with sized and
+/// trickled bodies; adding a variant is the intended way to grow it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FixtureResponse {
+    /// `200 OK` carrying `body`.
+    Body(String),
+    /// `302 Found` pointing at `location`, absolute or origin-relative.
+    Redirect(String),
+}
+
+impl FixtureResponse {
+    /// Renders the response as bytes on the wire.
+    fn render(&self) -> String {
+        match self {
+            Self::Body(body) => format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            ),
+            Self::Redirect(location) => format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+        }
+    }
+}
+
 /// What a listener observed for one connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Handshake {
@@ -94,6 +123,23 @@ impl TlsListener {
     /// client substitutes the URL's port into whatever the resolver returns,
     /// so the address is the only discriminator available to a fixture.
     pub async fn serve(ip: Ipv4Addr, port: u16, cert: &'static [u8], response_body: &str) -> Self {
+        let body = response_body.to_owned();
+        Self::serve_router(ip, port, cert, move |_path| {
+            FixtureResponse::Body(body.clone())
+        })
+        .await
+    }
+
+    /// Serves a response chosen per request path.
+    ///
+    /// `router` receives the request target exactly as it arrived on the wire
+    /// (the middle field of the request line) and returns the response to
+    /// send. This is what lets one listener host a redirect chain, answering
+    /// `/hop1` with a hop to `/hop2` and terminating with a body.
+    pub async fn serve_router<R>(ip: Ipv4Addr, port: u16, cert: &'static [u8], router: R) -> Self
+    where
+        R: Fn(&str) -> FixtureResponse + Send + Sync + 'static,
+    {
         let key: &[u8] = if cert == MATCH_CERT {
             MATCH_KEY
         } else {
@@ -116,10 +162,7 @@ impl TlsListener {
         let accepts = Arc::new(AtomicUsize::new(0));
         let completed = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
-            response_body.len()
-        );
+        let router: Arc<dyn Fn(&str) -> FixtureResponse + Send + Sync> = Arc::new(router);
 
         let (accept_counter, done_counter, log) = (
             Arc::clone(&accepts),
@@ -132,7 +175,7 @@ impl TlsListener {
                 let acceptor = acceptor.clone();
                 let done = Arc::clone(&done_counter);
                 let log = Arc::clone(&log);
-                let response = response.clone();
+                let router = Arc::clone(&router);
                 tokio::spawn(async move {
                     // A handshake failure is an expected outcome here, not an
                     // error: the name-mismatch row exists to produce one.
@@ -141,15 +184,20 @@ impl TlsListener {
                     };
                     done.fetch_add(1, Ordering::SeqCst);
                     let mut buffer = [0_u8; 1024];
+                    let mut target = String::new();
                     if let Ok(read) = tls.read(&mut buffer).await
                         && read > 0
                         && let Some(line) = String::from_utf8_lossy(&buffer[..read]).lines().next()
                     {
+                        // The request target is the middle field of the
+                        // request line, recorded verbatim so a fixture can
+                        // assert what was transmitted byte for byte.
+                        target = line.split_whitespace().nth(1).unwrap_or("").to_owned();
                         log.lock()
                             .expect("request log is uncontended")
                             .push(line.to_owned());
                     }
-                    let _ = tls.write_all(response.as_bytes()).await;
+                    let _ = tls.write_all(router(&target).render().as_bytes()).await;
                     let _ = tls.shutdown().await;
                 });
             }

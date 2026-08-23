@@ -249,10 +249,10 @@ impl HttpSubstrate {
         };
         let mut builder = reqwest::Client::builder()
             .dns_resolver(Arc::new(resolver))
-            // Redirect authorization is rfs-g2z9 Slice 4's claim (C4/C5).
-            // Until it lands the substrate follows no redirect at all, so the
-            // interim posture is deny rather than an unauthorized hop.
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(redirect_policy(
+                allowlist.clone(),
+                ceilings.redirect_depth(),
+            ))
             .timeout(ceilings.timeout());
         for root in roots {
             let certificate = reqwest::Certificate::from_der(root).map_err(|error| {
@@ -349,6 +349,51 @@ impl HttpSubstrate {
         }
         Ok((body, truncated))
     }
+}
+
+/// Builds the redirect policy that authorizes every hop before it is sent.
+///
+/// Each hop is re-checked against the same [`OriginAllowlist`] the initial
+/// request passed, so a redirect cannot walk out of the allowlisted origin —
+/// the classic way an allowlisted host is used as an open redirector to reach
+/// something it was never permitted to. The check runs inside the policy, which
+/// the client consults *before* transmitting the next request, so a refused
+/// target is never put on the wire at all rather than being requested and
+/// discarded.
+///
+/// Refusal is expressed with `attempt.error(..)` rather than `attempt.stop()`.
+/// The two differ in what the caller observes: `stop()` hands the caller the
+/// redirect response itself, so a refused hop would surface as a successful
+/// `302`, while the approved behavior is a `permission_denied` failure. The
+/// error is carried through the client's own error type and recovered by
+/// [`policy_error_or`].
+///
+/// Depth uses the same boundary as the client's built-in limit — `previous`
+/// holds the original URL plus every hop already followed, so `> depth` admits
+/// exactly `depth` redirects and refuses the next.
+fn redirect_policy(allowlist: OriginAllowlist, depth: usize) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() > depth {
+            return attempt.error(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!("redirect chain exceeded the {depth}-hop ceiling"),
+            ));
+        }
+        if let Err(refusal) = allowlist.authorize(attempt.url()) {
+            // The underlying reason is preserved, but prefixed so the message
+            // names the control that fired. Origin scoping refuses the initial
+            // URL with the same category, and a caller that could not tell the
+            // two apart would not know whether to fix the reference or the
+            // profile.
+            let category = refusal.category();
+            let detail = refusal.message().to_owned();
+            return attempt.error(ResourceError::new(
+                category,
+                format!("redirect was not followed: {detail}"),
+            ));
+        }
+        attempt.follow()
+    })
 }
 
 /// Recovers a policy refusal from a transport error, or reports the transport.
