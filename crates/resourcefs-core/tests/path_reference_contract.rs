@@ -569,3 +569,80 @@ fn maximum_reference_parses_within_boundary_budget() {
         "64 KiB reference parsing took {elapsed:?}"
     );
 }
+
+/// C19 — the encoded-separator guard covers exactly the forms that reach
+/// `percent_decode`, and reaching it unvalidated would be a panic.
+///
+/// The guard is deliberately **not** asserted as a family list. `percent_decode`
+/// indexes `bytes[index + 1]` under an `expect("percent escapes were
+/// validated")`, so a form that reaches it without prior validation aborts the
+/// process rather than returning `invalid_reference`. A family-list assertion
+/// would still pass in that world; this table cannot, because every row that
+/// decodes carries a **malformed trailing escape** whose only two honest
+/// outcomes are a clean rejection or no decoding at all.
+///
+/// Each row therefore pins one of three outcomes, and the test completing at
+/// all is itself the evidence that no form panicked.
+#[test]
+fn encoded_separator_guard_scope() {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Outcome {
+        /// Parses, and the encoding survives into the canonical spelling.
+        PreservesEncoding,
+        /// Rejected because a filesystem-backed family forbids the separator.
+        RejectsSeparator,
+        /// Rejected because the escape itself is malformed.
+        RejectsMalformed,
+    }
+
+    // Hand-authored from the signed spec, not derived from the parser.
+    let table: &[(&str, Outcome)] = &[
+        // Filesystem-backed families still reject encoded separators.
+        ("notes%2Fsecret.md", Outcome::RejectsSeparator),
+        ("notes%5Csecret.md", Outcome::RejectsSeparator),
+        (
+            "rfs://workspace/repo/notes%2Fsecret.md",
+            Outcome::RejectsSeparator,
+        ),
+        ("local://notes%2Fsecret.md", Outcome::RejectsSeparator),
+        // ...and still reject a malformed escape rather than panicking on it.
+        ("notes%.md", Outcome::RejectsMalformed),
+        ("notes%2.md", Outcome::RejectsMalformed),
+        ("local://notes%.md", Outcome::RejectsMalformed),
+        ("rfs://workspace/repo/notes%.md", Outcome::RejectsMalformed),
+        // HTTPS never decodes, so an encoded separator is meaningful to the
+        // origin and survives verbatim in path and query alike.
+        ("https://example.com/a%2Fb/doc", Outcome::PreservesEncoding),
+        (
+            "https://example.com/search?q=a%2Fb",
+            Outcome::PreservesEncoding,
+        ),
+        ("https://example.com/a%5Cb", Outcome::PreservesEncoding),
+        // A trailing escape is the panic case if HTTPS ever started decoding.
+        ("https://example.com/a%", Outcome::PreservesEncoding),
+    ];
+
+    for (input, expected) in table {
+        let parsed = PathReference::parse((*input).to_owned());
+        match expected {
+            Outcome::PreservesEncoding => {
+                let reference =
+                    parsed.unwrap_or_else(|error| panic!("{input} must parse; got {error}"));
+                let encoded = input.rsplit_once('/').map_or(*input, |(_, tail)| tail);
+                assert!(
+                    reference.requested().contains(encoded),
+                    "{input} must reach the wire with its encoding intact, got {}",
+                    reference.requested()
+                );
+            }
+            Outcome::RejectsSeparator | Outcome::RejectsMalformed => {
+                let error = parsed.expect_err(&format!("{input} must be rejected, not decoded"));
+                assert_eq!(
+                    error.category(),
+                    ErrorCategory::InvalidReference,
+                    "{input} must be rejected as an invalid reference"
+                );
+            }
+        }
+    }
+}

@@ -7,7 +7,7 @@ use resourcefs_core::{
 };
 
 use crate::{
-    ArtifactSource, FilesystemSource, LocalSource,
+    ArtifactSource, FilesystemSource, HttpsSource, LocalSource,
     catalog::{NamespaceCatalog, SourceCatalogEntry, SourceCatalogMetadata},
     filesystem::mutation::FILESYSTEM_MUTATION_SOURCE_KEY,
     local::LOCAL_MUTATION_SOURCE_KEY,
@@ -19,6 +19,7 @@ pub struct CompiledSources {
     filesystem: FilesystemSource,
     artifacts: ArtifactSource,
     local: LocalSource,
+    https: Option<HttpsSource>,
 }
 
 impl CompiledSources {
@@ -26,11 +27,13 @@ impl CompiledSources {
         filesystem: FilesystemSource,
         artifacts: ArtifactSource,
         local: LocalSource,
+        https: Option<HttpsSource>,
     ) -> Result<Self, ResourceError> {
         let compiled = Self {
             filesystem,
             artifacts,
             local,
+            https,
         };
         let source_document = NamespaceCatalog::source_document(compiled.catalog_entries()?)?;
         let workspace_document = NamespaceCatalog::workspace_document(&compiled.filesystem).await?;
@@ -41,8 +44,18 @@ impl CompiledSources {
         Ok(compiled)
     }
 
-    fn catalog_metadata(&self) -> [&dyn SourceCatalogMetadata; 3] {
-        [&self.filesystem, &self.artifacts, &self.local]
+    /// The compiled registry, in registration order.
+    ///
+    /// HTTPS appears only when origins are configured: an unconfigured build
+    /// must not advertise a scheme no reference can resolve, which is what
+    /// makes the catalog's mounted and unmounted shapes distinguishable.
+    fn catalog_metadata(&self) -> Vec<&dyn SourceCatalogMetadata> {
+        let mut sources: Vec<&dyn SourceCatalogMetadata> =
+            vec![&self.filesystem, &self.artifacts, &self.local];
+        if let Some(https) = &self.https {
+            sources.push(https);
+        }
+        sources
     }
 
     pub(crate) fn catalog_entries(&self) -> Result<Vec<SourceCatalogEntry>, ResourceError> {
@@ -80,21 +93,9 @@ impl SourceAdapter for CompiledSources {
             ResourceAddress::Workspace(_) => self.filesystem.read(reference).await,
             ResourceAddress::Artifact(_) => self.artifacts.read(reference).await,
             ResourceAddress::Local(_) => self.local.read(reference).await,
-            ResourceAddress::Https(_) => Err(https_not_mounted()),
+            ResourceAddress::Https(_) => self.https_source()?.read(reference).await,
         }
     }
-}
-
-/// The `https://` grammar is admitted before its Source Adapter exists.
-///
-/// Returning a stable `source_unavailable` keeps an HTTPS reference from being
-/// misrouted to another adapter while increments B and C build the bounded HTTP
-/// substrate and mount the adapter.
-fn https_not_mounted() -> ResourceError {
-    ResourceError::new(
-        ErrorCategory::SourceUnavailable,
-        "https source is not mounted",
-    )
 }
 
 #[async_trait]
@@ -113,7 +114,13 @@ impl MutationAdapter for CompiledSources {
                 ))
             }
             ResourceAddress::Local(_) => self.local.resolve(reference, access).await,
-            ResourceAddress::Https(_) => Err(https_not_mounted()),
+            // Read-only family: distinct from the immutable ones above, which
+            // exist and refuse, and from an unmounted source, which does not
+            // exist. HTTPS is mounted and simply supports no mutation.
+            ResourceAddress::Https(_) => Err(ResourceError::new(
+                ErrorCategory::UnsupportedMutation,
+                "https:// Resources are read-only; ResourceFS performs no remote writes",
+            )),
         }
     }
 
@@ -159,6 +166,19 @@ enum MutationRoute {
 }
 
 impl CompiledSources {
+    /// Returns the configured HTTPS adapter, or explains that none is.
+    ///
+    /// Distinct from the read-only refusal on the mutation path: that one says
+    /// the family never accepts writes, this one says no origin is declared.
+    fn https_source(&self) -> Result<&HttpsSource, ResourceError> {
+        self.https.as_ref().ok_or_else(|| {
+            ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                "no HTTPS origins are configured in the Server Profile",
+            )
+        })
+    }
+
     fn mutation_adapter_for(
         &self,
         target: &MutationTarget,
@@ -203,7 +223,11 @@ impl DiscoveryAdapter for CompiledSources {
             Some(ResourceAddress::Local(_)) => {
                 self.local.search(target, pattern, options, operation).await
             }
-            Some(ResourceAddress::Https(_)) => Err(https_not_mounted()),
+            Some(ResourceAddress::Https(_)) => {
+                self.https_source()?
+                    .search(target, pattern, options, operation)
+                    .await
+            }
         }
     }
 
@@ -266,6 +290,7 @@ mod tests {
             filesystem,
             ArtifactSource::new(session.path_session().clone()),
             crate::LocalSource::new(session.path_session().clone()),
+            None,
         )
         .await
         .expect("compiled sources");
@@ -281,5 +306,86 @@ mod tests {
         assert!(source_lines[0].starts_with("artifact:// — "));
         assert!(source_lines[1].starts_with("local:// — "));
         assert!(source_lines[2].starts_with("rfs://workspace — "));
+        assert!(
+            !document.content().contains("https://"),
+            "an unconfigured build must not advertise a scheme no reference can resolve"
+        );
+    }
+
+    /// C17 — a configured HTTPS source self-lists, with an example that
+    /// re-parses.
+    ///
+    /// Paired with the unmounted case above: asserting only the mounted shape
+    /// would pass for a catalog that advertises `https://` unconditionally,
+    /// which is precisely what the unconfigured build must not do.
+    #[tokio::test]
+    async fn catalog_lists_https_once_configured() {
+        use std::sync::Arc;
+
+        use resourcefs_core::{AllowedOrigin, HttpCeilings, OriginAllowlist, PathReference};
+
+        use crate::{HttpSubstrate, HttpsSource};
+
+        let temporary = TempDir::new().expect("temporary directory");
+        let root = temporary.path().join("workspace");
+        fs::create_dir(&root).expect("workspace root");
+        let filesystem = FilesystemSource::new(
+            LaunchRootSource::Cli(vec![LaunchRoot::read_only(
+                WorkspaceRootId::new("workspace").expect("root ID"),
+                root,
+            )]),
+            None,
+            BackingPathVisibility::Hidden,
+        )
+        .await
+        .expect("filesystem source");
+        let store = SessionStore::open_with(
+            SessionStorageConfig::new(
+                temporary.path().join("cache"),
+                SESSION_CLEANUP_TTL.as_secs() as i64,
+            )
+            .expect("session storage config"),
+        )
+        .await
+        .expect("session store");
+        let session = store
+            .create_session(ServerLimits::default())
+            .await
+            .expect("session");
+        let allowlist = OriginAllowlist::new(vec![
+            AllowedOrigin::new("https://example.com/", false).expect("origin"),
+        ]);
+        let substrate =
+            Arc::new(HttpSubstrate::new(allowlist, HttpCeilings::default()).expect("substrate"));
+        let compiled = CompiledSources::new(
+            filesystem,
+            ArtifactSource::new(session.path_session().clone()),
+            crate::LocalSource::new(session.path_session().clone()),
+            Some(HttpsSource::new(substrate)),
+        )
+        .await
+        .expect("compiled sources");
+        let document =
+            NamespaceCatalog::source_document(compiled.catalog_entries().expect("catalog entries"))
+                .expect("catalog document");
+        let source_lines = document
+            .content()
+            .lines()
+            .filter(|line| line.contains(" — "))
+            .collect::<Vec<_>>();
+        assert_eq!(source_lines.len(), 4);
+        let https = source_lines
+            .iter()
+            .find(|line| line.starts_with("https:// — "))
+            .expect("the configured HTTPS source must self-list");
+
+        // The advertised example must be a reference the parser accepts:
+        // a catalog that teaches an unusable spelling is worse than silence.
+        let example = https
+            .rsplit(" — ")
+            .next()
+            .expect("the entry carries an example");
+        PathReference::parse(example.trim().to_owned())
+            .expect("the advertised HTTPS example must re-parse");
     }
 }

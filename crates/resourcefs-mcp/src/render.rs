@@ -755,6 +755,7 @@ mod tests {
                 filesystem,
                 ArtifactSource::new(session.path_session().clone()),
                 resourcefs_sources::LocalSource::new(session.path_session().clone()),
+                None,
             )
             .await
             .expect("render fixture compiled sources"),

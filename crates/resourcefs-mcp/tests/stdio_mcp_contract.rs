@@ -1420,9 +1420,10 @@ fn renders_complete_success_and_errors() {
             ("directory", "unsupported_projection"),
             ("binary.bin", "unsupported_projection"),
             ("../secret", "permission_denied"),
-            // `https://` is a parsed address family as of rfs-g2z9 Slice 1, but
-            // its Source Adapter is not mounted until increment C: the stable
-            // placeholder must surface rather than a misrouted read.
+            // The HTTPS adapter is mounted, but this server declares no origins,
+            // so a read reports an unconfigured source rather than a missing
+            // one. Mutation of the same reference is `unsupported_mutation`
+            // regardless of configuration — see `https_is_read_only`.
             ("https://example.com/file", "source_unavailable"),
             // A scheme with no family still fails at the grammar.
             ("ftp://example.com/file", "invalid_reference"),
@@ -2961,4 +2962,44 @@ fn rejects_invalid_root_configuration() {
             "invalid command omitted {expected_diagnostic:?}: {args:?}: {stderr}"
         );
     }
+}
+
+/// C13 (read-only half) — every mutation of an `https://` reference is refused
+/// as `unsupported_mutation` through the public tools.
+///
+/// Distinct from the catalog and Artifact families, which are refused as
+/// `permission_denied` because they exist and forbid writes; HTTPS is a
+/// read-only *family*, so the refusal does not depend on whether any origin is
+/// configured. That independence is the point: a build with no HTTPS origins
+/// must still answer "this family is read-only" rather than "no such source".
+#[test]
+fn https_is_read_only() {
+    let fixture = WorkspaceFixture::new();
+    let mut process = McpProcess::start(&fixture.root);
+    process.initialize(VERSION_2026);
+
+    let write = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_write",
+            "arguments": {
+                "path": "https://example.com/doc",
+                "content": "forbidden"
+            }
+        }),
+    );
+    assert!(write.get("error").is_none(), "{write}");
+    assert_tool_error(&write["result"], "unsupported_mutation");
+
+    let edit = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_edit",
+            "arguments": {
+                "patch": "[https://example.com/doc#sha256:0000000000000000000000000000000000000000000000000000000000000000]\nPUT 1.=1:\n+forbidden"
+            }
+        }),
+    );
+    assert!(edit.get("error").is_none(), "{edit}");
+    assert_tool_error(&edit["result"], "unsupported_mutation");
 }

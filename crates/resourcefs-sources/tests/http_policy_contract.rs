@@ -1,5 +1,5 @@
-//! Egress-policy contracts for the bounded HTTP substrate (rfs-g2z9 C2, C3,
-//! C4, C5, C7, C15).
+//! Egress-policy contracts for the bounded HTTP substrate and the HTTPS Source
+//! Adapter (rfs-g2z9 C2, C3, C4, C5, C7, C12, C13, C15, C19).
 //!
 //! The oracle throughout is **server-side observation**: each listener counts
 //! the TCP connections it actually accepted. That is deliberately not the
@@ -565,4 +565,163 @@ fn literal_substrate(port: u16, allow_private_network: bool) -> HttpSubstrate {
         &[tls::FIXTURE_CA],
     )
     .expect("substrate builds")
+}
+
+/// C12 — no resolved IP address reaches an observable channel.
+///
+/// Scoped to addresses by `design.md` Revision 2: credential transmission does
+/// not exist yet (tracked as C20), so a credential sentinel would have no path
+/// to any channel and scanning for one would pass unconditionally.
+///
+/// The sentinel is the **resolved address itself**, which is genuinely present
+/// in the system — the resolver authorizes it and the denial is caused by it —
+/// so its absence from the message is a real property rather than a vacuous
+/// one. Every scanned channel is asserted non-empty first: a scan over a
+/// channel that produced no output proves nothing, which is the failure mode
+/// four fixtures in this change already hit.
+#[tokio::test]
+async fn no_resolved_address_leak() {
+    // A distinctive address so a substring hit cannot be coincidental.
+    let sentinel_ip = Ipv4Addr::new(10, 213, 47, 91);
+    let sentinel = sentinel_ip.to_string();
+
+    let allowlist = tls::fixture_allowlist(8443, false);
+    let substrate = tls::tls_substrate(allowlist, vec![IpAddr::V4(sentinel_ip)]);
+    let url = Url::parse(&format!("https://{}:8443/doc", tls::FIXTURE_HOST)).expect("url");
+
+    let error = substrate
+        .fetch(HttpRequest::get(url), &OperationGuard::new())
+        .await
+        .expect_err("a private address without the grant must be refused");
+
+    // The channel genuinely carries content, so the absence below is meaningful.
+    let message = error.message();
+    assert!(
+        !message.is_empty(),
+        "the refusal must explain itself; an empty message makes the scan vacuous"
+    );
+    assert_eq!(error.category(), ErrorCategory::PermissionDenied);
+    // Message, not category: an allowlist refusal shares this category.
+    assert!(
+        message.contains("private-network"),
+        "the refusal must name the control that fired, got {message:?}"
+    );
+
+    for channel in [message, &format!("{error}"), &format!("{error:?}")] {
+        assert!(
+            !channel.is_empty(),
+            "every scanned channel must carry output"
+        );
+        assert!(
+            !channel.contains(&sentinel),
+            "a resolved address must never reach an observable channel; found {sentinel} in {channel:?}"
+        );
+    }
+}
+
+/// C19 (wire half) — a percent-encoded separator reaches the origin unchanged.
+///
+/// The oracle is the **server's received request line**, not the client's URL:
+/// a client that re-encoded or decoded the path would still report whatever it
+/// believed it sent.
+#[tokio::test]
+async fn encoded_url_reaches_wire_unchanged() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("port");
+    let port = listener.local_addr().expect("addr").port();
+    drop(listener);
+
+    let server = tls::TlsListener::serve(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        port,
+        tls::MATCH_CERT,
+        "<html><body><p>ok</p></body></html>",
+    )
+    .await;
+
+    let allowlist = tls::fixture_allowlist(port, true);
+    let substrate = tls::tls_substrate(allowlist, vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
+    let url = Url::parse(&format!(
+        "https://{}:{port}/search?q=a%2Fb",
+        tls::FIXTURE_HOST
+    ))
+    .expect("url");
+
+    substrate
+        .fetch(HttpRequest::get(url), &OperationGuard::new())
+        .await
+        .expect("an allowlisted encoded URL must be fetched");
+    tls::settle().await;
+
+    let requests = server.requests();
+    assert!(
+        !requests.is_empty(),
+        "the server must have received a request; an empty log makes the assertion vacuous"
+    );
+    assert!(
+        requests.iter().any(|line| line.contains("/search?q=a%2Fb")),
+        "the encoding must reach the wire verbatim, got {requests:?}"
+    );
+    assert!(
+        !requests.iter().any(|line| line.contains("/search?q=a/b")),
+        "the separator must not be decoded on the way out, got {requests:?}"
+    );
+}
+
+/// C13 (read half) — an HTTPS read uses the common Resource shape.
+///
+/// The read-only refusal half lives in `stdio_mcp_contract.rs`, where the
+/// public tools are reachable; this asserts the shape a mounted source
+/// produces, which needs a real fetch.
+#[tokio::test]
+async fn https_read_uses_common_resource_shape() {
+    use resourcefs_core::{PathReference, SourceAdapter};
+    use resourcefs_sources::HttpsSource;
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("port");
+    let port = listener.local_addr().expect("addr").port();
+    drop(listener);
+
+    let _server = tls::TlsListener::serve(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        port,
+        tls::MATCH_CERT,
+        "<html><body><h1>Title</h1><p>Body text.</p></body></html>",
+    )
+    .await;
+
+    let allowlist = tls::fixture_allowlist(port, true);
+    let substrate = Arc::new(tls::tls_substrate(
+        allowlist,
+        vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+    ));
+    let source = HttpsSource::new(substrate);
+    let reference =
+        PathReference::parse(format!("https://{}:{port}/doc", tls::FIXTURE_HOST)).expect("parse");
+
+    let resource = source.read(&reference).await.expect("read succeeds");
+
+    assert!(
+        !resource.content().is_empty(),
+        "a successful read must carry content"
+    );
+    assert!(
+        resource.content().contains("Title"),
+        "reader mode must render the document, got {:?}",
+        resource.content()
+    );
+    // HTTPS is read-only: the family never reports itself mutable.
+    assert!(
+        !resource.is_mutable(),
+        "an https:// Resource must never report itself mutable"
+    );
+    // Identity is the canonical URL, so a later read under a selector is the
+    // same Resource rather than a second one.
+    assert_eq!(
+        resource.canonical_reference(),
+        format!("https://{}:{port}/doc", tls::FIXTURE_HOST)
+    );
 }

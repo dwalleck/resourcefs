@@ -556,11 +556,21 @@ impl PathReference {
         // Parsed ahead of the workspace fall-through, whose generic `contains("://")`
         // arm would otherwise reject every URL as an unsupported scheme.
         if requested.starts_with(HTTPS_PREFIX) {
-            let address = HttpsAddress::parse(&requested)?;
+            let (base, projection) = https_projection_split(&requested).map_or_else(
+                || Ok((requested.as_str(), None)),
+                |(base, selector)| {
+                    ProjectionSelector::parse(selector).map(|selector| (base, Some(selector)))
+                },
+            )?;
+            let address = HttpsAddress::parse(base)?;
+            let requested = projection.as_ref().map_or_else(
+                || address.as_str().to_owned(),
+                |selector| format!("{}:{}", address.as_str(), selector.as_str()),
+            );
             return Ok(Self {
-                requested: address.as_str().to_owned(),
+                requested,
                 address: ResourceAddress::Https(address),
-                projection: None,
+                projection,
                 selector_candidate: None,
                 selector_error: None,
                 local_candidate: None,
@@ -1126,6 +1136,31 @@ fn validate_session_token(token: &str) -> Result<(), ResourceError> {
         ));
     }
     Ok(())
+}
+
+/// Splits a trailing projection selector from an `https://` reference.
+///
+/// Deliberately never searches the authority. A port is spelled with a colon
+/// and its digits would satisfy the bare-selector rule, so the generic
+/// [`projection_candidate_split`] would read `https://example.com:8443/doc` as
+/// host `https://example.com` with selector `8443/doc`. The search therefore
+/// begins at the path, query, or fragment — whichever starts first — so a port
+/// colon is structurally unreachable.
+///
+/// A URL whose path genuinely ends in `:raw` or `:<digits>` is shadowed by this
+/// rule. That ambiguity is inherent to appending selectors to an address space
+/// that already uses colons, and it resolves the same way the rest of the
+/// grammar does: the selector spelling wins, and the unshadowed form remains
+/// reachable by percent-encoding the colon.
+fn https_projection_split(input: &str) -> Option<(&str, &str)> {
+    let after_scheme = input.get(HTTPS_PREFIX.len()..)?;
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .map_or(input.len(), |offset| HTTPS_PREFIX.len() + offset);
+    let (authority, rest) = input.split_at(authority_end);
+    let (base, selector) = projection_candidate_split(rest)?;
+    // `rest` starts at the path, so a non-empty base keeps the authority whole.
+    Some((&input[..authority.len() + base.len()], selector))
 }
 
 fn projection_candidate_split(input: &str) -> Option<(&str, &str)> {

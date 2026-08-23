@@ -6,6 +6,7 @@ mod compiled;
 mod configuration;
 mod filesystem;
 mod http;
+mod https;
 mod local;
 mod pattern;
 mod probe;
@@ -28,6 +29,7 @@ pub use configuration::{
 #[cfg(feature = "test-support")]
 pub use http::extract_markdown_for_test;
 pub use http::{BoundedHttpResponse, HttpRequest, HttpSubstrate, ReaderModeDocument};
+pub use https::HttpsSource;
 pub use local::LocalSource;
 
 #[cfg(feature = "test-support")]

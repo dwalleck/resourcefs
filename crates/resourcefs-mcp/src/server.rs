@@ -1337,6 +1337,7 @@ async fn serve_inner(
             source.clone(),
             ArtifactSource::new(session.clone()),
             LocalSource::new(session.clone()),
+            None,
         )
         .await?,
     );

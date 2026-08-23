@@ -70,6 +70,7 @@ async fn fixture() -> Fixture {
             filesystem.clone(),
             artifacts,
             LocalSource::new(session.path_session().clone()),
+            None,
         )
         .await
         .expect("compiled sources"),
