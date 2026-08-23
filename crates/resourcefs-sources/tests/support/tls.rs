@@ -36,6 +36,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use resourcefs_core::{HttpCeilings, OriginAllowlist};
@@ -78,11 +79,72 @@ pub enum FixtureResponse {
     Body(String),
     /// `302 Found` pointing at `location`, absolute or origin-relative.
     Redirect(String),
+    /// `200 OK` whose body is written incrementally.
+    ///
+    /// One variant covers every body shape the bound, timeout, and extraction
+    /// rows need, because they differ only in these four numbers:
+    ///
+    /// - `declared` — the `Content-Length` to advertise, or `None` to send no
+    ///   length at all and delimit the body by closing the connection.
+    ///   Declaring more than `len` sends is how the short-count row is built.
+    /// - `len` — how many body bytes to actually write.
+    /// - `chunk` — bytes per write, so a reader can be observed stopping
+    ///   part-way rather than only at the end.
+    /// - `delay` — pause between writes, which is what makes a body outlast a
+    ///   timeout without needing a large one.
+    Stream {
+        declared: Option<usize>,
+        len: usize,
+        chunk: usize,
+        delay: Duration,
+    },
 }
 
 impl FixtureResponse {
-    /// Renders the response as bytes on the wire.
-    fn render(&self) -> String {
+    /// A body of exactly `len` bytes, written promptly.
+    pub const fn sized(len: usize) -> Self {
+        Self::Stream {
+            declared: Some(len),
+            len,
+            chunk: 64 * 1024,
+            delay: Duration::ZERO,
+        }
+    }
+
+    /// A body of `len` bytes dribbled out `chunk` at a time, pausing `delay`
+    /// between writes.
+    pub const fn trickle(len: usize, chunk: usize, delay: Duration) -> Self {
+        Self::Stream {
+            declared: Some(len),
+            len,
+            chunk,
+            delay,
+        }
+    }
+
+    /// A body advertising `declared` bytes but sending only `len`.
+    pub const fn short_count(declared: usize, len: usize) -> Self {
+        Self::Stream {
+            declared: Some(declared),
+            len,
+            chunk: 64 * 1024,
+            delay: Duration::ZERO,
+        }
+    }
+
+    /// A body with no `Content-Length`, delimited by the connection closing.
+    pub const fn undeclared(len: usize) -> Self {
+        Self::Stream {
+            declared: None,
+            len,
+            chunk: 64 * 1024,
+            delay: Duration::ZERO,
+        }
+    }
+
+    /// Renders the response head. `Stream` bodies are written separately by
+    /// [`write_response`] so each write can be counted and paced.
+    fn render_head(&self) -> String {
         match self {
             Self::Body(body) => format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -91,6 +153,55 @@ impl FixtureResponse {
             Self::Redirect(location) => format!(
                 "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             ),
+            Self::Stream {
+                declared: Some(declared),
+                ..
+            } => format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {declared}\r\nConnection: close\r\n\r\n"
+            ),
+            Self::Stream { declared: None, .. } => {
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n".to_owned()
+            }
+        }
+    }
+}
+
+/// Writes a response, counting body bytes this listener actually flushed.
+///
+/// The count is the server-side oracle for every bound in Slice 5: it is what
+/// the peer was *sent*, measured here rather than inferred from what the client
+/// says it accepted. A write error ends the loop, which is how the listener
+/// observes the peer going away mid-body.
+async fn write_response<W>(stream: &mut W, response: &FixtureResponse, flushed: &AtomicUsize)
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    if stream
+        .write_all(response.render_head().as_bytes())
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let FixtureResponse::Stream {
+        len, chunk, delay, ..
+    } = response
+    else {
+        return;
+    };
+    let filler = vec![b'a'; *chunk];
+    let mut sent = 0_usize;
+    while sent < *len {
+        let width = (*chunk).min(*len - sent);
+        if stream.write_all(&filler[..width]).await.is_err() || stream.flush().await.is_err() {
+            // The peer stopped reading: exactly the observation the bound and
+            // cancellation rows are looking for.
+            return;
+        }
+        flushed.fetch_add(width, Ordering::SeqCst);
+        sent += width;
+        if !delay.is_zero() {
+            tokio::time::sleep(*delay).await;
         }
     }
 }
@@ -114,6 +225,7 @@ pub struct TlsListener {
     accepts: Arc<AtomicUsize>,
     completed: Arc<AtomicUsize>,
     requests: Arc<std::sync::Mutex<Vec<String>>>,
+    flushed: Arc<AtomicUsize>,
 }
 
 impl TlsListener {
@@ -162,12 +274,14 @@ impl TlsListener {
         let accepts = Arc::new(AtomicUsize::new(0));
         let completed = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let flushed = Arc::new(AtomicUsize::new(0));
         let router: Arc<dyn Fn(&str) -> FixtureResponse + Send + Sync> = Arc::new(router);
 
-        let (accept_counter, done_counter, log) = (
+        let (accept_counter, done_counter, log, flush_counter) = (
             Arc::clone(&accepts),
             Arc::clone(&completed),
             Arc::clone(&requests),
+            Arc::clone(&flushed),
         );
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
@@ -176,6 +290,7 @@ impl TlsListener {
                 let done = Arc::clone(&done_counter);
                 let log = Arc::clone(&log);
                 let router = Arc::clone(&router);
+                let flushed = Arc::clone(&flush_counter);
                 tokio::spawn(async move {
                     // A handshake failure is an expected outcome here, not an
                     // error: the name-mismatch row exists to produce one.
@@ -197,7 +312,7 @@ impl TlsListener {
                             .expect("request log is uncontended")
                             .push(line.to_owned());
                     }
-                    let _ = tls.write_all(router(&target).render().as_bytes()).await;
+                    write_response(&mut tls, &router(&target), &flushed).await;
                     let _ = tls.shutdown().await;
                 });
             }
@@ -208,6 +323,7 @@ impl TlsListener {
             accepts,
             completed,
             requests,
+            flushed,
         }
     }
 
@@ -228,6 +344,17 @@ impl TlsListener {
         } else {
             Handshake::Failed
         }
+    }
+
+    /// Body bytes this listener actually wrote and flushed.
+    ///
+    /// This is what the peer was *sent*, which is deliberately not the same as
+    /// what the client accepted: socket and TLS buffers sit between them, so a
+    /// server routinely flushes past a smaller client ceiling. Fixtures record
+    /// this as an observation of transfer; the ceiling itself is asserted
+    /// against retained bytes.
+    pub fn flushed(&self) -> usize {
+        self.flushed.load(Ordering::SeqCst)
     }
 
     /// Every request line this listener actually received.
@@ -267,9 +394,24 @@ pub fn fixture_allowlist(port: u16, allow_private_network: bool) -> OriginAllowl
 /// listener needs the private-network grant; withholding it is how the denial
 /// rows are expressed.
 pub fn tls_substrate(allowlist: OriginAllowlist, addresses: Vec<IpAddr>) -> HttpSubstrate {
+    tls_substrate_with_ceilings(allowlist, addresses, HttpCeilings::default())
+}
+
+/// As [`tls_substrate`], with the ceilings under test.
+///
+/// The bound and timeout rows need ceilings far below the shipped ones so a
+/// fixture can cross them in milliseconds instead of moving 8 MiB or waiting
+/// 30 seconds. Lowering is the supported direction — `HttpCeilings::new`
+/// refuses to raise any ceiling above its hard maximum — so exercising a small
+/// value tests the same code path production uses.
+pub fn tls_substrate_with_ceilings(
+    allowlist: OriginAllowlist,
+    addresses: Vec<IpAddr>,
+    ceilings: HttpCeilings,
+) -> HttpSubstrate {
     HttpSubstrate::with_host_lookup_and_roots(
         allowlist,
-        HttpCeilings::default(),
+        ceilings,
         move |_host| {
             let addresses = addresses.clone();
             async move { Ok::<_, io::Error>(addresses) }

@@ -298,12 +298,15 @@ impl HttpSubstrate {
         // `base_url` never reaches the resolver, let alone a socket.
         self.allowlist.authorize(request.url())?;
 
-        let response = self
-            .client
-            .get(request.url().clone())
-            .send()
-            .await
-            .map_err(policy_error_or)?;
+        // Cancellation races the connect the same way it races the body: a
+        // caller who gave up should not wait on a handshake to a slow peer.
+        let response = tokio::select! {
+            biased;
+            () = operation.cancelled() => return Err(cancelled_mid_request()),
+            sent = self.client.get(request.url().clone()).send() => {
+                sent.map_err(policy_error_or)?
+            }
+        };
 
         let status = response.status().as_u16();
         let final_url = Url::parse(response.url().as_str()).unwrap_or_else(|_| request.url.clone());
@@ -313,7 +316,7 @@ impl HttpSubstrate {
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
 
-        let (body, truncated) = self.read_bounded(response).await?;
+        let (body, truncated) = self.read_bounded(response, operation).await?;
         Ok(BoundedHttpResponse {
             status,
             final_url,
@@ -323,22 +326,39 @@ impl HttpSubstrate {
         })
     }
 
-    /// Reads a response body, stopping once the accept ceiling is reached.
+    /// Reads a response body, stopping once the accept ceiling is reached or
+    /// the operation is cancelled.
     ///
     /// The ceiling bounds what ResourceFS accepts and retains, not what the
     /// peer transmits — socket and client buffers sit in between, and the
-    /// probe measured a peer flushing well past a smaller client ceiling. The
-    /// ceiling's own fence (C8, including the rule that extraction never runs
-    /// over a truncated document) belongs to rfs-g2z9 Slice 7; this bound exists so the
-    /// substrate never performs an unbounded read in the meantime.
+    /// probe measured a peer flushing well past a smaller client ceiling.
+    /// `http_bounds_contract.rs` fences the retained bound (C16) and records
+    /// the server's flushed count as an observation rather than asserting the
+    /// stronger guarantee. What remains for C8 is reader-mode's own rule, that
+    /// an over-ceiling document is refused outright so extraction never runs
+    /// over a truncated one.
+    ///
+    /// Cancellation is checked per chunk rather than once at the end, so a
+    /// caller who gave up stops paying for a body still arriving. Dropping the
+    /// response mid-stream is what tells the peer to stop, which the fixtures
+    /// observe as a server that flushed only part of what it meant to send.
+    /// Unlike a mutation, a read has no commit to mask (rfs-73dz): HTTPS is
+    /// read-only, so cancellation is simply honoured wherever it lands.
     async fn read_bounded(
         &self,
         mut response: reqwest::Response,
+        operation: &OperationGuard,
     ) -> Result<(Vec<u8>, bool), ResourceError> {
         let ceiling = self.ceilings.fetch_bytes();
         let mut body = Vec::new();
         let mut truncated = false;
-        while let Some(chunk) = response.chunk().await.map_err(policy_error_or)? {
+        loop {
+            let chunk = tokio::select! {
+                biased;
+                () = operation.cancelled() => return Err(cancelled_mid_request()),
+                chunk = response.chunk() => chunk.map_err(policy_error_or)?,
+            };
+            let Some(chunk) = chunk else { break };
             let remaining = ceiling.saturating_sub(body.len());
             if chunk.len() >= remaining {
                 body.extend_from_slice(&chunk[..remaining]);
@@ -403,6 +423,20 @@ fn redirect_policy(allowlist: OriginAllowlist, depth: usize) -> reqwest::redirec
 /// [`ResourceError`]; without this a `permission_denied` would surface as an
 /// opaque connection failure and the operator would not learn which policy
 /// refused.
+/// The refusal for an operation cancelled after egress began.
+///
+/// Named rather than inlined so the connect and body paths cannot drift into
+/// reporting the same event differently, and so the message identifies
+/// cancellation specifically: a timeout and a transport failure share this
+/// call's failure position, and a fixture asserting only a category could not
+/// tell them apart.
+fn cancelled_mid_request() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::Cancelled,
+        "request was cancelled before its response was accepted",
+    )
+}
+
 fn policy_error_or(error: reqwest::Error) -> ResourceError {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
     while let Some(current) = source {
