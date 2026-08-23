@@ -13,13 +13,14 @@ use std::process::Command;
 
 use cargo_metadata::MetadataCommand;
 
-/// The eleven license identifiers approved in `spec.md`'s Decisions table.
+/// The twelve license identifiers approved in `spec.md`'s Decisions table.
 const APPROVED_LICENSES: &[&str] = &[
     "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
     "MPL-2.0",

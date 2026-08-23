@@ -96,3 +96,8 @@ Revision 1 — queue reopened 2026-08-23 when implementation found the signed ad
 
 Requester approval (verbatim): "\"all\" + documented ignores"
 Date: 2026-08-23
+
+Revision 2 — queue reopened 2026-08-23 during rfs-g2z9 Slice 3, the first dependency addition to face this gate. Adding reqwest 0.13.2 produced exactly one rejection: `webpki-root-certs` v1.0.9 (the Mozilla trusted-root CA bundle, reached via `rustls-platform-verifier`) declares **CDLA-Permissive-2.0**, a permissive *data* license with no copyleft reach into code that ships the data. It is unavoidable on this path — both of reqwest 0.13.2's rustls feature routes include `rustls-platform-verifier`, and the only rustls-free alternative (native-tls) would link system OpenSSL on Linux and break the static distribution this project relies on. Advisories, bans, and sources all passed; this was the sole failure. Offered a blanket allow-list entry, a targeted per-package exception, or switching to native-tls, the requester chose the allow-list entry — preserving the zero-exceptions posture chosen in the original sign-off. The approved set is therefore **twelve** identifiers; `APPROVED_LICENSES` in `crates/resourcefs-mcp/tests/supply_chain_contract.rs` was updated in the same commit so C1's fence still pins the exact signed list. The success criterion is unchanged and still holds: zero `[[licenses.exceptions]]` entries and zero `[advisories] ignore` entries.
+
+Requester approval (verbatim): "Add CDLA-Permissive-2.0 to the allow-list"
+Date: 2026-08-23

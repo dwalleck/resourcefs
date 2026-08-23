@@ -20,12 +20,21 @@ unused-allowed-license = "allow"
 # MPL-2.0 is file-level copyleft, so linking it carries no obligation on our
 # own sources, and allowing it outright avoids exception churn for
 # `option-ext` (reached through `directories`).
+#
+# CDLA-Permissive-2.0 is a permissive *data* license with no copyleft reach
+# into code that ships the data. It is required by `webpki-root-certs`, the
+# Mozilla trusted-root CA bundle, which reqwest's rustls path pulls through
+# `rustls-platform-verifier`; both of reqwest 0.13.2's rustls feature routes
+# include it, and the only rustls-free alternative (native-tls) would link
+# system OpenSSL on Linux and break static distribution. Approved by the
+# requester on 2026-08-23 (see .rfs-q12y/spec.md Revision 2).
 allow = [
     "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
     "MPL-2.0",
