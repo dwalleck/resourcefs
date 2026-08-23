@@ -109,7 +109,7 @@ impl ReadEngine {
     ) -> Result<ReadResource, ResourceError> {
         let limits = request.limits.lowered_by(self.limits.text_limits());
         ensure_live(&self.session, operation)?;
-        let source = self.sources.read(&request.reference).await?;
+        let source = self.sources.read(&request.reference, operation).await?;
         ensure_live(&self.session, operation)?;
 
         let requested_artifact = match request.reference.address() {

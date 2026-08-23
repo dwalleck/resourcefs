@@ -76,7 +76,11 @@ impl CompiledSources {
 
 #[async_trait]
 impl SourceAdapter for CompiledSources {
-    async fn read(&self, reference: &PathReference) -> Result<SourceResource, ResourceError> {
+    async fn read(
+        &self,
+        reference: &PathReference,
+        operation: &OperationGuard,
+    ) -> Result<SourceResource, ResourceError> {
         match reference.address() {
             ResourceAddress::Catalog(address) => {
                 let document = match address {
@@ -90,10 +94,10 @@ impl SourceAdapter for CompiledSources {
                 let (content, version_tag) = document.into_parts();
                 SourceResource::text_projection(reference.clone(), content, version_tag)
             }
-            ResourceAddress::Workspace(_) => self.filesystem.read(reference).await,
-            ResourceAddress::Artifact(_) => self.artifacts.read(reference).await,
-            ResourceAddress::Local(_) => self.local.read(reference).await,
-            ResourceAddress::Https(_) => self.https_source()?.read(reference).await,
+            ResourceAddress::Workspace(_) => self.filesystem.read(reference, operation).await,
+            ResourceAddress::Artifact(_) => self.artifacts.read(reference, operation).await,
+            ResourceAddress::Local(_) => self.local.read(reference, operation).await,
+            ResourceAddress::Https(_) => self.https_source()?.read(reference, operation).await,
         }
     }
 }
@@ -355,8 +359,9 @@ mod tests {
         let allowlist = OriginAllowlist::new(vec![
             AllowedOrigin::new("https://example.com/", false).expect("origin"),
         ]);
-        let substrate =
-            Arc::new(HttpSubstrate::new(allowlist, HttpCeilings::default()).expect("substrate"));
+        let substrate = Arc::new(
+            HttpSubstrate::new(allowlist, HttpCeilings::default(), Vec::new()).expect("substrate"),
+        );
         let compiled = CompiledSources::new(
             filesystem,
             ArtifactSource::new(session.path_session().clone()),

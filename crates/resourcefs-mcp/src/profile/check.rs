@@ -76,6 +76,8 @@ impl CheckedProfile {
             logging: components.logging,
             redactor,
             sources,
+            https: components.https,
+            configuration_base: self.configuration_base.clone(),
         })
     }
 

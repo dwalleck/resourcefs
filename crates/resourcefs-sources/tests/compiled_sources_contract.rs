@@ -126,7 +126,7 @@ async fn routes_every_reference_by_typed_address_family_only() {
     for reference in [relative_raw, canonical_raw, canonical_root] {
         let resource = fixture
             .compiled
-            .read(&reference)
+            .read(&reference, &OperationGuard::new())
             .await
             .expect("workspace route");
         assert_eq!(resource.content(), "workspace bytes\n");
@@ -145,7 +145,7 @@ async fn routes_every_reference_by_typed_address_family_only() {
     ] {
         let resource = fixture
             .compiled
-            .read(&reference)
+            .read(&reference, &OperationGuard::new())
             .await
             .expect("artifact route");
         assert!(resource.canonical_reference().starts_with("artifact://"));
@@ -164,7 +164,10 @@ async fn catalog_reads_route_by_typed_address_family() {
     let fixture = fixture().await;
     let sources = fixture
         .compiled
-        .read(&PathReference::parse("rfs://").expect("source catalog"))
+        .read(
+            &PathReference::parse("rfs://").expect("source catalog"),
+            &OperationGuard::new(),
+        )
         .await
         .expect("source catalog read");
     assert_eq!(sources.canonical_reference(), "rfs://");
@@ -182,12 +185,18 @@ async fn catalog_reads_route_by_typed_address_family() {
 
     let canonical = fixture
         .compiled
-        .read(&PathReference::parse("rfs://workspace").expect("workspace catalog"))
+        .read(
+            &PathReference::parse("rfs://workspace").expect("workspace catalog"),
+            &OperationGuard::new(),
+        )
         .await
         .expect("workspace catalog read");
     let alias = fixture
         .compiled
-        .read(&PathReference::parse("rfs://workspace/").expect("workspace alias"))
+        .read(
+            &PathReference::parse("rfs://workspace/").expect("workspace alias"),
+            &OperationGuard::new(),
+        )
         .await
         .expect("workspace alias read");
     assert_eq!(canonical, alias);
@@ -211,7 +220,10 @@ async fn workspace_catalog_snapshot_never_mixes_root_generations() {
     let refresh = fixture.filesystem.begin_client_root_refresh().await;
     let refreshing = fixture
         .compiled
-        .read(&PathReference::parse("rfs://workspace").expect("workspace catalog"))
+        .read(
+            &PathReference::parse("rfs://workspace").expect("workspace catalog"),
+            &OperationGuard::new(),
+        )
         .await
         .expect_err("refreshing authority must not deliver a mixed catalog");
     assert_eq!(refreshing.category(), ErrorCategory::SourceUnavailable);
@@ -234,7 +246,10 @@ async fn workspace_catalog_snapshot_never_mixes_root_generations() {
         .to_string();
     let file = fixture
         .compiled
-        .read(&PathReference::parse(file_uri).expect("client file reference"))
+        .read(
+            &PathReference::parse(file_uri).expect("client file reference"),
+            &OperationGuard::new(),
+        )
         .await
         .expect("client file read");
     let root_reference = file
@@ -243,7 +258,10 @@ async fn workspace_catalog_snapshot_never_mixes_root_generations() {
         .expect("canonical root prefix");
     let catalog = fixture
         .compiled
-        .read(&PathReference::parse("rfs://workspace").expect("workspace catalog"))
+        .read(
+            &PathReference::parse("rfs://workspace").expect("workspace catalog"),
+            &OperationGuard::new(),
+        )
         .await
         .expect("replacement catalog");
     assert_eq!(catalog.content(), format!("{root_reference} (primary)\n"));

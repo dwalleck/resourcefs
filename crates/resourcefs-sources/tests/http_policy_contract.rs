@@ -471,6 +471,7 @@ async fn redirect_to_denied_address_is_refused() {
             Ok::<_, io::Error>(vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))])
         },
         &[tls::FIXTURE_CA],
+        Vec::new(),
     )
     .expect("substrate builds");
 
@@ -563,6 +564,7 @@ fn literal_substrate(port: u16, allow_private_network: bool) -> HttpSubstrate {
             Ok::<_, io::Error>(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)])
         },
         &[tls::FIXTURE_CA],
+        Vec::new(),
     )
     .expect("substrate builds")
 }
@@ -702,7 +704,10 @@ async fn https_read_uses_common_resource_shape() {
     let reference =
         PathReference::parse(format!("https://{}:{port}/doc", tls::FIXTURE_HOST)).expect("parse");
 
-    let resource = source.read(&reference).await.expect("read succeeds");
+    let resource = source
+        .read(&reference, &OperationGuard::new())
+        .await
+        .expect("read succeeds");
 
     assert!(
         !resource.content().is_empty(),

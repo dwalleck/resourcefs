@@ -41,7 +41,10 @@ async fn scratch_needs_no_grant() {
     // read back through the adapter to confirm the bytes landed
     let read = fixture
         .local
-        .read(&PathReference::local("plan.md").expect("scratch reference"))
+        .read(
+            &PathReference::local("plan.md").expect("scratch reference"),
+            &OperationGuard::new(),
+        )
         .await
         .expect("scratch read");
     assert_eq!(read.content(), "one\ntwo\nthree\n");
@@ -202,7 +205,10 @@ async fn cross_source_mv_rejected() {
     // and the workspace destination was never created.
     let survived = fixture
         .local
-        .read(&PathReference::local("source.md").expect("scratch reference"))
+        .read(
+            &PathReference::local("source.md").expect("scratch reference"),
+            &OperationGuard::new(),
+        )
         .await
         .expect("source scratch survives a rejected move");
     assert_eq!(survived.content(), "scratch bytes\n");

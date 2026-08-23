@@ -28,7 +28,9 @@ pub use configuration::{
 };
 #[cfg(feature = "test-support")]
 pub use http::extract_markdown_for_test;
-pub use http::{BoundedHttpResponse, HttpRequest, HttpSubstrate, ReaderModeDocument};
+pub use http::{
+    BoundedHttpResponse, HttpRequest, HttpSubstrate, OriginCredential, ReaderModeDocument,
+};
 pub use https::HttpsSource;
 pub use local::LocalSource;
 

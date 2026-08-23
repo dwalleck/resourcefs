@@ -2,8 +2,8 @@ use std::{fmt, path::Path};
 
 use resourcefs_core::{Redactor, Secret, ServerLimits};
 use resourcefs_sources::{
-    BackingPathVisibility, FilesystemSource, LaunchRoot, LaunchRootSource, SESSION_CLEANUP_TTL,
-    SessionStorageConfig,
+    BackingPathVisibility, FilesystemSource, HttpsSource, LaunchRoot, LaunchRootSource,
+    SESSION_CLEANUP_TTL, SessionStorageConfig,
 };
 
 use crate::{
@@ -15,6 +15,7 @@ const COMPILED_PROFILE_SOURCE_KINDS: &[&str] = &[];
 
 pub(crate) struct LaunchPlan {
     source: FilesystemSource,
+    https: Option<HttpsSource>,
     limits: ServerLimits,
     session_storage: SessionStorageConfig,
     logging: LogConfig,
@@ -45,8 +46,12 @@ impl LaunchPlan {
         )
         .await
         .map_err(LaunchError::configuration)?;
+        let https = profile::mount_https(checked.https, &checked.configuration_base)
+            .await
+            .map_err(LaunchError::configuration)?;
         Ok(Self {
             source,
+            https,
             limits: checked.limits,
             session_storage: checked.session_storage,
             logging: checked.logging,
@@ -72,6 +77,8 @@ impl LaunchPlan {
             .map_err(|_| LaunchError::internal("could not construct the credential redactor"))?;
         Ok(Self {
             source,
+            // CLI launches declare no profile, so no HTTPS origin exists.
+            https: None,
             limits: ServerLimits::default(),
             session_storage,
             logging: LogConfig::default(),
@@ -83,6 +90,7 @@ impl LaunchPlan {
         self,
     ) -> (
         FilesystemSource,
+        Option<HttpsSource>,
         ServerLimits,
         SessionStorageConfig,
         LogConfig,
@@ -90,6 +98,7 @@ impl LaunchPlan {
     ) {
         (
             self.source,
+            self.https,
             self.limits,
             self.session_storage,
             self.logging,

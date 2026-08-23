@@ -106,15 +106,17 @@ impl SourceCatalogMetadata for HttpsSource {
 
 #[async_trait]
 impl SourceAdapter for HttpsSource {
-    async fn read(&self, reference: &PathReference) -> Result<SourceResource, ResourceError> {
+    async fn read(
+        &self,
+        reference: &PathReference,
+        operation: &OperationGuard,
+    ) -> Result<SourceResource, ResourceError> {
         let ResourceAddress::Https(address) = reference.address() else {
             return Err(unsupported_https_target());
         };
-        // Reads arriving through the read engine carry no guard of their own;
-        // an always-active guard keeps the substrate's cancellation checks on
-        // one code path rather than duplicating them here.
-        let operation = OperationGuard::new();
-        self.read_https(reference, address, &operation).await
+        // The caller's guard reaches the substrate, so a cancelled `rfs_read`
+        // abandons the request instead of running to the full request timeout.
+        self.read_https(reference, address, operation).await
     }
 }
 

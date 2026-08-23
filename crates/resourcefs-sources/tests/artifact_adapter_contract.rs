@@ -133,7 +133,10 @@ async fn artifact_root_raw_ranges_and_pages_match_immutable_bytes() {
 
     let root = fixture
         .source
-        .read(&PathReference::parse(&fixture.root).expect("root reference"))
+        .read(
+            &PathReference::parse(&fixture.root).expect("root reference"),
+            &OperationGuard::new(),
+        )
         .await
         .expect("root read");
     assert_eq!(root.canonical_reference(), fixture.root);
@@ -148,7 +151,7 @@ async fn artifact_root_raw_ranges_and_pages_match_immutable_bytes() {
 
     let raw = fixture
         .source
-        .read(&selected(&fixture.root, "raw"))
+        .read(&selected(&fixture.root, "raw"), &OperationGuard::new())
         .await
         .expect("raw read");
     assert_eq!(raw.content(), fixture.content);
@@ -156,7 +159,10 @@ async fn artifact_root_raw_ranges_and_pages_match_immutable_bytes() {
 
     let ranges = fixture
         .source
-        .read(&selected(&fixture.root, "3-3,1-2,3-3"))
+        .read(
+            &selected(&fixture.root, "3-3,1-2,3-3"),
+            &OperationGuard::new(),
+        )
         .await
         .expect("range read");
     assert_eq!(ranges.content(), "gamma\r\nαlpha\r\nbeta\ngamma\r\n");
@@ -165,7 +171,7 @@ async fn artifact_root_raw_ranges_and_pages_match_immutable_bytes() {
 
     let suffix = fixture
         .source
-        .read(&selected(&fixture.root, "2-"))
+        .read(&selected(&fixture.root, "2-"), &OperationGuard::new())
         .await
         .expect("suffix read");
     assert_eq!(suffix.content(), "beta\ngamma\r\ndelta");
@@ -179,7 +185,7 @@ async fn artifact_root_raw_ranges_and_pages_match_immutable_bytes() {
 
     let page = fixture
         .source
-        .read(&selected(&fixture.root, "page:2"))
+        .read(&selected(&fixture.root, "page:2"), &OperationGuard::new())
         .await
         .expect("page read");
     assert_eq!(page.content(), &fixture.content[2..]);
@@ -196,7 +202,7 @@ async fn invalid_page_and_non_artifact_authority_fail_without_disclosure() {
     let fixture = fixture().await;
     let invalid_boundary = fixture
         .source
-        .read(&selected(&fixture.root, "page:1"))
+        .read(&selected(&fixture.root, "page:1"), &OperationGuard::new())
         .await
         .expect_err("UTF-8 midpoint");
     assert_eq!(invalid_boundary.category(), ErrorCategory::InvalidReference);
@@ -204,7 +210,10 @@ async fn invalid_page_and_non_artifact_authority_fail_without_disclosure() {
     let end = fixture.content.len();
     let at_end = fixture
         .source
-        .read(&selected(&fixture.root, &format!("page:{end}")))
+        .read(
+            &selected(&fixture.root, &format!("page:{end}")),
+            &OperationGuard::new(),
+        )
         .await
         .expect_err("end is not a progressing page");
     assert_eq!(at_end.category(), ErrorCategory::InvalidReference);
@@ -215,7 +224,7 @@ async fn invalid_page_and_non_artifact_authority_fail_without_disclosure() {
     );
     let wrong_source = fixture
         .source
-        .read(&workspace)
+        .read(&workspace, &OperationGuard::new())
         .await
         .expect_err("workspace authority");
     assert_eq!(
@@ -241,7 +250,7 @@ async fn disconnect_invalidates_all_artifact_projections() {
     ] {
         let error = fixture
             .source
-            .read(&reference)
+            .read(&reference, &OperationGuard::new())
             .await
             .expect_err("inactive artifact");
         assert_eq!(error.category(), ErrorCategory::NotFound);

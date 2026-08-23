@@ -40,7 +40,7 @@ use std::{
 };
 
 use resourcefs_core::{HttpCeilings, OriginAllowlist};
-use resourcefs_sources::HttpSubstrate;
+use resourcefs_sources::{HttpSubstrate, OriginCredential};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -246,6 +246,9 @@ pub struct TlsListener {
     accepts: Arc<AtomicUsize>,
     completed: Arc<AtomicUsize>,
     requests: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Full request heads (request line plus headers), so a fixture can assert
+    /// what was transmitted on the wire — notably a credential header.
+    heads: Arc<std::sync::Mutex<Vec<String>>>,
     flushed: Arc<AtomicUsize>,
 }
 
@@ -295,13 +298,15 @@ impl TlsListener {
         let accepts = Arc::new(AtomicUsize::new(0));
         let completed = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let heads = Arc::new(std::sync::Mutex::new(Vec::new()));
         let flushed = Arc::new(AtomicUsize::new(0));
         let router: Arc<dyn Fn(&str) -> FixtureResponse + Send + Sync> = Arc::new(router);
 
-        let (accept_counter, done_counter, log, flush_counter) = (
+        let (accept_counter, done_counter, log, head_source, flush_counter) = (
             Arc::clone(&accepts),
             Arc::clone(&completed),
             Arc::clone(&requests),
+            Arc::clone(&heads),
             Arc::clone(&flushed),
         );
         tokio::spawn(async move {
@@ -310,6 +315,7 @@ impl TlsListener {
                 let acceptor = acceptor.clone();
                 let done = Arc::clone(&done_counter);
                 let log = Arc::clone(&log);
+                let head_log = Arc::clone(&head_source);
                 let router = Arc::clone(&router);
                 let flushed = Arc::clone(&flush_counter);
                 tokio::spawn(async move {
@@ -332,6 +338,10 @@ impl TlsListener {
                         log.lock()
                             .expect("request log is uncontended")
                             .push(line.to_owned());
+                        head_log
+                            .lock()
+                            .expect("request head log is uncontended")
+                            .push(String::from_utf8_lossy(&buffer[..read]).into_owned());
                     }
                     write_response(&mut tls, &router(&target), &flushed).await;
                     let _ = tls.shutdown().await;
@@ -344,6 +354,7 @@ impl TlsListener {
             accepts,
             completed,
             requests,
+            heads,
             flushed,
         }
     }
@@ -379,6 +390,17 @@ impl TlsListener {
     }
 
     /// Every request line this listener actually received.
+    /// Returns the full request heads the listener received.
+    ///
+    /// Distinct from [`Self::requests`], which records only the request line:
+    /// a credential is a header, so proving it reached the wire needs the head.
+    pub fn heads(&self) -> Vec<String> {
+        self.heads
+            .lock()
+            .expect("request head log is uncontended")
+            .clone()
+    }
+
     pub fn requests(&self) -> Vec<String> {
         self.requests
             .lock()
@@ -430,6 +452,24 @@ pub fn tls_substrate_with_ceilings(
     addresses: Vec<IpAddr>,
     ceilings: HttpCeilings,
 ) -> HttpSubstrate {
+    tls_substrate_full(allowlist, addresses, ceilings, Vec::new())
+}
+
+/// As [`tls_substrate`], carrying resolved per-origin credentials.
+pub fn tls_substrate_with_credentials(
+    allowlist: OriginAllowlist,
+    addresses: Vec<IpAddr>,
+    credentials: Vec<OriginCredential>,
+) -> HttpSubstrate {
+    tls_substrate_full(allowlist, addresses, HttpCeilings::default(), credentials)
+}
+
+fn tls_substrate_full(
+    allowlist: OriginAllowlist,
+    addresses: Vec<IpAddr>,
+    ceilings: HttpCeilings,
+    credentials: Vec<OriginCredential>,
+) -> HttpSubstrate {
     HttpSubstrate::with_host_lookup_and_roots(
         allowlist,
         ceilings,
@@ -438,6 +478,7 @@ pub fn tls_substrate_with_ceilings(
             async move { Ok::<_, io::Error>(addresses) }
         },
         &[FIXTURE_CA],
+        credentials,
     )
     .expect("substrate builds")
 }

@@ -16,8 +16,8 @@ use resourcefs_core::{
 #[cfg(feature = "test-support")]
 use resourcefs_sources::StorageFailurePoint;
 use resourcefs_sources::{
-    ArtifactSource, ClientRoot, CompiledSources, FilesystemSource, LocalSource, RootRefresh,
-    SessionStorageConfig, SessionStore, StoredSession,
+    ArtifactSource, ClientRoot, CompiledSources, FilesystemSource, HttpsSource, LocalSource,
+    RootRefresh, SessionStorageConfig, SessionStore, StoredSession,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -1292,7 +1292,7 @@ impl ServeFailure {
 }
 
 pub(crate) async fn serve(plan: LaunchPlan) -> Result<(), ServeFailure> {
-    let (source, limits, session_storage, logging, redactor) = plan.into_parts();
+    let (source, https, limits, session_storage, logging, redactor) = plan.into_parts();
     let logging = LogSink::new(logging, redactor)
         .await
         .map_err(ServeFailure::unreported)?;
@@ -1306,7 +1306,7 @@ pub(crate) async fn serve(plan: LaunchPlan) -> Result<(), ServeFailure> {
             .await
             .map_err(ServeFailure::unreported)?;
     }
-    match serve_inner(source, limits, session_storage).await {
+    match serve_inner(source, https, limits, session_storage).await {
         Ok(()) => Ok(()),
         Err(error) => {
             if let Err(logging_error) = logging.write(LogLevel::Error, &error.to_string()).await {
@@ -1319,6 +1319,7 @@ pub(crate) async fn serve(plan: LaunchPlan) -> Result<(), ServeFailure> {
 
 async fn serve_inner(
     source: FilesystemSource,
+    https: Option<HttpsSource>,
     limits: ServerLimits,
     session_storage: SessionStorageConfig,
 ) -> Result<(), BoxError> {
@@ -1337,7 +1338,7 @@ async fn serve_inner(
             source.clone(),
             ArtifactSource::new(session.clone()),
             LocalSource::new(session.clone()),
-            None,
+            https,
         )
         .await?,
     );

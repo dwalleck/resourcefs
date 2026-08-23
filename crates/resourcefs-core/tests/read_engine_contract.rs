@@ -3,7 +3,7 @@ use std::{
     io::Cursor,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -70,7 +70,11 @@ struct SessionBackedSource {
 
 #[async_trait]
 impl SourceAdapter for SessionBackedSource {
-    async fn read(&self, reference: &PathReference) -> Result<SourceResource, ResourceError> {
+    async fn read(
+        &self,
+        reference: &PathReference,
+        _operation: &OperationGuard,
+    ) -> Result<SourceResource, ResourceError> {
         match reference.address() {
             ResourceAddress::Catalog(_) => Err(ResourceError::new(
                 ErrorCategory::UnsupportedProjection,
@@ -201,6 +205,94 @@ impl Harness {
             .expect("bounded read")
     }
 }
+/// A source that reports whether the guard the engine handed it ever became
+/// cancelled.
+struct GuardObservingSource {
+    entered: Arc<tokio::sync::Notify>,
+    observed_cancellation: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl SourceAdapter for GuardObservingSource {
+    async fn read(
+        &self,
+        _reference: &PathReference,
+        operation: &OperationGuard,
+    ) -> Result<SourceResource, ResourceError> {
+        self.entered.notify_one();
+        // A guard the engine forwarded resolves here the moment the caller
+        // cancels. A fresh guard the engine minted for itself never resolves at
+        // all, so the timeout is what tells the two apart.
+        let observed = tokio::time::timeout(Duration::from_secs(5), operation.cancelled())
+            .await
+            .is_ok();
+        self.observed_cancellation.store(observed, Ordering::SeqCst);
+        SourceResource::text(workspace_reference(), "fixture\n".to_owned())
+    }
+}
+
+/// The engine hands the caller's own guard to the Source Adapter (rfs-g2z9 C21).
+///
+/// The engine re-checks liveness *after* the source returns, so a `cancelled`
+/// category alone cannot distinguish a guard that reached the source from one
+/// the engine kept to itself — the wrong version still reports `cancelled`,
+/// just after running the source to completion. A network source paid for that
+/// difference with a full request timeout, which is the entire reason the guard
+/// was threaded through the trait. So the load-bearing assertion is what the
+/// *source* observed, not what the caller received.
+#[tokio::test]
+async fn read_forwards_the_callers_guard_to_the_source() {
+    let limits = ServerLimits::default();
+    let session = PathSession::new(
+        SessionToken::parse("00000000000000000000000000000042").expect("session token"),
+        Arc::new(MemoryStorage::default()),
+        limits,
+    );
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let observed = Arc::new(AtomicBool::new(false));
+    let source: Arc<dyn SourceAdapter> = Arc::new(GuardObservingSource {
+        entered: Arc::clone(&entered),
+        observed_cancellation: Arc::clone(&observed),
+    });
+    let engine = ReadEngine::new(source, session, limits);
+
+    let guard = OperationGuard::new();
+    let canceller = guard.clone();
+    tokio::spawn(async move {
+        entered.notified().await;
+        canceller.cancel();
+    });
+
+    let refusal = engine
+        .read(
+            ReadRequest {
+                reference: workspace_reference(),
+                limits: TextLimits::default(),
+                numbered: false,
+            },
+            &guard,
+        )
+        .await
+        .expect_err("a cancelled read is refused");
+
+    assert!(
+        observed.load(Ordering::SeqCst),
+        "the source never saw the caller's cancellation, so it had no way to \
+         abandon its work early"
+    );
+    // This fake ignores its guard and returns successfully, so the refusal here
+    // comes from the engine's post-read liveness check rather than from the
+    // source. A source that honours the guard — the HTTPS one does — refuses
+    // with `cancelled` from inside the read instead, which is what
+    // `resourcefs-sources` fences end to end.
+    assert_eq!(
+        refusal.category(),
+        ErrorCategory::SourceUnavailable,
+        "the engine's own liveness check refuses a cancelled operation: {}",
+        refusal.message()
+    );
+}
+
 #[test]
 fn displayed_line_ranges_reject_zero_and_descending_bounds() {
     for (start, end) in [(0, 1), (2, 1)] {

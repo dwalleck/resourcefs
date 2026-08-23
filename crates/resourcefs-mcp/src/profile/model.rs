@@ -15,7 +15,7 @@ use resourcefs_core::{
     TextLimitInput, WorkspaceRootId,
 };
 use resourcefs_sources::{
-    BackingPathVisibility, ConfigurationDirectory, ConfigurationError, LaunchRoot,
+    BackingPathVisibility, ConfigurationDirectory, ConfigurationError, HttpsConfig, LaunchRoot,
     LaunchRootSource, MutationGrants, MutationSupport, SESSION_CLEANUP_TTL, SessionStorageConfig,
 };
 use schemars::{JsonSchema, Schema, SchemaGenerator};
@@ -142,6 +142,13 @@ pub(super) struct LaunchProfileComponents {
     pub(super) limits: ServerLimits,
     pub(super) session_storage: SessionStorageConfig,
     pub(super) logging: LogConfig,
+    /// The validated HTTPS sources this profile declares.
+    ///
+    /// Carried to launch so the serve path can construct a live `HttpsSource`.
+    /// Before this existed, `configured_sources` was assigned and never read,
+    /// so an allowlisted reference could not be served and a degraded source
+    /// was indistinguishable from an unmounted one.
+    pub(super) https: Vec<HttpsConfig>,
 }
 
 impl ProfileDocument {
@@ -324,6 +331,14 @@ impl ProfileDocument {
             }
             None => (Vec::new(), None, BackingPathVisibility::Hidden),
         };
+        let https = self
+            .configured_sources
+            .drain(..)
+            .filter_map(|source| match source {
+                super::convert::ConfiguredSource::Https(config) => Some(config),
+                _ => None,
+            })
+            .collect();
         Ok(LaunchProfileComponents {
             root_source: LaunchRootSource::Profile(roots),
             primary_selector,
@@ -331,6 +346,7 @@ impl ProfileDocument {
             limits,
             session_storage,
             logging,
+            https,
         })
     }
 }

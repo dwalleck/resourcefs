@@ -42,6 +42,7 @@ mod extract;
 
 use std::{
     collections::HashMap,
+    fmt,
     future::Future,
     io,
     net::{IpAddr, SocketAddr},
@@ -50,7 +51,8 @@ use std::{
 };
 
 use resourcefs_core::{
-    AddressPolicy, ErrorCategory, HttpCeilings, OperationGuard, OriginAllowlist, ResourceError,
+    AddressPolicy, AllowedOrigin, ErrorCategory, HttpCeilings, OperationGuard, OriginAllowlist,
+    ResourceError, Secret,
 };
 use url::Url;
 
@@ -275,6 +277,10 @@ pub struct HttpSubstrate {
     /// The same per-host policies the resolver holds, retained so the
     /// IP-literal route can apply them before the client is invoked.
     policies: HashMap<String, AddressPolicy>,
+    /// Resolved per-origin credentials, matched by the same `authorizes`
+    /// predicate the allowlist uses so two origins sharing a host cannot be
+    /// confused for one another.
+    credentials: Vec<OriginCredential>,
     #[cfg(feature = "test-support")]
     extractions: ExtractionCounter,
 }
@@ -288,10 +294,71 @@ impl std::fmt::Debug for HttpSubstrate {
     }
 }
 
+/// One origin's resolved credential, applied at the single point of egress.
+///
+/// The value is a [`Secret`], which implements neither `Debug` nor `Display`,
+/// so it cannot reach an observable channel without crossing `expose` at the
+/// one call site that attaches it to a request.
+pub struct OriginCredential {
+    origin: AllowedOrigin,
+    header: String,
+    value: Secret,
+}
+
+impl OriginCredential {
+    /// Resolves one origin's credential into the value sent on the wire.
+    ///
+    /// An auth scheme is folded into the value here (`Bearer <secret>`), so the
+    /// composed string is itself a `Secret` and never exists as a plain
+    /// `String` a caller could log.
+    pub fn new(
+        origin: AllowedOrigin,
+        header: impl Into<String>,
+        scheme: Option<&str>,
+        secret: &Secret,
+    ) -> Result<Self, ResourceError> {
+        let composed = match scheme {
+            Some(scheme) => format!("{scheme} {}", secret.expose()),
+            None => secret.expose().to_owned(),
+        };
+        let value = Secret::new(composed).map_err(|_| {
+            ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                "origin credential could not be composed",
+            )
+        })?;
+        Ok(Self {
+            origin,
+            header: header.into(),
+            value,
+        })
+    }
+
+    /// Returns the origin this credential belongs to.
+    #[must_use]
+    pub const fn origin(&self) -> &AllowedOrigin {
+        &self.origin
+    }
+}
+
+impl fmt::Debug for OriginCredential {
+    /// Names the header but never the value.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OriginCredential")
+            .field("header", &self.header)
+            .finish_non_exhaustive()
+    }
+}
+
 impl HttpSubstrate {
     /// Builds the substrate over the system resolver.
-    pub fn new(allowlist: OriginAllowlist, ceilings: HttpCeilings) -> Result<Self, ResourceError> {
-        Self::build(allowlist, ceilings, system_lookup(), &[])
+    pub fn new(
+        allowlist: OriginAllowlist,
+        ceilings: HttpCeilings,
+        credentials: Vec<OriginCredential>,
+    ) -> Result<Self, ResourceError> {
+        Self::build(allowlist, ceilings, system_lookup(), &[], credentials)
     }
 
     /// Builds the substrate over an injected host lookup, for contract tests.
@@ -308,7 +375,7 @@ impl HttpSubstrate {
         F: Fn(String) -> R + Send + Sync + 'static,
         R: Future<Output = io::Result<Vec<IpAddr>>> + Send + 'static,
     {
-        Self::with_host_lookup_and_roots(allowlist, ceilings, lookup, &[])
+        Self::with_host_lookup_and_roots(allowlist, ceilings, lookup, &[], Vec::new())
     }
 
     /// Builds the substrate over an injected host lookup that additionally
@@ -329,6 +396,7 @@ impl HttpSubstrate {
         ceilings: HttpCeilings,
         lookup: F,
         roots: &[&[u8]],
+        credentials: Vec<OriginCredential>,
     ) -> Result<Self, ResourceError>
     where
         F: Fn(String) -> R + Send + Sync + 'static,
@@ -339,6 +407,7 @@ impl HttpSubstrate {
             ceilings,
             Arc::new(move |host| Box::pin(lookup(host)) as LookupFuture),
             roots,
+            credentials,
         )
     }
 
@@ -347,6 +416,7 @@ impl HttpSubstrate {
         ceilings: HttpCeilings,
         lookup: HostLookup,
         roots: &[&[u8]],
+        credentials: Vec<OriginCredential>,
     ) -> Result<Self, ResourceError> {
         let policies = host_policies(&allowlist);
         let resolver = PolicyResolver {
@@ -358,6 +428,10 @@ impl HttpSubstrate {
             .redirect(redirect_policy(
                 allowlist.clone(),
                 policies.clone(),
+                credentials
+                    .iter()
+                    .map(|credential| credential.origin().clone())
+                    .collect(),
                 ceilings.redirect_depth(),
             ))
             .timeout(ceilings.timeout());
@@ -381,9 +455,28 @@ impl HttpSubstrate {
             allowlist,
             ceilings,
             policies,
+            credentials,
             #[cfg(feature = "test-support")]
             extractions: ExtractionCounter::default(),
         })
+    }
+
+    /// Builds the GET, attaching the credential of the origin that owns this
+    /// URL, if any.
+    ///
+    /// Matching uses the origin's own `authorizes` predicate rather than a host
+    /// key: two origins may share a host and differ only by path prefix, and
+    /// only one of them may carry a credential. `Secret::expose` is crossed
+    /// here and nowhere else on the request path.
+    fn credentialed(&self, url: &Url) -> reqwest::RequestBuilder {
+        let mut builder = self.client.get(url.clone());
+        for credential in &self.credentials {
+            if credential.origin.authorizes(url) {
+                builder = builder.header(&credential.header, credential.value.expose());
+                break;
+            }
+        }
+        builder
     }
 
     /// Records one extractor invocation against this substrate.
@@ -437,7 +530,7 @@ impl HttpSubstrate {
         let response = tokio::select! {
             biased;
             () = operation.cancelled() => return Err(cancelled_mid_request()),
-            sent = self.client.get(request.url().clone()).send() => {
+            sent = self.credentialed(request.url()).send() => {
                 sent.map_err(policy_error_or)?
             }
         };
@@ -625,9 +718,27 @@ fn unsupported_reader_mode(detail: &str) -> ResourceError {
 fn redirect_policy(
     allowlist: OriginAllowlist,
     policies: HashMap<String, AddressPolicy>,
+    credentialed: Vec<AllowedOrigin>,
     depth: usize,
 ) -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(move |attempt| {
+        // A credential is attached to the request builder, and the client
+        // re-sends builder headers on every hop. Following a redirect out of
+        // the origin the credential belongs to would therefore hand that
+        // origin's secret to a different server — allowlisted or not. The hop
+        // is refused rather than stripped, because a silently de-authenticated
+        // request usually fails in a way that reads as a server fault.
+        if let Some(first) = attempt.previous().first() {
+            for origin in &credentialed {
+                if origin.authorizes(first) && !origin.authorizes(attempt.url()) {
+                    return attempt.error(ResourceError::new(
+                        ErrorCategory::PermissionDenied,
+                        "redirect was not followed: it would carry this origin's \
+                         credential outside the origin that owns it",
+                    ));
+                }
+            }
+        }
         if attempt.previous().len() > depth {
             return attempt.error(ResourceError::new(
                 ErrorCategory::LimitExceeded,

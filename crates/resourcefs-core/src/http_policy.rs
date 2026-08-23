@@ -243,7 +243,13 @@ impl AllowedOrigin {
         AddressPolicy::new(self.allow_private_network)
     }
 
-    fn authorizes(&self, requested: &Url) -> bool {
+    /// Returns whether this origin's `base_url` prefixes `requested`.
+    ///
+    /// Public so the transport can ask the same question the allowlist asks —
+    /// notably to keep an origin's credential from following a redirect out of
+    /// the origin that owns it.
+    #[must_use]
+    pub fn authorizes(&self, requested: &Url) -> bool {
         self.base_url.scheme() == requested.scheme()
             && self.base_url.host() == requested.host()
             && self.base_url.port_or_known_default() == requested.port_or_known_default()

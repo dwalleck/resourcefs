@@ -176,7 +176,7 @@ async fn artifact_and_catalog_immutable() {
     // The artifact still reads its original bytes.
     let survived = fixture
         .compiled
-        .read(&artifact_reference)
+        .read(&artifact_reference, &OperationGuard::new())
         .await
         .expect("artifact still readable");
     assert_eq!(survived.content(), "recoverable bytes\n");

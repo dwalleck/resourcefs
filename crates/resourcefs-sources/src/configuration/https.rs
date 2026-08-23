@@ -60,6 +60,29 @@ impl CredentialHeader {
             secret,
         })
     }
+
+    /// Returns the header name the credential is sent under.
+    #[must_use]
+    pub fn header(&self) -> &str {
+        &self.header
+    }
+
+    /// Returns the optional auth scheme prefixed to the secret value.
+    #[must_use]
+    pub fn scheme(&self) -> Option<&str> {
+        self.scheme.as_deref()
+    }
+
+    /// Returns the unresolved reference to the credential's secret.
+    ///
+    /// This is the *reference*, never the value: resolution crosses
+    /// [`resourcefs_core::Secret`], which implements neither `Debug` nor
+    /// `Display`, so the credential cannot reach an observable channel by
+    /// accident.
+    #[must_use]
+    pub const fn secret(&self) -> &SecretReference {
+        &self.secret
+    }
 }
 
 /// One candidate HTTPS base-prefix authority, validated by [`HttpsConfig::new`].
@@ -82,6 +105,24 @@ impl HttpsOrigin {
             credential,
         }
     }
+
+    /// Returns the origin's configured base URL.
+    #[must_use]
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Returns whether this origin may reach restricted address space.
+    #[must_use]
+    pub const fn allow_private_network(&self) -> bool {
+        self.allow_private_network
+    }
+
+    /// Returns the origin's credential definition, if one is configured.
+    #[must_use]
+    pub const fn credential(&self) -> Option<&CredentialHeader> {
+        self.credential.as_ref()
+    }
 }
 
 /// Validated static authority for the HTTPS Source Adapter.
@@ -93,6 +134,24 @@ pub struct HttpsConfig {
 }
 
 impl HttpsConfig {
+    /// Returns the configured source id.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Returns whether an unreachable probe must fail startup.
+    #[must_use]
+    pub const fn required(&self) -> bool {
+        self.required
+    }
+
+    /// Returns the validated origins this source serves.
+    #[must_use]
+    pub fn origins(&self) -> &[HttpsOrigin] {
+        &self.origins
+    }
+
     pub fn new(
         id: impl Into<String>,
         required: bool,

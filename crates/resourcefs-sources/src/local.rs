@@ -127,7 +127,11 @@ impl SourceCatalogMetadata for LocalSource {
 
 #[async_trait]
 impl SourceAdapter for LocalSource {
-    async fn read(&self, reference: &PathReference) -> Result<SourceResource, ResourceError> {
+    async fn read(
+        &self,
+        reference: &PathReference,
+        _operation: &OperationGuard,
+    ) -> Result<SourceResource, ResourceError> {
         match reference.address() {
             ResourceAddress::Local(LocalAddress::Root) => self.read_root().await,
             ResourceAddress::Local(LocalAddress::Named(_)) => self.read_named(reference).await,

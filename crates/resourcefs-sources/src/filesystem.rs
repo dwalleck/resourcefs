@@ -818,7 +818,11 @@ impl SourceCatalogMetadata for FilesystemSource {
 
 #[async_trait]
 impl SourceAdapter for FilesystemSource {
-    async fn read(&self, reference: &PathReference) -> Result<SourceResource, ResourceError> {
+    async fn read(
+        &self,
+        reference: &PathReference,
+        _operation: &OperationGuard,
+    ) -> Result<SourceResource, ResourceError> {
         self.read_contained(reference).await
     }
 }

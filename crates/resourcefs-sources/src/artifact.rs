@@ -112,7 +112,11 @@ impl SourceCatalogMetadata for ArtifactSource {
 
 #[async_trait]
 impl SourceAdapter for ArtifactSource {
-    async fn read(&self, reference: &PathReference) -> Result<SourceResource, ResourceError> {
+    async fn read(
+        &self,
+        reference: &PathReference,
+        _operation: &OperationGuard,
+    ) -> Result<SourceResource, ResourceError> {
         let selected = self.select(reference).await?;
         let resource = SourceResource::text_projection(
             selected.canonical,
