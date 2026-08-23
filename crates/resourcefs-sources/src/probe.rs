@@ -1,7 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
-use resourcefs_core::{OperationGuard, ProbeOutcome, ProbeState, SourceProbe};
-use tokio::{net::TcpStream, time::timeout};
+use resourcefs_core::{AddressPolicy, OperationGuard, ProbeOutcome, ProbeState, SourceProbe};
+use tokio::{
+    net::{TcpStream, lookup_host},
+    time::timeout,
+};
 
 use crate::{ConfigurationError, MAX_CONFIGURATION_ENTRIES};
 
@@ -18,15 +21,33 @@ impl SourceProbe for ValidatedLocalProbe {
     }
 }
 
+/// One probe endpoint and the address policy its origin grants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbeEndpoint<'a> {
+    pub host: &'a str,
+    pub port: u16,
+    pub allow_private_network: bool,
+}
+
 /// Bounded TCP-connectivity probe for one network-backed source.
+///
+/// Reachability is still a connect, but it is a *policed* connect: the host is
+/// resolved, every resolved address is authorized through the same
+/// [`AddressPolicy`] the request path uses, and only an authorized address is
+/// dialled. Without that, an origin declaring `allowPrivateNetwork: false`
+/// would still have its startup probe reach private space — an egress that
+/// bypasses the very grant the operator withheld.
 #[derive(Debug, Clone)]
 pub struct NetworkProbe {
-    endpoints: Vec<(String, u16)>,
+    endpoints: Vec<(String, u16, AddressPolicy)>,
     required: bool,
 }
 
 impl NetworkProbe {
-    pub fn new(endpoints: Vec<(String, u16)>, required: bool) -> Result<Self, ConfigurationError> {
+    pub fn new(
+        endpoints: Vec<(String, u16, AddressPolicy)>,
+        required: bool,
+    ) -> Result<Self, ConfigurationError> {
         if endpoints.is_empty() || endpoints.len() > MAX_CONFIGURATION_ENTRIES {
             return Err(ConfigurationError::new(format!(
                 "network probe endpoints must contain 1–{MAX_CONFIGURATION_ENTRIES} entries"
@@ -34,7 +55,7 @@ impl NetworkProbe {
         }
         if endpoints
             .iter()
-            .any(|(host, port)| host.is_empty() || *port == 0)
+            .any(|(host, port, _)| host.is_empty() || *port == 0)
         {
             return Err(ConfigurationError::new(
                 "network probe endpoints require a non-empty host and nonzero port",
@@ -45,6 +66,33 @@ impl NetworkProbe {
             required,
         })
     }
+
+    /// Connects to one endpoint only after its resolved addresses are authorized.
+    ///
+    /// Every resolved address must pass: a host resolving partly into
+    /// restricted space is refused outright rather than probed through
+    /// whichever address happened to be acceptable.
+    async fn connect_policed(host: &str, port: u16, policy: AddressPolicy) -> bool {
+        let Ok(addresses) = lookup_host((host, port)).await else {
+            return false;
+        };
+        let addresses: Vec<_> = addresses.collect();
+        if addresses.is_empty() {
+            return false;
+        }
+        if addresses
+            .iter()
+            .any(|address| policy.authorize(address.ip()).is_err())
+        {
+            return false;
+        }
+        for address in addresses {
+            if TcpStream::connect(address).await.is_ok() {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[async_trait::async_trait]
@@ -54,8 +102,8 @@ impl SourceProbe for NetworkProbe {
             biased;
             () = operation.cancelled() => false,
             result = timeout(NETWORK_PROBE_TIMEOUT, async {
-                for (host, port) in &self.endpoints {
-                    if TcpStream::connect((host.as_str(), *port)).await.is_err() {
+                for (host, port, policy) in &self.endpoints {
+                    if !Self::connect_policed(host.as_str(), *port, *policy).await {
                         return false;
                     }
                 }

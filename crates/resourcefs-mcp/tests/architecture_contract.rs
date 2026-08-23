@@ -234,3 +234,74 @@ fn discovery_dependencies_stay_in_owning_modules() {
         offenders.join(", ")
     );
 }
+
+/// Collects the workspace-relative paths naming `token`, sorted.
+fn offending_paths(workspace_root: &Path, token: &str) -> Vec<String> {
+    let mut offenders: Vec<String> = files_containing_token(workspace_root, token)
+        .into_iter()
+        .map(|path| {
+            path.strip_prefix(workspace_root)
+                .unwrap_or_else(|_| {
+                    panic!("scanned path {} escaped the workspace root", path.display())
+                })
+                .iter()
+                .map(|part| part.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .collect();
+    offenders.sort();
+    offenders
+}
+
+/// rfs-g2z9 C15 — the bounded substrate is the workspace's single network
+/// egress point.
+///
+/// Two independent assertions, because they fail for different reasons: the
+/// crate graph cannot see *which module* uses a dependency, and a filesystem
+/// scan cannot see a dependency edge. Both tokens are assembled at runtime so
+/// this fence's own source text does not match its own scan.
+#[test]
+fn single_http_client_module() {
+    let metadata = MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .expect("workspace cargo metadata");
+    let packages: BTreeMap<_, _> = metadata
+        .workspace_packages()
+        .into_iter()
+        .map(|package| (package.name.as_str(), package))
+        .collect();
+    let workspace_root = metadata.workspace_root.as_std_path();
+
+    // The client belongs to the sources crate alone: neither the source-neutral
+    // core contract nor the protocol adapter may reach the network.
+    let client = format!("req{}", "west");
+    for crate_name in ["resourcefs-core", "resourcefs-mcp"] {
+        assert!(
+            !dependency_names(packages[crate_name]).contains(client.as_str()),
+            "forbidden edge {crate_name} -> {client}: network egress belongs to resourcefs-sources"
+        );
+    }
+
+    // Exactly one module may construct a client. A second one would be able to
+    // issue requests that never pass the policy resolver.
+    let offenders = offending_paths(workspace_root, &client);
+    assert_eq!(
+        offenders,
+        vec!["crates/resourcefs-sources/src/http/mod.rs"],
+        "the HTTP client may be named only in the bounded substrate; found in: {}",
+        offenders.join(", ")
+    );
+
+    // Raw TCP egress is confined to the probe, which authorizes each resolved
+    // address through the same policy the substrate applies.
+    let socket = format!("TcpS{}", "tream");
+    let offenders = offending_paths(workspace_root, &socket);
+    assert_eq!(
+        offenders,
+        vec!["crates/resourcefs-sources/src/probe.rs"],
+        "raw TCP egress must stay in the policed probe; found in: {}",
+        offenders.join(", ")
+    );
+}

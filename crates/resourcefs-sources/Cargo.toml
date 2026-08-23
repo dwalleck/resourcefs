@@ -19,6 +19,7 @@ globset.workspace = true
 ignore.workspace = true
 pcre2-sys.workspace = true
 regex.workspace = true
+reqwest.workspace = true
 resourcefs-core = { path = "../resourcefs-core" }
 sha2.workspace = true
 tokio.workspace = true

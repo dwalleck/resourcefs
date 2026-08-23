@@ -1469,7 +1469,9 @@ pub(super) struct StaticSource {
 #[derive(Debug, Clone)]
 pub(super) enum StaticProbe {
     ValidatedLocal,
-    Network(Vec<String>),
+    /// Probe endpoints paired with the private-network grant of the origin
+    /// each came from, so the probe can authorize its own egress.
+    Network(Vec<(String, bool)>),
     Unsupported,
 }
 
@@ -1586,15 +1588,16 @@ impl StaticSource {
                 source
                     .origins
                     .iter()
-                    .map(|origin| origin.base_url.clone())
+                    .map(|origin| (origin.base_url.clone(), origin.allow_private_network))
                     .collect(),
             ),
-            SourceProfile::Github(source) => StaticProbe::Network(vec![
+            SourceProfile::Github(source) => StaticProbe::Network(vec![(
                 source
                     .api_base_url
                     .clone()
                     .unwrap_or_else(|| "https://api.github.com".to_owned()),
-            ]),
+                source.allow_private_network,
+            )]),
             SourceProfile::Documents(_)
             | SourceProfile::Skills(_)
             | SourceProfile::Rules(_)

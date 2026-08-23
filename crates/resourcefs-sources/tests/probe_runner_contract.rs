@@ -5,8 +5,8 @@ use std::sync::{
 
 use async_trait::async_trait;
 use resourcefs_core::{
-    MAX_PROBE_DIAGNOSTIC_BYTES, OperationGuard, ProbeDiagnostic, ProbeDiagnosticError,
-    ProbeOutcome, ProbeState, SourceProbe,
+    AddressPolicy, MAX_PROBE_DIAGNOSTIC_BYTES, OperationGuard, ProbeDiagnostic,
+    ProbeDiagnosticError, ProbeOutcome, ProbeState, SourceProbe,
 };
 use resourcefs_sources::{MAX_CONFIGURATION_ENTRIES, NetworkProbe, ProbeRunner, ProbeTarget};
 
@@ -97,18 +97,32 @@ fn probe_diagnostic_boundaries_are_exact() {
 #[test]
 fn network_probe_requires_bounded_valid_endpoints() {
     assert!(NetworkProbe::new(Vec::new(), false).is_err());
-    assert!(NetworkProbe::new(vec![(String::new(), 443)], false).is_err());
-    assert!(NetworkProbe::new(vec![("example.test".to_owned(), 0)], false).is_err());
+    assert!(
+        NetworkProbe::new(vec![(String::new(), 443, AddressPolicy::new(true))], false).is_err()
+    );
     assert!(
         NetworkProbe::new(
-            vec![("example.test".to_owned(), 443); MAX_CONFIGURATION_ENTRIES],
+            vec![("example.test".to_owned(), 0, AddressPolicy::new(true))],
+            false
+        )
+        .is_err()
+    );
+    assert!(
+        NetworkProbe::new(
+            vec![
+                ("example.test".to_owned(), 443, AddressPolicy::new(true));
+                MAX_CONFIGURATION_ENTRIES
+            ],
             false
         )
         .is_ok()
     );
     assert!(
         NetworkProbe::new(
-            vec![("example.test".to_owned(), 443); MAX_CONFIGURATION_ENTRIES + 1],
+            vec![
+                ("example.test".to_owned(), 443, AddressPolicy::new(true));
+                MAX_CONFIGURATION_ENTRIES + 1
+            ],
             false
         )
         .is_err()
@@ -123,8 +137,15 @@ async fn network_probe_observes_connectivity_and_cancellation() {
     let endpoint = listener
         .local_addr()
         .unwrap_or_else(|error| panic!("probe listener address failed: {error}"));
-    let probe = NetworkProbe::new(vec![(endpoint.ip().to_string(), endpoint.port())], true)
-        .unwrap_or_else(|error| panic!("network probe construction failed: {error}"));
+    let probe = NetworkProbe::new(
+        vec![(
+            endpoint.ip().to_string(),
+            endpoint.port(),
+            AddressPolicy::new(true),
+        )],
+        true,
+    )
+    .unwrap_or_else(|error| panic!("network probe construction failed: {error}"));
     let operation = OperationGuard::new();
     let (outcome, accepted) = tokio::join!(
         probe.probe(&operation),

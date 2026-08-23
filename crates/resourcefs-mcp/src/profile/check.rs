@@ -6,7 +6,8 @@ use std::{
 
 use async_trait::async_trait;
 use resourcefs_core::{
-    OperationGuard, ProbeDiagnostic, ProbeOutcome, ProbeState, Redactor, Secret, SourceProbe,
+    AddressPolicy, OperationGuard, ProbeDiagnostic, ProbeOutcome, ProbeState, Redactor, Secret,
+    SourceProbe,
 };
 use resourcefs_sources::{
     ChildEnvironment, CommandExecutor, CommandSpec, EnvironmentValue, MAX_LIVE_COMMAND_TREES,
@@ -188,7 +189,7 @@ fn probe_target(source: &CheckedSource) -> Result<ProbeTarget, ProfileError> {
         StaticProbe::Network(urls) => {
             let endpoints = urls
                 .iter()
-                .map(|value| {
+                .map(|(value, allow_private_network)| {
                     let url = Url::parse(value).map_err(|_| {
                         ProfileError::invalid("validated network probe URL became invalid")
                     })?;
@@ -198,7 +199,14 @@ fn probe_target(source: &CheckedSource) -> Result<ProbeTarget, ProfileError> {
                     let port = url.port_or_known_default().ok_or_else(|| {
                         ProfileError::invalid("validated network probe URL has no port")
                     })?;
-                    Ok((host.to_owned(), port))
+                    // The probe carries the same grant the request path uses,
+                    // so a withheld private-network grant also withholds the
+                    // probe's egress.
+                    Ok((
+                        host.to_owned(),
+                        port,
+                        AddressPolicy::new(*allow_private_network),
+                    ))
                 })
                 .collect::<Result<Vec<_>, ProfileError>>()?;
             let probe = NetworkProbe::new(endpoints, source.required).map_err(|_| {

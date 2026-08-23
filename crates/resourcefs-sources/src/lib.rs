@@ -5,6 +5,7 @@ mod catalog;
 mod compiled;
 mod configuration;
 mod filesystem;
+mod http;
 mod local;
 mod pattern;
 mod probe;
@@ -24,6 +25,7 @@ pub use configuration::{
     SkillsConfig, SshConfig, SshHost, VaultConfig, VaultRoot, VaultTarget,
     validate_configuration_id,
 };
+pub use http::{BoundedHttpResponse, HttpRequest, HttpSubstrate};
 pub use local::LocalSource;
 
 #[cfg(feature = "test-support")]
@@ -33,7 +35,8 @@ pub use filesystem::{
     RootAcquisition, RootRefresh, RootRefreshOutcome,
 };
 pub use probe::{
-    NetworkProbe, ProbeRecord, ProbeRun, ProbeRunner, ProbeTarget, ValidatedLocalProbe,
+    NetworkProbe, ProbeEndpoint, ProbeRecord, ProbeRun, ProbeRunner, ProbeTarget,
+    ValidatedLocalProbe,
 };
 pub use process::{
     CommandError, CommandErrorKind, CommandExecutor, CommandInput, CommandLimits, CommandOutput,
