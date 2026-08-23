@@ -11,11 +11,15 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
 
 use crate::{
-    ArtifactAddress, DisplayedLineRange, ErrorCategory, PathReference, ResourceAddress,
+    ArtifactAddress, DisplayedLineRange, ErrorCategory, LocalName, PathReference, ResourceAddress,
     ResourceError, ServerLimits, VersionSelector, VersionTag, WorkspaceAddress,
 };
 
 pub const MAX_SESSION_BYTES: usize = 256 * 1024 * 1024;
+
+/// Objects one Path Session may hold, counted across every family it owns:
+/// immutable `artifact://` records and mutable `local://` Session Scratch
+/// Resources share this single ceiling.
 pub const MAX_SESSION_ARTIFACTS: usize = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -199,9 +203,34 @@ struct SessionState {
     used_bytes: usize,
     records: HashSet<ArtifactId>,
     digest_index: HashMap<[u8; 32], Vec<ArtifactId>>,
+    scratch: HashMap<LocalName, ScratchEntry>,
     snapshots: HashMap<SnapshotKey, SeenSnapshot>,
     snapshot_bytes: usize,
     reserved_snapshot_bytes: usize,
+}
+
+/// One caller-authored Session Scratch Resource.
+///
+/// The name indexes this entry; the allocated `id` is the only key the backing
+/// store ever sees, so a scratch name never becomes a storage path.
+#[derive(Debug, Clone)]
+struct ScratchEntry {
+    id: ArtifactId,
+    version_tag: VersionTag,
+    bytes: usize,
+}
+
+/// Current content and Version Tag of one Session Scratch Resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScratchState {
+    pub content: String,
+    pub version_tag: VersionTag,
+}
+
+/// Objects charged against the Path Session's shared object ceiling: immutable
+/// `artifact://` records plus mutable `local://` Session Scratch Resources.
+fn session_object_count(state: &SessionState) -> usize {
+    state.records.len().saturating_add(state.scratch.len())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -295,6 +324,7 @@ impl PathSession {
                     used_bytes: 0,
                     records: HashSet::new(),
                     digest_index: HashMap::new(),
+                    scratch: HashMap::new(),
                     snapshots: HashMap::new(),
                     snapshot_bytes: 0,
                     reserved_snapshot_bytes: 0,
@@ -414,7 +444,7 @@ impl PathSession {
             }
         }
 
-        if state.records.len() >= MAX_SESSION_ARTIFACTS {
+        if session_object_count(&state) >= MAX_SESSION_ARTIFACTS {
             return Err(ResourceError::new(
                 ErrorCategory::LimitExceeded,
                 format!(
@@ -621,6 +651,244 @@ impl PathSession {
             .map(|snapshot| (snapshot.ranges.clone(), snapshot.displayed_eof)))
     }
 
+    /// Reads one Session Scratch Resource, or `None` when the name is unused.
+    #[cfg_attr(
+        not(feature = "test-support"),
+        expect(
+            dead_code,
+            reason = "the local:// Source Adapter that calls this lands with rfs-60g1 \
+                      Slice 4; this expectation then becomes unfulfilled and must be removed"
+        )
+    )]
+    pub(crate) async fn scratch_load(
+        &self,
+        name: &LocalName,
+    ) -> Result<Option<ScratchState>, ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_scratch_error());
+        }
+        let entry = {
+            let state = self.inner.admission.lock().await;
+            state.scratch.get(name).cloned()
+        };
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        let content = self.inner.storage.read(entry.id).await?;
+        if !self.is_active() {
+            return Err(inactive_scratch_error());
+        }
+        Ok(Some(ScratchState {
+            content,
+            version_tag: entry.version_tag,
+        }))
+    }
+
+    /// Creates or replaces one Session Scratch Resource under Path Session
+    /// authority, charging its bytes to the shared session ceilings.
+    ///
+    /// Quota is checked before any write, so a refused put leaves every existing
+    /// Resource — scratch or artifact — byte-for-byte unchanged.
+    #[cfg_attr(
+        not(feature = "test-support"),
+        expect(
+            dead_code,
+            reason = "the local:// Source Adapter that calls this lands with rfs-60g1 \
+                      Slice 4; this expectation then becomes unfulfilled and must be removed"
+        )
+    )]
+    pub(crate) async fn scratch_put(
+        &self,
+        name: &LocalName,
+        content: &str,
+        operation: &OperationGuard,
+    ) -> Result<VersionTag, ResourceError> {
+        let content_bytes = content.as_bytes();
+        if content_bytes.len() > self.inner.limits.object_bytes() {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!(
+                    "Session Scratch Resource exceeds the configured {}-byte object ceiling; write less content",
+                    self.inner.limits.object_bytes()
+                ),
+            ));
+        }
+        ensure_commit_live(self, operation)?;
+
+        let mut state = self.inner.admission.lock().await;
+        ensure_commit_live(self, operation)?;
+
+        let existing = state.scratch.get(name).cloned();
+        if existing.is_none() && session_object_count(&state) >= MAX_SESSION_ARTIFACTS {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!(
+                    "Path Session exceeds the {MAX_SESSION_ARTIFACTS}-object ceiling; remove a Session Scratch Resource first"
+                ),
+            ));
+        }
+        let released_bytes = existing.as_ref().map_or(0, |entry| entry.bytes);
+        let resulting_bytes = scratch_resulting_bytes(
+            &state,
+            released_bytes,
+            content_bytes.len(),
+            self.inner.limits.session_bytes(),
+        )?;
+
+        // Replacement reuses the existing object id: `write_atomic` swaps the
+        // content atomically, so a failed write leaves the previous content
+        // readable under the same name.
+        let id = match existing.as_ref() {
+            Some(entry) => entry.id,
+            None => {
+                let id = ArtifactId::new(state.next_object_id)?;
+                state.next_object_id = state.next_object_id.checked_add(1).ok_or_else(|| {
+                    ResourceError::new(
+                        ErrorCategory::LimitExceeded,
+                        "Session Scratch object ID space exhausted",
+                    )
+                })?;
+                id
+            }
+        };
+        self.inner.storage.write_atomic(id, content_bytes).await?;
+
+        let version_tag = VersionTag::from_content(content_bytes);
+        state.scratch.insert(
+            name.clone(),
+            ScratchEntry {
+                id,
+                version_tag: version_tag.clone(),
+                bytes: content_bytes.len(),
+            },
+        );
+        state.used_bytes = resulting_bytes;
+        Ok(version_tag)
+    }
+
+    /// Deletes one Session Scratch Resource and returns its bytes to the session.
+    #[cfg_attr(
+        not(feature = "test-support"),
+        expect(
+            dead_code,
+            reason = "the local:// Source Adapter that calls this lands with rfs-60g1 \
+                      Slice 4; this expectation then becomes unfulfilled and must be removed"
+        )
+    )]
+    pub(crate) async fn scratch_remove(&self, name: &LocalName) -> Result<(), ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_scratch_error());
+        }
+        let mut state = self.inner.admission.lock().await;
+        let Some(entry) = state.scratch.remove(name) else {
+            return Err(scratch_not_found(name));
+        };
+        state.used_bytes = state
+            .used_bytes
+            .checked_sub(entry.bytes)
+            .expect("scratch bytes are charged before they are released");
+        self.inner.storage.remove(entry.id).await
+    }
+
+    /// Renames one Session Scratch Resource without clobbering an existing name.
+    ///
+    /// The backing object is untouched: only the name index moves, so the
+    /// Version Tag is unchanged.
+    #[cfg_attr(
+        not(feature = "test-support"),
+        expect(
+            dead_code,
+            reason = "the local:// Source Adapter that calls this lands with rfs-60g1 \
+                      Slice 4; this expectation then becomes unfulfilled and must be removed"
+        )
+    )]
+    pub(crate) async fn scratch_rename(
+        &self,
+        from: &LocalName,
+        to: &LocalName,
+    ) -> Result<(), ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_scratch_error());
+        }
+        let mut state = self.inner.admission.lock().await;
+        if !state.scratch.contains_key(from) {
+            return Err(scratch_not_found(from));
+        }
+        if from != to && state.scratch.contains_key(to) {
+            return Err(ResourceError::new(
+                ErrorCategory::VersionConflict,
+                format!(
+                    "Session Scratch Resource '{to}' already exists; move is no-clobber within one Path Session"
+                ),
+            ));
+        }
+        let entry = state
+            .scratch
+            .remove(from)
+            .expect("scratch entry presence was checked under this lock");
+        state.scratch.insert(to.clone(), entry);
+        Ok(())
+    }
+
+    /// Enumerates this Path Session's Session Scratch names in sorted order.
+    #[cfg_attr(
+        not(feature = "test-support"),
+        expect(
+            dead_code,
+            reason = "the local:// Source Adapter that calls this lands with rfs-60g1 \
+                      Slice 4; this expectation then becomes unfulfilled and must be removed"
+        )
+    )]
+    pub(crate) async fn scratch_names(&self) -> Result<Vec<LocalName>, ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_scratch_error());
+        }
+        let state = self.inner.admission.lock().await;
+        let mut names = state.scratch.keys().cloned().collect::<Vec<_>>();
+        names.sort_unstable();
+        Ok(names)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn scratch_put_for_test(
+        &self,
+        name: &LocalName,
+        content: &str,
+        operation: &OperationGuard,
+    ) -> Result<VersionTag, ResourceError> {
+        self.scratch_put(name, content, operation).await
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn scratch_load_for_test(
+        &self,
+        name: &LocalName,
+    ) -> Result<Option<(String, VersionTag)>, ResourceError> {
+        Ok(self
+            .scratch_load(name)
+            .await?
+            .map(|state| (state.content, state.version_tag)))
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn scratch_remove_for_test(&self, name: &LocalName) -> Result<(), ResourceError> {
+        self.scratch_remove(name).await
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn scratch_rename_for_test(
+        &self,
+        from: &LocalName,
+        to: &LocalName,
+    ) -> Result<(), ResourceError> {
+        self.scratch_rename(from, to).await
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn scratch_names_for_test(&self) -> Result<Vec<LocalName>, ResourceError> {
+        self.scratch_names().await
+    }
+
     pub async fn used_bytes(&self) -> usize {
         self.inner.admission.lock().await.used_bytes
     }
@@ -804,6 +1072,28 @@ fn combined_session_bytes(
     Ok(resulting)
 }
 
+/// Session bytes after releasing one Session Scratch Resource's previous bytes
+/// and charging its replacement, refusing anything past the session ceiling.
+fn scratch_resulting_bytes(
+    state: &SessionState,
+    released_bytes: usize,
+    added_bytes: usize,
+    session_limit: usize,
+) -> Result<usize, ResourceError> {
+    let resulting = state
+        .used_bytes
+        .checked_sub(released_bytes)
+        .and_then(|bytes| bytes.checked_add(added_bytes))
+        .ok_or_else(|| session_quota_error(session_limit))?;
+    let with_reservations = resulting
+        .checked_add(state.reserved_snapshot_bytes)
+        .ok_or_else(|| session_quota_error(session_limit))?;
+    if with_reservations > session_limit {
+        return Err(session_quota_error(session_limit));
+    }
+    Ok(resulting)
+}
+
 fn apply_snapshot_update(state: &mut SessionState, update: Option<SnapshotUpdate>) {
     let Some(update) = update else {
         return;
@@ -842,6 +1132,20 @@ fn session_quota_error(limit: usize) -> ResourceError {
     ResourceError::new(
         ErrorCategory::LimitExceeded,
         format!("Path Session exceeds the {limit}-byte artifact quota; narrow the selector"),
+    )
+}
+
+fn inactive_scratch_error() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::SourceUnavailable,
+        "Path Session disconnected before the Session Scratch operation",
+    )
+}
+
+fn scratch_not_found(name: &LocalName) -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::NotFound,
+        format!("Session Scratch Resource '{name}' is not available in this Path Session"),
     )
 }
 
