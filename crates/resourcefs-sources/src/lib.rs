@@ -25,9 +25,9 @@ pub use configuration::{
     SkillsConfig, SshConfig, SshHost, VaultConfig, VaultRoot, VaultTarget,
     validate_configuration_id,
 };
-pub use http::{BoundedHttpResponse, HttpRequest, HttpSubstrate, ReaderModeDocument};
 #[cfg(feature = "test-support")]
-pub use http::{extract_markdown_for_test, extraction_count};
+pub use http::extract_markdown_for_test;
+pub use http::{BoundedHttpResponse, HttpRequest, HttpSubstrate, ReaderModeDocument};
 pub use local::LocalSource;
 
 #[cfg(feature = "test-support")]

@@ -191,28 +191,20 @@ impl BoundedHttpResponse {
 /// refused before extracting" from "we extracted and then something else went
 /// wrong". Four fixtures in this change passed for the wrong reason on exactly
 /// that class of assertion; this counter is the positive evidence.
+/// Scoped to one substrate, deliberately, rather than to the process. A
+/// process-global counter cannot be asserted for exact equality: libtest runs a
+/// binary's tests on parallel threads, so a sibling test performing a legitimate
+/// extraction would land between this test's `before` reading and its
+/// assertion and fail it for no reason. Per-substrate makes the count a
+/// property of the object under test.
 #[cfg(feature = "test-support")]
-static EXTRACTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-#[cfg(feature = "test-support")]
-fn record_extraction() {
-    EXTRACTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-}
-
-#[cfg(not(feature = "test-support"))]
-const fn record_extraction() {}
+type ExtractionCounter = Arc<std::sync::atomic::AtomicUsize>;
 
 /// Extracts reader-mode Markdown, for contract tests that exercise the
 /// extractor directly rather than through a network fetch.
 #[cfg(feature = "test-support")]
 pub fn extract_markdown_for_test(html: &str) -> String {
     extract::extract_markdown(html)
-}
-
-/// Returns how many times the extractor has run in this process.
-#[cfg(feature = "test-support")]
-pub fn extraction_count() -> usize {
-    EXTRACTIONS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A reader-mode rendering of one complete HTML document.
@@ -283,6 +275,8 @@ pub struct HttpSubstrate {
     /// The same per-host policies the resolver holds, retained so the
     /// IP-literal route can apply them before the client is invoked.
     policies: HashMap<String, AddressPolicy>,
+    #[cfg(feature = "test-support")]
+    extractions: ExtractionCounter,
 }
 
 impl std::fmt::Debug for HttpSubstrate {
@@ -387,7 +381,29 @@ impl HttpSubstrate {
             allowlist,
             ceilings,
             policies,
+            #[cfg(feature = "test-support")]
+            extractions: ExtractionCounter::default(),
         })
+    }
+
+    /// Records one extractor invocation against this substrate.
+    #[cfg(feature = "test-support")]
+    fn record_extraction(&self) {
+        self.extractions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    #[expect(
+        clippy::unused_self,
+        reason = "mirrors the test-support signature so the call site is identical"
+    )]
+    const fn record_extraction(&self) {}
+
+    /// Returns how many times **this substrate** has run the extractor.
+    #[cfg(feature = "test-support")]
+    pub fn extraction_count(&self) -> usize {
+        self.extractions.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns the ceilings this substrate enforces.
@@ -469,8 +485,8 @@ impl HttpSubstrate {
                 ),
             ));
         }
-        let html = String::from_utf8_lossy(response.body());
-        record_extraction();
+        let html = reader_mode_source(&response)?;
+        self.record_extraction();
         Ok(ReaderModeDocument {
             markdown: extract::extract_markdown(&html),
             final_url: response.final_url,
@@ -525,6 +541,65 @@ impl HttpSubstrate {
         }
         Ok((body, truncated))
     }
+}
+
+/// Returns a response's body as HTML source, or refuses reader mode for it.
+///
+/// Reader mode is a rendering of an HTML document, and three inputs are not
+/// that: a declared non-HTML media type, a declared non-UTF-8 charset, and
+/// bytes that are not valid UTF-8. Each was previously run through
+/// `String::from_utf8_lossy` and fed to the tokenizer, so a PDF or an
+/// ISO-8859-1 page produced replacement-character Markdown that returned `Ok`
+/// and was indistinguishable from a faithful rendering — and that output is
+/// what a content-derived Version Tag hashes.
+///
+/// Refusing is the same choice the signed spec already made for an over-ceiling
+/// document: fail loudly rather than hand back something plausible and wrong.
+/// `:raw` remains available and returns the original bytes, which is the
+/// supported way to read any of these.
+///
+/// A response with no declared media type is treated as HTML. Servers omit the
+/// header routinely and reader mode is the default projection, so refusing on
+/// absence would break ordinary pages; a body that is not UTF-8 is still caught
+/// by the final check.
+fn reader_mode_source(response: &BoundedHttpResponse) -> Result<String, ResourceError> {
+    if let Some(content_type) = response.content_type() {
+        let mut parts = content_type.split(';').map(str::trim);
+        let media = parts.next().unwrap_or_default().to_ascii_lowercase();
+        if !media.is_empty() && !matches!(media.as_str(), "text/html" | "application/xhtml+xml") {
+            return Err(unsupported_reader_mode(&format!(
+                "response declares media type {media}, which reader mode does not render"
+            )));
+        }
+        for parameter in parts {
+            let Some((name, value)) = parameter.split_once('=') else {
+                continue;
+            };
+            if !name.trim().eq_ignore_ascii_case("charset") {
+                continue;
+            }
+            let charset = value.trim().trim_matches('"').to_ascii_lowercase();
+            if !matches!(charset.as_str(), "utf-8" | "utf8" | "us-ascii" | "ascii") {
+                return Err(unsupported_reader_mode(&format!(
+                    "response declares charset {charset}, which reader mode does not decode"
+                )));
+            }
+        }
+    }
+    String::from_utf8(response.body().to_vec())
+        .map_err(|_| unsupported_reader_mode("response body is not valid UTF-8"))
+}
+
+/// The refusal shared by every reader-mode input that is not an HTML document.
+///
+/// One constructor so the three rejection paths cannot drift into naming
+/// different recoveries, and so the message always carries the `:raw` escape
+/// hatch the signed spec provides.
+fn unsupported_reader_mode(detail: &str) -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::UnsupportedProjection,
+        format!("{detail}; read it with :raw for the original bytes"),
+    )
 }
 
 /// Builds the redirect policy that authorizes every hop before it is sent.

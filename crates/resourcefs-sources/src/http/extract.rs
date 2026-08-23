@@ -27,6 +27,7 @@ use std::cell::RefCell;
 
 use html5ever::tokenizer::{
     BufferQueue, Tag, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
+    states::RawKind,
 };
 
 /// Elements whose content never reaches the reader-mode output.
@@ -92,6 +93,15 @@ impl MarkdownSink {
 
 impl State {
     /// Ends the current block, pushing it if it carries content.
+    ///
+    /// A pending prefix survives a flush that had nothing to write. `<li>` sets
+    /// the marker and any block element opening immediately inside it — the
+    /// very common `<li><p>text</p></li>` — flushes an empty line before the
+    /// text arrives. Clearing unconditionally discarded the marker, so the item
+    /// rendered as a bare paragraph; for `<ol>` the counter had already been
+    /// consumed, so surviving items renumbered (1, 3, 5…) as well. Keeping the
+    /// prefix until it is actually spent makes the marker independent of how
+    /// the item's content is wrapped.
     fn flush(&mut self) {
         let body = self.line.trim_end();
         if !body.is_empty() {
@@ -99,9 +109,9 @@ impl State {
             block.push_str(&self.prefix);
             block.push_str(body);
             self.blocks.push(block);
+            self.prefix.clear();
         }
         self.line.clear();
-        self.prefix.clear();
     }
 
     /// Appends text, collapsing whitespace runs outside `<pre>`.
@@ -129,8 +139,14 @@ impl State {
         }
     }
 
+    /// Starts a new block with `prefix`, replacing any unspent one.
+    ///
+    /// Replacement rather than append, because a prefix now survives an empty
+    /// flush: two consecutive empty list items would otherwise accumulate
+    /// `"- - "`. The new block defines its own marker outright.
     fn begin_block(&mut self, prefix: &str) {
         self.flush();
+        self.prefix.clear();
         self.prefix.push_str(prefix);
     }
 
@@ -157,7 +173,25 @@ impl TokenSink for MarkdownSink {
     fn process_token(&self, token: Token, _line: u64) -> TokenSinkResult<()> {
         let mut state = self.state.borrow_mut();
         match token {
-            Token::TagToken(tag) => handle_tag(&mut state, &tag),
+            Token::TagToken(tag) => {
+                let raw = handle_tag(&mut state, &tag);
+                // A raw-text element's body is *text*, not markup, and only the
+                // sink can tell the tokenizer so: the standalone `Tokenizer`
+                // switches state solely on this return value. Returning
+                // `Continue` for `<script>`/`<style>` left their bodies being
+                // tokenized as markup, so `<script>var t = "<style>";</script>`
+                // emitted a `<style>` start tag that pushed `skip` to 2 while
+                // `</script>` only returned it to 1 — suppressing every
+                // subsequent character token and silently truncating the
+                // document to whatever preceded the script.
+                if let Some(kind) = raw {
+                    // `name` is cloned rather than formatted: the tokenizer
+                    // needs the element name to find the matching end tag, and
+                    // a `Debug` rendering here would carry tendril's storage
+                    // discriminator into a control path (module note, P4).
+                    return TokenSinkResult::RawData(kind);
+                }
+            }
             Token::CharacterTokens(text) if state.skip == 0 => {
                 // Explicit deref to `&str`. Never `{:?}` — see the module note.
                 state.push_text(&text);
@@ -171,24 +205,54 @@ impl TokenSink for MarkdownSink {
     }
 }
 
-fn handle_tag(state: &mut State, tag: &Tag) {
+/// Handles one tag, returning the raw-text state the tokenizer must enter.
+///
+/// `Some(kind)` is returned only for a dropped element whose body HTML treats
+/// as text rather than markup; the caller forwards it as
+/// `TokenSinkResult::RawData`, which is the only way a sink can drive the
+/// standalone tokenizer's state machine.
+fn handle_tag(state: &mut State, tag: &Tag) -> Option<RawKind> {
     // `LocalName` derefs to `&str`; comparing the borrowed name keeps the
     // storage representation out of every decision made here.
     let name: &str = &tag.name;
     if DROPPED.contains(&name) {
         match tag.kind {
-            TagKind::StartTag if !tag.self_closing => state.skip += 1,
+            TagKind::StartTag => {
+                // The self-closing flag is deliberately ignored for raw-text
+                // elements. HTML has no self-closing `<script>`: `<script/>`
+                // opens an element whose body runs to the next `</script>`,
+                // and honouring the flag let script text reach the output.
+                // For a foreign element such as `<svg/>` the flag is
+                // meaningful, and there is no raw-text state to enter.
+                let raw = raw_kind(name);
+                if raw.is_some() || !tag.self_closing {
+                    state.skip += 1;
+                }
+                return raw;
+            }
             TagKind::EndTag => state.skip = state.skip.saturating_sub(1),
-            TagKind::StartTag => {}
         }
-        return;
+        return None;
     }
     if state.skip > 0 {
-        return;
+        return None;
     }
     match tag.kind {
         TagKind::StartTag => start_tag(state, tag, name),
         TagKind::EndTag => end_tag(state, name),
+    }
+    None
+}
+
+/// The tokenizer state a dropped element's body must be read in.
+///
+/// `<svg>`, `<head>`, `<noscript>` and `<template>` hold ordinary markup, so
+/// they keep the default state and are skipped structurally.
+const fn raw_kind(name: &str) -> Option<RawKind> {
+    match name.as_bytes() {
+        b"script" => Some(RawKind::ScriptData),
+        b"style" => Some(RawKind::Rawtext),
+        _ => None,
     }
 }
 

@@ -408,13 +408,13 @@ async fn over_ceiling_never_extracts() {
         vec![IpAddr::V4(LOOPBACK)],
         ceilings(CEILING, 30_000),
     );
-    let before_control = resourcefs_sources::extraction_count();
+    let before_control = substrate.extraction_count();
     substrate
         .fetch_reader_mode(HttpRequest::get(fixture_url(port)), &OperationGuard::new())
         .await
         .expect("an in-ceiling document extracts");
     assert!(
-        resourcefs_sources::extraction_count() > before_control,
+        substrate.extraction_count() > before_control,
         "the control row must move the extraction counter, otherwise this \
          fence would pass with the extractor never wired up at all"
     );
@@ -431,17 +431,110 @@ async fn over_ceiling_never_extracts() {
         vec![IpAddr::V4(LOOPBACK)],
         ceilings(CEILING, 30_000),
     );
-    let before = resourcefs_sources::extraction_count();
+    let before = substrate.extraction_count();
     let error = substrate
         .fetch_reader_mode(HttpRequest::get(fixture_url(port)), &OperationGuard::new())
         .await
         .expect_err("an over-ceiling document must be refused");
     assert_eq!(error.category(), ErrorCategory::LimitExceeded);
     assert_eq!(
-        resourcefs_sources::extraction_count(),
+        substrate.extraction_count(),
         before,
         "extraction must not run over a truncated document: a partial parse \
          can drop or mangle structure and the caller cannot tell"
     );
     settle().await;
+}
+
+/// C8 — reader mode refuses an input that is not an HTML document.
+///
+/// Every one of these previously went through `String::from_utf8_lossy` into
+/// the tokenizer and returned `Ok`: a PDF became replacement-character
+/// Markdown, an ISO-8859-1 page became mojibake, and the caller had no way to
+/// tell either from a faithful rendering. That output is what a
+/// content-derived Version Tag hashes, so the damage outlives the request.
+///
+/// Refusing matches the choice the signed spec already made for an over-ceiling
+/// document: fail loudly rather than return something plausible and wrong. The
+/// control row runs first — an ordinary HTML response through the same fixture
+/// must succeed, so a refusal below cannot be a fixture that never worked.
+#[tokio::test]
+async fn reader_mode_refuses_non_html_inputs() {
+    let listener = TlsListener::serve_router(LOOPBACK, 0, MATCH_CERT, |path| match path {
+        "/pdf" => FixtureResponse::Typed {
+            content_type: "application/pdf".to_owned(),
+            body: b"%PDF-1.7 binary".to_vec(),
+        },
+        "/latin1" => FixtureResponse::Typed {
+            content_type: "text/html; charset=ISO-8859-1".to_owned(),
+            body: b"<p>caf\xe9</p>".to_vec(),
+        },
+        // Declares UTF-8 and is not: the bytes themselves are the last check.
+        "/invalid" => FixtureResponse::Typed {
+            content_type: "text/html; charset=utf-8".to_owned(),
+            body: b"<p>\xff\xfe</p>".to_vec(),
+        },
+        _ => FixtureResponse::Typed {
+            content_type: "text/html; charset=UTF-8".to_owned(),
+            body: b"<p>Fine</p>".to_vec(),
+        },
+    })
+    .await;
+    let port = listener.address.port();
+    let substrate = tls_substrate_with_ceilings(
+        fixture_allowlist(port, true),
+        vec![IpAddr::V4(LOOPBACK)],
+        ceilings(1024 * 1024, 30_000),
+    );
+
+    let control = substrate
+        .fetch_reader_mode(
+            HttpRequest::get(path_url(port, "/ok")),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("control: an ordinary HTML response must render");
+    assert!(
+        control.markdown().contains("Fine"),
+        "control must produce real Markdown, else the refusals below prove nothing"
+    );
+
+    for (path, expected) in [
+        ("/pdf", "application/pdf"),
+        ("/latin1", "iso-8859-1"),
+        ("/invalid", "not valid UTF-8"),
+    ] {
+        let failure = substrate
+            .fetch_reader_mode(
+                HttpRequest::get(path_url(port, path)),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect_err("a non-HTML input must be refused, not rendered");
+        assert_eq!(
+            failure.category(),
+            ErrorCategory::UnsupportedProjection,
+            "{path} must be refused as an unsupported projection"
+        );
+        // The message, not just the category: it must name *why* this input is
+        // not renderable and point at the `:raw` recovery, or an operator
+        // cannot tell a media-type refusal from a charset one.
+        let message = failure.message().to_ascii_lowercase();
+        assert!(
+            message.contains(&expected.to_ascii_lowercase()),
+            "{path} refusal must name the cause; got: {}",
+            failure.message()
+        );
+        assert!(
+            failure.message().contains(":raw"),
+            "{path} refusal must name the :raw recovery; got: {}",
+            failure.message()
+        );
+    }
+    settle().await;
+}
+
+/// A fixture URL for one specific path on the listener.
+fn path_url(port: u16, path: &str) -> Url {
+    Url::parse(&format!("https://{FIXTURE_HOST}:{port}{path}")).expect("fixture URL is well formed")
 }

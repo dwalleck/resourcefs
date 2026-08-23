@@ -32,6 +32,10 @@ const CORPUS: &[&str] = &[
     "deeply_nested",
     "entities",
     "storage_boundary",
+    // Raw-text elements whose bodies contain markup-looking text, and list
+    // items whose content is wrapped in a block element. Both shapes are
+    // ubiquitous in real HTML and both were silently mis-rendered.
+    "raw_text_and_lists",
 ];
 
 fn fixture(name: &str) -> String {
@@ -69,12 +73,21 @@ fn corpus_digests() -> Vec<String> {
 /// target or any network. The digests go to a **file** rather than stdout
 /// because libtest captures stdout — a child that printed them would appear to
 /// produce nothing, which is how the first version of this fence failed.
+/// The write is staged and renamed rather than written in place. `exit` does
+/// not wait for other threads, so an in-place write could be observed
+/// half-finished by the parent; the parent then dropped the mangled line while
+/// filtering and reported a *determinism* failure, pointing at extraction
+/// rather than at the handoff. Renaming publishes the file in one step, so the
+/// parent sees all of it or none of it.
 fn maybe_run_as_child() {
-    if let Some(path) = std::env::var_os("RFS_EXTRACT_DIGEST_CHILD") {
-        let body = corpus_digests().join("\n");
-        std::fs::write(&path, body).expect("child writes its digests");
-        std::process::exit(0);
-    }
+    let Some(path) = std::env::var_os("RFS_EXTRACT_DIGEST_CHILD") else {
+        return;
+    };
+    let body = corpus_digests().join("\n");
+    let staged = std::path::PathBuf::from(&path).with_extension("partial");
+    std::fs::write(&staged, body).expect("child stages its digests");
+    std::fs::rename(&staged, &path).expect("child publishes its digests atomically");
+    std::process::exit(0);
 }
 
 #[test]
@@ -96,7 +109,13 @@ fn extraction_is_deterministic() {
         CORPUS.len()
     ));
     let _ = std::fs::remove_file(&handoff);
+    // Run exactly this one test in the child. Without the filter the child ran
+    // the whole harness, so every test called `maybe_run_as_child`, each wrote
+    // the same handoff path, and the first `exit(0)` cut the others off — a
+    // race that grew with the file's test count and surfaced as a bogus
+    // determinism failure.
     let output = Command::new(&binary)
+        .args(["extraction_is_deterministic", "--exact", "--test-threads=1"])
         .env("RFS_EXTRACT_DIGEST_CHILD", &handoff)
         .output()
         .expect("re-execute the test binary as a child process");
@@ -190,4 +209,81 @@ fn storage_boundary_strings_render_as_plain_text() {
         markdown.contains("[abcdefghijklmnopqrstuvwxyz0123456789](/a-considerably-longer-href-past-the-inline-threshold)"),
         "long (heap-stored) link must render as plain text: {markdown:?}"
     );
+}
+
+/// C9 — a raw-text element's body is text, never markup.
+///
+/// `<script>` and `<style>` bodies are tokenized in a raw-text state, which
+/// only the sink can request. Returning `Continue` for them left their bodies
+/// read as markup, so a `<style>` appearing inside a script *string* opened a
+/// second dropped element that its `</script>` never closed: the skip depth
+/// never returned to zero and every character token afterwards was suppressed.
+/// The document silently truncated to whatever preceded the script, returned
+/// `Ok`, and fed a content-derived Version Tag.
+///
+/// The assertion is on the surviving text, not merely on length: a truncation
+/// that happened to keep the byte count would otherwise pass.
+#[test]
+fn raw_text_bodies_do_not_truncate_the_document() {
+    let markdown = resourcefs_sources::extract_markdown_for_test(
+        r#"<html><body><p>Before</p><script>var t = "<style>";</script><p>After</p></body></html>"#,
+    );
+    assert!(
+        markdown.contains("Before") && markdown.contains("After"),
+        "content after a script containing markup-shaped text must survive; got {markdown:?}"
+    );
+    assert!(
+        !markdown.contains("var t"),
+        "script source must never reach the output; got {markdown:?}"
+    );
+
+    // HTML ignores a self-closing flag on `<script>`: the element runs to the
+    // next `</script>`. Honouring the flag leaked script text into the output.
+    let self_closing = resourcefs_sources::extract_markdown_for_test(
+        r#"<html><body><script/>leaked source<p>x</p></body></html>"#,
+    );
+    assert!(
+        !self_closing.contains("leaked source"),
+        "a self-closing script tag must not leak its body; got {self_closing:?}"
+    );
+
+    let styled = resourcefs_sources::extract_markdown_for_test(
+        r#"<html><body><style>p{content:"<script>"}</style><p>Shown</p></body></html>"#,
+    );
+    assert!(
+        styled.contains("Shown") && !styled.contains("content:"),
+        "style bodies drop out without swallowing the document; got {styled:?}"
+    );
+}
+
+/// C9 — a list item keeps its marker however its content is wrapped.
+///
+/// `<li>` sets the marker, and a block element opening immediately inside it
+/// flushed an empty line before any text arrived. Clearing the prefix on that
+/// empty flush discarded the marker, so `<li><p>text</p></li>` — an extremely
+/// common shape — rendered as a bare paragraph. For `<ol>` the counter had
+/// already advanced, so the items that did keep a marker renumbered (1, 3, 5…),
+/// which is the more damaging failure: the output looks like a list and is
+/// wrong about its own ordering.
+#[test]
+fn list_items_keep_their_marker_when_content_is_wrapped() {
+    let unordered = resourcefs_sources::extract_markdown_for_test(
+        r"<ul><li><p>Wrapped</p></li><li>Bare</li><li><div>Div</div></li></ul>",
+    );
+    assert_eq!(
+        unordered, "- Wrapped\n\n- Bare\n\n- Div\n",
+        "every item keeps its bullet regardless of wrapping"
+    );
+
+    let ordered = resourcefs_sources::extract_markdown_for_test(
+        r"<ol><li><p>One</p></li><li>Two</li><li><div>Three</div></li></ol>",
+    );
+    assert_eq!(
+        ordered, "1. One\n\n2. Two\n\n3. Three\n",
+        "ordered items number consecutively; a lost marker must not skip a number"
+    );
+
+    // An empty item must not leave its marker behind to compound onto the next.
+    let empty = resourcefs_sources::extract_markdown_for_test(r"<ul><li></li><li>x</li></ul>");
+    assert_eq!(empty, "- x\n", "an unspent marker must not accumulate");
 }

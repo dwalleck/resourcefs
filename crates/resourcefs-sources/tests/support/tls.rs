@@ -79,6 +79,14 @@ pub enum FixtureResponse {
     Body(String),
     /// `302 Found` pointing at `location`, absolute or origin-relative.
     Redirect(String),
+    /// `200 OK` carrying `body` under an explicit `Content-Type`.
+    ///
+    /// [`Self::Body`] always declares `text/html`, so it cannot express the
+    /// rows that prove reader mode refuses a non-HTML media type or a charset
+    /// it does not decode. Those refusals exist because the alternative is
+    /// returning replacement-character Markdown that looks like a faithful
+    /// rendering, so they need a fixture that can actually declare the header.
+    Typed { content_type: String, body: Vec<u8> },
     /// `200 OK` whose body is written incrementally.
     ///
     /// One variant covers every body shape the bound, timeout, and extraction
@@ -153,6 +161,13 @@ impl FixtureResponse {
             Self::Redirect(location) => format!(
                 "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             ),
+            // Head only: the body may be arbitrary bytes (the invalid-UTF-8
+            // row depends on that), so `write_response` writes it separately
+            // rather than forcing it through a `String`.
+            Self::Typed { content_type, body } => format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            ),
             Self::Stream {
                 declared: Some(declared),
                 ..
@@ -181,6 +196,12 @@ where
         .await
         .is_err()
     {
+        return;
+    }
+    if let FixtureResponse::Typed { body, .. } = response {
+        if stream.write_all(body).await.is_ok() {
+            flushed.fetch_add(body.len(), Ordering::SeqCst);
+        }
         return;
     }
     let FixtureResponse::Stream {
