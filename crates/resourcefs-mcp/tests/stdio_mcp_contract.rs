@@ -1096,6 +1096,47 @@ fn versioned_write_receipts_and_catalog_policy_work_over_stdio() {
     );
     assert_tool_error(&process.call_read("created.txt"), "not_found");
 
+    let move_source = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_write",
+            "arguments": {"path": "move-source.txt", "content": "moved content\n"}
+        }),
+    );
+    assert!(move_source.get("error").is_none(), "{move_source}");
+    let move_source = &move_source["result"]["structuredContent"];
+    let moved = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_edit",
+            "arguments": {
+                "patch": format!(
+                    "[{}#{}]\nMV moved.txt",
+                    move_source["canonicalReference"]
+                        .as_str()
+                        .expect("move source reference"),
+                    move_source["versionTag"].as_str().expect("move source tag")
+                )
+            }
+        }),
+    );
+    assert!(moved.get("error").is_none(), "{moved}");
+    assert_eq!(moved["result"]["isError"], false);
+    assert_eq!(moved["result"]["structuredContent"]["operation"], "moved");
+    assert_eq!(
+        moved["result"]["structuredContent"]["sourceReference"],
+        "rfs://workspace/workspace/move-source.txt"
+    );
+    assert_eq!(
+        moved["result"]["structuredContent"]["canonicalReference"],
+        "rfs://workspace/workspace/moved.txt"
+    );
+    assert_tool_error(&process.call_read("move-source.txt"), "not_found");
+    assert_eq!(
+        process.call_read("moved.txt")["structuredContent"]["content"],
+        "moved content\n"
+    );
+
     process.finish();
 }
 

@@ -1299,11 +1299,8 @@ impl MutationEngine {
         let patch = HashlinePatch::parse(document)?;
         match &patch.operations()[0].0 {
             PatchOperationKind::Remove => return self.remove_patch(&patch, operation).await,
-            PatchOperationKind::Move { .. } => {
-                return Err(ResourceError::new(
-                    ErrorCategory::UnsupportedMutation,
-                    "MV execution is not enabled in this increment",
-                ));
+            PatchOperationKind::Move { destination } => {
+                return self.move_patch(&patch, destination, operation).await;
             }
             PatchOperationKind::Put { .. } | PatchOperationKind::Cut { .. } => {}
         }
@@ -1445,6 +1442,86 @@ impl MutationEngine {
             canonical_reference: target.canonical_reference().clone(),
             source_reference: None,
             version_tag: None,
+            coverage: None,
+        })
+    }
+
+    async fn move_patch(
+        &self,
+        patch: &HashlinePatch,
+        destination: &PathReference,
+        operation: &OperationGuard,
+    ) -> Result<MutationReceipt, ResourceError> {
+        let source = self
+            .adapter
+            .resolve(patch.target(), MutationAccess::Delete)
+            .await?;
+        let destination = self
+            .adapter
+            .resolve(destination, MutationAccess::Create)
+            .await?;
+        if source.source_key() != destination.source_key() {
+            return Err(ResourceError::new(
+                ErrorCategory::UnsupportedMutation,
+                "MV destination must belong to the same Source Adapter",
+            ));
+        }
+        let _locks = self
+            .lock_resources([source.lock_key(), destination.lock_key()])
+            .await?;
+        let snapshot = self
+            .session
+            .resolve_seen(source.canonical_reference().requested(), patch.version())
+            .await?;
+        let source_state = self
+            .adapter
+            .load(&source, MutationAccess::Delete, operation)
+            .await?;
+        let MutationState::Text { version_tag, .. } = source_state else {
+            return Err(ResourceError::new(
+                ErrorCategory::VersionConflict,
+                "MV source no longer exists",
+            ));
+        };
+        if version_tag != snapshot.version_tag {
+            return Err(ResourceError::new(
+                ErrorCategory::VersionConflict,
+                "MV source Version Tag no longer matches authoritative content",
+            ));
+        }
+        if matches!(
+            self.adapter
+                .load(&destination, MutationAccess::Create, operation)
+                .await?,
+            MutationState::Text { .. }
+        ) {
+            return Err(ResourceError::new(
+                ErrorCategory::VersionConflict,
+                "MV destination already exists",
+            ));
+        }
+        operation.begin_commit()?;
+        let committed = self
+            .adapter
+            .commit(
+                SourceMutation::Move {
+                    source: source.clone(),
+                    destination: Box::new(destination.clone()),
+                    expected: snapshot.version_tag.clone(),
+                },
+                operation,
+            )
+            .await;
+        debug_assert!(
+            operation.finish_commit(),
+            "MV commit transition must complete"
+        );
+        committed?;
+        Ok(MutationReceipt {
+            operation: MutationOperation::Moved,
+            canonical_reference: destination.canonical_reference().clone(),
+            source_reference: Some(source.canonical_reference().clone()),
+            version_tag: Some(snapshot.version_tag),
             coverage: None,
         })
     }

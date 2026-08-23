@@ -15,6 +15,8 @@ use resourcefs_core::{
 
 use super::*;
 
+const FILESYSTEM_MUTATION_SOURCE_KEY: &str = "workspace-filesystem";
+
 struct OpenMutationParent {
     directory: Dir,
     name: OsString,
@@ -63,7 +65,7 @@ impl MutationAdapter for FilesystemSource {
         open_mutation_parent(&resolved.root, &resolved.path, canonical.requested())?;
         MutationTarget::new(
             canonical,
-            MutationSourceKey::new(resolved.root.metadata.id().as_str())?,
+            MutationSourceKey::new(FILESYSTEM_MUTATION_SOURCE_KEY)?,
         )
     }
 
@@ -114,10 +116,11 @@ impl MutationAdapter for FilesystemSource {
             SourceMutation::Delete { target, expected } => {
                 commit_delete(active_view(&authority), target, expected)
             }
-            SourceMutation::Move { .. } => Err(ResourceError::new(
-                ErrorCategory::UnsupportedMutation,
-                "filesystem move is not enabled in this increment",
-            )),
+            SourceMutation::Move {
+                source,
+                destination,
+                expected,
+            } => commit_move(active_view(&authority), source, *destination, expected),
         }
     }
 }
@@ -155,14 +158,13 @@ fn resolve_target(
     view: &WorkspaceView,
     target: &MutationTarget,
 ) -> Result<ResolvedAddress, ResourceError> {
-    let resolved = resolve_reference(view, target.canonical_reference())?;
-    if resolved.root.metadata.id().as_str() != target.source_key().as_str() {
+    if target.source_key().as_str() != FILESYSTEM_MUTATION_SOURCE_KEY {
         return Err(ResourceError::new(
             ErrorCategory::SourceUnavailable,
             "mutation target source identity changed",
         ));
     }
-    Ok(resolved)
+    resolve_reference(view, target.canonical_reference())
 }
 
 fn canonical_target(resolved: &ResolvedAddress) -> Result<PathReference, ResourceError> {
@@ -418,6 +420,52 @@ fn commit_delete(
     })
 }
 
+fn commit_move(
+    view: &WorkspaceView,
+    source: MutationTarget,
+    destination: MutationTarget,
+    expected: VersionTag,
+) -> Result<(), ResourceError> {
+    let resolved_source = resolve_target(view, &source)?;
+    let resolved_destination = resolve_target(view, &destination)?;
+    enforce_grant(resolved_source.root.grants, MutationAccess::Delete)?;
+    enforce_grant(resolved_destination.root.grants, MutationAccess::Create)?;
+    let source_parent = open_mutation_parent(
+        &resolved_source.root,
+        &resolved_source.path,
+        source.canonical_reference().requested(),
+    )?;
+    let destination_parent = open_mutation_parent(
+        &resolved_destination.root,
+        &resolved_destination.path,
+        destination.canonical_reference().requested(),
+    )?;
+    let current_source = load_current(&source_parent, source.canonical_reference().requested())?
+        .ok_or_else(|| {
+            ResourceError::new(ErrorCategory::VersionConflict, "MV source no longer exists")
+        })?;
+    if current_source.version_tag != expected {
+        return Err(ResourceError::new(
+            ErrorCategory::VersionConflict,
+            "MV source Version Tag no longer matches authoritative content",
+        ));
+    }
+    if load_current(
+        &destination_parent,
+        destination.canonical_reference().requested(),
+    )?
+    .is_some()
+    {
+        return Err(ResourceError::new(
+            ErrorCategory::VersionConflict,
+            "MV destination already exists",
+        ));
+    }
+    platform_move(&source_parent, &destination_parent, &current_source._file).map_err(|error| {
+        mutation_commit_error(destination.canonical_reference().requested(), &error)
+    })
+}
+
 fn write_temporary(
     parent: &OpenMutationParent,
     content: &str,
@@ -593,13 +641,53 @@ fn platform_rename(
     }
 }
 
+#[cfg(unix)]
+fn platform_move(
+    source: &OpenMutationParent,
+    destination: &OpenMutationParent,
+    _source_file: &File,
+) -> io::Result<()> {
+    rustix::fs::renameat_with(
+        &source.directory,
+        &source.name,
+        &destination.directory,
+        &destination.name,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(io::Error::from)
+}
+
 #[cfg(windows)]
 fn platform_rename(
-    _parent: &Dir,
+    parent: &Dir,
     _source: &OsString,
-    _destination: &OsString,
-    destination_path: &Path,
+    destination: &OsString,
+    _destination_path: &Path,
     source_file: &File,
+    replace: bool,
+) -> io::Result<()> {
+    windows_rename_file(source_file, parent, destination, replace)
+}
+
+#[cfg(windows)]
+fn platform_move(
+    _source: &OpenMutationParent,
+    destination: &OpenMutationParent,
+    source_file: &File,
+) -> io::Result<()> {
+    windows_rename_file(
+        source_file,
+        &destination.directory,
+        &destination.name,
+        false,
+    )
+}
+
+#[cfg(windows)]
+fn windows_rename_file(
+    source_file: &File,
+    destination_parent: &Dir,
+    destination_name: &OsString,
     replace: bool,
 ) -> io::Result<()> {
     use std::{
@@ -611,9 +699,29 @@ fn platform_rename(
         ptr,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfoEx,
-        ReOpenFile, SetFileInformationByHandle,
+        FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, ReOpenFile,
     };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    // The capability-relative rename form (RootDirectory = a stable directory
+    // handle, FileName = a simple name) is honored only by NtSetInformationFile
+    // with FileRenameInformationEx. Win32 SetFileInformationByHandle rejects a
+    // non-null RootDirectory with ERROR_INVALID_PARAMETER (see MS docs: the
+    // relative form is an NT-layer capability). Declaring the ntdll entry here
+    // keeps the dependency to one file and avoids a Wdk feature edge.
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtSetInformationFile(
+            file_handle: windows_sys::Win32::Foundation::HANDLE,
+            io_status_block: *mut IO_STATUS_BLOCK,
+            file_information: *const core::ffi::c_void,
+            length: u32,
+            file_information_class: i32,
+        ) -> i32;
+        fn RtlNtStatusToDosError(status: i32) -> u32;
+    }
+    // FILE_INFORMATION_CLASS::FileRenameInformationEx
+    const FILE_RENAME_INFORMATION_EX: i32 = 65;
 
     const DELETE_ACCESS: u32 = 0x0001_0000;
     const FILE_RENAME_REPLACE_IF_EXISTS: u32 = 0x0000_0001;
@@ -634,12 +742,9 @@ fn platform_rename(
         ));
     }
     let reopened = unsafe { OwnedHandle::from_raw_handle(reopened) };
-    let destination = destination_path
-        .as_os_str()
-        .encode_wide()
-        .collect::<Vec<_>>();
+    let destination = destination_name.encode_wide().collect::<Vec<_>>();
     let bytes = offset_of!(FILE_RENAME_INFO, FileName)
-        .checked_add(destination.len() * std::mem::size_of::<u16>())
+        .checked_add((destination.len() + 1) * std::mem::size_of::<u16>())
         .ok_or_else(|| io::Error::other("rename buffer overflow"))?;
     let words = bytes.div_ceil(std::mem::size_of::<usize>());
     let mut storage = vec![0_usize; words];
@@ -651,7 +756,7 @@ fn platform_rename(
             } else {
                 0
             };
-        (*info).RootDirectory = std::ptr::null_mut();
+        (*info).RootDirectory = destination_parent.as_raw_handle();
         (*info).FileNameLength = u32::try_from(destination.len() * std::mem::size_of::<u16>())
             .map_err(|_| io::Error::other("destination is too long"))?;
         ptr::copy_nonoverlapping(
@@ -660,19 +765,25 @@ fn platform_rename(
             destination.len(),
         );
     }
-    let renamed = unsafe {
-        SetFileInformationByHandle(
+    let length = u32::try_from(bytes).map_err(|_| io::Error::other("rename buffer is too large"))?;
+    let mut io_status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+    let status = unsafe {
+        NtSetInformationFile(
             reopened.as_raw_handle(),
-            FileRenameInfoEx,
+            &mut io_status,
             info.cast(),
-            u32::try_from(bytes).map_err(|_| io::Error::other("rename buffer is too large"))?,
+            length,
+            FILE_RENAME_INFORMATION_EX,
         )
     };
-    if renamed == 0 {
-        let error = io::Error::last_os_error();
+    if status < 0 {
+        let dos = unsafe { RtlNtStatusToDosError(status) };
+        let error = io::Error::from_raw_os_error(dos as i32);
         Err(io::Error::new(
             error.kind(),
-            format!("FileRenameInfoEx failed: {error}"),
+            format!(
+                "NtSetInformationFile(FileRenameInformationEx) failed: NTSTATUS {status:#010x} ({error})"
+            ),
         ))
     } else {
         Ok(())

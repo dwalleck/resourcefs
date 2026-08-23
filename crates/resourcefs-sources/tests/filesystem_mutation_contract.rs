@@ -291,6 +291,257 @@ async fn policy_precedes_state_and_creation_never_creates_parents() {
     assert_eq!(error.category(), ErrorCategory::NotFound);
     assert!(!workspace.path().join("missing").exists());
 }
+#[tokio::test]
+async fn mv_is_atomic_no_clobber_and_preserves_both_entries_on_conflict() {
+    let workspace = TempDir::new().expect("workspace");
+    let engine = engine(workspace.path(), MutationGrants::new(true, false, true)).await;
+    let created = engine
+        .write(
+            WriteRequest::new(reference("source.txt"), "source bytes\n".to_owned(), None)
+                .expect("source create"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("source fixture");
+    fs::write(
+        workspace.path().join("destination.txt"),
+        "destination bytes\n",
+    )
+    .expect("destination fixture");
+    let patch = format!(
+        "[{}#{}]\nMV destination.txt",
+        created.canonical_reference().requested(),
+        created.version_tag().expect("source tag")
+    );
+
+    let conflict = engine
+        .edit(&patch, &OperationGuard::new())
+        .await
+        .expect_err("existing destination");
+    assert_eq!(conflict.category(), ErrorCategory::VersionConflict);
+    assert_eq!(
+        fs::read(workspace.path().join("source.txt")).expect("source preserved"),
+        b"source bytes\n"
+    );
+    assert_eq!(
+        fs::read(workspace.path().join("destination.txt")).expect("destination preserved"),
+        b"destination bytes\n"
+    );
+
+    fs::remove_file(workspace.path().join("destination.txt")).expect("remove conflict fixture");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        fs::write(workspace.path().join("other.txt"), "other\n").expect("other fixture");
+        symlink(
+            std::path::Path::new("other.txt"),
+            workspace.path().join("destination.txt"),
+        )
+        .expect("linked destination");
+        let linked = engine
+            .edit(&patch, &OperationGuard::new())
+            .await
+            .expect_err("linked destination");
+        assert_eq!(linked.category(), ErrorCategory::PermissionDenied);
+        assert_eq!(
+            fs::read(workspace.path().join("source.txt")).expect("source after linked denial"),
+            b"source bytes\n"
+        );
+        fs::remove_file(workspace.path().join("destination.txt")).expect("remove linked fixture");
+    }
+    let moved = engine
+        .edit(&patch, &OperationGuard::new())
+        .await
+        .expect("MV");
+    assert_eq!(moved.operation(), MutationOperation::Moved);
+    assert_eq!(
+        moved
+            .source_reference()
+            .expect("source reference")
+            .requested(),
+        "rfs://workspace/workspace/source.txt"
+    );
+    assert_eq!(
+        moved.canonical_reference().requested(),
+        "rfs://workspace/workspace/destination.txt"
+    );
+    assert!(moved.version_tag().is_some());
+    assert_eq!(moved.displayed_ranges(), None);
+    assert!(!workspace.path().join("source.txt").exists());
+    assert_eq!(
+        fs::read(workspace.path().join("destination.txt")).expect("moved bytes"),
+        b"source bytes\n"
+    );
+}
+
+#[tokio::test]
+async fn mv_can_cross_workspace_roots_with_exact_independent_grants() {
+    let temporary = TempDir::new().expect("temporary roots");
+    let alpha = temporary.path().join("alpha");
+    let beta = temporary.path().join("beta");
+    fs::create_dir(&alpha).expect("alpha root");
+    fs::create_dir(&beta).expect("beta root");
+    let source = FilesystemSource::new(
+        LaunchRootSource::Profile(vec![
+            LaunchRoot::new(
+                WorkspaceRootId::new("alpha").expect("alpha ID"),
+                alpha.clone(),
+                MutationGrants::new(true, false, true),
+            ),
+            LaunchRoot::new(
+                WorkspaceRootId::new("beta").expect("beta ID"),
+                beta.clone(),
+                MutationGrants::new(true, false, false),
+            ),
+        ]),
+        Some("alpha".to_owned()),
+        BackingPathVisibility::Hidden,
+    )
+    .await
+    .expect("multi-root source");
+    let engine = MutationEngine::new(Arc::new(source), session());
+    let created = engine
+        .write(
+            WriteRequest::new(
+                reference("rfs://workspace/alpha/source.txt"),
+                "cross-root\n".to_owned(),
+                None,
+            )
+            .expect("source create"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("source");
+    assert_eq!(
+        created.canonical_reference().requested(),
+        "rfs://workspace/alpha/source.txt"
+    );
+    assert!(
+        alpha.join("source.txt").exists(),
+        "source path missing; beta path exists={}, base path exists={}",
+        beta.join("source.txt").exists(),
+        temporary.path().join("source.txt").exists()
+    );
+    let patch = format!(
+        "[{}#{}]\nMV rfs://workspace/beta/moved.txt",
+        created.canonical_reference().requested(),
+        created.version_tag().expect("source tag")
+    );
+
+    engine
+        .edit(&patch, &OperationGuard::new())
+        .await
+        .expect("cross-root same-Source MV");
+
+    assert!(!alpha.join("source.txt").exists());
+    assert_eq!(
+        fs::read(beta.join("moved.txt")).expect("moved bytes"),
+        b"cross-root\n"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn mv_never_copies_across_filesystems() {
+    use std::os::unix::fs::MetadataExt;
+
+    let source_root = TempDir::new().expect("source root");
+    let destination_root = TempDir::new_in("/dev/shm").expect("cross-filesystem root");
+    assert_ne!(
+        fs::metadata(source_root.path())
+            .expect("source metadata")
+            .dev(),
+        fs::metadata(destination_root.path())
+            .expect("destination metadata")
+            .dev(),
+        "fixture roots must use distinct filesystems"
+    );
+    let source = FilesystemSource::new(
+        LaunchRootSource::Profile(vec![
+            LaunchRoot::new(
+                WorkspaceRootId::new("source").expect("source ID"),
+                source_root.path().to_owned(),
+                MutationGrants::new(true, false, true),
+            ),
+            LaunchRoot::new(
+                WorkspaceRootId::new("destination").expect("destination ID"),
+                destination_root.path().to_owned(),
+                MutationGrants::new(true, false, false),
+            ),
+        ]),
+        Some("source".to_owned()),
+        BackingPathVisibility::Hidden,
+    )
+    .await
+    .expect("cross-filesystem source");
+    let engine = MutationEngine::new(Arc::new(source), session());
+    let created = engine
+        .write(
+            WriteRequest::new(
+                reference("rfs://workspace/source/source.txt"),
+                "do not copy\n".to_owned(),
+                None,
+            )
+            .expect("source create"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("source");
+    let patch = format!(
+        "[{}#{}]\nMV rfs://workspace/destination/moved.txt",
+        created.canonical_reference().requested(),
+        created.version_tag().expect("source tag")
+    );
+
+    let error = engine
+        .edit(&patch, &OperationGuard::new())
+        .await
+        .expect_err("cross-filesystem MV");
+
+    assert_eq!(error.category(), ErrorCategory::UnsupportedMutation);
+    assert!(source_root.path().join("source.txt").exists());
+    assert!(!destination_root.path().join("moved.txt").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retargeted_links_never_mutate_outside() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = TempDir::new().expect("workspace");
+    let outside = TempDir::new().expect("outside");
+    let outside_target = outside.path().join("sentinel.txt");
+    let outside_destination = outside.path().join("moved.txt");
+    fs::write(&outside_target, "outside sentinel\n").expect("outside sentinel");
+    symlink(outside.path(), workspace.path().join("linked-parent")).expect("escaping parent link");
+    let engine = engine(workspace.path(), MutationGrants::new(true, false, true)).await;
+    let created = engine
+        .write(
+            WriteRequest::new(reference("source.txt"), "inside\n".to_owned(), None)
+                .expect("source create"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("source");
+    let patch = format!(
+        "[{}#{}]\nMV linked-parent/moved.txt",
+        created.canonical_reference().requested(),
+        created.version_tag().expect("source tag")
+    );
+
+    let error = engine
+        .edit(&patch, &OperationGuard::new())
+        .await
+        .expect_err("escaping parent link");
+
+    assert_eq!(error.category(), ErrorCategory::PermissionDenied);
+    assert_eq!(
+        fs::read(&outside_target).expect("outside sentinel after"),
+        b"outside sentinel\n"
+    );
+    assert!(!outside_destination.exists());
+    assert!(workspace.path().join("source.txt").exists());
+}
 
 #[cfg(unix)]
 #[tokio::test]
