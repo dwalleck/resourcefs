@@ -1,0 +1,56 @@
+# Continuous integration for ResourceFS.
+#
+# Owned by rfs-q12y. The four gate steps below are the same commands a
+# maintainer runs locally, and
+# `crates/resourcefs-mcp/tests/supply_chain_contract.rs` asserts they match
+# byte-for-byte, so CI cannot silently drift from local practice.
+#
+# NOT YET EXECUTED: this repository has no git remote, so this workflow has
+# never run. Its content is checked in-repo (gate commands, triggers, tabs)
+# but its execution is deferred verification, tracked at rfs-58r1. A workflow
+# that has never run is usually broken the first time it does; treat the first
+# real run as debugging, not as a green signal.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gates:
+    name: gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo state
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lints
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-features
+
+      - name: Dependency vetting
+        run: cargo deny check

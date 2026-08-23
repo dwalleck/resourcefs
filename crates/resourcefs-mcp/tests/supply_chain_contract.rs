@@ -208,6 +208,52 @@ fn workspace_passes_the_gate() {
     );
 }
 
+/// The four gate commands, transcribed from `.rfs-q12y/spec.md`'s Behavior
+/// section — the same commands a maintainer runs locally.
+const GATE_COMMANDS: &[&str] = &[
+    "cargo fmt --all -- --check",
+    "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "cargo test --workspace --all-features",
+    "cargo deny check",
+];
+
+/// C5 — CI runs the local gates and cannot drift from them.
+///
+/// The workflow has never executed (no git remote), so this asserts only what
+/// is checkable in-repo: the gate commands, the triggers, and the absence of
+/// tabs. Whether it actually runs is deferred verification, tracked at
+/// rfs-58r1.
+#[test]
+fn ci_workflow_mirrors_local_gates() {
+    let path = workspace_root().join(".github/workflows/ci.yml");
+    let workflow = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+
+    for command in GATE_COMMANDS {
+        let occurrences = workflow.matches(command).count();
+        assert_eq!(
+            occurrences, 1,
+            "the CI workflow must run `{command}` exactly once, byte-for-byte identical to the \
+             local gate; found {occurrences} occurrences. A reworded command means CI and local \
+             practice have diverged; a second occurrence usually means a weaker duplicate was \
+             added alongside the real gate."
+        );
+    }
+
+    for trigger in ["push:", "pull_request:"] {
+        assert!(
+            workflow.lines().any(|line| line.trim() == trigger),
+            "the CI workflow must declare a `{trigger}` trigger"
+        );
+    }
+
+    assert!(
+        !workflow.contains('\t'),
+        "the CI workflow must not contain tab characters: tabs are invalid YAML indentation and \
+         are the most likely way a hand-written workflow fails the first time it runs"
+    );
+}
+
 /// Writes `path` and every parent directory it needs.
 fn write(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
