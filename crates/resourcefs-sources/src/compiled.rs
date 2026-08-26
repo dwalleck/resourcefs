@@ -98,6 +98,9 @@ impl SourceAdapter for CompiledSources {
             ResourceAddress::Artifact(_) => self.artifacts.read(reference, operation).await,
             ResourceAddress::Local(_) => self.local.read(reference, operation).await,
             ResourceAddress::Https(_) => self.https_source()?.read(reference, operation).await,
+            ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
+                Err(github_source_unavailable())
+            }
         }
     }
 }
@@ -124,6 +127,10 @@ impl MutationAdapter for CompiledSources {
             ResourceAddress::Https(_) => Err(ResourceError::new(
                 ErrorCategory::UnsupportedMutation,
                 "https:// Resources are read-only; ResourceFS performs no remote writes",
+            )),
+            ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => Err(ResourceError::new(
+                ErrorCategory::UnsupportedMutation,
+                "GitHub issue and pull request Resources are read-only",
             )),
         }
     }
@@ -198,6 +205,13 @@ impl CompiledSources {
     }
 }
 
+fn github_source_unavailable() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::SourceUnavailable,
+        "no GitHub source is configured in the Server Profile",
+    )
+}
+
 #[async_trait]
 impl DiscoveryAdapter for CompiledSources {
     async fn search(
@@ -231,6 +245,9 @@ impl DiscoveryAdapter for CompiledSources {
                 self.https_source()?
                     .search(target, pattern, options, operation)
                     .await
+            }
+            Some(ResourceAddress::Issue(_)) | Some(ResourceAddress::PullRequest(_)) => {
+                Err(github_source_unavailable())
             }
         }
     }

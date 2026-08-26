@@ -1,3 +1,4 @@
+use resourcefs_core::GithubRepositoryIdentity;
 use std::collections::HashSet;
 
 use super::{
@@ -6,22 +7,31 @@ use super::{
 };
 
 const DEFAULT_API_BASE_URL: &str = "https://api.github.com/";
-const MAX_GITHUB_OWNER_BYTES: usize = 39;
-const MAX_GITHUB_REPOSITORY_BYTES: usize = 100;
 
-/// One candidate repository authority, validated by [`GithubConfig::new`].
+/// One validated repository authority and its nested mutation grants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GithubRepository {
-    name: String,
+    identity: GithubRepositoryIdentity,
     grants: MutationGrants,
 }
 
 impl GithubRepository {
-    pub fn new(name: impl Into<String>, grants: MutationGrants) -> Self {
-        Self {
-            name: name.into(),
-            grants,
-        }
+    pub fn new(
+        name: impl Into<String>,
+        grants: MutationGrants,
+    ) -> Result<Self, ConfigurationError> {
+        let name = name.into();
+        let identity = GithubRepositoryIdentity::parse(&name)
+            .map_err(|error| ConfigurationError::new(error.message()))?;
+        Ok(Self { identity, grants })
+    }
+
+    pub fn identity(&self) -> &GithubRepositoryIdentity {
+        &self.identity
+    }
+
+    pub const fn grants(&self) -> MutationGrants {
+        self.grants
     }
 }
 
@@ -62,9 +72,8 @@ impl GithubConfig {
 
         let mut identities = HashSet::with_capacity(repositories.len());
         for repository in &repositories {
-            validate_repository_name(&repository.name)?;
             MutationSupport::GITHUB.validate_nested(grants, repository.grants)?;
-            if !identities.insert(repository.name.to_ascii_lowercase()) {
+            if !identities.insert(repository.identity.clone()) {
                 return Err(ConfigurationError::new(
                     "GitHub repository identities must be unique ignoring ASCII case",
                 ));
@@ -81,33 +90,4 @@ impl GithubConfig {
             repositories,
         })
     }
-}
-
-fn validate_repository_name(name: &str) -> Result<(), ConfigurationError> {
-    let Some((owner, repository)) = name.split_once('/') else {
-        return Err(invalid_repository_name());
-    };
-    if repository.contains('/')
-        || owner.is_empty()
-        || repository.is_empty()
-        || owner.len() > MAX_GITHUB_OWNER_BYTES
-        || repository.len() > MAX_GITHUB_REPOSITORY_BYTES
-        || matches!(owner, "." | "..")
-        || matches!(repository, "." | "..")
-        || !owner.bytes().all(is_repository_byte)
-        || !repository.bytes().all(is_repository_byte)
-    {
-        return Err(invalid_repository_name());
-    }
-    Ok(())
-}
-
-fn is_repository_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
-}
-
-fn invalid_repository_name() -> ConfigurationError {
-    ConfigurationError::new(
-        "GitHub repository must be one canonical ASCII owner/repository identity",
-    )
 }

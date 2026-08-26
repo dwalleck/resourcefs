@@ -304,6 +304,8 @@ fn classify(input: &str) -> GrammarExpectation {
             ResourceAddress::Workspace(_) => GrammarExpectation::OtherFamily("workspace"),
             ResourceAddress::Artifact(_) => GrammarExpectation::OtherFamily("artifact"),
             ResourceAddress::Catalog(_) => GrammarExpectation::OtherFamily("catalog"),
+            ResourceAddress::Issue(_) => GrammarExpectation::OtherFamily("issue"),
+            ResourceAddress::PullRequest(_) => GrammarExpectation::OtherFamily("pullRequest"),
         },
         Err(error) => GrammarExpectation::Rejected(error.category()),
     }

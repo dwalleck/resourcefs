@@ -86,7 +86,8 @@ fn convert_source(
                     let (name, grants) = repository.into_parts();
                     GithubRepository::new(name, grants)
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(source_configuration_error)?;
             GithubConfig::new(
                 id,
                 required,

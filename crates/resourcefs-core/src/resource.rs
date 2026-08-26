@@ -477,6 +477,14 @@ fn validate_canonical_identity(reference: &PathReference) -> Result<(), Resource
         ResourceAddress::Https(address) => {
             reference.projection().is_none() && reference.requested() == address.as_str()
         }
+        ResourceAddress::Issue(address) => {
+            reference.projection().is_none()
+                && reference.requested() == address.canonical_reference()
+        }
+        ResourceAddress::PullRequest(address) => {
+            reference.projection().is_none()
+                && reference.requested() == address.canonical_reference()
+        }
         ResourceAddress::Workspace(_) => false,
     };
     if !canonical {

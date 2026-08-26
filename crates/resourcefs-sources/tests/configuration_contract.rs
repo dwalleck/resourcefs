@@ -399,6 +399,10 @@ fn https_policy_matrix() {
     assert!(CredentialHeader::new("bad header", None, secret()).is_err());
 }
 
+fn github_repository(name: &str, grants: MutationGrants) -> GithubRepository {
+    GithubRepository::new(name, grants).expect("valid GitHub repository identity")
+}
+
 fn github_config(
     grants: MutationGrants,
     repositories: impl IntoIterator<Item = GithubRepository>,
@@ -418,56 +422,37 @@ fn github_config(
 fn github_policy_matrix() {
     let none = MutationGrants::default();
     let create = MutationGrants::new(true, false, false);
+    for invalid in [
+        "/repository",
+        "owner/",
+        "owner/repository/extra",
+        "./repository",
+        "owner/repo name",
+    ] {
+        assert!(
+            GithubRepository::new(invalid, none).is_err(),
+            "invalid GitHub repository {invalid}"
+        );
+    }
+
+    let canonical = github_repository("Owner/Repository", none);
+    assert_eq!(canonical.identity().as_str(), "owner/repository");
+    assert_eq!(canonical.grants(), none);
+
     for (name, source_grants, repositories, accepted) in [
         (
             "default-public-api",
             none,
-            vec![GithubRepository::new("owner/repository", none)],
-            true,
-        ),
-        (
-            "case-preserving-single",
-            none,
-            vec![GithubRepository::new("Owner/Repository", none)],
+            vec![github_repository("owner/repository", none)],
             true,
         ),
         ("empty", none, vec![], false),
         (
-            "missing-owner",
-            none,
-            vec![GithubRepository::new("/repository", none)],
-            false,
-        ),
-        (
-            "missing-repository",
-            none,
-            vec![GithubRepository::new("owner/", none)],
-            false,
-        ),
-        (
-            "extra-segment",
-            none,
-            vec![GithubRepository::new("owner/repository/extra", none)],
-            false,
-        ),
-        (
-            "dot-owner",
-            none,
-            vec![GithubRepository::new("./repository", none)],
-            false,
-        ),
-        (
-            "whitespace",
-            none,
-            vec![GithubRepository::new("owner/repo name", none)],
-            false,
-        ),
-        (
             "duplicate",
             none,
             vec![
-                GithubRepository::new("owner/repository", none),
-                GithubRepository::new("owner/repository", none),
+                github_repository("owner/repository", none),
+                github_repository("owner/repository", none),
             ],
             false,
         ),
@@ -475,21 +460,21 @@ fn github_policy_matrix() {
             "case-fold-duplicate",
             none,
             vec![
-                GithubRepository::new("Owner/Repository", none),
-                GithubRepository::new("owner/repository", none),
+                github_repository("Owner/Repository", none),
+                github_repository("owner/repository", none),
             ],
             false,
         ),
         (
             "equal-nested-grants",
             create,
-            vec![GithubRepository::new("owner/repository", create)],
+            vec![github_repository("owner/repository", create)],
             true,
         ),
         (
             "broader-nested-grants",
             create,
-            vec![GithubRepository::new(
+            vec![github_repository(
                 "owner/repository",
                 MutationGrants::new(false, true, false),
             )],
@@ -498,7 +483,7 @@ fn github_policy_matrix() {
         (
             "nested-delete",
             MutationGrants::new(true, true, false),
-            vec![GithubRepository::new(
+            vec![github_repository(
                 "owner/repository",
                 MutationGrants::new(false, false, true),
             )],
@@ -515,7 +500,7 @@ fn github_policy_matrix() {
     assert!(
         github_config(
             MutationGrants::new(false, false, true),
-            [GithubRepository::new("owner/repository", none)]
+            [github_repository("owner/repository", none)]
         )
         .is_err(),
         "GitHub delete must remain unsupported"
@@ -528,7 +513,7 @@ fn github_policy_matrix() {
             Some("https://github.example.test/api/v3".to_owned()),
             true,
             secret(),
-            vec![GithubRepository::new("owner/repository", none)],
+            vec![github_repository("owner/repository", none)],
         )
         .is_ok()
     );
@@ -540,7 +525,7 @@ fn github_policy_matrix() {
             Some("http://github.example.test/api/v3".to_owned()),
             false,
             secret(),
-            vec![GithubRepository::new("owner/repository", none)],
+            vec![github_repository("owner/repository", none)],
         )
         .is_err()
     );

@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     fmt::{self, Write as _},
+    num::NonZeroU64,
     path::{Component, Path, PathBuf},
 };
 
@@ -15,6 +16,8 @@ pub(crate) const WORKSPACE_CATALOG_REFERENCE: &str = "rfs://workspace";
 pub(crate) const ARTIFACT_PREFIX: &str = "artifact://";
 pub(crate) const LOCAL_PREFIX: &str = "local://";
 pub(crate) const HTTPS_PREFIX: &str = "https://";
+pub(crate) const ISSUE_PREFIX: &str = "issue://";
+pub(crate) const PULL_REQUEST_PREFIX: &str = "pr://";
 pub const MAX_PATH_REFERENCE_BYTES: usize = 64 * 1024;
 pub const MAX_WORKSPACE_ROOTS: usize = 256;
 
@@ -330,6 +333,260 @@ impl HttpsAddress {
     }
 }
 
+const MAX_GITHUB_OWNER_BYTES: usize = 39;
+const MAX_GITHUB_REPOSITORY_BYTES: usize = 100;
+
+/// Canonical case-insensitive `owner/repository` authority.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GithubRepositoryIdentity {
+    canonical: String,
+    owner_bytes: usize,
+}
+
+impl GithubRepositoryIdentity {
+    pub fn new(
+        owner: impl Into<String>,
+        repository: impl Into<String>,
+    ) -> Result<Self, ResourceError> {
+        let owner = owner.into();
+        let repository = repository.into();
+        validate_github_identity_part(&owner, MAX_GITHUB_OWNER_BYTES)?;
+        validate_github_identity_part(&repository, MAX_GITHUB_REPOSITORY_BYTES)?;
+        let owner = owner.to_ascii_lowercase();
+        let repository = repository.to_ascii_lowercase();
+        let owner_bytes = owner.len();
+        Ok(Self {
+            canonical: format!("{owner}/{repository}"),
+            owner_bytes,
+        })
+    }
+
+    pub fn parse(value: &str) -> Result<Self, ResourceError> {
+        let Some((owner, repository)) = value.split_once('/') else {
+            return Err(invalid_github_repository());
+        };
+        if repository.contains('/') {
+            return Err(invalid_github_repository());
+        }
+        Self::new(owner, repository)
+    }
+
+    pub fn owner(&self) -> &str {
+        &self.canonical[..self.owner_bytes]
+    }
+
+    pub fn repository(&self) -> &str {
+        &self.canonical[self.owner_bytes + 1..]
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.canonical
+    }
+}
+
+fn validate_github_identity_part(value: &str, maximum: usize) -> Result<(), ResourceError> {
+    if value.is_empty()
+        || value.len() > maximum
+        || matches!(value, "." | "..")
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(invalid_github_repository());
+    }
+    Ok(())
+}
+
+fn invalid_github_repository() -> ResourceError {
+    invalid_reference("GitHub repository must be one canonical ASCII owner/repository identity")
+}
+
+macro_rules! github_numeric_id {
+    ($name:ident, $label:literal) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub struct $name(NonZeroU64);
+
+        impl $name {
+            pub fn new(value: u64) -> Result<Self, ResourceError> {
+                NonZeroU64::new(value)
+                    .map(Self)
+                    .ok_or_else(|| invalid_reference(concat!($label, " must be positive")))
+            }
+
+            pub const fn get(self) -> u64 {
+                self.0.get()
+            }
+        }
+    };
+}
+
+github_numeric_id!(IssueNumber, "GitHub issue number");
+github_numeric_id!(PullRequestNumber, "GitHub pull request number");
+github_numeric_id!(ConversationCommentId, "GitHub conversation comment ID");
+github_numeric_id!(ReviewId, "GitHub review ID");
+github_numeric_id!(ReviewCommentId, "GitHub review comment ID");
+github_numeric_id!(DiffFileIndex, "GitHub diff file index");
+
+/// Resource below one GitHub issue Aggregate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IssueResource {
+    Aggregate,
+    Title,
+    Body,
+    Comments,
+    Comment(ConversationCommentId),
+}
+
+/// Parsed `issue://` identity independent of its optional text/page selector.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum IssueAddress {
+    Root,
+    Collection {
+        repository: GithubRepositoryIdentity,
+    },
+    Item {
+        repository: GithubRepositoryIdentity,
+        number: IssueNumber,
+        resource: IssueResource,
+    },
+}
+
+impl IssueAddress {
+    pub fn repository(&self) -> Option<&GithubRepositoryIdentity> {
+        match self {
+            Self::Root => None,
+            Self::Collection { repository } | Self::Item { repository, .. } => Some(repository),
+        }
+    }
+
+    pub const fn number(&self) -> Option<IssueNumber> {
+        match self {
+            Self::Item { number, .. } => Some(*number),
+            Self::Root | Self::Collection { .. } => None,
+        }
+    }
+
+    pub const fn resource(&self) -> Option<IssueResource> {
+        match self {
+            Self::Item { resource, .. } => Some(*resource),
+            Self::Root | Self::Collection { .. } => None,
+        }
+    }
+
+    pub(crate) fn canonical_reference(&self) -> String {
+        match self {
+            Self::Root => ISSUE_PREFIX.to_owned(),
+            Self::Collection { repository } => format!("{ISSUE_PREFIX}{}", repository.as_str()),
+            Self::Item {
+                repository,
+                number,
+                resource,
+            } => {
+                let base = format!("{ISSUE_PREFIX}{}/{}", repository.as_str(), number.get());
+                match resource {
+                    IssueResource::Aggregate => base,
+                    IssueResource::Title => format!("{base}/title"),
+                    IssueResource::Body => format!("{base}/body"),
+                    IssueResource::Comments => format!("{base}/comments"),
+                    IssueResource::Comment(id) => format!("{base}/comments/{}", id.get()),
+                }
+            }
+        }
+    }
+}
+
+/// Resource below one GitHub pull-request Aggregate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PullRequestResource {
+    Aggregate,
+    Title,
+    Body,
+    Comments,
+    Comment(ConversationCommentId),
+    Reviews,
+    Review(ReviewId),
+    ReviewComments,
+    ReviewComment(ReviewCommentId),
+    Diff,
+    DiffFile(DiffFileIndex),
+}
+
+/// Parsed `pr://` identity independent of its optional text/page selector.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PullRequestAddress {
+    Root,
+    Collection {
+        repository: GithubRepositoryIdentity,
+    },
+    Item {
+        repository: GithubRepositoryIdentity,
+        number: PullRequestNumber,
+        resource: PullRequestResource,
+    },
+}
+
+impl PullRequestAddress {
+    pub fn repository(&self) -> Option<&GithubRepositoryIdentity> {
+        match self {
+            Self::Root => None,
+            Self::Collection { repository } | Self::Item { repository, .. } => Some(repository),
+        }
+    }
+
+    pub const fn number(&self) -> Option<PullRequestNumber> {
+        match self {
+            Self::Item { number, .. } => Some(*number),
+            Self::Root | Self::Collection { .. } => None,
+        }
+    }
+
+    pub const fn resource(&self) -> Option<PullRequestResource> {
+        match self {
+            Self::Item { resource, .. } => Some(*resource),
+            Self::Root | Self::Collection { .. } => None,
+        }
+    }
+
+    pub(crate) fn canonical_reference(&self) -> String {
+        match self {
+            Self::Root => PULL_REQUEST_PREFIX.to_owned(),
+            Self::Collection { repository } => {
+                format!("{PULL_REQUEST_PREFIX}{}", repository.as_str())
+            }
+            Self::Item {
+                repository,
+                number,
+                resource,
+            } => {
+                let base = format!(
+                    "{PULL_REQUEST_PREFIX}{}/{}",
+                    repository.as_str(),
+                    number.get()
+                );
+                match resource {
+                    PullRequestResource::Aggregate => base,
+                    PullRequestResource::Title => format!("{base}/title"),
+                    PullRequestResource::Body => format!("{base}/body"),
+                    PullRequestResource::Comments => format!("{base}/comments"),
+                    PullRequestResource::Comment(id) => {
+                        format!("{base}/comments/{}", id.get())
+                    }
+                    PullRequestResource::Reviews => format!("{base}/reviews"),
+                    PullRequestResource::Review(id) => format!("{base}/reviews/{}", id.get()),
+                    PullRequestResource::ReviewComments => format!("{base}/review-comments"),
+                    PullRequestResource::ReviewComment(id) => {
+                        format!("{base}/review-comments/{}", id.get())
+                    }
+                    PullRequestResource::Diff => format!("{base}/diff"),
+                    PullRequestResource::DiffFile(index) => {
+                        format!("{base}/diff/{}", index.get())
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Parsed source identity independent of its optional projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceAddress {
@@ -338,6 +595,8 @@ pub enum ResourceAddress {
     Artifact(ArtifactAddress),
     Local(LocalAddress),
     Https(HttpsAddress),
+    Issue(IssueAddress),
+    PullRequest(PullRequestAddress),
 }
 
 /// A Session Scratch name paired with the projection selector that follows it.
@@ -577,6 +836,50 @@ impl PathReference {
             });
         }
 
+        if requested.starts_with(ISSUE_PREFIX) {
+            let (base, projection) = projection_candidate_split(&requested).map_or_else(
+                || Ok((requested.as_str(), None)),
+                |(base, selector)| {
+                    ProjectionSelector::parse(selector).map(|selector| (base, Some(selector)))
+                },
+            )?;
+            let address = parse_issue_address(base)?;
+            let canonical = address.canonical_reference();
+            let requested = projection.as_ref().map_or(canonical.clone(), |selector| {
+                format!("{canonical}:{}", selector.as_str())
+            });
+            return Ok(Self {
+                requested,
+                address: ResourceAddress::Issue(address),
+                projection,
+                selector_candidate: None,
+                selector_error: None,
+                local_candidate: None,
+            });
+        }
+
+        if requested.starts_with(PULL_REQUEST_PREFIX) {
+            let (base, projection) = projection_candidate_split(&requested).map_or_else(
+                || Ok((requested.as_str(), None)),
+                |(base, selector)| {
+                    ProjectionSelector::parse(selector).map(|selector| (base, Some(selector)))
+                },
+            )?;
+            let address = parse_pull_request_address(base)?;
+            let canonical = address.canonical_reference();
+            let requested = projection.as_ref().map_or(canonical.clone(), |selector| {
+                format!("{canonical}:{}", selector.as_str())
+            });
+            return Ok(Self {
+                requested,
+                address: ResourceAddress::PullRequest(address),
+                projection,
+                selector_candidate: None,
+                selector_error: None,
+                local_candidate: None,
+            });
+        }
+
         if let Some(raw_name) = requested.strip_prefix(LOCAL_PREFIX) {
             // Filesystem-backed family: escapes must be validated before
             // `percent_decode`, whose contract assumes prior validation.
@@ -698,6 +1001,26 @@ impl PathReference {
         Self::parse(requested)
     }
 
+    pub fn issue(
+        address: IssueAddress,
+        projection: Option<ProjectionSelector>,
+    ) -> Result<Self, ResourceError> {
+        Self::parse(github_requested(
+            address.canonical_reference(),
+            projection.as_ref(),
+        ))
+    }
+
+    pub fn pull_request(
+        address: PullRequestAddress,
+        projection: Option<ProjectionSelector>,
+    ) -> Result<Self, ResourceError> {
+        Self::parse(github_requested(
+            address.canonical_reference(),
+            projection.as_ref(),
+        ))
+    }
+
     pub fn requested(&self) -> &str {
         &self.requested
     }
@@ -712,7 +1035,9 @@ impl PathReference {
             ResourceAddress::Catalog(_)
             | ResourceAddress::Artifact(_)
             | ResourceAddress::Local(_)
-            | ResourceAddress::Https(_) => None,
+            | ResourceAddress::Https(_)
+            | ResourceAddress::Issue(_)
+            | ResourceAddress::PullRequest(_) => None,
         }
     }
 
@@ -735,6 +1060,142 @@ impl PathReference {
     /// after the literal name reports `not_found`.
     pub const fn local_selector_candidate(&self) -> Option<&SelectedLocalAddress> {
         self.local_candidate.as_ref()
+    }
+}
+
+fn github_requested(base: String, projection: Option<&ProjectionSelector>) -> String {
+    projection.map_or(base.clone(), |selector| {
+        format!("{base}:{}", selector.as_str())
+    })
+}
+
+fn parse_github_body(input: &str, prefix: &str) -> Result<String, ResourceError> {
+    let body = input
+        .strip_prefix(prefix)
+        .ok_or_else(|| invalid_reference("malformed GitHub reference"))?;
+    if body.is_empty() {
+        return Ok(String::new());
+    }
+    validate_percent_encoding(body)?;
+    percent_decode(body)
+}
+
+fn github_repository(
+    owner: &str,
+    repository: &str,
+) -> Result<GithubRepositoryIdentity, ResourceError> {
+    GithubRepositoryIdentity::new(owner, repository)
+}
+
+fn github_number(value: &str, label: &str) -> Result<u64, ResourceError> {
+    positive_integer(value).ok_or_else(|| invalid_reference(format!("{label} must be positive")))
+}
+
+fn parse_issue_address(input: &str) -> Result<IssueAddress, ResourceError> {
+    let body = parse_github_body(input, ISSUE_PREFIX)?;
+    if body.is_empty() {
+        return Ok(IssueAddress::Root);
+    }
+    let segments = body.split('/').collect::<Vec<_>>();
+    match segments.as_slice() {
+        [owner, repository] => Ok(IssueAddress::Collection {
+            repository: github_repository(owner, repository)?,
+        }),
+        [owner, repository, number] => Ok(IssueAddress::Item {
+            repository: github_repository(owner, repository)?,
+            number: IssueNumber::new(github_number(number, "GitHub issue number")?)?,
+            resource: IssueResource::Aggregate,
+        }),
+        [owner, repository, number, resource] => {
+            let repository = github_repository(owner, repository)?;
+            let number = IssueNumber::new(github_number(number, "GitHub issue number")?)?;
+            let resource = match *resource {
+                "title" => IssueResource::Title,
+                "body" => IssueResource::Body,
+                "comments" => IssueResource::Comments,
+                _ => return Err(invalid_reference("unsupported GitHub issue Resource path")),
+            };
+            Ok(IssueAddress::Item {
+                repository,
+                number,
+                resource,
+            })
+        }
+        [owner, repository, number, "comments", comment] => Ok(IssueAddress::Item {
+            repository: github_repository(owner, repository)?,
+            number: IssueNumber::new(github_number(number, "GitHub issue number")?)?,
+            resource: IssueResource::Comment(ConversationCommentId::new(github_number(
+                comment,
+                "GitHub conversation comment ID",
+            )?)?),
+        }),
+        _ => Err(invalid_reference("malformed GitHub issue reference")),
+    }
+}
+
+fn parse_pull_request_address(input: &str) -> Result<PullRequestAddress, ResourceError> {
+    let body = parse_github_body(input, PULL_REQUEST_PREFIX)?;
+    if body.is_empty() {
+        return Ok(PullRequestAddress::Root);
+    }
+    let segments = body.split('/').collect::<Vec<_>>();
+    match segments.as_slice() {
+        [owner, repository] => Ok(PullRequestAddress::Collection {
+            repository: github_repository(owner, repository)?,
+        }),
+        [owner, repository, number] => Ok(PullRequestAddress::Item {
+            repository: github_repository(owner, repository)?,
+            number: PullRequestNumber::new(github_number(number, "GitHub pull request number")?)?,
+            resource: PullRequestResource::Aggregate,
+        }),
+        [owner, repository, number, resource] => {
+            let repository = github_repository(owner, repository)?;
+            let number =
+                PullRequestNumber::new(github_number(number, "GitHub pull request number")?)?;
+            let resource = match *resource {
+                "title" => PullRequestResource::Title,
+                "body" => PullRequestResource::Body,
+                "comments" => PullRequestResource::Comments,
+                "reviews" => PullRequestResource::Reviews,
+                "review-comments" => PullRequestResource::ReviewComments,
+                "diff" => PullRequestResource::Diff,
+                _ => {
+                    return Err(invalid_reference(
+                        "unsupported GitHub pull request Resource path",
+                    ));
+                }
+            };
+            Ok(PullRequestAddress::Item {
+                repository,
+                number,
+                resource,
+            })
+        }
+        [owner, repository, number, collection, id] => {
+            let repository = github_repository(owner, repository)?;
+            let number =
+                PullRequestNumber::new(github_number(number, "GitHub pull request number")?)?;
+            let value = github_number(id, "GitHub pull request child ID")?;
+            let resource = match *collection {
+                "comments" => PullRequestResource::Comment(ConversationCommentId::new(value)?),
+                "reviews" => PullRequestResource::Review(ReviewId::new(value)?),
+                "review-comments" => {
+                    PullRequestResource::ReviewComment(ReviewCommentId::new(value)?)
+                }
+                "diff" => PullRequestResource::DiffFile(DiffFileIndex::new(value)?),
+                _ => {
+                    return Err(invalid_reference(
+                        "unsupported GitHub pull request Resource path",
+                    ));
+                }
+            };
+            Ok(PullRequestAddress::Item {
+                repository,
+                number,
+                resource,
+            })
+        }
+        _ => Err(invalid_reference("malformed GitHub pull request reference")),
     }
 }
 

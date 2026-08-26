@@ -109,6 +109,10 @@ impl SourceAdapter for SessionBackedSource {
                 ErrorCategory::UnsupportedProjection,
                 "test source does not implement HTTPS Resources",
             )),
+            ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => Err(ResourceError::new(
+                ErrorCategory::UnsupportedProjection,
+                "test source does not implement GitHub Resources",
+            )),
         }
     }
 }

@@ -117,7 +117,9 @@ impl ReadEngine {
             ResourceAddress::Catalog(_)
             | ResourceAddress::Workspace(_)
             | ResourceAddress::Local(_)
-            | ResourceAddress::Https(_) => None,
+            | ResourceAddress::Https(_)
+            | ResourceAddress::Issue(_)
+            | ResourceAddress::PullRequest(_) => None,
         };
         let requested_artifact_projection = request.reference.projection().is_some();
         // Seen regions exist for editable Resources: Workspace files and named

@@ -284,7 +284,9 @@ fn artifact_address(reference: &str) -> resourcefs_core::ArtifactAddress {
         ResourceAddress::Catalog(_)
         | ResourceAddress::Workspace(_)
         | ResourceAddress::Local(_)
-        | ResourceAddress::Https(_) => {
+        | ResourceAddress::Https(_)
+        | ResourceAddress::Issue(_)
+        | ResourceAddress::PullRequest(_) => {
             panic!("recovery must name an Artifact")
         }
     }
