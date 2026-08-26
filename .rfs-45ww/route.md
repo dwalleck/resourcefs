@@ -37,3 +37,5 @@ interrogated-spec → prove-it-prototype → falsifiable-design → budgeted-pla
 ## Terminal criterion
 
 Empirical — `prove-it-prototype` records PASS for every empirical premise, every later artifact satisfies its owning stage's completion criterion, and `checkpointed-build` records no FAIL.
+
+Result: 2026-08-25 post-amend current-tree replay | `cargo fmt --all -- --check` → PASS; `cargo clippy --workspace --all-targets --all-features -- -D warnings` → PASS; `cargo deny check` → PASS (`advisories`, `bans`, `licenses`, `sources`); `cargo test --workspace` → PASS (416 tests, 55 suites, 7 ignored); `cargo test --workspace --all-features` → PASS (416 tests, 55 suites, 7 ignored); `cargo test --workspace -- --ignored` → PASS (7 production budgets, 55 suites, 416 filtered) | Empirical premises P1–P6, claims C1–C21, all slice gates, final implementation/oracle comparisons, falsifiers, and regression fences completed with no FAIL.
