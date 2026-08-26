@@ -396,6 +396,9 @@ fn selects_exactly_one_launch_authority() {
     );
     assert_clean_protocol_serve(profile_only);
 
+    let cache_home = temporary.path().join("cli-cache-home");
+    fs::create_dir(&cache_home).expect("CLI cache home");
+    let cache_home = cache_home.to_string_lossy();
     let roots_only = run_initialized_serve(
         &[
             "serve".to_owned(),
@@ -405,7 +408,11 @@ fn selects_exactly_one_launch_authority() {
             "workspace".to_owned(),
         ],
         temporary.path(),
-        &[],
+        &[
+            ("XDG_CACHE_HOME", Some(cache_home.as_ref())),
+            ("LOCALAPPDATA", Some(cache_home.as_ref())),
+            ("HOME", Some(cache_home.as_ref())),
+        ],
     );
     assert_clean_protocol_serve(roots_only);
 

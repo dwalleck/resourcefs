@@ -149,6 +149,7 @@ async fn newline_free_files_are_rejected_before_unbounded_allocation() {
             ArtifactSource::new(session.path_session().clone()),
             resourcefs_sources::LocalSource::new(session.path_session().clone()),
             None,
+            None,
         )
         .await
         .expect("C5 compiled sources"),

@@ -10,8 +10,8 @@ use std::{
 
 use globset::GlobBuilder;
 use resourcefs_core::{
-    ErrorCategory, MAX_DISCOVERY_PATTERN_BYTES, MAX_PATH_REFERENCE_BYTES, ResourceError,
-    SearchEngine,
+    ErrorCategory, MAX_DISCOVERY_PATTERN_BYTES, MAX_PATH_REFERENCE_BYTES, PathReference,
+    ResourceError, SearchEngine, SearchRecord, SearchSourceResult,
 };
 
 const PCRE2_MATCH_LIMIT: u32 = 100_000;
@@ -152,6 +152,39 @@ impl SearchMatcher {
             SearchMatcherInner::Pcre2(regex) => regex.jit_size(),
         }
     }
+}
+
+#[cfg_attr(
+    test,
+    allow(
+        dead_code,
+        reason = "standalone pattern contract includes this module without Source Adapters"
+    )
+)]
+pub(crate) fn search_document(
+    content: &str,
+    canonical: &PathReference,
+    pattern: &str,
+    case_sensitive: bool,
+) -> Result<SearchSourceResult, ResourceError> {
+    let mut matcher = SearchMatcher::compile(pattern, case_sensitive)?;
+    let engine = matcher.engine();
+    let mut records = Vec::new();
+    for (index, line) in content.lines().enumerate() {
+        if matcher.is_match(line)? {
+            let line_number = u64::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(1))
+                .ok_or_else(|| {
+                    ResourceError::new(
+                        ErrorCategory::LimitExceeded,
+                        "search line number is not representable",
+                    )
+                })?;
+            records.push(SearchRecord::new(canonical.clone(), line_number, line)?);
+        }
+    }
+    Ok(SearchSourceResult::new(engine, records, Vec::new()))
 }
 
 #[derive(Debug)]

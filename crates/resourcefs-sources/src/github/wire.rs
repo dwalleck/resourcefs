@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(feature = "test-support"),
-    expect(
-        dead_code,
-        reason = "the issue-list pull_request discriminator lands before collection filtering"
-    )
-)]
-
 use serde::{Deserialize, de::DeserializeOwned};
 
 use resourcefs_core::{ErrorCategory, ResourceError};
@@ -135,6 +127,7 @@ fn malformed_json(path: String, error: &dyn std::fmt::Display) -> ResourceError 
     ResourceError::new(ErrorCategory::SourceUnavailable, message)
 }
 
+#[cfg(feature = "test-support")]
 fn require_positive(value: u64, field: &str) -> Result<u64, ResourceError> {
     if value == 0 {
         return Err(ResourceError::new(
@@ -145,16 +138,19 @@ fn require_positive(value: u64, field: &str) -> Result<u64, ResourceError> {
     Ok(value)
 }
 
+#[cfg(feature = "test-support")]
 fn string_bytes<'a>(values: impl IntoIterator<Item = &'a str>) -> usize {
     values
         .into_iter()
         .fold(0_usize, |total, value| total.saturating_add(value.len()))
 }
 
+#[cfg(feature = "test-support")]
 fn optional_bytes(value: &Option<String>) -> usize {
     value.as_deref().map_or(0, str::len)
 }
 
+#[cfg(feature = "test-support")]
 fn user_bytes(value: &Option<SimpleUser>) -> Result<usize, ResourceError> {
     let Some(user) = value else {
         return Ok(0);

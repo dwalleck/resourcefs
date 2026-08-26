@@ -361,6 +361,7 @@ async fn cancellation_survives_source_dispatch() {
         ArtifactSource::new(session.path_session().clone()),
         LocalSource::new(session.path_session().clone()),
         Some(source(port, Vec::new())),
+        None,
     )
     .await
     .expect("compiled sources");

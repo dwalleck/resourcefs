@@ -1,18 +1,24 @@
 mod render;
 mod wire;
 
-use std::sync::Arc;
+use std::{io::Cursor, sync::Arc};
 
 use async_trait::async_trait;
 use resourcefs_core::{
-    ErrorCategory, GithubRepositoryIdentity, IssueAddress, IssueResource, OperationGuard,
-    PathReference, PathSession, PullRequestAddress, PullRequestResource, ResourceAddress,
-    ResourceError, SessionCacheEntry, SessionCacheKey, SourceAdapter, SourceResource,
+    DiscoveryAdapter, ErrorCategory, GithubRepositoryIdentity, GlobOptions, GlobTarget,
+    IssueAddress, IssueResource, OperationGuard, PathReference, PathSession, PullRequestAddress,
+    PullRequestResource, ResourceAddress, ResourceError, SearchOptions, SearchSourceResult,
+    SearchTarget, SessionCacheEntry, SessionCacheKey, SourceAdapter, SourceGlobResult,
+    SourceResource, select_utf8,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
-use crate::{GithubConfig, HttpRequest, HttpSubstrate};
+use crate::{
+    GithubConfig, HttpRequest, HttpSubstrate,
+    catalog::{SourceCatalogEntry, SourceCatalogMetadata},
+    pattern::search_document,
+};
 use wire::{
     ConversationComment, DiffFile, Issue, PullRequest, PullRequestSummary, Review, ReviewComment,
     SimpleUser,
@@ -919,13 +925,8 @@ impl GithubSource {
         reference: &PathReference,
         operation: &OperationGuard,
     ) -> Result<SourceResource, ResourceError> {
-        let page = match reference.projection() {
-            None => None,
-            Some(projection) => projection
-                .page_offset()
-                .map(Some)
-                .ok_or_else(unsupported_github_projection)?,
-        };
+        let projection = reference.projection();
+        let page = projection.and_then(resourcefs_core::ProjectionSelector::page_offset);
         let (canonical, content) = match reference.address() {
             ResourceAddress::Issue(address) => {
                 let repository = address
@@ -949,7 +950,12 @@ impl GithubSource {
             }
             _ => return Err(unsupported_github_projection()),
         };
-        SourceResource::text(canonical, content)
+        if projection.is_some_and(|projection| projection.line_selection().is_some()) {
+            let selected = select_utf8(Cursor::new(content), projection)?;
+            SourceResource::selected_text(canonical, selected)
+        } else {
+            SourceResource::text(canonical, content)
+        }
     }
 }
 
@@ -971,6 +977,109 @@ impl SourceAdapter for GithubSource {
                 "GitHub operation exceeded the configured logical deadline",
             )
         })?
+    }
+}
+
+impl SourceCatalogMetadata for GithubSource {
+    fn catalog_entries(&self) -> Result<Vec<SourceCatalogEntry>, ResourceError> {
+        Ok(vec![
+            SourceCatalogEntry::new(
+                "issue://",
+                "issue://<owner>/<repository>[/<number>[/title|body|comments/<id>]][:selector]",
+                "issue://owner/repository/42",
+                None,
+            )?,
+            SourceCatalogEntry::new(
+                "pr://",
+                "pr://<owner>/<repository>[/<number>[/title|body|comments|reviews|review-comments|diff]][:selector]",
+                "pr://owner/repository/42",
+                None,
+            )?,
+        ])
+    }
+}
+
+#[async_trait]
+impl DiscoveryAdapter for GithubSource {
+    async fn search(
+        &self,
+        target: &SearchTarget,
+        pattern: &str,
+        options: SearchOptions,
+        operation: &OperationGuard,
+    ) -> Result<SearchSourceResult, ResourceError> {
+        let reference = target
+            .reference()
+            .ok_or_else(unsupported_github_projection)?;
+        if !matches!(
+            reference.address(),
+            ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_)
+        ) {
+            return Err(unsupported_github_projection());
+        }
+        let source = self.read(reference, operation).await?;
+        let canonical = PathReference::parse(source.canonical_reference().to_owned())?;
+        let mut lines = source.content().lines().collect::<Vec<_>>();
+        while lines.last().is_some_and(|line| line.is_empty()) {
+            lines.pop();
+        }
+        let mut continuations = Vec::new();
+        loop {
+            let Some(line) = lines
+                .last()
+                .and_then(|line| line.strip_prefix("Continuation: "))
+            else {
+                break;
+            };
+            continuations.push(PathReference::parse(line)?);
+            lines.pop();
+            while lines.last().is_some_and(|line| line.is_empty()) {
+                lines.pop();
+            }
+        }
+        continuations.reverse();
+        let content = lines.join("\n");
+        let continuation = match continuations.as_slice() {
+            [] => None,
+            [continuation] => Some(continuation.clone()),
+            many => {
+                let manifest = many
+                    .iter()
+                    .map(PathReference::requested)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let address = self.session.retain(&manifest, operation).await?;
+                Some(PathReference::artifact(address, None)?)
+            }
+        };
+        let pattern = pattern.to_owned();
+        let case_sensitive = options.case_sensitive();
+        let mut result = tokio::task::spawn_blocking(move || {
+            search_document(&content, &canonical, &pattern, case_sensitive)
+        })
+        .await
+        .map_err(|error| {
+            ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                format!("GitHub discovery worker failed: {error}"),
+            )
+        })??;
+        if let Some(continuation) = continuation {
+            result = result.with_source_continuation(continuation);
+        }
+        Ok(result)
+    }
+
+    async fn glob(
+        &self,
+        _target: &GlobTarget,
+        _options: GlobOptions,
+        _operation: &OperationGuard,
+    ) -> Result<SourceGlobResult, ResourceError> {
+        Err(ResourceError::new(
+            ErrorCategory::UnsupportedProjection,
+            "GitHub Resources cannot be enumerated by glob; read a repository collection",
+        ))
     }
 }
 
@@ -1059,6 +1168,11 @@ fn validate_comment_ids(values: &[ConversationComment]) -> Result<(), ResourceEr
     validate_unique_ids(values.iter().map(|value| value.id), "comment.id")?;
     for value in values {
         validate_user(&value.user, "comment.user.id")?;
+        if value.issue_url.is_empty() {
+            return Err(malformed_upstream(
+                "GitHub conversation comment requires issue_url",
+            ));
+        }
     }
     Ok(())
 }

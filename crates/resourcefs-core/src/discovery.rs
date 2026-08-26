@@ -409,6 +409,7 @@ pub struct SearchSourceResult {
     engine: SearchEngine,
     records: Vec<SearchRecord>,
     diagnostics: Vec<DiscoveryDiagnostic>,
+    source_continuation: Option<String>,
 }
 
 impl SearchSourceResult {
@@ -421,7 +422,13 @@ impl SearchSourceResult {
             engine,
             records,
             diagnostics,
+            source_continuation: None,
         }
+    }
+
+    pub fn with_source_continuation(mut self, reference: PathReference) -> Self {
+        self.source_continuation = Some(reference.requested().to_owned());
+        self
     }
 }
 
@@ -669,6 +676,7 @@ impl DiscoveryEngine {
             engine,
             mut records,
             mut diagnostics,
+            source_continuation,
         } = source;
         normalize_search_records(&mut records);
         normalize_diagnostics(&mut diagnostics)?;
@@ -686,7 +694,7 @@ impl DiscoveryEngine {
             total_records: records.len(),
             text: page.text,
             recovery_reference: recovery.reference,
-            continuation_reference: recovery.continuation,
+            continuation_reference: recovery.continuation.or(source_continuation),
         })
     }
 

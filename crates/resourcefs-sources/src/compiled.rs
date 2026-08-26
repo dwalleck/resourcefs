@@ -7,7 +7,7 @@ use resourcefs_core::{
 };
 
 use crate::{
-    ArtifactSource, FilesystemSource, HttpsSource, LocalSource,
+    ArtifactSource, FilesystemSource, GithubSource, HttpsSource, LocalSource,
     catalog::{NamespaceCatalog, SourceCatalogEntry, SourceCatalogMetadata},
     filesystem::mutation::FILESYSTEM_MUTATION_SOURCE_KEY,
     local::LOCAL_MUTATION_SOURCE_KEY,
@@ -20,6 +20,7 @@ pub struct CompiledSources {
     artifacts: ArtifactSource,
     local: LocalSource,
     https: Option<HttpsSource>,
+    github: Option<GithubSource>,
 }
 
 impl CompiledSources {
@@ -28,12 +29,14 @@ impl CompiledSources {
         artifacts: ArtifactSource,
         local: LocalSource,
         https: Option<HttpsSource>,
+        github: Option<GithubSource>,
     ) -> Result<Self, ResourceError> {
         let compiled = Self {
             filesystem,
             artifacts,
             local,
             https,
+            github,
         };
         let source_document = NamespaceCatalog::source_document(compiled.catalog_entries()?)?;
         let workspace_document = NamespaceCatalog::workspace_document(&compiled.filesystem).await?;
@@ -54,6 +57,9 @@ impl CompiledSources {
             vec![&self.filesystem, &self.artifacts, &self.local];
         if let Some(https) = &self.https {
             sources.push(https);
+        }
+        if let Some(github) = &self.github {
+            sources.push(github);
         }
         sources
     }
@@ -99,7 +105,7 @@ impl SourceAdapter for CompiledSources {
             ResourceAddress::Local(_) => self.local.read(reference, operation).await,
             ResourceAddress::Https(_) => self.https_source()?.read(reference, operation).await,
             ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
-                Err(github_source_unavailable())
+                self.github_source()?.read(reference, operation).await
             }
         }
     }
@@ -203,6 +209,10 @@ impl CompiledSources {
             )),
         }
     }
+
+    fn github_source(&self) -> Result<&GithubSource, ResourceError> {
+        self.github.as_ref().ok_or_else(github_source_unavailable)
+    }
 }
 
 fn github_source_unavailable() -> ResourceError {
@@ -247,7 +257,9 @@ impl DiscoveryAdapter for CompiledSources {
                     .await
             }
             Some(ResourceAddress::Issue(_)) | Some(ResourceAddress::PullRequest(_)) => {
-                Err(github_source_unavailable())
+                self.github_source()?
+                    .search(target, pattern, options, operation)
+                    .await
             }
         }
     }
@@ -311,6 +323,7 @@ mod tests {
             filesystem,
             ArtifactSource::new(session.path_session().clone()),
             crate::LocalSource::new(session.path_session().clone()),
+            None,
             None,
         )
         .await
@@ -384,6 +397,7 @@ mod tests {
             ArtifactSource::new(session.path_session().clone()),
             crate::LocalSource::new(session.path_session().clone()),
             Some(HttpsSource::new(substrate)),
+            None,
         )
         .await
         .expect("compiled sources");

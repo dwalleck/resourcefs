@@ -3,6 +3,14 @@ mod session_support;
 #[path = "support/tls.rs"]
 mod tls;
 
+use resourcefs_core::{
+    DiscoveryEngine, ErrorCategory, MutationAccess, MutationAdapter, OperationGuard, PathReference,
+    SearchLimits, SearchOptions, SearchRequest, SearchTarget, ServerLimits, SourceAdapter,
+};
+use resourcefs_sources::{
+    ArtifactSource, CompiledSources, GithubConfig, GithubRepository, GithubSource, HttpSubstrate,
+    MutationGrants, SecretReference, render_issue_for_test,
+};
 use std::{
     net::{IpAddr, Ipv4Addr},
     sync::{
@@ -10,12 +18,6 @@ use std::{
         atomic::{AtomicU16, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
-};
-
-use resourcefs_core::{ErrorCategory, OperationGuard, PathReference, SourceAdapter};
-use resourcefs_sources::{
-    GithubConfig, GithubRepository, GithubSource, HttpSubstrate, MutationGrants, SecretReference,
-    render_issue_for_test,
 };
 use tls::{FIXTURE_HOST, FixtureResponse, MATCH_CERT, TlsListener, fixture_allowlist, settle};
 
@@ -311,6 +313,94 @@ async fn errors_match_typed_status_header_matrix() {
 }
 
 #[tokio::test]
+async fn search_and_line_selectors_use_the_rendered_resource() {
+    let (_listener, source) = fixture_source(|path| match path {
+        "/repos/owner/repo/issues/42" => response(ISSUE),
+        "/repos/owner/repo/issues/42/comments?per_page=100&page=1" => response(ISSUE_COMMENTS),
+        other => panic!("unexpected route {other}"),
+    })
+    .await;
+    let selected = source
+        .read(
+            &PathReference::parse("issue://owner/repo/42:1-3").expect("line selector"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("selected aggregate");
+    assert_eq!(
+        selected.content(),
+        "# Issue #42: Parser bug\n\nKind: issue\n"
+    );
+
+    let engine_session = session_support::scratch_fixture().await;
+    let engine = DiscoveryEngine::new(
+        Arc::new(source),
+        engine_session.path_session().clone(),
+        ServerLimits::default(),
+    );
+    let result = engine
+        .search(
+            SearchRequest::new(
+                SearchTarget::resource(
+                    PathReference::parse("issue://owner/repo/42").expect("aggregate"),
+                ),
+                "^CONVERSATION$",
+                SearchOptions::new(false, true, false),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("search request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("GitHub search");
+    assert_eq!(result.total_records(), 1);
+    assert_eq!(result.groups()[0].reference(), "issue://owner/repo/42");
+    assert_eq!(result.groups()[0].lines()[0].text(), "conversation");
+}
+#[tokio::test]
+async fn compiled_registry_mounts_dispatches_and_refuses_github_mutation() {
+    let (_listener, github) = fixture_source(|path| match path {
+        "/repos/owner/repo/issues/42" => response(ISSUE),
+        other => panic!("unexpected route {other}"),
+    })
+    .await;
+    let scratch = session_support::scratch_fixture().await;
+    let session = scratch.path_session().clone();
+    let compiled = CompiledSources::new(
+        scratch.filesystem.clone(),
+        ArtifactSource::new(session.clone()),
+        scratch.local.clone(),
+        None,
+        Some(github),
+    )
+    .await
+    .expect("compiled GitHub source");
+    let catalog = compiled
+        .read(
+            &PathReference::parse("rfs://").expect("catalog"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("catalog read");
+    assert!(catalog.content().contains("issue://"));
+    assert!(catalog.content().contains("pr://"));
+    let title_reference = PathReference::parse("issue://owner/repo/42/title").expect("title");
+    assert_eq!(
+        compiled
+            .read(&title_reference, &OperationGuard::new())
+            .await
+            .expect("compiled read")
+            .content(),
+        "Parser bug"
+    );
+    let mutation = MutationAdapter::resolve(&compiled, &title_reference, MutationAccess::Update)
+        .await
+        .expect_err("GitHub mutation unsupported");
+    assert_eq!(mutation.category(), ErrorCategory::UnsupportedMutation);
+}
+
+#[tokio::test]
 async fn repository_collections_are_bounded_filtered_and_continuable() {
     let port = Arc::new(AtomicU16::new(0));
     let observed_port = Arc::clone(&port);
@@ -367,8 +457,35 @@ async fn repository_collections_are_bounded_filtered_and_continuable() {
         "{}",
         listed.content()
     );
+    let engine_session = session_support::scratch_fixture().await;
+    let engine = DiscoveryEngine::new(
+        Arc::new(source),
+        engine_session.path_session().clone(),
+        ServerLimits::default(),
+    );
+    let search = engine
+        .search(
+            SearchRequest::new(
+                SearchTarget::resource(
+                    PathReference::parse("issue://owner/repo").expect("collection"),
+                ),
+                "^Continuation:",
+                SearchOptions::default(),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("search"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("continuation search");
+    assert_eq!(search.total_records(), 0);
+    assert_eq!(
+        search.continuation_reference(),
+        Some("issue://owner/repo:page:11")
+    );
     settle().await;
-    assert_eq!(listener.requests().len(), 10);
+    assert_eq!(listener.requests().len(), 20);
 }
 
 #[tokio::test]
@@ -644,6 +761,51 @@ async fn github_pagination_cache_budget() {
     assert!(started.elapsed() <= Duration::from_secs(30));
     settle().await;
     assert_eq!(listener.requests().len(), 10);
+}
+
+#[tokio::test]
+#[ignore = "checkpointed-build production-scale budget"]
+async fn github_search_budget() {
+    let mut body = "x".repeat(7 * 1024 * 1024);
+    body.push_str("\nneedle\n");
+    let issue = format!(
+        "{{\"id\":1,\"number\":42,\"state\":\"open\",\"title\":\"large\",\"body\":{},\"user\":null,\"html_url\":\"https://example/42\",\"created_at\":\"2026-08-20T00:00:00Z\",\"updated_at\":\"2026-08-20T00:00:00Z\"}}",
+        serde_json::to_string(&body).expect("encode body")
+    );
+    let (_listener, source) = fixture_source(move |path| match path {
+        "/repos/owner/repo/issues/42" => response(&issue),
+        "/repos/owner/repo/issues/42/comments?per_page=100&page=1" => response("[]"),
+        other => panic!("unexpected route {other}"),
+    })
+    .await;
+    let engine_session = session_support::scratch_fixture().await;
+    let engine = DiscoveryEngine::new(
+        Arc::new(source),
+        engine_session.path_session().clone(),
+        ServerLimits::default(),
+    );
+    let started = Instant::now();
+    let result = engine
+        .search(
+            SearchRequest::new(
+                SearchTarget::resource(
+                    PathReference::parse("issue://owner/repo/42").expect("aggregate"),
+                ),
+                "^needle$",
+                SearchOptions::default(),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("search");
+    assert_eq!(result.total_records(), 1);
+    assert!(
+        started.elapsed() <= Duration::from_secs(1),
+        "maximum GitHub search exceeded one second"
+    );
 }
 #[test]
 #[ignore = "checkpointed-build production-scale budget"]

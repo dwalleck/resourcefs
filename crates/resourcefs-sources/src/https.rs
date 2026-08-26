@@ -3,14 +3,14 @@ use std::{fmt, io::Cursor, sync::Arc};
 use async_trait::async_trait;
 use resourcefs_core::{
     DiscoveryAdapter, ErrorCategory, GlobOptions, GlobTarget, HttpsAddress, OperationGuard,
-    PathReference, ResourceAddress, ResourceError, SearchOptions, SearchRecord, SearchSourceResult,
-    SearchTarget, SourceAdapter, SourceGlobResult, SourceResource, VersionTag, select_utf8,
+    PathReference, ResourceAddress, ResourceError, SearchOptions, SearchSourceResult, SearchTarget,
+    SourceAdapter, SourceGlobResult, SourceResource, VersionTag, select_utf8,
 };
 
 use crate::{
     catalog::{SourceCatalogEntry, SourceCatalogMetadata},
     http::{HttpRequest, HttpSubstrate},
-    pattern::SearchMatcher,
+    pattern::search_document,
 };
 
 /// Read and discovery adapter for allowlisted `https://` Resources.
@@ -169,38 +169,10 @@ impl DiscoveryAdapter for HttpsSource {
     }
 }
 
-fn search_document(
-    markdown: &str,
-    canonical: &PathReference,
-    pattern: &str,
-    case_sensitive: bool,
-) -> Result<SearchSourceResult, ResourceError> {
-    let mut matcher = SearchMatcher::compile(pattern, case_sensitive)?;
-    let engine = matcher.engine();
-    let mut records = Vec::new();
-    for (index, line) in markdown.lines().enumerate() {
-        if matcher.is_match(line)? {
-            let line_number = u64::try_from(index)
-                .ok()
-                .and_then(|index| index.checked_add(1))
-                .ok_or_else(search_line_overflow)?;
-            records.push(SearchRecord::new(canonical.clone(), line_number, line)?);
-        }
-    }
-    Ok(SearchSourceResult::new(engine, records, Vec::new()))
-}
-
 fn discovery_worker_error(error: tokio::task::JoinError) -> ResourceError {
     ResourceError::new(
         ErrorCategory::SourceUnavailable,
         format!("HTTPS discovery worker failed: {error}"),
-    )
-}
-
-fn search_line_overflow() -> ResourceError {
-    ResourceError::new(
-        ErrorCategory::LimitExceeded,
-        "HTTPS search line number is not representable",
     )
 }
 

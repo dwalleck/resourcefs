@@ -550,7 +550,7 @@ impl ResourceFsServer {
 
     #[tool(
         name = "rfs_search",
-        description = "Start with rfs_read of rfs:// to discover mounted sources. Search Workspace files and Artifact Resources for matching lines. Omit path to search the Primary Workspace Root recursively; one optional exact Workspace file/directory or Artifact path limits the scan to that target and its descendants, and a concrete target is attempted exactly as named. Defaults: caseSensitive=true, gitignore=true, hidden=false, skip=0; caseSensitive=false selects Unicode-aware case-insensitive matching, gitignore=false includes ignored entries, hidden=true includes hidden entries. The pattern is matched literally when it has no metacharacters, otherwise with Rust regex first and PCRE2 when Rust rejects the syntax; a pattern both engines reject is an invalid_pattern tool error, and a pattern over 65,536 UTF-8 bytes is limit_exceeded. Optional limits may only lower the 1,000-record, 49,152-byte, 3,000-line, and 512-column ceilings. Follow continuationReference for the next page; recoveryReference names the complete immutable result. Returns complete non-empty text and equivalent structured content; operational failures are tool errors with stable categories.",
+        description = "Start with rfs_read of rfs:// to discover mounted sources. Search matching lines in Workspace, Artifact, HTTPS, and configured issue:// or pr:// Resources. Omit path to search the Primary Workspace Root recursively; an explicit path targets exactly one Resource or source-native repository collection. Defaults: caseSensitive=true, gitignore=true, hidden=false, skip=0; caseSensitive=false selects Unicode-aware case-insensitive matching, gitignore=false includes ignored Workspace entries, hidden=true includes hidden Workspace entries. The pattern is matched literally when it has no metacharacters, otherwise with Rust regex first and PCRE2 when Rust rejects the syntax; a pattern both engines reject is an invalid_pattern tool error, and a pattern over 65,536 UTF-8 bytes is limit_exceeded. Optional limits may only lower the 1,000-record, 49,152-byte, 3,000-line, and 512-column ceilings. Follow continuationReference for the next page; recoveryReference names the complete immutable result. Returns complete non-empty text and equivalent structured content; operational failures are tool errors with stable categories.",
         output_schema = schema_for_type::<SearchToolOutput>()
     )]
     async fn search(
@@ -1339,6 +1339,7 @@ async fn serve_inner(
             ArtifactSource::new(session.clone()),
             LocalSource::new(session.clone()),
             https,
+            None,
         )
         .await?,
     );
