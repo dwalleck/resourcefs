@@ -37,12 +37,35 @@ fn enforces_dependency_direction() {
     assert!(sources.contains("resourcefs-core"));
     assert!(!sources.contains("rmcp"));
     assert!(!sources.contains("clap"));
-    for forbidden in ["serde", "serde_json", "schemars"] {
+    for required in ["serde", "serde_json", "serde_path_to_error"] {
         assert!(
-            !sources.contains(forbidden),
-            "forbidden edge resourcefs-sources -> {forbidden}: operator profile syntax and schema belong to resourcefs-mcp"
+            sources.contains(required),
+            "GitHub native-wire decoding requires resourcefs-sources -> {required}"
         );
     }
+    assert!(
+        !sources.contains("schemars"),
+        "operator profile schemas belong to resourcefs-mcp, never source-native wire decoding"
+    );
+
+    let sources_root = metadata
+        .workspace_root
+        .as_std_path()
+        .join("crates/resourcefs-sources");
+    for forbidden in ["ProfileDocument", "GithubSourceProfile", "JsonSchema"] {
+        assert!(
+            files_containing_token(&sources_root, forbidden).is_empty(),
+            "operator profile token '{forbidden}' leaked into resourcefs-sources"
+        );
+    }
+    let core_source = metadata
+        .workspace_root
+        .as_std_path()
+        .join("crates/resourcefs-core/src");
+    assert!(
+        files_containing_token(&core_source, "serde_json").is_empty(),
+        "source-neutral core production code must not decode source-native JSON"
+    );
 
     let mcp = dependency_names(packages["resourcefs-mcp"]);
     assert!(mcp.contains("resourcefs-core"));

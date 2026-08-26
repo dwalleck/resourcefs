@@ -5,6 +5,7 @@ mod catalog;
 mod compiled;
 mod configuration;
 mod filesystem;
+mod github;
 mod http;
 mod https;
 mod local;
@@ -26,6 +27,8 @@ pub use configuration::{
     SkillsConfig, SshConfig, SshHost, VaultConfig, VaultRoot, VaultTarget,
     validate_configuration_id,
 };
+#[cfg(feature = "test-support")]
+pub use github::{GithubWireKindForTest, GithubWireObservation, inspect_github_wire_for_test};
 #[cfg(feature = "test-support")]
 pub use http::extract_markdown_for_test;
 pub use http::{

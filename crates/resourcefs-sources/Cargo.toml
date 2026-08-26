@@ -22,6 +22,9 @@ pcre2-sys.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 resourcefs-core = { path = "../resourcefs-core" }
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 url.workspace = true
