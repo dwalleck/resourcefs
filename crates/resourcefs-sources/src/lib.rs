@@ -27,8 +27,12 @@ pub use configuration::{
     SkillsConfig, SshConfig, SshHost, VaultConfig, VaultRoot, VaultTarget,
     validate_configuration_id,
 };
+pub use github::GithubSource;
 #[cfg(feature = "test-support")]
-pub use github::{GithubWireKindForTest, GithubWireObservation, inspect_github_wire_for_test};
+pub use github::{
+    GithubWireKindForTest, GithubWireObservation, inspect_github_wire_for_test,
+    render_issue_for_test,
+};
 #[cfg(feature = "test-support")]
 pub use http::extract_markdown_for_test;
 pub use http::{

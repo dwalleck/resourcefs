@@ -438,6 +438,21 @@ fn github_policy_matrix() {
     let canonical = github_repository("Owner/Repository", none);
     assert_eq!(canonical.identity().as_str(), "owner/repository");
     assert_eq!(canonical.grants(), none);
+    let canonical_config =
+        github_config(none, [canonical.clone()]).expect("canonical GitHub config");
+    assert_eq!(canonical_config.id(), "github-source");
+    assert!(!canonical_config.required());
+    assert_eq!(canonical_config.grants(), none);
+    assert_eq!(canonical_config.api_base_url(), "https://api.github.com/");
+    assert!(!canonical_config.allow_private_network());
+    assert_eq!(canonical_config.credential(), &secret());
+    assert_eq!(canonical_config.repositories(), &[canonical.clone()]);
+    assert_eq!(
+        canonical_config
+            .repository(canonical.identity())
+            .map(GithubRepository::identity),
+        Some(canonical.identity())
+    );
 
     for (name, source_grants, repositories, accepted) in [
         (

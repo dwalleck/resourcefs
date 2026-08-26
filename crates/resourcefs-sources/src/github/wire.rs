@@ -2,7 +2,7 @@
     not(feature = "test-support"),
     expect(
         dead_code,
-        reason = "typed wire decoding lands before the direct GitHub adapter consumes every field"
+        reason = "the issue-list pull_request discriminator lands before collection filtering"
     )
 )]
 
@@ -32,9 +32,7 @@ pub(super) struct Issue {
 }
 
 #[derive(Debug, Deserialize)]
-pub(super) struct PullRequestMarker {
-    pub(super) url: Option<String>,
-}
+pub(super) struct PullRequestMarker {}
 
 #[derive(Debug, Deserialize)]
 pub(super) struct GitRef {
@@ -101,13 +99,6 @@ pub(super) struct DiffFile {
     pub(super) patch: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub(super) struct ErrorResponse {
-    pub(super) message: String,
-    pub(super) documentation_url: Option<String>,
-    pub(super) status: Option<String>,
-}
-
 pub(super) fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ResourceError> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let decoded = serde_path_to_error::deserialize(&mut deserializer)
@@ -168,7 +159,6 @@ pub enum GithubWireKindForTest {
     Reviews,
     ReviewComments,
     DiffFiles,
-    Error,
 }
 
 #[cfg(feature = "test-support")]
@@ -225,13 +215,7 @@ pub fn inspect_github_wire_for_test(
             ])
             .saturating_add(optional_bytes(&value.body))
             .saturating_add(user_bytes(&value.user)?)
-            .saturating_add(
-                value
-                    .pull_request
-                    .as_ref()
-                    .and_then(|marker| marker.url.as_deref())
-                    .map_or(0, str::len),
-            );
+            .saturating_add(usize::from(value.pull_request.is_some()));
             Ok(GithubWireObservation {
                 ids: vec![id],
                 numbers: vec![number],
@@ -382,20 +366,6 @@ pub fn inspect_github_wire_for_test(
                 ids: Vec::new(),
                 numbers: Vec::new(),
                 absent_fields,
-                retained_bytes,
-            })
-        }
-        GithubWireKindForTest::Error => {
-            let value: ErrorResponse = decode(bytes)?;
-            let retained_bytes = value
-                .message
-                .len()
-                .saturating_add(optional_bytes(&value.documentation_url))
-                .saturating_add(optional_bytes(&value.status));
-            Ok(GithubWireObservation {
-                ids: Vec::new(),
-                numbers: Vec::new(),
-                absent_fields: Vec::new(),
                 retained_bytes,
             })
         }

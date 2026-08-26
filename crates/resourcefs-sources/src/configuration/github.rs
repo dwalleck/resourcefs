@@ -90,4 +90,38 @@ impl GithubConfig {
             repositories,
         })
     }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub const fn required(&self) -> bool {
+        self.required
+    }
+
+    pub const fn grants(&self) -> MutationGrants {
+        self.grants
+    }
+
+    pub fn api_base_url(&self) -> &str {
+        &self.api_base_url
+    }
+
+    pub const fn allow_private_network(&self) -> bool {
+        self.allow_private_network
+    }
+
+    pub const fn credential(&self) -> &SecretReference {
+        &self.credential
+    }
+
+    pub fn repositories(&self) -> &[GithubRepository] {
+        &self.repositories
+    }
+
+    pub fn repository(&self, identity: &GithubRepositoryIdentity) -> Option<&GithubRepository> {
+        self.repositories
+            .iter()
+            .find(|repository| repository.identity() == identity)
+    }
 }
