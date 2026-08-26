@@ -486,10 +486,7 @@ impl GithubSource {
                 validate_issue_identity(&issue, number)?;
                 Ok(match resource {
                     IssueResource::Title => issue.title,
-                    IssueResource::Body => match issue.body {
-                        Some(body) => body,
-                        None => String::new(),
-                    },
+                    IssueResource::Body => authoritative_body(issue.body),
                     _ => unreachable!("matched title/body"),
                 })
             }
@@ -718,10 +715,7 @@ impl GithubSource {
                 validate_pull_identity(&pull, number)?;
                 Ok(match resource {
                     PullRequestResource::Title => pull.title,
-                    PullRequestResource::Body => match pull.body {
-                        Some(body) => body,
-                        None => String::new(),
-                    },
+                    PullRequestResource::Body => authoritative_body(pull.body),
                     _ => unreachable!("matched title/body"),
                 })
             }
@@ -1040,13 +1034,10 @@ impl DiscoveryAdapter for GithubSource {
             lines.pop();
         }
         let mut continuations = Vec::new();
-        loop {
-            let Some(line) = lines
-                .last()
-                .and_then(|line| line.strip_prefix("Continuation: "))
-            else {
-                break;
-            };
+        while let Some(line) = lines
+            .last()
+            .and_then(|line| line.strip_prefix("Continuation: "))
+        {
             continuations.push(PathReference::parse(line)?);
             lines.pop();
             while lines.last().is_some_and(|line| line.is_empty()) {
@@ -1130,6 +1121,17 @@ fn validate_issue_identity(issue: &Issue, expected: u64) -> Result<(), ResourceE
         ));
     }
     Ok(())
+}
+
+#[expect(
+    clippy::manual_unwrap_or_default,
+    reason = "null remains typed absence until the approved empty body Field rendering boundary"
+)]
+fn authoritative_body(body: Option<String>) -> String {
+    match body {
+        Some(body) => body,
+        None => String::new(),
+    }
 }
 
 fn validate_pull_identity(pull: &PullRequest, expected: u64) -> Result<(), ResourceError> {

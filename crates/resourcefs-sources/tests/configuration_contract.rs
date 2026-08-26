@@ -446,7 +446,10 @@ fn github_policy_matrix() {
     assert_eq!(canonical_config.api_base_url(), "https://api.github.com/");
     assert!(!canonical_config.allow_private_network());
     assert_eq!(canonical_config.credential(), &secret());
-    assert_eq!(canonical_config.repositories(), &[canonical.clone()]);
+    assert_eq!(
+        canonical_config.repositories(),
+        std::slice::from_ref(&canonical)
+    );
     assert_eq!(
         canonical_config
             .repository(canonical.identity())
