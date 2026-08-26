@@ -6,15 +6,17 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use resourcefs_core::{
     ErrorCategory, GithubRepositoryIdentity, IssueAddress, IssueResource, OperationGuard,
-    PathReference, PullRequestAddress, PullRequestResource, ResourceAddress, ResourceError,
-    SourceAdapter, SourceResource,
+    PathReference, PathSession, PullRequestAddress, PullRequestResource, ResourceAddress,
+    ResourceError, SessionCacheEntry, SessionCacheKey, SourceAdapter, SourceResource,
 };
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
 use crate::{GithubConfig, HttpRequest, HttpSubstrate};
-use wire::{ConversationComment, DiffFile, Issue, PullRequest, Review, ReviewComment, SimpleUser};
-
+use wire::{
+    ConversationComment, DiffFile, Issue, PullRequest, PullRequestSummary, Review, ReviewComment,
+    SimpleUser,
+};
 #[cfg(feature = "test-support")]
 pub use wire::{GithubWireKindForTest, GithubWireObservation, inspect_github_wire_for_test};
 
@@ -30,11 +32,29 @@ const GITHUB_DIFF: &str = "application/vnd.github.diff";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const USER_AGENT: &str = "resourcefs/1.0";
 
+#[derive(Debug, Serialize, Deserialize)]
+struct CacheMetadata {
+    etag: String,
+    link: Option<String>,
+}
+
+struct FetchedResponse {
+    body: Arc<[u8]>,
+    link: Option<String>,
+}
+
+impl FetchedResponse {
+    fn body(&self) -> &[u8] {
+        &self.body
+    }
+}
+
 #[derive(Clone)]
 pub struct GithubSource {
     config: GithubConfig,
     api_base: Url,
     substrate: Arc<HttpSubstrate>,
+    session: PathSession,
 }
 
 impl std::fmt::Debug for GithubSource {
@@ -48,7 +68,11 @@ impl std::fmt::Debug for GithubSource {
 }
 
 impl GithubSource {
-    pub fn new(config: GithubConfig, substrate: Arc<HttpSubstrate>) -> Result<Self, ResourceError> {
+    pub fn new(
+        config: GithubConfig,
+        substrate: Arc<HttpSubstrate>,
+        session: PathSession,
+    ) -> Result<Self, ResourceError> {
         let mut api_base = Url::parse(config.api_base_url()).map_err(|_| {
             ResourceError::new(
                 ErrorCategory::InvalidReference,
@@ -64,6 +88,7 @@ impl GithubSource {
             config,
             api_base,
             substrate,
+            session,
         })
     }
 
@@ -99,11 +124,19 @@ impl GithubSource {
             })
     }
 
-    fn request(url: Url, accept: &str) -> Result<HttpRequest, ResourceError> {
-        HttpRequest::get(url)
+    fn request(url: Url, accept: &str, etag: Option<&str>) -> Result<HttpRequest, ResourceError> {
+        let request = HttpRequest::get(url)
             .with_header("Accept", accept)
             .and_then(|request| request.with_header("User-Agent", USER_AGENT))
-            .and_then(|request| request.with_header("X-GitHub-Api-Version", GITHUB_API_VERSION))
+            .and_then(|request| request.with_header("X-GitHub-Api-Version", GITHUB_API_VERSION))?;
+        match etag {
+            Some(etag) => request.with_header("If-None-Match", etag),
+            None => Ok(request),
+        }
+    }
+
+    fn cache_key(url: &Url, accept: &str) -> Result<SessionCacheKey, ResourceError> {
+        SessionCacheKey::new("github-http", format!("{accept}\n{url}"))
     }
 
     async fn fetch(
@@ -111,19 +144,90 @@ impl GithubSource {
         url: Url,
         accept: &str,
         operation: &OperationGuard,
-    ) -> Result<crate::BoundedHttpResponse, ResourceError> {
-        let response = self
-            .substrate
-            .fetch(Self::request(url, accept)?, operation)
-            .await?;
-        self.classify_status(&response)?;
-        if response.truncated() {
-            return Err(ResourceError::new(
-                ErrorCategory::LimitExceeded,
-                "GitHub response exceeds the bounded HTTP body ceiling",
-            ));
+    ) -> Result<FetchedResponse, ResourceError> {
+        let key = Self::cache_key(&url, accept)?;
+        let cached = self.session.cache_get(&key).await?;
+        let cached_metadata = cached
+            .as_ref()
+            .map(|entry| serde_json::from_slice::<CacheMetadata>(entry.metadata()))
+            .transpose()
+            .map_err(|_| malformed_upstream("GitHub session cache metadata is corrupt"))?;
+        let mut attempt = 0_u8;
+        loop {
+            let request = Self::request(
+                url.clone(),
+                accept,
+                cached_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.etag.as_str()),
+            )?;
+            let response = match self.substrate.fetch_attempt(request, operation).await {
+                Ok(response) => response,
+                Err(failure) if attempt == 0 && failure.is_retryable() => {
+                    attempt = 1;
+                    continue;
+                }
+                Err(failure) => return Err(failure.into_error()),
+            };
+            if response.status() == 304 {
+                let (Some(entry), Some(metadata)) = (cached.as_ref(), cached_metadata.as_ref())
+                else {
+                    return Err(malformed_upstream(
+                        "GitHub returned 304 without a session cache entry",
+                    ));
+                };
+                return Ok(FetchedResponse {
+                    body: Arc::clone(entry.content_arc()),
+                    link: metadata.link.clone(),
+                });
+            }
+            if attempt == 0
+                && matches!(response.status(), 429 | 503)
+                && let Some(delay) = response.retry_after()
+            {
+                attempt = 1;
+                tokio::select! {
+                    biased;
+                    () = operation.cancelled() => {
+                        return Err(ResourceError::new(
+                            ErrorCategory::Cancelled,
+                            "GitHub retry wait was cancelled",
+                        ));
+                    }
+                    () = tokio::time::sleep(delay) => {}
+                }
+                continue;
+            }
+            self.classify_status(&response)?;
+            if response.truncated() {
+                return Err(ResourceError::new(
+                    ErrorCategory::LimitExceeded,
+                    "GitHub response exceeds the bounded HTTP body ceiling",
+                ));
+            }
+            let etag = response.etag().map(str::to_owned);
+            let link = response.link().map(str::to_owned);
+            let body = response.into_body();
+            let entry = SessionCacheEntry::new(
+                etag.as_ref().map_or_else(Vec::new, |etag| {
+                    serde_json::to_vec(&CacheMetadata {
+                        etag: etag.clone(),
+                        link: link.clone(),
+                    })
+                    .expect("CacheMetadata serialization cannot fail")
+                }),
+                body,
+            )?;
+            if etag.is_some() {
+                self.session.cache_put(key.clone(), entry.clone()).await?;
+            } else {
+                self.session.cache_remove(&key).await?;
+            }
+            return Ok(FetchedResponse {
+                body: Arc::clone(entry.content_arc()),
+                link,
+            });
         }
-        Ok(response)
     }
 
     fn classify_status(&self, response: &crate::BoundedHttpResponse) -> Result<(), ResourceError> {
@@ -164,6 +268,81 @@ impl GithubSource {
         }
     }
 
+    fn next_link(
+        &self,
+        link: Option<&str>,
+        repository: &GithubRepositoryIdentity,
+        expected_path: &str,
+    ) -> Result<Option<Url>, ResourceError> {
+        let Some(target) = link.and_then(|link| {
+            link.split(',').find_map(|part| {
+                let part = part.trim();
+                part.contains("rel=\"next\"").then(|| {
+                    part.split_once('<')
+                        .and_then(|(_, rest)| rest.split_once('>'))
+                        .map(|(url, _)| url)
+                })?
+            })
+        }) else {
+            return Ok(None);
+        };
+        let target = Url::parse(target)
+            .map_err(|_| malformed_upstream("GitHub pagination Link is malformed"))?;
+        if target.scheme() != self.api_base.scheme()
+            || target.host_str() != self.api_base.host_str()
+            || target.port_or_known_default() != self.api_base.port_or_known_default()
+            || target.path() != expected_path
+            || !target.path().contains(&format!(
+                "/repos/{}/{}/",
+                repository.owner(),
+                repository.repository()
+            ))
+        {
+            return Err(ResourceError::new(
+                ErrorCategory::PermissionDenied,
+                "GitHub pagination Link leaves its repository endpoint authority",
+            ));
+        }
+        Ok(Some(target))
+    }
+
+    async fn collection<T: DeserializeOwned>(
+        &self,
+        repository: &GithubRepositoryIdentity,
+        suffix: &str,
+        parameters: &[(&str, &str)],
+        start_page: u64,
+        operation: &OperationGuard,
+    ) -> Result<(Vec<T>, Option<u64>), ResourceError> {
+        let mut next = self.endpoint(repository, suffix)?;
+        {
+            let mut query = next.query_pairs_mut();
+            for (name, value) in parameters {
+                query.append_pair(name, value);
+            }
+            query.append_pair("per_page", "100");
+            query.append_pair("page", &start_page.to_string());
+        }
+        let expected_path = next.path().to_owned();
+        let mut values = Vec::new();
+        for _ in 0..10 {
+            let response = self.fetch(next, GITHUB_JSON, operation).await?;
+            let following = self.next_link(response.link.as_deref(), repository, &expected_path)?;
+            let mut page: Vec<T> = wire::decode(response.body())?;
+            values.append(&mut page);
+            let Some(link) = following else {
+                return Ok((values, None));
+            };
+            next = link;
+        }
+        let continuation = next
+            .query_pairs()
+            .find_map(|(name, value)| (name == "page").then(|| value.parse::<u64>().ok()))
+            .flatten()
+            .ok_or_else(|| malformed_upstream("GitHub next Link does not name a numeric page"))?;
+        Ok((values, Some(continuation)))
+    }
+
     async fn json<T: DeserializeOwned>(
         &self,
         url: Url,
@@ -176,8 +355,62 @@ impl GithubSource {
     async fn issue_resource(
         &self,
         address: &IssueAddress,
+        page: Option<u64>,
         operation: &OperationGuard,
     ) -> Result<String, ResourceError> {
+        if let IssueAddress::Collection { repository } = address {
+            let (mut issues, continuation): (Vec<Issue>, Option<u64>) = self
+                .collection(
+                    repository,
+                    "issues",
+                    &[("state", "all"), ("sort", "updated"), ("direction", "desc")],
+                    page.unwrap_or(1),
+                    operation,
+                )
+                .await?;
+            for issue in &issues {
+                validate_issue_identity(issue, issue.number)?;
+            }
+            issues.retain(|issue| issue.pull_request.is_none());
+            issues.sort_by(|left, right| {
+                right
+                    .updated_at
+                    .cmp(&left.updated_at)
+                    .then_with(|| left.number.cmp(&right.number))
+            });
+            let mut rendered = format!("# Issues: {}\n", repository.as_str());
+            if issues.is_empty() {
+                rendered.push_str("\n(no issues)\n");
+            } else {
+                for issue in issues {
+                    use std::fmt::Write as _;
+                    writeln!(
+                        &mut rendered,
+                        "- issue://{}/{} — {} [{}] by {} (updated {})",
+                        repository.as_str(),
+                        issue.number,
+                        issue.title,
+                        issue.state,
+                        issue
+                            .user
+                            .as_ref()
+                            .map_or("[deleted]", |user| user.login.as_str()),
+                        issue.updated_at
+                    )
+                    .expect("String write");
+                }
+            }
+            if let Some(page) = continuation {
+                use std::fmt::Write as _;
+                writeln!(
+                    &mut rendered,
+                    "\nContinuation: issue://{}:page:{page}",
+                    repository.as_str()
+                )
+                .expect("String write");
+            }
+            return Ok(rendered);
+        }
         let IssueAddress::Item {
             repository,
             number,
@@ -186,6 +419,9 @@ impl GithubSource {
         else {
             return Err(unsupported_github_projection());
         };
+        if page.is_some() && !matches!(resource, IssueResource::Comments) {
+            return Err(unsupported_github_projection());
+        }
         let number = number.get();
         match resource {
             IssueResource::Aggregate => {
@@ -195,15 +431,28 @@ impl GithubSource {
                         operation,
                     )
                     .await?;
-                let mut comments: Vec<ConversationComment> = self
-                    .json(
-                        self.endpoint(repository, &format!("issues/{number}/comments"))?,
+                let (mut comments, continuation): (Vec<ConversationComment>, Option<u64>) = self
+                    .collection(
+                        repository,
+                        &format!("issues/{number}/comments"),
+                        &[],
+                        1,
                         operation,
                     )
                     .await?;
                 validate_issue_identity(&issue, number)?;
                 validate_comment_ids(&comments)?;
-                Ok(render::issue_aggregate(repository, &issue, &mut comments))
+                let mut rendered = render::issue_aggregate(repository, &issue, &mut comments);
+                if let Some(page) = continuation {
+                    use std::fmt::Write as _;
+                    writeln!(
+                        &mut rendered,
+                        "\nContinuation: issue://{}/{number}/comments:page:{page}",
+                        repository.as_str()
+                    )
+                    .expect("String write");
+                }
+                Ok(rendered)
             }
             IssueResource::Title | IssueResource::Body => {
                 let issue: Issue = self
@@ -223,9 +472,12 @@ impl GithubSource {
                 })
             }
             IssueResource::Comments => {
-                let mut comments: Vec<ConversationComment> = self
-                    .json(
-                        self.endpoint(repository, &format!("issues/{number}/comments"))?,
+                let (mut comments, continuation): (Vec<ConversationComment>, Option<u64>) = self
+                    .collection(
+                        repository,
+                        &format!("issues/{number}/comments"),
+                        &[],
+                        page.unwrap_or(1),
                         operation,
                     )
                     .await?;
@@ -235,7 +487,7 @@ impl GithubSource {
                         .cmp(&right.created_at)
                         .then_with(|| left.id.cmp(&right.id))
                 });
-                Ok(comments
+                let mut rendered = comments
                     .iter()
                     .map(|comment| {
                         format!(
@@ -246,7 +498,17 @@ impl GithubSource {
                         )
                     })
                     .collect::<Vec<_>>()
-                    .join("\n\n"))
+                    .join("\n\n");
+                if let Some(page) = continuation {
+                    use std::fmt::Write as _;
+                    writeln!(
+                        &mut rendered,
+                        "\nContinuation: issue://{}/{number}/comments:page:{page}",
+                        repository.as_str()
+                    )
+                    .expect("String write");
+                }
+                Ok(rendered)
             }
             IssueResource::Comment(id) => {
                 let comment: ConversationComment = self
@@ -270,8 +532,65 @@ impl GithubSource {
     async fn pull_request_resource(
         &self,
         address: &PullRequestAddress,
+        page: Option<u64>,
         operation: &OperationGuard,
     ) -> Result<String, ResourceError> {
+        if let PullRequestAddress::Collection { repository } = address {
+            let (mut pulls, continuation): (Vec<PullRequestSummary>, Option<u64>) = self
+                .collection(
+                    repository,
+                    "pulls",
+                    &[("state", "all"), ("sort", "updated"), ("direction", "desc")],
+                    page.unwrap_or(1),
+                    operation,
+                )
+                .await?;
+            validate_pull_summaries(&pulls)?;
+            pulls.sort_by(|left, right| {
+                right
+                    .updated_at
+                    .cmp(&left.updated_at)
+                    .then_with(|| left.number.cmp(&right.number))
+            });
+            let mut rendered = format!("# Pull requests: {}\n", repository.as_str());
+            if pulls.is_empty() {
+                rendered.push_str("\n(no pull requests)\n");
+            } else {
+                for pull in pulls {
+                    use std::fmt::Write as _;
+                    let merge = if pull.merged_at.is_some() {
+                        "merged"
+                    } else {
+                        pull.state.as_str()
+                    };
+                    writeln!(
+                        &mut rendered,
+                        "- pr://{}/{} — {} [{}{}] by {} (updated {}; {})",
+                        repository.as_str(),
+                        pull.number,
+                        pull.title,
+                        merge,
+                        if pull.draft { ", draft" } else { "" },
+                        pull.user
+                            .as_ref()
+                            .map_or("[deleted]", |user| user.login.as_str()),
+                        pull.updated_at,
+                        pull.html_url
+                    )
+                    .expect("String write");
+                }
+            }
+            if let Some(page) = continuation {
+                use std::fmt::Write as _;
+                writeln!(
+                    &mut rendered,
+                    "\nContinuation: pr://{}:page:{page}",
+                    repository.as_str()
+                )
+                .expect("String write");
+            }
+            return Ok(rendered);
+        }
         let PullRequestAddress::Item {
             repository,
             number,
@@ -280,6 +599,17 @@ impl GithubSource {
         else {
             return Err(unsupported_github_projection());
         };
+        if page.is_some()
+            && !matches!(
+                resource,
+                PullRequestResource::Comments
+                    | PullRequestResource::Reviews
+                    | PullRequestResource::ReviewComments
+                    | PullRequestResource::Diff
+            )
+        {
+            return Err(unsupported_github_projection());
+        }
         let number = number.get();
         match resource {
             PullRequestResource::Aggregate => {
@@ -289,27 +619,39 @@ impl GithubSource {
                         operation,
                     )
                     .await?;
-                let mut comments: Vec<ConversationComment> = self
-                    .json(
-                        self.endpoint(repository, &format!("issues/{number}/comments"))?,
+                let (mut comments, comment_next): (Vec<ConversationComment>, Option<u64>) = self
+                    .collection(
+                        repository,
+                        &format!("issues/{number}/comments"),
+                        &[],
+                        1,
                         operation,
                     )
                     .await?;
-                let mut reviews: Vec<Review> = self
-                    .json(
-                        self.endpoint(repository, &format!("pulls/{number}/reviews"))?,
+                let (mut reviews, review_next): (Vec<Review>, Option<u64>) = self
+                    .collection(
+                        repository,
+                        &format!("pulls/{number}/reviews"),
+                        &[],
+                        1,
                         operation,
                     )
                     .await?;
-                let mut review_comments: Vec<ReviewComment> = self
-                    .json(
-                        self.endpoint(repository, &format!("pulls/{number}/comments"))?,
+                let (mut review_comments, review_comment_next): (Vec<ReviewComment>, Option<u64>) =
+                    self.collection(
+                        repository,
+                        &format!("pulls/{number}/comments"),
+                        &[],
+                        1,
                         operation,
                     )
                     .await?;
-                let files: Vec<DiffFile> = self
-                    .json(
-                        self.endpoint(repository, &format!("pulls/{number}/files"))?,
+                let (files, file_next): (Vec<DiffFile>, Option<u64>) = self
+                    .collection(
+                        repository,
+                        &format!("pulls/{number}/files"),
+                        &[],
+                        1,
                         operation,
                     )
                     .await?;
@@ -318,14 +660,31 @@ impl GithubSource {
                 validate_review_ids(&reviews)?;
                 validate_review_comment_ids(&review_comments)?;
                 validate_files(&files)?;
-                Ok(render::pull_request_aggregate(
+                let mut rendered = render::pull_request_aggregate(
                     repository,
                     &pull,
                     &mut comments,
                     &mut reviews,
                     &mut review_comments,
                     &files,
-                ))
+                );
+                use std::fmt::Write as _;
+                for (collection, next) in [
+                    ("comments", comment_next),
+                    ("reviews", review_next),
+                    ("review-comments", review_comment_next),
+                    ("diff", file_next),
+                ] {
+                    if let Some(page) = next {
+                        writeln!(
+                            &mut rendered,
+                            "\nContinuation: pr://{}/{number}/{collection}:page:{page}",
+                            repository.as_str()
+                        )
+                        .expect("String write");
+                    }
+                }
+                Ok(rendered)
             }
             PullRequestResource::Title | PullRequestResource::Body => {
                 let pull: PullRequest = self
@@ -345,18 +704,31 @@ impl GithubSource {
                 })
             }
             PullRequestResource::Comments => {
-                let comments: Vec<ConversationComment> = self
-                    .json(
-                        self.endpoint(repository, &format!("issues/{number}/comments"))?,
+                let (comments, continuation): (Vec<ConversationComment>, Option<u64>) = self
+                    .collection(
+                        repository,
+                        &format!("issues/{number}/comments"),
+                        &[],
+                        page.unwrap_or(1),
                         operation,
                     )
                     .await?;
                 validate_comment_ids(&comments)?;
-                Ok(comments
+                let mut rendered = comments
                     .iter()
                     .map(render::comment)
                     .collect::<Vec<_>>()
-                    .join("\n\n"))
+                    .join("\n\n");
+                if let Some(page) = continuation {
+                    use std::fmt::Write as _;
+                    writeln!(
+                        &mut rendered,
+                        "\nContinuation: pr://{}/{number}/comments:page:{page}",
+                        repository.as_str()
+                    )
+                    .expect("String write");
+                }
+                Ok(rendered)
             }
             PullRequestResource::Comment(id) => {
                 let comment: ConversationComment = self
@@ -375,18 +747,31 @@ impl GithubSource {
                 Ok(render::comment(&comment))
             }
             PullRequestResource::Reviews => {
-                let reviews: Vec<Review> = self
-                    .json(
-                        self.endpoint(repository, &format!("pulls/{number}/reviews"))?,
+                let (reviews, continuation): (Vec<Review>, Option<u64>) = self
+                    .collection(
+                        repository,
+                        &format!("pulls/{number}/reviews"),
+                        &[],
+                        page.unwrap_or(1),
                         operation,
                     )
                     .await?;
                 validate_review_ids(&reviews)?;
-                Ok(reviews
+                let mut rendered = reviews
                     .iter()
                     .map(render::review)
                     .collect::<Vec<_>>()
-                    .join("\n\n"))
+                    .join("\n\n");
+                if let Some(page) = continuation {
+                    use std::fmt::Write as _;
+                    writeln!(
+                        &mut rendered,
+                        "\nContinuation: pr://{}/{number}/reviews:page:{page}",
+                        repository.as_str()
+                    )
+                    .expect("String write");
+                }
+                Ok(rendered)
             }
             PullRequestResource::Review(id) => {
                 let review: Review = self
@@ -405,18 +790,31 @@ impl GithubSource {
                 Ok(render::review(&review))
             }
             PullRequestResource::ReviewComments => {
-                let comments: Vec<ReviewComment> = self
-                    .json(
-                        self.endpoint(repository, &format!("pulls/{number}/comments"))?,
+                let (comments, continuation): (Vec<ReviewComment>, Option<u64>) = self
+                    .collection(
+                        repository,
+                        &format!("pulls/{number}/comments"),
+                        &[],
+                        page.unwrap_or(1),
                         operation,
                     )
                     .await?;
                 validate_review_comment_ids(&comments)?;
-                Ok(comments
+                let mut rendered = comments
                     .iter()
                     .map(render::review_comment)
                     .collect::<Vec<_>>()
-                    .join("\n\n"))
+                    .join("\n\n");
+                if let Some(page) = continuation {
+                    use std::fmt::Write as _;
+                    writeln!(
+                        &mut rendered,
+                        "\nContinuation: pr://{}/{number}/review-comments:page:{page}",
+                        repository.as_str()
+                    )
+                    .expect("String write");
+                }
+                Ok(rendered)
             }
             PullRequestResource::ReviewComment(id) => {
                 let comment: ReviewComment = self
@@ -435,15 +833,61 @@ impl GithubSource {
                 Ok(render::review_comment(&comment))
             }
             PullRequestResource::Diff => {
-                let response = self
-                    .fetch(
-                        self.endpoint(repository, &format!("pulls/{number}"))?,
-                        GITHUB_DIFF,
-                        operation,
-                    )
-                    .await?;
-                String::from_utf8(response.body().to_vec())
-                    .map_err(|_| malformed_upstream("GitHub unified diff is not valid UTF-8"))
+                if let Some(page) = page {
+                    let (files, continuation): (Vec<DiffFile>, Option<u64>) = self
+                        .collection(
+                            repository,
+                            &format!("pulls/{number}/files"),
+                            &[],
+                            page,
+                            operation,
+                        )
+                        .await?;
+                    validate_files(&files)?;
+                    let base_index = page
+                        .checked_sub(1)
+                        .and_then(|page| page.checked_mul(100))
+                        .ok_or_else(|| {
+                            ResourceError::new(
+                                ErrorCategory::LimitExceeded,
+                                "GitHub diff page index overflowed",
+                            )
+                        })?;
+                    let mut rendered = files
+                        .iter()
+                        .enumerate()
+                        .map(|(offset, file)| {
+                            format!(
+                                "pr://{}/{number}/diff/{} — {} ({})",
+                                repository.as_str(),
+                                base_index + offset as u64 + 1,
+                                file.filename,
+                                file.status
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if let Some(page) = continuation {
+                        use std::fmt::Write as _;
+                        writeln!(
+                            &mut rendered,
+                            "\nContinuation: pr://{}/{number}/diff:page:{page}",
+                            repository.as_str()
+                        )
+                        .expect("String write");
+                    }
+                    Ok(rendered)
+                } else {
+                    let response = self
+                        .fetch(
+                            self.endpoint(repository, &format!("pulls/{number}"))?,
+                            GITHUB_DIFF,
+                            operation,
+                        )
+                        .await?;
+                    String::from_utf8(response.body().to_vec())
+                        .map_err(|_| malformed_upstream("GitHub unified diff is not valid UTF-8"))
+                }
             }
             PullRequestResource::DiffFile(index) => {
                 let files: Vec<DiffFile> = self
@@ -469,18 +913,19 @@ impl GithubSource {
             }
         }
     }
-}
 
-#[async_trait]
-impl SourceAdapter for GithubSource {
-    async fn read(
+    async fn read_resource(
         &self,
         reference: &PathReference,
         operation: &OperationGuard,
     ) -> Result<SourceResource, ResourceError> {
-        if reference.projection().is_some() {
-            return Err(unsupported_github_projection());
-        }
+        let page = match reference.projection() {
+            None => None,
+            Some(projection) => projection
+                .page_offset()
+                .map(Some)
+                .ok_or_else(unsupported_github_projection)?,
+        };
         let (canonical, content) = match reference.address() {
             ResourceAddress::Issue(address) => {
                 let repository = address
@@ -489,7 +934,7 @@ impl SourceAdapter for GithubSource {
                 self.authorize_repository(repository)?;
                 (
                     PathReference::issue(address.clone(), None)?,
-                    self.issue_resource(address, operation).await?,
+                    self.issue_resource(address, page, operation).await?,
                 )
             }
             ResourceAddress::PullRequest(address) => {
@@ -499,12 +944,33 @@ impl SourceAdapter for GithubSource {
                 self.authorize_repository(repository)?;
                 (
                     PathReference::pull_request(address.clone(), None)?,
-                    self.pull_request_resource(address, operation).await?,
+                    self.pull_request_resource(address, page, operation).await?,
                 )
             }
             _ => return Err(unsupported_github_projection()),
         };
         SourceResource::text(canonical, content)
+    }
+}
+
+#[async_trait]
+impl SourceAdapter for GithubSource {
+    async fn read(
+        &self,
+        reference: &PathReference,
+        operation: &OperationGuard,
+    ) -> Result<SourceResource, ResourceError> {
+        tokio::time::timeout(
+            self.substrate.ceilings().timeout(),
+            self.read_resource(reference, operation),
+        )
+        .await
+        .map_err(|_| {
+            ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                "GitHub operation exceeded the configured logical deadline",
+            )
+        })?
     }
 }
 
@@ -549,6 +1015,26 @@ fn validate_pull_identity(pull: &PullRequest, expected: u64) -> Result<(), Resou
         return Err(malformed_upstream(
             "GitHub pull request number does not match its Path Reference",
         ));
+    }
+    Ok(())
+}
+
+fn validate_pull_summaries(values: &[PullRequestSummary]) -> Result<(), ResourceError> {
+    validate_unique_ids(values.iter().map(|value| value.id), "pull_request.id")?;
+    let mut numbers = std::collections::HashSet::new();
+    for value in values {
+        validate_positive(value.number, "pull_request.number")?;
+        validate_user(&value.user, "pull_request.user.id")?;
+        if !numbers.insert(value.number)
+            || value.state.is_empty()
+            || value.title.is_empty()
+            || value.html_url.is_empty()
+            || value.updated_at.is_empty()
+        {
+            return Err(malformed_upstream(
+                "GitHub pull request listing contains invalid required fields",
+            ));
+        }
     }
     Ok(())
 }

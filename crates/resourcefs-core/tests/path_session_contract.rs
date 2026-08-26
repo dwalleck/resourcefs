@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use resourcefs_core::{
     ArtifactAddress, ArtifactId, DisplayedLineRange, ErrorCategory, MAX_ARTIFACT_BYTES,
     MAX_SESSION_ARTIFACTS, MAX_SESSION_BYTES, OperationGuard, PathReference, PathSession,
-    ResourceError, ServerLimits, ServerLimitsInput, SessionStorage, SessionToken,
-    StorageLimitInput, VersionTag,
+    ResourceError, ServerLimits, ServerLimitsInput, SessionCacheEntry, SessionCacheKey,
+    SessionStorage, SessionToken, StorageLimitInput, VersionTag,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Barrier, Mutex, Notify};
@@ -746,4 +746,97 @@ async fn snapshot_key_accepts_local_rejects_foreign() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn opaque_cache_replacement_is_quota_charged_and_zero_copy() {
+    let storage = Arc::new(FakeStorage::default());
+    let session = session(91, storage);
+    let key = SessionCacheKey::new("github", "issue://owner/repo/42").expect("cache key");
+    let first =
+        SessionCacheEntry::new(b"etag-1".to_vec(), b"first body".to_vec()).expect("cache entry");
+    let expected_first_bytes = key.retained_bytes() + first.retained_bytes();
+    session
+        .cache_put(key.clone(), first.clone())
+        .await
+        .expect("cache put");
+    assert_eq!(session.used_bytes().await, expected_first_bytes);
+    let loaded = session
+        .cache_get(&key)
+        .await
+        .expect("cache get")
+        .expect("cache hit");
+    assert!(Arc::ptr_eq(loaded.content_arc(), first.content_arc()));
+    assert_eq!(loaded.metadata(), b"etag-1");
+    assert_eq!(loaded.content(), b"first body");
+
+    let second =
+        SessionCacheEntry::new(b"etag-2".to_vec(), b"x".to_vec()).expect("replacement entry");
+    let expected_second_bytes = key.retained_bytes() + second.retained_bytes();
+    session
+        .cache_put(key.clone(), second.clone())
+        .await
+        .expect("cache replacement");
+    assert_eq!(session.used_bytes().await, expected_second_bytes);
+    assert_eq!(
+        session
+            .cache_get(&key)
+            .await
+            .expect("cache get")
+            .expect("cache hit")
+            .metadata(),
+        b"etag-2"
+    );
+
+    assert!(session.cache_remove(&key).await.expect("cache remove"));
+    assert_eq!(session.used_bytes().await, 0);
+    assert!(!session.cache_remove(&key).await.expect("missing remove"));
+}
+
+#[tokio::test]
+async fn opaque_cache_obeys_session_limits_and_disconnect_isolation() {
+    let limits = ServerLimits::new(ServerLimitsInput {
+        storage: StorageLimitInput {
+            object_bytes: Some(32),
+            session_bytes: Some(48),
+        },
+        ..ServerLimitsInput::default()
+    })
+    .expect("limits");
+    let first_session = session_with_limits(92, Arc::new(FakeStorage::default()), limits);
+    let second_session = session_with_limits(93, Arc::new(FakeStorage::default()), limits);
+    let key = SessionCacheKey::new("github", "k").expect("cache key");
+    let entry = SessionCacheEntry::new(vec![b'm'; 8], vec![b'c'; 8]).expect("entry");
+    first_session
+        .cache_put(key.clone(), entry)
+        .await
+        .expect("within cache quota");
+    assert!(
+        second_session
+            .cache_get(&key)
+            .await
+            .expect("second session")
+            .is_none()
+    );
+    let over_object = SessionCacheEntry::new(Vec::new(), vec![b'x'; 33]).expect("large entry");
+    assert_eq!(
+        first_session
+            .cache_put(
+                SessionCacheKey::new("github", "large").expect("large key"),
+                over_object,
+            )
+            .await
+            .expect_err("object ceiling")
+            .category(),
+        ErrorCategory::LimitExceeded
+    );
+    first_session.invalidate();
+    assert_eq!(
+        first_session
+            .cache_get(&key)
+            .await
+            .expect_err("inactive cache")
+            .category(),
+        ErrorCategory::SourceUnavailable
+    );
 }

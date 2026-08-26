@@ -91,6 +91,8 @@ pub enum FixtureResponse {
         headers: Vec<(String, String)>,
         body: Vec<u8>,
     },
+    /// Close the TLS stream without sending a response.
+    Abort,
     /// `200 OK` whose body is written incrementally.
     ///
     /// One variant covers every body shape the bound, timeout, and extraction
@@ -190,6 +192,7 @@ impl FixtureResponse {
                 ));
                 rendered
             }
+            Self::Abort => String::new(),
             Self::Stream {
                 declared: Some(declared),
                 ..

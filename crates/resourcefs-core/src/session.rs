@@ -11,8 +11,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
 
 use crate::{
-    ArtifactAddress, DisplayedLineRange, ErrorCategory, LocalAddress, LocalName, PathReference,
-    ResourceAddress, ResourceError, ServerLimits, VersionSelector, VersionTag, WorkspaceAddress,
+    ArtifactAddress, DisplayedLineRange, ErrorCategory, LocalAddress, LocalName,
+    MAX_PATH_REFERENCE_BYTES, PathReference, ResourceAddress, ResourceError, ServerLimits,
+    VersionSelector, VersionTag, WorkspaceAddress,
 };
 
 pub const MAX_SESSION_BYTES: usize = 256 * 1024 * 1024;
@@ -70,6 +71,102 @@ impl ArtifactId {
 
     pub const fn get(self) -> u64 {
         self.0
+    }
+}
+
+/// Validated source namespace plus opaque representation key for one session cache entry.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SessionCacheKey {
+    namespace: String,
+    key: String,
+}
+
+impl SessionCacheKey {
+    pub fn new(
+        namespace: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Result<Self, ResourceError> {
+        let namespace = namespace.into();
+        let key = key.into();
+        if namespace.is_empty()
+            || !namespace
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "session cache namespace must be non-empty canonical ASCII",
+            ));
+        }
+        if key.is_empty() {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "session cache key must not be empty",
+            ));
+        }
+        let retained_bytes = namespace
+            .len()
+            .checked_add(key.len())
+            .ok_or_else(|| session_quota_error(MAX_SESSION_BYTES))?;
+        if retained_bytes > MAX_PATH_REFERENCE_BYTES {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!("session cache key exceeds the {MAX_PATH_REFERENCE_BYTES}-byte ceiling"),
+            ));
+        }
+        Ok(Self { namespace, key })
+    }
+
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub const fn retained_bytes(&self) -> usize {
+        self.namespace.len() + self.key.len()
+    }
+}
+
+/// Opaque metadata and content bytes retained without copying on cache hits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCacheEntry {
+    metadata: Arc<[u8]>,
+    content: Arc<[u8]>,
+}
+
+impl SessionCacheEntry {
+    pub fn new(metadata: Vec<u8>, content: Vec<u8>) -> Result<Self, ResourceError> {
+        metadata
+            .len()
+            .checked_add(content.len())
+            .ok_or_else(|| session_quota_error(MAX_SESSION_BYTES))?;
+        Ok(Self {
+            metadata: Arc::from(metadata),
+            content: Arc::from(content),
+        })
+    }
+
+    pub fn metadata(&self) -> &[u8] {
+        &self.metadata
+    }
+
+    pub fn content(&self) -> &[u8] {
+        &self.content
+    }
+
+    pub const fn metadata_arc(&self) -> &Arc<[u8]> {
+        &self.metadata
+    }
+
+    pub const fn content_arc(&self) -> &Arc<[u8]> {
+        &self.content
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        self.metadata.len() + self.content.len()
     }
 }
 
@@ -204,6 +301,7 @@ struct SessionState {
     records: HashSet<ArtifactId>,
     digest_index: HashMap<[u8; 32], Vec<ArtifactId>>,
     scratch: HashMap<LocalName, ScratchEntry>,
+    cache: HashMap<SessionCacheKey, SessionCacheEntry>,
     snapshots: HashMap<SnapshotKey, SeenSnapshot>,
     snapshot_bytes: usize,
     reserved_snapshot_bytes: usize,
@@ -227,10 +325,13 @@ pub struct ScratchState {
     pub version_tag: VersionTag,
 }
 
-/// Objects charged against the Path Session's shared object ceiling: immutable
-/// `artifact://` records plus mutable `local://` Session Scratch Resources.
+/// Objects charged against the Path Session's shared object ceiling.
 fn session_object_count(state: &SessionState) -> usize {
-    state.records.len().saturating_add(state.scratch.len())
+    state
+        .records
+        .len()
+        .saturating_add(state.scratch.len())
+        .saturating_add(state.cache.len())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -331,6 +432,7 @@ impl PathSession {
                     records: HashSet::new(),
                     digest_index: HashMap::new(),
                     scratch: HashMap::new(),
+                    cache: HashMap::new(),
                     snapshots: HashMap::new(),
                     snapshot_bytes: 0,
                     reserved_snapshot_bytes: 0,
@@ -804,6 +906,79 @@ impl PathSession {
         Ok(())
     }
 
+    pub async fn cache_get(
+        &self,
+        key: &SessionCacheKey,
+    ) -> Result<Option<SessionCacheEntry>, ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_cache_error());
+        }
+        Ok(self.inner.admission.lock().await.cache.get(key).cloned())
+    }
+
+    pub async fn cache_put(
+        &self,
+        key: SessionCacheKey,
+        entry: SessionCacheEntry,
+    ) -> Result<(), ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_cache_error());
+        }
+        if entry.retained_bytes() > self.inner.limits.object_bytes() {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!(
+                    "session cache entry exceeds the configured {}-byte object ceiling",
+                    self.inner.limits.object_bytes()
+                ),
+            ));
+        }
+        let added_bytes = key
+            .retained_bytes()
+            .checked_add(entry.retained_bytes())
+            .ok_or_else(|| session_quota_error(self.inner.limits.session_bytes()))?;
+        let mut state = self.inner.admission.lock().await;
+        let released_bytes = state.cache.get(&key).map_or(0, |previous| {
+            key.retained_bytes()
+                .saturating_add(previous.retained_bytes())
+        });
+        if released_bytes == 0 && session_object_count(&state) >= MAX_SESSION_ARTIFACTS {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!(
+                    "Path Session object count exceeds the {MAX_SESSION_ARTIFACTS}-object ceiling"
+                ),
+            ));
+        }
+        let resulting_bytes = scratch_resulting_bytes(
+            &state,
+            released_bytes,
+            added_bytes,
+            self.inner.limits.session_bytes(),
+        )?;
+        state.cache.insert(key, entry);
+        state.used_bytes = resulting_bytes;
+        Ok(())
+    }
+
+    pub async fn cache_remove(&self, key: &SessionCacheKey) -> Result<bool, ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_cache_error());
+        }
+        let mut state = self.inner.admission.lock().await;
+        let Some(entry) = state.cache.remove(key) else {
+            return Ok(false);
+        };
+        let released_bytes = key
+            .retained_bytes()
+            .checked_add(entry.retained_bytes())
+            .expect("published cache entry byte count fits");
+        state.used_bytes = state
+            .used_bytes
+            .checked_sub(released_bytes)
+            .expect("cache bytes are charged before release");
+        Ok(true)
+    }
     /// Enumerates this Path Session's Session Scratch names in sorted order.
     pub async fn scratch_names(&self) -> Result<Vec<LocalName>, ResourceError> {
         if !self.is_active() {
@@ -1057,7 +1232,7 @@ fn inactive_catalog_error() -> ResourceError {
 fn session_quota_error(limit: usize) -> ResourceError {
     ResourceError::new(
         ErrorCategory::LimitExceeded,
-        format!("Path Session exceeds the {limit}-byte artifact quota; narrow the selector"),
+        format!("Path Session exceeds the {limit}-byte storage quota; narrow or remove content"),
     )
 }
 
@@ -1065,6 +1240,13 @@ fn inactive_scratch_error() -> ResourceError {
     ResourceError::new(
         ErrorCategory::SourceUnavailable,
         "Path Session disconnected before the Session Scratch operation",
+    )
+}
+
+fn inactive_cache_error() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::SourceUnavailable,
+        "Path Session disconnected before the cache operation",
     )
 }
 

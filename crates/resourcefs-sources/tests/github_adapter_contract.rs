@@ -1,9 +1,14 @@
+#[path = "support/mod.rs"]
+mod session_support;
 #[path = "support/tls.rs"]
 mod tls;
 
 use std::{
     net::{IpAddr, Ipv4Addr},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU16, AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -61,7 +66,32 @@ fn response(body: &str) -> FixtureResponse {
     }
 }
 
+fn protocol_response(
+    status: &'static str,
+    headers: impl IntoIterator<Item = (&'static str, String)>,
+    body: impl Into<Vec<u8>>,
+) -> FixtureResponse {
+    FixtureResponse::Response {
+        status,
+        headers: headers
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect(),
+        body: body.into(),
+    }
+}
+
 async fn fixture_source<R>(router: R) -> (TlsListener, GithubSource)
+where
+    R: Fn(&str) -> FixtureResponse + Send + Sync + 'static,
+{
+    fixture_source_with_ceilings(router, resourcefs_core::HttpCeilings::default()).await
+}
+
+async fn fixture_source_with_ceilings<R>(
+    router: R,
+    ceilings: resourcefs_core::HttpCeilings,
+) -> (TlsListener, GithubSource)
 where
     R: Fn(&str) -> FixtureResponse + Send + Sync + 'static,
 {
@@ -80,13 +110,19 @@ where
     .expect("GitHub config");
     let substrate = HttpSubstrate::with_host_lookup_and_roots(
         fixture_allowlist(port, true),
-        resourcefs_core::HttpCeilings::default(),
+        ceilings,
         move |_host| async move { Ok::<_, std::io::Error>(vec![loopback]) },
         &[tls::FIXTURE_CA],
         Vec::new(),
     )
     .expect("substrate");
-    let source = GithubSource::new(config, Arc::new(substrate)).expect("GitHub source");
+    let session_fixture = session_support::scratch_fixture().await;
+    let source = GithubSource::new(
+        config,
+        Arc::new(substrate),
+        session_fixture.path_session().clone(),
+    )
+    .expect("GitHub source");
     (listener, source)
 }
 
@@ -94,7 +130,7 @@ where
 async fn issue_aggregate_and_fields_are_stable_and_read_only() {
     let (listener, source) = fixture_source(|path| match path {
         "/repos/owner/repo/issues/42" => response(ISSUE),
-        "/repos/owner/repo/issues/42/comments" => response(ISSUE_COMMENTS),
+        "/repos/owner/repo/issues/42/comments?per_page=100&page=1" => response(ISSUE_COMMENTS),
         other => panic!("unexpected route {other}"),
     })
     .await;
@@ -137,15 +173,16 @@ async fn issue_aggregate_and_fields_are_stable_and_read_only() {
 async fn pr_projection_kinds_remain_distinct_and_patch_absence_is_explicit() {
     let (listener, source) = fixture_source(|path| match path {
         "/repos/owner/repo/pulls/7" => response(PULL),
-        "/repos/owner/repo/issues/7/comments" => response("[]"),
-        "/repos/owner/repo/pulls/7/reviews" => response(REVIEWS),
+        "/repos/owner/repo/issues/7/comments?per_page=100&page=1" => response("[]"),
+        "/repos/owner/repo/pulls/7/reviews?per_page=100&page=1" => response(REVIEWS),
         "/repos/owner/repo/pulls/7/reviews/202" => response(
             r#"{"id":202,"body":"looks good","user":{"login":"reviewer","id":3},"state":"APPROVED","submitted_at":null,"commit_id":null}"#,
         ),
-        "/repos/owner/repo/pulls/7/comments" => response(REVIEW_COMMENTS),
+        "/repos/owner/repo/pulls/7/comments?per_page=100&page=1" => response(REVIEW_COMMENTS),
         "/repos/owner/repo/pulls/comments/303" => response(
             r#"{"id":303,"body":"inline","user":{"login":"reviewer","id":3},"path":"src/lib.rs","diff_hunk":"@@ -1 +1 @@","created_at":"2026-08-20T04:00:00Z","updated_at":"2026-08-20T04:00:00Z","pull_request_review_id":null}"#,
         ),
+        "/repos/owner/repo/pulls/7/files?per_page=100&page=1" => response(FILES),
         "/repos/owner/repo/pulls/7/files" => response(FILES),
         other => panic!("unexpected route {other}"),
     })
@@ -273,6 +310,341 @@ async fn errors_match_typed_status_header_matrix() {
     }
 }
 
+#[tokio::test]
+async fn repository_collections_are_bounded_filtered_and_continuable() {
+    let port = Arc::new(AtomicU16::new(0));
+    let observed_port = Arc::clone(&port);
+    let (listener, source) = fixture_source(move |path| {
+        let page = path
+            .split('?')
+            .nth(1)
+            .into_iter()
+            .flat_map(|query| query.split('&'))
+            .find_map(|part| part.strip_prefix("page="))
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("numeric page");
+        let issue = format!(
+            "{{\"id\":{id},\"number\":{number},\"state\":\"open\",\"title\":\"issue {number}\",\"body\":\"\",\"user\":null,\"html_url\":\"https://example/{number}\",\"created_at\":\"2026-08-20T00:00:00Z\",\"updated_at\":\"2026-08-20T00:00:00Z\"}}",
+            id = 10_000 + page,
+            number = page
+        );
+        let body = if page == 1 {
+            format!(
+                "[{issue},{{\"id\":99999,\"number\":999,\"state\":\"open\",\"title\":\"PR row\",\"body\":\"\",\"user\":null,\"html_url\":\"https://example/999\",\"created_at\":\"2026-08-20T00:00:00Z\",\"updated_at\":\"2026-08-20T00:00:00Z\",\"pull_request\":{{\"url\":\"https://api.example/pulls/999\"}}}}]"
+            )
+        } else {
+            format!("[{issue}]")
+        };
+        let next_page = page + 1;
+        let headers = (page <= 10).then(|| {
+            (
+                "Link",
+                format!(
+                    "<https://{FIXTURE_HOST}:{}/repos/owner/repo/issues?state=all&sort=updated&direction=desc&per_page=100&page={next_page}&after=opaque>; rel=\"next\"",
+                    observed_port.load(Ordering::Acquire)
+                ),
+            )
+        });
+        protocol_response("200 OK", headers, body.into_bytes())
+    })
+    .await;
+    port.store(listener.address.port(), Ordering::Release);
+
+    let listed = source
+        .read(
+            &PathReference::parse("issue://owner/repo").expect("collection"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("bounded listing");
+    assert!(listed.content().starts_with("# Issues: owner/repo\n"));
+    assert!(listed.content().contains("issue://owner/repo/1"));
+    assert!(!listed.content().contains("issue://owner/repo/999"));
+    assert!(
+        listed
+            .content()
+            .contains("\nContinuation: issue://owner/repo:page:11\n"),
+        "{}",
+        listed.content()
+    );
+    settle().await;
+    assert_eq!(listener.requests().len(), 10);
+}
+
+#[tokio::test]
+async fn etag_cache_revalidates_replaces_and_never_hides_requests() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&requests);
+    let (listener, source) =
+        fixture_source(move |_path| match counter.fetch_add(1, Ordering::AcqRel) {
+            0 => protocol_response(
+                "200 OK",
+                [("ETag", "W/\"one\"".to_owned())],
+                ISSUE.as_bytes().to_vec(),
+            ),
+            1 => protocol_response(
+                "304 Not Modified",
+                [("ETag", "W/\"one\"".to_owned())],
+                Vec::new(),
+            ),
+            2 => protocol_response(
+                "200 OK",
+                [("ETag", "W/\"two\"".to_owned())],
+                ISSUE.replace("Parser bug", "Parser fixed").into_bytes(),
+            ),
+            _ => protocol_response("500 Internal Server Error", [], Vec::new()),
+        })
+        .await;
+    let reference = PathReference::parse("issue://owner/repo/42/title").expect("title");
+    let first = source
+        .read(&reference, &OperationGuard::new())
+        .await
+        .expect("first");
+    let unchanged = source
+        .read(&reference, &OperationGuard::new())
+        .await
+        .expect("304");
+    let changed = source
+        .read(&reference, &OperationGuard::new())
+        .await
+        .expect("changed");
+    assert_eq!(first.content(), "Parser bug");
+    assert_eq!(unchanged.content(), "Parser bug");
+    assert_eq!(changed.content(), "Parser fixed");
+    let failure = source
+        .read(&reference, &OperationGuard::new())
+        .await
+        .expect_err("failed revalidation must not serve stale content");
+    assert_eq!(failure.category(), ErrorCategory::SourceUnavailable);
+    settle().await;
+    let heads = listener.heads();
+    assert_eq!(heads.len(), 4);
+    assert!(!heads[0].to_ascii_lowercase().contains("if-none-match"));
+    assert!(
+        heads[1]
+            .to_ascii_lowercase()
+            .contains("if-none-match: w/\"one\"")
+    );
+    assert!(
+        heads[2]
+            .to_ascii_lowercase()
+            .contains("if-none-match: w/\"one\"")
+    );
+}
+
+#[tokio::test]
+async fn retry_is_single_and_machine_signaled() {
+    let rate_attempts = Arc::new(AtomicUsize::new(0));
+    let rate_counter = Arc::clone(&rate_attempts);
+    let (_listener, source) = fixture_source(move |_path| {
+        if rate_counter.fetch_add(1, Ordering::AcqRel) == 0 {
+            protocol_response(
+                "429 Too Many Requests",
+                [("Retry-After", "0".to_owned())],
+                Vec::new(),
+            )
+        } else {
+            response(ISSUE)
+        }
+    })
+    .await;
+    let title = source
+        .read(
+            &PathReference::parse("issue://owner/repo/42/title").expect("title"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("rate retry");
+    assert_eq!(title.content(), "Parser bug");
+    assert_eq!(rate_attempts.load(Ordering::Acquire), 2);
+
+    let transport_attempts = Arc::new(AtomicUsize::new(0));
+    let transport_counter = Arc::clone(&transport_attempts);
+    let (_listener, source) = fixture_source(move |_path| {
+        if transport_counter.fetch_add(1, Ordering::AcqRel) == 0 {
+            FixtureResponse::Abort
+        } else {
+            response(ISSUE)
+        }
+    })
+    .await;
+    source
+        .read(
+            &PathReference::parse("issue://owner/repo/42/title").expect("title"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("transport retry");
+    assert_eq!(transport_attempts.load(Ordering::Acquire), 2);
+}
+
+#[tokio::test]
+async fn pagination_links_are_confined_and_page_failures_are_atomic() {
+    let port = Arc::new(AtomicU16::new(0));
+    let observed_port = Arc::clone(&port);
+    let (listener, source) = fixture_source(move |_path| {
+        protocol_response(
+            "200 OK",
+            [(
+                "Link",
+                format!(
+                    "<https://{FIXTURE_HOST}:{}/repos/other/repo/issues?per_page=100&page=2>; rel=\"next\"",
+                    observed_port.load(Ordering::Acquire)
+                ),
+            )],
+            b"[]".to_vec(),
+        )
+    })
+    .await;
+    port.store(listener.address.port(), Ordering::Release);
+    let error = source
+        .read(
+            &PathReference::parse("issue://owner/repo").expect("collection"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("cross-repository Link");
+    assert_eq!(error.category(), ErrorCategory::PermissionDenied);
+    settle().await;
+    assert_eq!(listener.requests().len(), 1);
+
+    let port = Arc::new(AtomicU16::new(0));
+    let observed_port = Arc::clone(&port);
+    let (listener, source) = fixture_source(move |path| {
+        if path.contains("page=2") {
+            protocol_response("500 Internal Server Error", [], Vec::new())
+        } else {
+            protocol_response(
+                "200 OK",
+                [(
+                    "Link",
+                    format!(
+                        "<https://{FIXTURE_HOST}:{}/repos/owner/repo/issues?state=all&sort=updated&direction=desc&per_page=100&page=2>; rel=\"next\"",
+                        observed_port.load(Ordering::Acquire)
+                    ),
+                )],
+                b"[]".to_vec(),
+            )
+        }
+    })
+    .await;
+    port.store(listener.address.port(), Ordering::Release);
+    let error = source
+        .read(
+            &PathReference::parse("issue://owner/repo").expect("collection"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("page two failure cannot return partial success");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    settle().await;
+    assert_eq!(listener.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn retry_after_shares_the_configured_logical_deadline() {
+    let ceilings = resourcefs_core::HttpCeilings::new(resourcefs_core::HttpCeilingsInput {
+        timeout_millis: Some(50),
+        ..resourcefs_core::HttpCeilingsInput::default()
+    })
+    .expect("lowered timeout");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&attempts);
+    let (_listener, source) = fixture_source_with_ceilings(
+        move |_path| {
+            counted.fetch_add(1, Ordering::AcqRel);
+            protocol_response(
+                "429 Too Many Requests",
+                [("Retry-After", "1".to_owned())],
+                Vec::new(),
+            )
+        },
+        ceilings,
+    )
+    .await;
+    let started = Instant::now();
+    let error = source
+        .read(
+            &PathReference::parse("issue://owner/repo/42/title").expect("title"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("Retry-After exceeds logical deadline");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(attempts.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn typed_page_continuations_are_directly_readable() {
+    let (listener, source) = fixture_source(|path| {
+        assert!(path.ends_with("per_page=100&page=11"), "{path}");
+        protocol_response("200 OK", [], b"[]".to_vec())
+    })
+    .await;
+    let page = source
+        .read(
+            &PathReference::parse("issue://owner/repo:page:11").expect("page reference"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("page read");
+    assert_eq!(page.content(), "# Issues: owner/repo\n\n(no issues)\n");
+    settle().await;
+    assert_eq!(listener.requests().len(), 1);
+}
+
+#[tokio::test]
+#[ignore = "checkpointed-build production-scale budget"]
+async fn github_pagination_cache_budget() {
+    let port = Arc::new(AtomicU16::new(0));
+    let observed_port = Arc::clone(&port);
+    let (listener, source) = fixture_source(move |path| {
+        let page = path
+            .split('?')
+            .nth(1)
+            .into_iter()
+            .flat_map(|query| query.split('&'))
+            .find_map(|part| part.strip_prefix("page="))
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("numeric page");
+        let first = (page - 1) * 100 + 1;
+        let body = (first..first + 100)
+            .map(|number| {
+                format!(
+                    "{{\"id\":{},\"number\":{number},\"state\":\"open\",\"title\":\"issue {number}\",\"body\":\"\",\"user\":null,\"html_url\":\"https://example/{number}\",\"created_at\":\"2026-08-20T00:00:00Z\",\"updated_at\":\"2026-08-20T00:00:00Z\"}}",
+                    10_000 + number
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let headers = (page < 10).then(|| {
+            (
+                "Link",
+                format!(
+                    "<https://{FIXTURE_HOST}:{}/repos/owner/repo/issues?state=all&sort=updated&direction=desc&per_page=100&page={}>; rel=\"next\"",
+                    observed_port.load(Ordering::Acquire),
+                    page + 1
+                ),
+            )
+        });
+        protocol_response("200 OK", headers, format!("[{body}]").into_bytes())
+    })
+    .await;
+    port.store(listener.address.port(), Ordering::Release);
+    let started = Instant::now();
+    let listed = source
+        .read(
+            &PathReference::parse("issue://owner/repo").expect("collection"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("1,000-object listing");
+    assert_eq!(listed.content().matches("- issue://").count(), 1_000);
+    assert!(started.elapsed() <= Duration::from_secs(30));
+    settle().await;
+    assert_eq!(listener.requests().len(), 10);
+}
 #[test]
 #[ignore = "checkpointed-build production-scale budget"]
 fn github_single_resource_render_budget() {

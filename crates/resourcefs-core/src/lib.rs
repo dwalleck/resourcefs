@@ -62,7 +62,7 @@ pub use secret::{Redactor, Secret, SecretError};
 pub use selector::{SelectedText, select_utf8};
 pub use session::{
     ArtifactId, MAX_SESSION_ARTIFACTS, MAX_SESSION_BYTES, OperationGuard, PathSession,
-    ScratchState, SessionStorage, SessionToken,
+    ScratchState, SessionCacheEntry, SessionCacheKey, SessionStorage, SessionToken,
 };
 pub use source::SourceAdapter;
 pub use version::VersionTag;

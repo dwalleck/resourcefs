@@ -65,6 +65,34 @@ struct SourceRequestHeader {
     value: reqwest::header::HeaderValue,
 }
 
+pub(crate) struct HttpFetchFailure {
+    error: ResourceError,
+    retryable: bool,
+}
+
+impl HttpFetchFailure {
+    fn terminal(error: ResourceError) -> Self {
+        Self {
+            error,
+            retryable: false,
+        }
+    }
+
+    fn transport(error: ResourceError) -> Self {
+        Self {
+            error,
+            retryable: true,
+        }
+    }
+
+    pub(crate) const fn is_retryable(&self) -> bool {
+        self.retryable
+    }
+
+    pub(crate) fn into_error(self) -> ResourceError {
+        self.error
+    }
+}
 /// Resolves one host name to its addresses.
 ///
 /// Injectable so contract tests can drive resolution deterministically without
@@ -295,6 +323,12 @@ impl BoundedHttpResponse {
     #[must_use]
     pub fn body(&self) -> &[u8] {
         &self.body
+    }
+
+    /// Moves the accepted body into a source-owned cache without copying.
+    #[must_use]
+    pub fn into_body(self) -> Vec<u8> {
+        self.body
     }
 
     /// Returns whether the body reached the accept ceiling and was cut short.
@@ -668,32 +702,37 @@ impl HttpSubstrate {
         request: HttpRequest,
         operation: &OperationGuard,
     ) -> Result<BoundedHttpResponse, ResourceError> {
+        self.fetch_attempt(request, operation)
+            .await
+            .map_err(HttpFetchFailure::into_error)
+    }
+
+    pub(crate) async fn fetch_attempt(
+        &self,
+        request: HttpRequest,
+        operation: &OperationGuard,
+    ) -> Result<BoundedHttpResponse, HttpFetchFailure> {
         if !operation.is_active() {
-            return Err(ResourceError::new(
+            return Err(HttpFetchFailure::terminal(ResourceError::new(
                 ErrorCategory::Cancelled,
                 "request was cancelled before egress",
-            ));
+            )));
         }
-        // A degraded source's origins are configured but unreachable. This runs
-        // before allowlist scoping so the refusal names the true state rather
-        // than falling through to "not allowlisted", which would tell an
-        // operator their profile lacks an origin it actually declares.
-        self.refuse_degraded(request.url())?;
-        // Origin scoping runs before any egress: a URL outside every declared
-        // `base_url` never reaches the resolver, let alone a socket.
-        self.allowlist.authorize(request.url())?;
-        // The IP-literal route bypasses the resolver entirely, so the address
-        // policy is applied here instead. Names fall through untouched and are
-        // authorized inside the resolver.
-        authorize_literal_host(&self.policies, request.url())?;
+        self.refuse_degraded(request.url())
+            .map_err(HttpFetchFailure::terminal)?;
+        self.allowlist
+            .authorize(request.url())
+            .map_err(HttpFetchFailure::terminal)?;
+        authorize_literal_host(&self.policies, request.url())
+            .map_err(HttpFetchFailure::terminal)?;
 
-        // Cancellation races the connect the same way it races the body: a
-        // caller who gave up should not wait on a handshake to a slow peer.
         let response = tokio::select! {
             biased;
-            () = operation.cancelled() => return Err(cancelled_mid_request()),
+            () = operation.cancelled() => {
+                return Err(HttpFetchFailure::terminal(cancelled_mid_request()));
+            }
             sent = self.credentialed(&request).send() => {
-                sent.map_err(policy_error_or)?
+                sent.map_err(classify_reqwest_failure)?
             }
         };
 
@@ -704,8 +743,10 @@ impl HttpSubstrate {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        let etag = Self::retained_header(response.headers(), &reqwest::header::ETAG)?;
-        let link = Self::retained_header(response.headers(), &reqwest::header::LINK)?;
+        let etag = Self::retained_header(response.headers(), &reqwest::header::ETAG)
+            .map_err(HttpFetchFailure::terminal)?;
+        let link = Self::retained_header(response.headers(), &reqwest::header::LINK)
+            .map_err(HttpFetchFailure::terminal)?;
         let retry_after = response
             .headers()
             .get(reqwest::header::RETRY_AFTER)
@@ -720,7 +761,16 @@ impl HttpSubstrate {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u64>().ok());
 
-        let (body, truncated) = self.read_bounded(response, operation).await?;
+        let (body, truncated) = self
+            .read_bounded(response, operation)
+            .await
+            .map_err(|error| {
+                if error.category() == ErrorCategory::SourceUnavailable {
+                    HttpFetchFailure::transport(error)
+                } else {
+                    HttpFetchFailure::terminal(error)
+                }
+            })?;
         Ok(BoundedHttpResponse {
             status,
             final_url,
@@ -998,6 +1048,17 @@ fn cancelled_mid_request() -> ResourceError {
         ErrorCategory::Cancelled,
         "request was cancelled before its response was accepted",
     )
+}
+
+fn classify_reqwest_failure(error: reqwest::Error) -> HttpFetchFailure {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    while let Some(current) = source {
+        if let Some(found) = current.downcast_ref::<ResourceError>() {
+            return HttpFetchFailure::terminal(found.clone());
+        }
+        source = current.source();
+    }
+    HttpFetchFailure::transport(policy_error_or(error))
 }
 
 fn policy_error_or(error: reqwest::Error) -> ResourceError {

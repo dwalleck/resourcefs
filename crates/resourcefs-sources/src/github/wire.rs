@@ -59,6 +59,19 @@ pub(super) struct PullRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub(super) struct PullRequestSummary {
+    pub(super) id: u64,
+    pub(super) number: u64,
+    pub(super) state: String,
+    pub(super) title: String,
+    pub(super) user: Option<SimpleUser>,
+    pub(super) html_url: String,
+    pub(super) updated_at: String,
+    pub(super) draft: bool,
+    pub(super) merged_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub(super) struct ConversationComment {
     pub(super) id: u64,
     pub(super) body: Option<String>,
