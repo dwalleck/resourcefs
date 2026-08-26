@@ -2,8 +2,8 @@ use std::{collections::HashSet, fmt, path::Path};
 
 use resourcefs_core::{ProbeState, Redactor, Secret, ServerLimits};
 use resourcefs_sources::{
-    BackingPathVisibility, FilesystemSource, HttpsSource, LaunchRoot, LaunchRootSource, ProbeRun,
-    SESSION_CLEANUP_TTL, SessionStorageConfig,
+    BackingPathVisibility, FilesystemSource, GithubSourceMount, HttpsSource, LaunchRoot,
+    LaunchRootSource, ProbeRun, SESSION_CLEANUP_TTL, SessionStorageConfig,
 };
 
 use crate::{
@@ -14,14 +14,14 @@ use crate::{
 /// Source kinds this binary can actually mount from a profile.
 ///
 /// A configured kind absent here fails startup rather than being ignored, so a
-/// profile never silently serves less than it declares. `https` joined the list
-/// when the launch path gained `mount_https`; every other kind remains a
-/// declared-but-uncompiled adapter tracked by its own issue.
-const COMPILED_PROFILE_SOURCE_KINDS: &[&str] = &["https"];
+/// profile never silently serves less than it declares. HTTPS and GitHub are
+/// the currently mounted network-backed profile sources.
+const COMPILED_PROFILE_SOURCE_KINDS: &[&str] = &["https", "github"];
 
 pub(crate) struct LaunchPlan {
     source: FilesystemSource,
     https: Option<HttpsSource>,
+    github: Option<GithubSourceMount>,
     limits: ServerLimits,
     session_storage: SessionStorageConfig,
     logging: LogConfig,
@@ -93,9 +93,13 @@ impl LaunchPlan {
         let https = profile::mount_https(checked.https, &checked.configuration_base, &degraded)
             .await
             .map_err(LaunchError::configuration)?;
+        let github = profile::mount_github(checked.github, &checked.configuration_base, &degraded)
+            .await
+            .map_err(LaunchError::configuration)?;
         Ok(Self {
             source,
             https,
+            github,
             limits: checked.limits,
             session_storage: checked.session_storage,
             logging: checked.logging,
@@ -123,6 +127,7 @@ impl LaunchPlan {
             source,
             // CLI launches declare no profile, so no HTTPS origin exists.
             https: None,
+            github: None,
             limits: ServerLimits::default(),
             session_storage,
             logging: LogConfig::default(),
@@ -135,6 +140,7 @@ impl LaunchPlan {
     ) -> (
         FilesystemSource,
         Option<HttpsSource>,
+        Option<GithubSourceMount>,
         ServerLimits,
         SessionStorageConfig,
         LogConfig,
@@ -143,6 +149,7 @@ impl LaunchPlan {
         (
             self.source,
             self.https,
+            self.github,
             self.limits,
             self.session_storage,
             self.logging,

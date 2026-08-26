@@ -5,9 +5,9 @@ use resourcefs_core::{
     AllowedOrigin, HttpCeilings, OperationGuard, OriginAllowlist, Redactor, ServerLimits,
 };
 use resourcefs_sources::{
-    BackingPathVisibility, CommandExecutor, HttpSubstrate, HttpsConfig, HttpsSource,
-    LaunchRootSource, MAX_LIVE_COMMAND_TREES, OriginCredential, ProbeRun, ProbeRunner,
-    SessionStorageConfig, secret,
+    BackingPathVisibility, CommandExecutor, GithubConfig, GithubSourceMount, HttpSubstrate,
+    HttpsConfig, HttpsSource, LaunchRootSource, MAX_LIVE_COMMAND_TREES, OriginCredential, ProbeRun,
+    ProbeRunner, SessionStorageConfig, secret,
 };
 
 use crate::logging::LogConfig;
@@ -36,6 +36,7 @@ pub(crate) struct CheckedLaunchProfile {
     /// Validated HTTPS sources, consumed by the launch path to mount a live
     /// `HttpsSource`.
     pub(crate) https: Vec<HttpsConfig>,
+    pub(crate) github: Vec<GithubConfig>,
     /// Base directory for resolving credential-command paths at launch.
     pub(crate) configuration_base: std::path::PathBuf,
 }
@@ -174,4 +175,56 @@ pub(crate) async fn mount_https(
         .map_err(|error| ProfileError::invalid(format!("{error}")))?
         .with_degraded_origins(degraded);
     Ok(Some(HttpsSource::new(Arc::new(substrate))))
+}
+
+pub(crate) async fn mount_github(
+    mut configs: Vec<GithubConfig>,
+    base: &std::path::Path,
+    degraded_ids: &std::collections::HashSet<String>,
+) -> Result<Option<GithubSourceMount>, ProfileError> {
+    if configs.is_empty() {
+        return Ok(None);
+    }
+    if configs.len() != 1 {
+        return Err(ProfileError::invalid(
+            "exactly one GitHub source may own issue:// and pr://",
+        ));
+    }
+    let config = configs.pop().expect("one checked GitHub config");
+    let allowed = AllowedOrigin::new(config.api_base_url(), config.allow_private_network())
+        .map_err(|error| ProfileError::invalid(format!("{error}")))?;
+    let degraded_source = degraded_ids.contains(config.id());
+    let mut origins = Vec::new();
+    let mut degraded = Vec::new();
+    let mut credentials = Vec::new();
+    if degraded_source {
+        degraded.push(allowed);
+    } else {
+        let executor = CommandExecutor::new(MAX_LIVE_COMMAND_TREES, base)
+            .map_err(|_| ProfileError::invalid("could not initialize the credential executor"))?;
+        let operation = OperationGuard::new();
+        let resolved = secret::resolve(config.credential(), &executor, &operation, |name| {
+            std::env::var_os(name)
+        })
+        .await
+        .map_err(|_| {
+            ProfileError::invalid(format!(
+                "source '{}' could not resolve its configured credential",
+                config.id()
+            ))
+        })?;
+        credentials.push(
+            OriginCredential::new(allowed.clone(), "Authorization", Some("Bearer"), &resolved)
+                .map_err(|error| ProfileError::invalid(format!("{error}")))?,
+        );
+        origins.push(allowed);
+    }
+    let substrate = HttpSubstrate::new(
+        OriginAllowlist::new(origins),
+        HttpCeilings::default(),
+        credentials,
+    )
+    .map_err(|error| ProfileError::invalid(format!("{error}")))?
+    .with_degraded_origins(degraded);
+    Ok(Some(GithubSourceMount::new(config, Arc::new(substrate))))
 }

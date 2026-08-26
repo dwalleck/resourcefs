@@ -15,8 +15,9 @@ use resourcefs_core::{
     TextLimitInput, WorkspaceRootId,
 };
 use resourcefs_sources::{
-    BackingPathVisibility, ConfigurationDirectory, ConfigurationError, HttpsConfig, LaunchRoot,
-    LaunchRootSource, MutationGrants, MutationSupport, SESSION_CLEANUP_TTL, SessionStorageConfig,
+    BackingPathVisibility, ConfigurationDirectory, ConfigurationError, GithubConfig, HttpsConfig,
+    LaunchRoot, LaunchRootSource, MutationGrants, MutationSupport, SESSION_CLEANUP_TTL,
+    SessionStorageConfig,
 };
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
@@ -149,6 +150,7 @@ pub(super) struct LaunchProfileComponents {
     /// so an allowlisted reference could not be served and a degraded source
     /// was indistinguishable from an unmounted one.
     pub(super) https: Vec<HttpsConfig>,
+    pub(super) github: Vec<GithubConfig>,
 }
 
 impl ProfileDocument {
@@ -331,14 +333,15 @@ impl ProfileDocument {
             }
             None => (Vec::new(), None, BackingPathVisibility::Hidden),
         };
-        let https = self
-            .configured_sources
-            .drain(..)
-            .filter_map(|source| match source {
-                super::convert::ConfiguredSource::Https(config) => Some(config),
-                _ => None,
-            })
-            .collect();
+        let mut https = Vec::new();
+        let mut github = Vec::new();
+        for source in self.configured_sources.drain(..) {
+            match source {
+                super::convert::ConfiguredSource::Https(config) => https.push(config),
+                super::convert::ConfiguredSource::Github(config) => github.push(config),
+                _ => {}
+            }
+        }
         Ok(LaunchProfileComponents {
             root_source: LaunchRootSource::Profile(roots),
             primary_selector,
@@ -347,6 +350,7 @@ impl ProfileDocument {
             session_storage,
             logging,
             https,
+            github,
         })
     }
 }
@@ -1697,6 +1701,7 @@ mod tests {
     use super::ProfileDocument;
     use crate::logging::{LogDestinationKind, LogLevel};
     use resourcefs_sources::{LaunchRootSource, MutationGrants};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn logging_paths_resolve_from_the_profile_directory() {
@@ -1753,5 +1758,49 @@ mod tests {
         };
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].grants(), MutationGrants::new(true, true, false));
+    }
+
+    #[test]
+    fn github_config_reaches_launch_components() {
+        let fixture = tempfile::tempdir().expect("profile directory");
+        let profile = ProfileDocument::from_slice_in(
+            br#"{"schemaVersion":1,"sources":[{"kind":"github","id":"forge","required":false,"allowPrivateNetwork":false,"credential":{"kind":"environment","name":"GITHUB_TOKEN"},"repositories":[{"name":"Owner/Repository"}]}]}"#,
+            fixture.path(),
+        )
+        .expect("GitHub profile");
+        let components = profile.into_launch_components().expect("launch components");
+        assert_eq!(components.github.len(), 1);
+        assert_eq!(components.github[0].id(), "forge");
+        assert_eq!(
+            components.github[0].repositories()[0].identity().as_str(),
+            "owner/repository"
+        );
+    }
+
+    #[test]
+    #[ignore = "checkpointed-build production-scale budget"]
+    fn github_profile_validation_budget() {
+        let fixture = tempfile::tempdir().expect("profile directory");
+        let repositories = (0..4_096)
+            .map(|index| serde_json::json!({"name":format!("owner/repository-{index}")}))
+            .collect::<Vec<_>>();
+        let encoded = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion":1,
+            "sources":[{
+                "kind":"github",
+                "id":"forge",
+                "required":false,
+                "allowPrivateNetwork":false,
+                "credential":{"kind":"environment","name":"GITHUB_TOKEN"},
+                "repositories":repositories
+            }]
+        }))
+        .expect("profile bytes");
+        let started = Instant::now();
+        ProfileDocument::from_slice_in(&encoded, fixture.path()).expect("maximum GitHub profile");
+        assert!(
+            started.elapsed() <= Duration::from_millis(50),
+            "4,096-repository profile validation exceeded 50 ms"
+        );
     }
 }

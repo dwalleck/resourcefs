@@ -533,11 +533,9 @@ fn profile_serve_matrix() {
     fs::write(temporary.path().join("rules.json"), b"{}").expect("rules manifest");
     fs::write(temporary.path().join("agents.json"), b"{}").expect("agent manifest");
 
-    // `https` is absent because this binary now mounts it; the kinds below are
-    // the ones that remain declared-but-uncompiled. Its startup behaviour is
-    // covered by `required_https_fails_startup` and the degradation fences.
+    // HTTPS and GitHub are absent because this binary mounts them. Their startup
+    // behavior is covered by required/degraded source and credential fences.
     for kind in [
-        "github",
         "ssh",
         "documents",
         "skills",
@@ -739,12 +737,22 @@ fn secret_never_reaches_observable_channels() {
     assert!(logged.stderr.is_empty());
     assert_bytes_exclude(&fs::read(log_path).expect("file diagnostic"), LOG_SECRET);
 
-    let unavailable = run_serve_profile(
-        &static_profile,
+    let unavailable = run_initialized_serve(
+        &[
+            "serve".to_owned(),
+            "--config".to_owned(),
+            static_profile.display().to_string(),
+        ],
         temporary.path(),
         &[("RFS_SECRET_STATIC", Some(STATIC_SECRET))],
     );
-    assert_eq!(unavailable.status.code(), Some(3));
+    assert_eq!(
+        unavailable.status.code(),
+        Some(0),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&unavailable.stdout),
+        String::from_utf8_lossy(&unavailable.stderr)
+    );
     assert_bytes_exclude(&unavailable.stdout, STATIC_SECRET);
     assert_bytes_exclude(&unavailable.stderr, STATIC_SECRET);
 }
@@ -1521,90 +1529,5 @@ fn probing_is_bounded_and_does_not_starve_a_healthy_source() {
         state("notes"),
         "available",
         "a healthy source must not be starved of the window by an unresponsive sibling"
-    );
-}
-
-/// C14 — a source whose kind this binary cannot mount is refused *before* it is
-/// probed, so startup neither dials its origin nor runs its credential helper.
-///
-/// Startup probing made this reachable: the launch path now probes every
-/// configured source, and probing resolves deferred secrets. Without ordering
-/// the kind gate first, `serve` would dial GitHub and execute an operator's
-/// credential command on the way to refusing the source outright — work done on
-/// behalf of something that can never serve a byte.
-///
-/// Two server-side oracles, because the two costs are independent and a fix for
-/// one does not imply the other. The listener proves no egress: it stays live,
-/// so accepting nothing is only possible if nothing dialled. The marker proves
-/// no execution: the helper creates it when run, so its absence is positive
-/// evidence the credential was never resolved rather than merely unused.
-#[test]
-fn an_unmountable_kind_is_refused_before_it_is_probed() {
-    let temporary = TempDir::new().expect("temporary directory");
-    // The helper is resolved through the command's own `PATH`, which is how
-    // this profile schema locates credential commands; an absolute argv fails
-    // to resolve, and a credential that never resolves would make both oracles
-    // below pass for the wrong reason.
-    let command_directory = temporary.path().join("command-bin");
-    fs::create_dir(&command_directory).expect("command directory");
-    create_executable(&command_directory.join("credential-helper"));
-    let marker = temporary.path().join("credential-was-executed");
-
-    let listener = TcpListener::bind("127.0.0.1:0").expect("origin listener");
-    listener
-        .set_nonblocking(true)
-        .expect("nonblocking listener");
-    let port = listener.local_addr().expect("listener address").port();
-
-    let profile = write_profile(
-        temporary.path(),
-        "unmountable.json",
-        &json!({
-            "schemaVersion":1,
-            "session":{"cacheDirectory":"unmountable-cache"},
-            "sources":[{
-                "kind":"github","id":"forge","required":false,
-                "apiBaseUrl":format!("https://127.0.0.1:{port}/"),
-                "allowPrivateNetwork":true,
-                "credential":{
-                    "kind":"command",
-                    "command":{
-                        "argv":["credential-helper"],
-                        "environment":{
-                            "PATH":{"kind":"literal","value":"command-bin"},
-                            "RFS_CHECK_MARKER":{
-                                "kind":"literal",
-                                "value":marker.display().to_string()
-                            }
-                        }
-                    }
-                },
-                "repositories":[{"name":"owner/repository"}]
-            }]
-        }),
-    );
-
-    let output = run_serve_profile(&profile, temporary.path(), &[]);
-    assert_eq!(
-        output.status.code(),
-        Some(3),
-        "an uncompiled kind still stops startup"
-    );
-    let diagnostic = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert!(
-        diagnostic.contains("not supported"),
-        "the refusal must name the missing adapter, not a reachability verdict; got: {diagnostic}"
-    );
-    assert_eq!(
-        listener
-            .accept()
-            .expect_err("startup must not dial a source it cannot mount")
-            .kind(),
-        std::io::ErrorKind::WouldBlock,
-        "no connection may be made on behalf of an unmountable source"
-    );
-    assert!(
-        !marker.exists(),
-        "the credential helper must not run for a source that cannot mount"
     );
 }

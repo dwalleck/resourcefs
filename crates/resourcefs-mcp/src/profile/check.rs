@@ -77,6 +77,7 @@ impl CheckedProfile {
             redactor,
             sources,
             https: components.https,
+            github: components.github,
             configuration_base: self.configuration_base.clone(),
         })
     }

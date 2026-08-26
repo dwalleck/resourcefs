@@ -73,6 +73,22 @@ impl std::fmt::Debug for GithubSource {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct GithubSourceMount {
+    config: GithubConfig,
+    substrate: Arc<HttpSubstrate>,
+}
+
+impl GithubSourceMount {
+    pub fn new(config: GithubConfig, substrate: Arc<HttpSubstrate>) -> Self {
+        Self { config, substrate }
+    }
+
+    pub fn bind(self, session: PathSession) -> Result<GithubSource, ResourceError> {
+        GithubSource::new(self.config, self.substrate, session)
+    }
+}
+
 impl GithubSource {
     pub fn new(
         config: GithubConfig,

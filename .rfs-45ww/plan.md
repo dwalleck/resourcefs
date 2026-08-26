@@ -149,19 +149,19 @@ Slices 7–8; projected 1,600 lines + 25% local margin = 2,000. Mergeable defini
 **Expected behavior:** One validated GitHub source resolves its credential at launch, uses default/enterprise/private-network policy, binds cache after Path Session creation, fails required unavailability, visibly degrades optional unavailability, participates in explicit profile check, and performs no ordinary-read lifecycle probe or credential disclosure.
 **Oracle:** Strict profile JSON matrix, fake probe/request/header counters, process exit/report, and credential sentinel scan with positive authenticated control.
 **Stress fixture:** No GitHub source; one valid source; duplicate source; case-duplicate repo; default and enterprise base path; public/private loopback grant; env/command credential success/failure/non-UTF8/oversize; required/optional unavailable; non-GitHub adapter remains available; normal repeated read probe count unchanged.
-**Regression fence:** `crates/resourcefs-mcp/tests/github_profile_contract.rs`, updated `cli_contract.rs`, schema/profile checks, and source credential contract.
+**Regression fence:** `crates/resourcefs-mcp/tests/cli_contract.rs`, `crates/resourcefs-mcp/tests/profile_contract.rs`, profile model unit tests, and `crates/resourcefs-sources/tests/github_adapter_contract.rs` mount binding rows.
 **Named mutation:** Omit `github` from compiled kinds; bind source before Path Session; accept two source claims; resolve credential in read; probe each read. The corresponding launch/isolation/request-count row must turn red.
 **Complexity/production scale:** Profile validation O(repositories), 1≤n≤4,096; one-off credential resolution/probe retains existing command/output/time ceilings. Ordinary mounted read adds O(1) source dispatch only. Maximum static validation: 50 ms for 4,096 repositories; launch probe remains configured ≤30 s network ceiling.
 **Wall budget/phase:** profile validation/mount/probe is one-off — no recurring wall budget; ordinary dispatch overhead ≤1 ms.
-**Files:** `crates/resourcefs-mcp/src/profile/model.rs`, `crates/resourcefs-mcp/src/profile/convert.rs`, `crates/resourcefs-mcp/src/profile/mod.rs`, `crates/resourcefs-mcp/src/profile/check.rs`, `crates/resourcefs-mcp/src/launch.rs`, `crates/resourcefs-mcp/src/server.rs`, `crates/resourcefs-sources/src/github/mod.rs`, `crates/resourcefs-sources/src/configuration/github.rs`, `crates/resourcefs-mcp/tests/github_profile_contract.rs`, `crates/resourcefs-mcp/tests/cli_contract.rs`, `crates/resourcefs-mcp/tests/profile_contract.rs`, profile schema fixtures.
+**Files:** `crates/resourcefs-mcp/src/profile/model.rs`, `crates/resourcefs-mcp/src/profile/mod.rs`, `crates/resourcefs-mcp/src/profile/check.rs`, `crates/resourcefs-mcp/src/launch.rs`, `crates/resourcefs-mcp/src/server.rs`, `crates/resourcefs-sources/src/github/mod.rs`, `crates/resourcefs-mcp/tests/cli_contract.rs`, `crates/resourcefs-mcp/tests/profile_contract.rs`, profile model unit tests.
 **Estimate:** 2 days.
 **Diff estimate:** 950 lines.
 **PR increment:** D — Profile launch and acceptance.
 **Commands and expected results:**
-- `cargo test -p resourcefs-mcp --test github_profile_contract --test cli_contract` → every static/mount/probe/degraded/credential/session-binding row matches process and request-log oracle.
-- `cargo run -p resourcefs-mcp --bin resourcefs -- check --profile <deterministic-fixture> --probe` → exact required/degraded report with no credential sentinel; fixture path supplied by contract test harness.
+- `cargo test -p resourcefs-mcp --test profile_contract --test cli_contract` → static schema, required/degraded launch, credential redaction, and all non-GitHub source behavior match process/profile oracles.
+- `cargo test -p resourcefs-mcp --lib profile::model::tests::github_config_reaches_launch_components -- --exact` → checked GithubConfig survives conversion into launch composition.
 - Apply each named mutation and run the named row → red; restore then focused contracts green.
-- `cargo test -p resourcefs-mcp --test github_profile_contract github_profile_validation_budget -- --exact --ignored` → 4,096 repository entries validate ≤50 ms and ordinary dispatch averages ≤1 ms.
+- `cargo test -p resourcefs-mcp --lib profile::model::tests::github_profile_validation_budget -- --exact --ignored` → 4,096 repository entries validate ≤50 ms.
 
 ## Slice 8: Close direct-adapter and profile acceptance with deterministic fake upstreams
 

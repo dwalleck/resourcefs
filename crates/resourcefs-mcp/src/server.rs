@@ -16,8 +16,8 @@ use resourcefs_core::{
 #[cfg(feature = "test-support")]
 use resourcefs_sources::StorageFailurePoint;
 use resourcefs_sources::{
-    ArtifactSource, ClientRoot, CompiledSources, FilesystemSource, HttpsSource, LocalSource,
-    RootRefresh, SessionStorageConfig, SessionStore, StoredSession,
+    ArtifactSource, ClientRoot, CompiledSources, FilesystemSource, GithubSourceMount, HttpsSource,
+    LocalSource, RootRefresh, SessionStorageConfig, SessionStore, StoredSession,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -1292,7 +1292,7 @@ impl ServeFailure {
 }
 
 pub(crate) async fn serve(plan: LaunchPlan) -> Result<(), ServeFailure> {
-    let (source, https, limits, session_storage, logging, redactor) = plan.into_parts();
+    let (source, https, github, limits, session_storage, logging, redactor) = plan.into_parts();
     let logging = LogSink::new(logging, redactor)
         .await
         .map_err(ServeFailure::unreported)?;
@@ -1306,7 +1306,7 @@ pub(crate) async fn serve(plan: LaunchPlan) -> Result<(), ServeFailure> {
             .await
             .map_err(ServeFailure::unreported)?;
     }
-    match serve_inner(source, https, limits, session_storage).await {
+    match serve_inner(source, https, github, limits, session_storage).await {
         Ok(()) => Ok(()),
         Err(error) => {
             if let Err(logging_error) = logging.write(LogLevel::Error, &error.to_string()).await {
@@ -1320,6 +1320,7 @@ pub(crate) async fn serve(plan: LaunchPlan) -> Result<(), ServeFailure> {
 async fn serve_inner(
     source: FilesystemSource,
     https: Option<HttpsSource>,
+    github: Option<GithubSourceMount>,
     limits: ServerLimits,
     session_storage: SessionStorageConfig,
 ) -> Result<(), BoxError> {
@@ -1332,6 +1333,9 @@ async fn serve_inner(
     let (heartbeat_shutdown, heartbeat_stop) = watch::channel(false);
     let mut heartbeat = tokio::spawn(heartbeat_session(stored_session.clone(), heartbeat_stop));
     let session = stored_session.path_session().clone();
+    let github = github
+        .map(|mount| mount.bind(session.clone()))
+        .transpose()?;
     let disconnect = Arc::new(DisconnectState::new(session.clone()));
     let compiled_sources = Arc::new(
         CompiledSources::new(
@@ -1339,7 +1343,7 @@ async fn serve_inner(
             ArtifactSource::new(session.clone()),
             LocalSource::new(session.clone()),
             https,
-            None,
+            github,
         )
         .await?,
     );

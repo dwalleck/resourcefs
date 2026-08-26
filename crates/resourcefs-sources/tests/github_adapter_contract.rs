@@ -8,8 +8,8 @@ use resourcefs_core::{
     SearchLimits, SearchOptions, SearchRequest, SearchTarget, ServerLimits, SourceAdapter,
 };
 use resourcefs_sources::{
-    ArtifactSource, CompiledSources, GithubConfig, GithubRepository, GithubSource, HttpSubstrate,
-    MutationGrants, SecretReference, render_issue_for_test,
+    ArtifactSource, CompiledSources, GithubConfig, GithubRepository, GithubSource,
+    GithubSourceMount, HttpSubstrate, MutationGrants, SecretReference, render_issue_for_test,
 };
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -119,12 +119,9 @@ where
     )
     .expect("substrate");
     let session_fixture = session_support::scratch_fixture().await;
-    let source = GithubSource::new(
-        config,
-        Arc::new(substrate),
-        session_fixture.path_session().clone(),
-    )
-    .expect("GitHub source");
+    let source = GithubSourceMount::new(config, Arc::new(substrate))
+        .bind(session_fixture.path_session().clone())
+        .expect("GitHub source");
     (listener, source)
 }
 
