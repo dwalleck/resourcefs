@@ -56,6 +56,15 @@ use resourcefs_core::{
 };
 use url::Url;
 
+const MAX_SOURCE_REQUEST_HEADERS: usize = 16;
+const MAX_SOURCE_REQUEST_HEADER_BYTES: usize = 16 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceRequestHeader {
+    name: reqwest::header::HeaderName,
+    value: reqwest::header::HeaderValue,
+}
+
 /// Resolves one host name to its addresses.
 ///
 /// Injectable so contract tests can drive resolution deterministically without
@@ -127,13 +136,75 @@ impl reqwest::dns::Resolve for PolicyResolver {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     url: Url,
+    headers: Vec<SourceRequestHeader>,
+    header_bytes: usize,
 }
 
 impl HttpRequest {
     /// Builds a GET request for one absolute URL.
     #[must_use]
     pub const fn get(url: Url) -> Self {
-        Self { url }
+        Self {
+            url,
+            headers: Vec::new(),
+            header_bytes: 0,
+        }
+    }
+
+    /// Adds one validated non-secret end-to-end header.
+    pub fn with_header(
+        mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<Self, ResourceError> {
+        if self.headers.len() >= MAX_SOURCE_REQUEST_HEADERS {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!(
+                    "HTTP request exceeds the {MAX_SOURCE_REQUEST_HEADERS}-header source ceiling"
+                ),
+            ));
+        }
+        let name = name.into();
+        let value = value.into();
+        let parsed_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| invalid_source_header("HTTP request header name is invalid"))?;
+        if is_authority_or_framing_header(&parsed_name) {
+            return Err(invalid_source_header(
+                "HTTP source header must not control authority, cookies, host, or message framing",
+            ));
+        }
+        if self.headers.iter().any(|header| header.name == parsed_name) {
+            return Err(invalid_source_header(
+                "HTTP source headers must not contain duplicate names",
+            ));
+        }
+        let parsed_value = reqwest::header::HeaderValue::from_str(&value)
+            .map_err(|_| invalid_source_header("HTTP request header value is invalid"))?;
+        let header_bytes = self
+            .header_bytes
+            .checked_add(name.len())
+            .and_then(|bytes| bytes.checked_add(value.len()))
+            .ok_or_else(|| {
+                ResourceError::new(
+                    ErrorCategory::LimitExceeded,
+                    "HTTP source header byte count overflowed",
+                )
+            })?;
+        if header_bytes > MAX_SOURCE_REQUEST_HEADER_BYTES {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!(
+                    "HTTP request source headers exceed the {MAX_SOURCE_REQUEST_HEADER_BYTES}-byte ceiling"
+                ),
+            ));
+        }
+        self.headers.push(SourceRequestHeader {
+            name: parsed_name,
+            value: parsed_value,
+        });
+        self.header_bytes = header_bytes;
+        Ok(self)
     }
 
     /// Returns the requested URL.
@@ -143,12 +214,36 @@ impl HttpRequest {
     }
 }
 
+fn invalid_source_header(message: &'static str) -> ResourceError {
+    ResourceError::new(ErrorCategory::InvalidReference, message)
+}
+
+fn is_authority_or_framing_header(name: &reqwest::header::HeaderName) -> bool {
+    matches!(
+        name,
+        &reqwest::header::AUTHORIZATION
+            | &reqwest::header::PROXY_AUTHORIZATION
+            | &reqwest::header::COOKIE
+            | &reqwest::header::HOST
+            | &reqwest::header::CONNECTION
+            | &reqwest::header::TRANSFER_ENCODING
+            | &reqwest::header::CONTENT_LENGTH
+            | &reqwest::header::TE
+            | &reqwest::header::TRAILER
+            | &reqwest::header::UPGRADE
+    )
+}
+
 /// One bounded response, carrying no source-specific type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundedHttpResponse {
     status: u16,
     final_url: Url,
     content_type: Option<String>,
+    etag: Option<String>,
+    link: Option<String>,
+    retry_after: Option<std::time::Duration>,
+    rate_limit_remaining: Option<u64>,
     body: Vec<u8>,
     truncated: bool,
 }
@@ -170,6 +265,30 @@ impl BoundedHttpResponse {
     #[must_use]
     pub fn content_type(&self) -> Option<&str> {
         self.content_type.as_deref()
+    }
+
+    /// Returns the entity validator retained for conditional reads.
+    #[must_use]
+    pub fn etag(&self) -> Option<&str> {
+        self.etag.as_deref()
+    }
+
+    /// Returns the pagination Link header exactly as received.
+    #[must_use]
+    pub fn link(&self) -> Option<&str> {
+        self.link.as_deref()
+    }
+
+    /// Returns a delta-seconds Retry-After value.
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<std::time::Duration> {
+        self.retry_after
+    }
+
+    /// Returns GitHub-style remaining request budget when numeric.
+    #[must_use]
+    pub const fn rate_limit_remaining(&self) -> Option<u64> {
+        self.rate_limit_remaining
     }
 
     /// Returns the accepted body bytes.
@@ -498,17 +617,18 @@ impl HttpSubstrate {
         Ok(())
     }
 
-    /// Builds the GET, attaching the credential of the origin that owns this
-    /// URL, if any.
+    /// Builds the GET, attaching validated source headers and then the
+    /// credential of the origin that owns this URL, if any.
     ///
-    /// Matching uses the origin's own `authorizes` predicate rather than a host
-    /// key: two origins may share a host and differ only by path prefix, and
-    /// only one of them may carry a credential. `Secret::expose` is crossed
-    /// here and nowhere else on the request path.
-    fn credentialed(&self, url: &Url) -> reqwest::RequestBuilder {
-        let mut builder = self.client.get(url.clone());
+    /// Source headers cannot name authority or framing fields, so only this
+    /// method can cross `Secret::expose` and attach a credential.
+    fn credentialed(&self, request: &HttpRequest) -> reqwest::RequestBuilder {
+        let mut builder = self.client.get(request.url.clone());
+        for header in &request.headers {
+            builder = builder.header(header.name.clone(), header.value.clone());
+        }
         for credential in &self.credentials {
-            if credential.origin.authorizes(url) {
+            if credential.origin.authorizes(request.url()) {
                 builder = builder.header(&credential.header, credential.value.expose());
                 break;
             }
@@ -572,7 +692,7 @@ impl HttpSubstrate {
         let response = tokio::select! {
             biased;
             () = operation.cancelled() => return Err(cancelled_mid_request()),
-            sent = self.credentialed(request.url()).send() => {
+            sent = self.credentialed(&request).send() => {
                 sent.map_err(policy_error_or)?
             }
         };
@@ -584,15 +704,58 @@ impl HttpSubstrate {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
+        let etag = Self::retained_header(response.headers(), &reqwest::header::ETAG)?;
+        let link = Self::retained_header(response.headers(), &reqwest::header::LINK)?;
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(std::time::Duration::from_secs);
+        let rate_limit_remaining = response
+            .headers()
+            .get(reqwest::header::HeaderName::from_static(
+                "x-ratelimit-remaining",
+            ))
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
 
         let (body, truncated) = self.read_bounded(response, operation).await?;
         Ok(BoundedHttpResponse {
             status,
             final_url,
             content_type,
+            etag,
+            link,
+            retry_after,
+            rate_limit_remaining,
             body,
             truncated,
         })
+    }
+
+    fn retained_header(
+        headers: &reqwest::header::HeaderMap,
+        name: &reqwest::header::HeaderName,
+    ) -> Result<Option<String>, ResourceError> {
+        let Some(value) = headers.get(name) else {
+            return Ok(None);
+        };
+        let value = value.to_str().map_err(|_| {
+            ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                format!("HTTP response header '{name}' is not valid text"),
+            )
+        })?;
+        if value.len() > MAX_SOURCE_REQUEST_HEADER_BYTES {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!(
+                    "HTTP response header '{name}' exceeds the {MAX_SOURCE_REQUEST_HEADER_BYTES}-byte retained metadata ceiling"
+                ),
+            ));
+        }
+        Ok(Some(value.to_owned()))
     }
 
     /// Performs one authorized request and returns its reader-mode Markdown.

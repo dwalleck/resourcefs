@@ -1,12 +1,11 @@
 //! Shared loopback TLS fixture for the bounded HTTP substrate's contracts.
 //!
-//! rfs-g2z9 Slice 6 owns this helper; Slices 4, 5, and 7 consume it, because
-//! every claim about redirects, body bounds, or extraction needs the substrate
-//! to complete a real HTTP exchange, and origin scoping admits only `https`
-//! (`AllowedOrigin::new` rejects any other scheme). A plain listener cannot
-//! serve those slices: the request dies in the TLS handshake, so a fixture
-//! built on one would observe an empty server log and pass while proving
-//! nothing.
+//! Every claim about redirects, headers, body bounds, or extraction needs the
+//! substrate to complete a real HTTP exchange, and origin scoping admits only
+//! `https` (`AllowedOrigin::new` rejects any other scheme). A plain listener
+//! cannot serve these contracts: the request dies in the TLS handshake, so a
+//! fixture built on one would observe an empty server log and pass while
+//! proving nothing.
 //!
 //! The certificates are static DER committed under `tests/fixtures/tls/`, so
 //! no certificate-generation crate enters the dependency tree. They are
@@ -69,10 +68,9 @@ pub const FIXTURE_HOST: &str = "tls.invalid";
 
 /// One response a fixture listener can serve.
 ///
-/// Shaped per request path by [`TlsListener::serve_router`], because a
-/// redirect chain needs each hop to answer differently and a single fixed
-/// response cannot express one. Slices 5 and 7 extend this with sized and
-/// trickled bodies; adding a variant is the intended way to grow it.
+/// Shaped per request path by [`TlsListener::serve_router`]. Fixed, typed,
+/// header-bearing, redirect, and streamed responses share this one fixture
+/// interface so every contract reaches the same TLS listener and request log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FixtureResponse {
     /// `200 OK` carrying `body`.
@@ -87,6 +85,12 @@ pub enum FixtureResponse {
     /// returning replacement-character Markdown that looks like a faithful
     /// rendering, so they need a fixture that can actually declare the header.
     Typed { content_type: String, body: Vec<u8> },
+    /// Arbitrary bounded status/headers/body for protocol-metadata contracts.
+    Response {
+        status: &'static str,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    },
     /// `200 OK` whose body is written incrementally.
     ///
     /// One variant covers every body shape the bound, timeout, and extraction
@@ -168,6 +172,24 @@ impl FixtureResponse {
                 "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             ),
+            Self::Response {
+                status,
+                headers,
+                body,
+            } => {
+                let mut rendered = format!("HTTP/1.1 {status}\r\n");
+                for (name, value) in headers {
+                    rendered.push_str(name);
+                    rendered.push_str(": ");
+                    rendered.push_str(value);
+                    rendered.push_str("\r\n");
+                }
+                rendered.push_str(&format!(
+                    "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                ));
+                rendered
+            }
             Self::Stream {
                 declared: Some(declared),
                 ..
@@ -183,8 +205,8 @@ impl FixtureResponse {
 
 /// Writes a response, counting body bytes this listener actually flushed.
 ///
-/// The count is the server-side oracle for every bound in Slice 5: it is what
-/// the peer was *sent*, measured here rather than inferred from what the client
+/// The count is the server-side oracle for every body bound: it is what the
+/// peer was *sent*, measured here rather than inferred from what the client
 /// says it accepted. A write error ends the loop, which is how the listener
 /// observes the peer going away mid-body.
 async fn write_response<W>(stream: &mut W, response: &FixtureResponse, flushed: &AtomicUsize)
@@ -198,32 +220,35 @@ where
     {
         return;
     }
-    if let FixtureResponse::Typed { body, .. } = response {
-        if stream.write_all(body).await.is_ok() {
-            flushed.fetch_add(body.len(), Ordering::SeqCst);
-        }
-        return;
-    }
-    let FixtureResponse::Stream {
-        len, chunk, delay, ..
-    } = response
-    else {
-        return;
-    };
-    let filler = vec![b'a'; *chunk];
-    let mut sent = 0_usize;
-    while sent < *len {
-        let width = (*chunk).min(*len - sent);
-        if stream.write_all(&filler[..width]).await.is_err() || stream.flush().await.is_err() {
-            // The peer stopped reading: exactly the observation the bound and
-            // cancellation rows are looking for.
+    let body = match response {
+        FixtureResponse::Typed { body, .. } | FixtureResponse::Response { body, .. } => body,
+        _ => {
+            let FixtureResponse::Stream {
+                len, chunk, delay, ..
+            } = response
+            else {
+                return;
+            };
+            let filler = vec![b'a'; *chunk];
+            let mut sent = 0_usize;
+            while sent < *len {
+                let width = (*chunk).min(*len - sent);
+                if stream.write_all(&filler[..width]).await.is_err()
+                    || stream.flush().await.is_err()
+                {
+                    return;
+                }
+                flushed.fetch_add(width, Ordering::SeqCst);
+                sent += width;
+                if !delay.is_zero() {
+                    tokio::time::sleep(*delay).await;
+                }
+            }
             return;
         }
-        flushed.fetch_add(width, Ordering::SeqCst);
-        sent += width;
-        if !delay.is_zero() {
-            tokio::time::sleep(*delay).await;
-        }
+    };
+    if stream.write_all(body).await.is_ok() {
+        flushed.fetch_add(body.len(), Ordering::SeqCst);
     }
 }
 
