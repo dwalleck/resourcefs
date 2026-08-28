@@ -56,6 +56,7 @@ impl HttpsSource {
 
         let (content, version_tag) = if raw {
             let response = self.substrate.fetch(request, operation).await?;
+            classify_status(response.status())?;
             let body = String::from_utf8(response.body().to_vec()).map_err(|_| {
                 ResourceError::new(
                     ErrorCategory::UnsupportedProjection,
@@ -66,6 +67,7 @@ impl HttpsSource {
             (body, version_tag)
         } else {
             let document = self.substrate.fetch_reader_mode(request, operation).await?;
+            classify_status(document.status())?;
             let markdown = document.markdown().to_owned();
             let version_tag = VersionTag::from_content(markdown.as_bytes());
             (markdown, version_tag)
@@ -82,6 +84,32 @@ impl HttpsSource {
         let selected = select_utf8(Cursor::new(content), projection)?;
         let (selected_content, selected_tag, _) = selected.into_parts();
         SourceResource::text_projection(canonical, selected_content, selected_tag)
+    }
+}
+
+/// Maps an upstream status onto the Behavior Contract before any body is
+/// treated as content (rfs-0ox5; rfs-g2z9: "an upstream 404 is `not_found`").
+///
+/// Only the numeric status is consulted, never body prose, and an error page
+/// is never a Resource: rendering one would hand the caller a "not found"
+/// article carrying its own Version Tag, searchable and retainable as if it
+/// were the document. The vocabulary matches the GitHub adapter's
+/// machine-signal mapping so one status means one category across sources.
+fn classify_status(status: u16) -> Result<(), ResourceError> {
+    match status {
+        200..=299 => Ok(()),
+        401 | 403 => Err(ResourceError::new(
+            ErrorCategory::PermissionDenied,
+            format!("upstream denied the request with HTTP status {status}"),
+        )),
+        404 | 410 => Err(ResourceError::new(
+            ErrorCategory::NotFound,
+            format!("upstream reports no document at this reference (HTTP status {status})"),
+        )),
+        status => Err(ResourceError::new(
+            ErrorCategory::SourceUnavailable,
+            format!("upstream returned HTTP status {status}"),
+        )),
     }
 }
 
@@ -139,6 +167,7 @@ impl DiscoveryAdapter for HttpsSource {
             .substrate
             .fetch_reader_mode(HttpRequest::get(address.url().clone()), operation)
             .await?;
+        classify_status(document.status())?;
         let canonical = PathReference::parse(address.as_str().to_owned())?;
         let markdown = document.markdown().to_owned();
         let pattern = pattern.to_owned();
