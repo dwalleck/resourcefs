@@ -58,6 +58,7 @@ use url::Url;
 
 const MAX_SOURCE_REQUEST_HEADERS: usize = 16;
 const MAX_SOURCE_REQUEST_HEADER_BYTES: usize = 16 * 1024;
+const MAX_HTTP_MUTATION_REQUEST_BYTES: usize = MAX_ARTIFACT_BYTES * 6 + 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceRequestHeader {
@@ -68,6 +69,7 @@ struct SourceRequestHeader {
 pub(crate) struct HttpFetchFailure {
     error: ResourceError,
     retryable: bool,
+    unknown_outcome: bool,
 }
 
 impl HttpFetchFailure {
@@ -75,6 +77,7 @@ impl HttpFetchFailure {
         Self {
             error,
             retryable: false,
+            unknown_outcome: false,
         }
     }
 
@@ -82,11 +85,24 @@ impl HttpFetchFailure {
         Self {
             error,
             retryable: true,
+            unknown_outcome: true,
+        }
+    }
+
+    fn unknown(error: ResourceError) -> Self {
+        Self {
+            error,
+            retryable: false,
+            unknown_outcome: true,
         }
     }
 
     pub(crate) const fn is_retryable(&self) -> bool {
         self.retryable
+    }
+
+    pub(crate) const fn is_unknown_outcome(&self) -> bool {
+        self.unknown_outcome
     }
 
     pub(crate) fn into_error(self) -> ResourceError {
@@ -220,10 +236,12 @@ impl HttpRequest {
     }
 
     fn json(url: Url, method: HttpMethod, body: Vec<u8>) -> Result<Self, ResourceError> {
-        if body.len() > MAX_ARTIFACT_BYTES {
+        if body.len() > MAX_HTTP_MUTATION_REQUEST_BYTES {
             return Err(ResourceError::new(
                 ErrorCategory::LimitExceeded,
-                format!("HTTP mutation request body exceeds the {MAX_ARTIFACT_BYTES}-byte ceiling"),
+                format!(
+                    "HTTP mutation request body exceeds the {MAX_HTTP_MUTATION_REQUEST_BYTES}-byte encoded ceiling"
+                ),
             ));
         }
         Ok(Self {
@@ -842,7 +860,7 @@ impl HttpSubstrate {
         let response = tokio::select! {
             biased;
             () = operation.cancelled() => {
-                return Err(HttpFetchFailure::terminal(cancelled_mid_request()));
+                return Err(HttpFetchFailure::unknown(cancelled_mid_request()));
             }
             sent = self.credentialed(request).send() => {
                 sent.map_err(classify_reqwest_failure)?
@@ -860,11 +878,11 @@ impl HttpSubstrate {
         // strictness is per header: see `etag()` and `link()` for why one
         // degrades to absence and the other to an error at the point of use.
         let etag = Self::header_within_ceiling(response.headers(), &reqwest::header::ETAG)
-            .map_err(HttpFetchFailure::terminal)?
+            .map_err(HttpFetchFailure::unknown)?
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
         let link = Self::header_within_ceiling(response.headers(), &reqwest::header::LINK)
-            .map_err(HttpFetchFailure::terminal)?
+            .map_err(HttpFetchFailure::unknown)?
             .map(|value| {
                 value.to_str().map(str::to_owned).map_err(|_| {
                     ResourceError::new(
@@ -890,13 +908,7 @@ impl HttpSubstrate {
         let (body, truncated) = self
             .read_bounded(response, operation)
             .await
-            .map_err(|error| {
-                if error.category() == ErrorCategory::SourceUnavailable {
-                    HttpFetchFailure::transport(error)
-                } else {
-                    HttpFetchFailure::terminal(error)
-                }
-            })?;
+            .map_err(HttpFetchFailure::unknown)?;
         Ok(BoundedHttpResponse {
             status,
             final_url,

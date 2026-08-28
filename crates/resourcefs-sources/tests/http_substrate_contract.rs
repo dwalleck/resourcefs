@@ -172,12 +172,10 @@ async fn mutation_request_is_bounded_and_non_redirecting() {
     let exact = HttpRequest::post_json(url("/create"), vec![b'x'; MAX_ARTIFACT_BYTES])
         .expect("[C15] exact request-body ceiling");
     std::hint::black_box(exact);
-    assert_eq!(
-        HttpRequest::post_json(url("/create"), vec![b'x'; MAX_ARTIFACT_BYTES + 1])
-            .expect_err("[C15] one byte over request-body ceiling")
-            .category(),
-        ErrorCategory::LimitExceeded
-    );
+    let encoded_envelope =
+        HttpRequest::post_json(url("/create"), vec![b'x'; MAX_ARTIFACT_BYTES + 64 * 1024])
+            .expect("[C15] encoded envelope above content ceiling");
+    std::hint::black_box(encoded_envelope);
 
     settle().await;
     assert_eq!(

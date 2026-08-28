@@ -166,6 +166,8 @@ async fn creation_target_reads_are_unsupported() {
         "pr://owner/repo/7/comments/new",
         "issue://owner/repo/new:raw",
         "pr://owner/repo/7/comments/new:1",
+        "issue://other/repo/new",
+        "pr://other/repo/new",
     ] {
         let error = source
             .read(

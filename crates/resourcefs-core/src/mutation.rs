@@ -1232,7 +1232,9 @@ pub enum MutationCommitOutcome {
     /// Adapter response supplied the authoritative post-commit tag.
     AuthoritativeText { version_tag: VersionTag },
     /// Creation returned the new canonical Resource identity.
-    CreationTarget { canonical_reference: PathReference },
+    CreationTarget {
+        canonical_reference: Box<PathReference>,
+    },
 }
 
 /// Whether a failed adapter commit is known not to have committed.
@@ -1376,6 +1378,13 @@ impl MutationEngine {
         }
         self.adapter.validate_write(&target, &content)?;
 
+        let _locks = self.lock_resources([target.lock_key()]).await?;
+        if !operation.is_active() {
+            return Err(ResourceError::new(
+                ErrorCategory::Cancelled,
+                "mutation was cancelled before commit ownership",
+            ));
+        }
         let mut journal_lease = if matches!(target.mode(), MutationTargetMode::CreationTarget) {
             let id = operation_id
                 .take()
@@ -1391,9 +1400,19 @@ impl MutationEngine {
             {
                 MutationOperationStart::Owner(lease) => Some(lease),
                 MutationOperationStart::Wait(waiter) => {
-                    return match waiter.wait().await {
+                    let outcome = tokio::select! {
+                        biased;
+                        () = operation.cancelled() => {
+                            return Err(ResourceError::new(
+                                ErrorCategory::Cancelled,
+                                "mutation operation repeat was cancelled while waiting",
+                            ));
+                        }
+                        outcome = waiter.wait() => outcome,
+                    };
+                    return match outcome {
                         JournalOutcome::Succeeded(reference) => {
-                            Ok(Self::creation_receipt(reference))
+                            Ok(Self::creation_receipt(reference.as_ref().clone()))
                         }
                         JournalOutcome::Conclusive(error) | JournalOutcome::Unknown(error) => {
                             Err(error)
@@ -1401,16 +1420,14 @@ impl MutationEngine {
                     };
                 }
                 MutationOperationStart::Replay(reference) => {
-                    return Ok(Self::creation_receipt(reference));
+                    return Ok(Self::creation_receipt(reference.as_ref().clone()));
                 }
                 MutationOperationStart::Unknown(error) => return Err(error),
             }
         } else {
             None
         };
-
-        let _locks = self.lock_resources([target.lock_key()]).await?;
-        let operation_kind = if !matches!(target.mode(), MutationTargetMode::CreationTarget) {
+        let operation_kind = if matches!(target.mode(), MutationTargetMode::AuthoredText) {
             let state = match self.adapter.load(&target, access, operation).await {
                 Ok(state) => state,
                 Err(error) => {
@@ -1449,6 +1466,8 @@ impl MutationEngine {
                     return Err(error);
                 }
             }
+        } else if matches!(target.mode(), MutationTargetMode::AuthoritativeText) {
+            MutationOperation::Replaced
         } else {
             MutationOperation::Created
         };
@@ -1558,8 +1577,11 @@ impl MutationEngine {
                     canonical_reference,
                 },
             ) => {
+                let canonical_reference = *canonical_reference;
                 if let Some(lease) = journal_lease.take() {
-                    lease.finish(JournalOutcome::Succeeded(canonical_reference.clone()));
+                    lease.finish(JournalOutcome::Succeeded(Arc::new(
+                        canonical_reference.clone(),
+                    )));
                 }
                 Ok(Self::creation_receipt(canonical_reference))
             }

@@ -282,6 +282,10 @@ impl GithubSource {
         operation: Operation<'_>,
     ) -> Result<FetchedResponse, ResourceError> {
         let key = Self::cache_key(&url, accept)?;
+        let cache_generation = self
+            .session
+            .cache_generation(GITHUB_CACHE_NAMESPACE)
+            .await?;
         let mut cached = self.session.cache_get(&key).await?;
         let mut cached_metadata = cached
             .as_ref()
@@ -297,7 +301,9 @@ impl GithubSource {
             if error.category() != ErrorCategory::LimitExceeded {
                 return Err(error);
             }
-            self.session.cache_remove(&key).await?;
+            self.session
+                .cache_remove_if_generation(&key, cache_generation)
+                .await?;
             cached = None;
             cached_metadata = None;
         }
@@ -316,6 +322,17 @@ impl GithubSource {
                 Err(failure) => return Err(failure.into_error()),
             };
             if response.status() == 304 {
+                if self
+                    .session
+                    .cache_generation(GITHUB_CACHE_NAMESPACE)
+                    .await?
+                    != cache_generation
+                {
+                    return Err(github_error(
+                        ErrorCategory::SourceUnavailable,
+                        "GitHub read was invalidated by a concurrent mutation; retry the read",
+                    ));
+                }
                 let (Some(entry), Some(metadata)) = (cached.as_ref(), cached_metadata.as_ref())
                 else {
                     return Err(malformed_upstream(
@@ -375,9 +392,11 @@ impl GithubSource {
                 body,
             )?;
             if etag.is_some() {
-                self.cache(key, &entry).await?;
+                self.cache(key, &entry, cache_generation).await?;
             } else {
-                self.session.cache_remove(&key).await?;
+                self.session
+                    .cache_remove_if_generation(&key, cache_generation)
+                    .await?;
             }
             return Ok(FetchedResponse {
                 body: Arc::clone(entry.content_arc()),
@@ -396,11 +415,18 @@ impl GithubSource {
         &self,
         key: SessionCacheKey,
         entry: &SessionCacheEntry,
+        generation: u64,
     ) -> Result<(), ResourceError> {
-        match self.session.cache_put(key.clone(), entry.clone()).await {
-            Ok(()) => Ok(()),
+        match self
+            .session
+            .cache_put_if_generation(key.clone(), entry.clone(), generation)
+            .await
+        {
+            Ok(_) => Ok(()),
             Err(error) if error.category() == ErrorCategory::LimitExceeded => {
-                self.session.cache_remove(&key).await?;
+                self.session
+                    .cache_remove_if_generation(&key, generation)
+                    .await?;
                 Ok(())
             }
             Err(error) => Err(error),
@@ -1088,6 +1114,9 @@ impl GithubSource {
         reference: &PathReference,
         operation: Operation<'_>,
     ) -> Result<SourceResource, ResourceError> {
+        if reference.is_creation_target() {
+            return Err(unsupported_github_projection());
+        }
         let projection = reference.projection();
         let page = projection.and_then(ProjectionSelector::page_offset);
         let (canonical, rendered) = match reference.address() {
@@ -1113,7 +1142,7 @@ impl GithubSource {
             }
             _ => return Err(unsupported_github_projection()),
         };
-        let mutable = self.field_is_mutable(&canonical);
+        let mutable = self.field_mutability(&canonical)?;
         let Rendered {
             content,
             continuation,

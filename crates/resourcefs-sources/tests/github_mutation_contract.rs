@@ -172,7 +172,11 @@ fn route(request: &FixtureRequest, state: &Arc<Mutex<GithubState>>) -> FixtureRe
                     if let Some(value) = body.get("body").and_then(Value::as_str) {
                         state.issue_body = value.to_owned();
                     }
-                    response("200 OK", issue_json(&state))
+                    let mut response_body = issue_json(&state);
+                    if state.creation_response == "wrong-object" {
+                        response_body["id"] = json!(999_999);
+                    }
+                    response("200 OK", response_body)
                 }
                 "/repos/owner/repo/pulls/7" => {
                     if let Some(title) = body.get("title").and_then(Value::as_str) {
@@ -282,6 +286,12 @@ fn route(request: &FixtureRequest, state: &Arc<Mutex<GithubState>>) -> FixtureRe
                         .expect("[C19] object")
                         .remove("number");
                 }
+            }
+            if state.creation_response == "blank-title" && !target.ends_with("/comments") {
+                created["title"] = json!("");
+            }
+            if state.creation_response == "wrong-repository" && !target.ends_with("/comments") {
+                created["html_url"] = json!("https://github.example/other/repository/issues/77");
             }
             if state.creation_response == "wrong-parent" && target.ends_with("/comments") {
                 created["issue_url"] =
@@ -649,6 +659,28 @@ async fn invalid_field_content_precedes_egress() {
 }
 
 #[tokio::test]
+async fn field_response_object_identity_is_stable() {
+    let (_listener, source, session, state) = fixture(true).await;
+    let path = "issue://owner/repo/42/title";
+    let tag = read_tag(&source, path).await;
+    state.lock().expect("[C19] state").creation_response = "wrong-object";
+    let error = MutationEngine::new(Arc::new(source), session)
+        .write(
+            WriteRequest::new(
+                PathReference::parse(path).expect("[C19] Field"),
+                "changed".to_owned(),
+                Some(tag),
+                None,
+            )
+            .expect("[C19] request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("[C19] wrong stable object ID");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+}
+
+#[tokio::test]
 async fn mutation_status_matrix_is_stable_and_redacted() {
     for (status, rate_limited, category) in [
         (
@@ -722,6 +754,10 @@ async fn success_invalidates_github_cache_before_commit_returns() {
         .cache_put(other_key.clone(), entry)
         .await
         .expect("[C13] put");
+    let fetch_generation = session
+        .cache_generation("github-http")
+        .await
+        .expect("[C13] generation");
     let reference = PathReference::parse("issue://owner/repo/42/title").expect("[C13] ref");
     let target = MutationAdapter::resolve(&source, &reference, MutationAccess::Update)
         .await
@@ -732,7 +768,7 @@ async fn success_invalidates_github_cache_before_commit_returns() {
         &source,
         SourceMutation::Replace {
             target,
-            expected: VersionTag::from_content(b"unused"),
+            expected: VersionTag::from_content(b"original"),
             content: Arc::from("changed"),
         },
         &guard,
@@ -757,6 +793,25 @@ async fn success_invalidates_github_cache_before_commit_returns() {
             .expect("[C13] get")
             .is_some()
     );
+    assert!(
+        !session
+            .cache_put_if_generation(
+                github_key.clone(),
+                SessionCacheEntry::new(Vec::new(), b"stale-race".to_vec())
+                    .expect("[C13] stale entry"),
+                fetch_generation,
+            )
+            .await
+            .expect("[C13] stale conditional put"),
+        "[C13] in-flight pre-mutation fetch cannot repopulate cache"
+    );
+    assert!(
+        session
+            .cache_get(&github_key)
+            .await
+            .expect("[C13] stale get")
+            .is_none()
+    );
 
     session
         .cache_put(
@@ -776,7 +831,7 @@ async fn success_invalidates_github_cache_before_commit_returns() {
         &source,
         SourceMutation::Replace {
             target,
-            expected: VersionTag::from_content(b"unused"),
+            expected: VersionTag::from_content(b"changed-normalized"),
             content: Arc::from("rejected"),
         },
         &guard,
@@ -1011,6 +1066,14 @@ async fn creation_document_strict_matrix() {
         "---\ntitle: %YAML\n---\n",
         "---\ntitle: unquoted: colon\n---\n",
         "---\ntitle: ok # comment\n---\n",
+        "---\ntitle: 42\n---\n",
+        "---\ntitle: #comment\n---\n",
+        "---\ntitle: ok\t# comment\n---\n",
+        "---\ntitle: -\n---\n",
+        "---\ntitle: ?\n---\n",
+        "---\ntitle: :\n---\n",
+        "---\ntitle: ...\n---\n",
+        "---\ntitle: \"line\\nbreak\"\n---\n",
     ] {
         assert_eq!(
             MutationAdapter::validate_write(&source, &issue, content)
@@ -1038,6 +1101,14 @@ async fn creation_document_strict_matrix() {
             .expect_err("[C6] blank comment")
             .category(),
         ErrorCategory::InvalidReference
+    );
+    let huge_key = format!("{}: value", "a".repeat(1024 * 1024));
+    let huge_document = format!("---\n{huge_key}\n---\n");
+    let error = MutationAdapter::validate_write(&source, &issue, &huge_document)
+        .expect_err("[C6] huge unknown key");
+    assert!(
+        error.message().len() <= 512,
+        "[C6] invalid document diagnostic remains bounded"
     );
     settle().await;
     assert!(
@@ -1356,6 +1427,8 @@ async fn operation_recovery_state_matrix() {
 async fn mutation_response_validation_matrix() {
     for (mode, path) in [
         ("missing-identity", "issue://owner/repo/new"),
+        ("wrong-repository", "issue://owner/repo/new"),
+        ("blank-title", "issue://owner/repo/new"),
         ("malformed", "issue://owner/repo/new"),
         ("truncated", "issue://owner/repo/new"),
         ("wrong-status", "issue://owner/repo/new"),

@@ -311,6 +311,7 @@ struct SessionState {
     digest_index: HashMap<[u8; 32], Vec<ArtifactId>>,
     scratch: HashMap<LocalName, ScratchEntry>,
     cache: HashMap<SessionCacheKey, CachedObject>,
+    cache_generations: HashMap<String, u64>,
     /// Monotonic recency stamp handed to each cache access, so eviction can
     /// pick the least recently used entry without a linked list.
     cache_clock: u64,
@@ -368,7 +369,7 @@ impl MutationAttempt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationOperationOutcome {
     /// Upstream creation succeeded and returned this canonical Resource.
-    Succeeded(PathReference),
+    Succeeded(Arc<PathReference>),
     /// Upstream conclusively rejected without creating; identical retry may own.
     Conclusive(ResourceError),
     /// Upstream may have created; all repeats are blocked for this session.
@@ -383,7 +384,7 @@ pub enum MutationOperationStart {
     /// An identical attempt is in flight; wait for its exact outcome.
     Wait(MutationOperationWaiter),
     /// Creation already succeeded; return the recorded canonical Resource.
-    Replay(PathReference),
+    Replay(Arc<PathReference>),
     /// The last attempt may have created; return reconciliation guidance.
     Unknown(ResourceError),
 }
@@ -615,6 +616,7 @@ impl PathSession {
                     digest_index: HashMap::new(),
                     scratch: HashMap::new(),
                     cache: HashMap::new(),
+                    cache_generations: HashMap::new(),
                     cache_clock: 0,
                     snapshots: HashMap::new(),
                     snapshot_bytes: 0,
@@ -1242,6 +1244,26 @@ impl PathSession {
         key: SessionCacheKey,
         entry: SessionCacheEntry,
     ) -> Result<(), ResourceError> {
+        self.cache_put_inner(key, entry, None).await.map(|_| ())
+    }
+
+    /// Admits a fetch result only if no namespace invalidation happened since
+    /// the caller captured `generation`.
+    pub async fn cache_put_if_generation(
+        &self,
+        key: SessionCacheKey,
+        entry: SessionCacheEntry,
+        generation: u64,
+    ) -> Result<bool, ResourceError> {
+        self.cache_put_inner(key, entry, Some(generation)).await
+    }
+
+    async fn cache_put_inner(
+        &self,
+        key: SessionCacheKey,
+        entry: SessionCacheEntry,
+        expected_generation: Option<u64>,
+    ) -> Result<bool, ResourceError> {
         if !self.is_active() {
             return Err(inactive_cache_error());
         }
@@ -1260,6 +1282,16 @@ impl PathSession {
             .checked_add(entry.retained_bytes())
             .ok_or_else(|| session_quota_error(session_limit))?;
         let mut state = self.inner.admission.lock().await;
+        if expected_generation.is_some_and(|expected| {
+            state
+                .cache_generations
+                .get(key.namespace())
+                .copied()
+                .unwrap_or(0)
+                != expected
+        }) {
+            return Ok(false);
+        }
         let released_bytes = state.cache.get(&key).map_or(0, |previous| {
             key.retained_bytes()
                 .saturating_add(previous.entry.retained_bytes())
@@ -1283,7 +1315,39 @@ impl PathSession {
         let last_used = next_cache_stamp(&mut state);
         state.cache.insert(key, CachedObject { entry, last_used });
         state.used_bytes = resulting_bytes;
-        Ok(())
+        Ok(true)
+    }
+
+    /// Captures the invalidation generation for one cache namespace.
+    pub async fn cache_generation(&self, namespace: &str) -> Result<u64, ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_cache_error());
+        }
+        validate_cache_namespace(namespace)?;
+        let state = self.inner.admission.lock().await;
+        Ok(state.cache_generations.get(namespace).copied().unwrap_or(0))
+    }
+
+    /// Removes an exact entry only if its fetch generation is still current.
+    pub async fn cache_remove_if_generation(
+        &self,
+        key: &SessionCacheKey,
+        generation: u64,
+    ) -> Result<bool, ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_cache_error());
+        }
+        let mut state = self.inner.admission.lock().await;
+        if state
+            .cache_generations
+            .get(key.namespace())
+            .copied()
+            .unwrap_or(0)
+            != generation
+        {
+            return Ok(false);
+        }
+        Ok(release_cache_entry(&mut state, key))
     }
 
     pub async fn cache_remove(&self, key: &SessionCacheKey) -> Result<bool, ResourceError> {
@@ -1301,6 +1365,15 @@ impl PathSession {
         }
         validate_cache_namespace(namespace)?;
         let mut state = self.inner.admission.lock().await;
+        let generation = state
+            .cache_generations
+            .get(namespace)
+            .copied()
+            .unwrap_or(0)
+            .wrapping_add(1);
+        state
+            .cache_generations
+            .insert(namespace.to_owned(), generation);
         let keys = state
             .cache
             .keys()

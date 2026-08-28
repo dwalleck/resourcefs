@@ -354,10 +354,12 @@ async fn operation_journal_trace_matches_model() {
         MutationOperationStart::Wait(waiter) => waiter,
         other => panic!("[C4] expected waiter, got {other:?}"),
     };
-    owner.finish(MutationOperationOutcome::Succeeded(created.clone()));
+    owner.finish(MutationOperationOutcome::Succeeded(Arc::new(
+        created.clone(),
+    )));
     assert_eq!(
         waiter.wait().await,
-        MutationOperationOutcome::Succeeded(created.clone()),
+        MutationOperationOutcome::Succeeded(Arc::new(created.clone())),
         "[C4] waiter result"
     );
     assert!(matches!(
@@ -365,7 +367,7 @@ async fn operation_journal_trace_matches_model() {
             .begin_mutation_operation(id.clone(), target.clone(), Arc::clone(&content))
             .await
             .expect("[C4] replay"),
-        MutationOperationStart::Replay(reference) if reference == created
+        MutationOperationStart::Replay(reference) if reference.as_ref() == &created
     ));
 
     let conflict = session
@@ -454,11 +456,13 @@ async fn operation_journal_concurrent_repeat_coalesces() {
         };
         tasks.push(tokio::spawn(waiter.wait()));
     }
-    owner.finish(MutationOperationOutcome::Succeeded(created.clone()));
+    owner.finish(MutationOperationOutcome::Succeeded(Arc::new(
+        created.clone(),
+    )));
     for task in tasks {
         assert_eq!(
             task.await.expect("[C4] waiter task"),
-            MutationOperationOutcome::Succeeded(created.clone()),
+            MutationOperationOutcome::Succeeded(Arc::new(created.clone())),
             "[C4] shared result"
         );
     }
@@ -580,6 +584,11 @@ async fn operation_journal_count_and_byte_ceilings() {
 #[tokio::test]
 #[ignore = "checkpointed-build production-scale budget"]
 async fn operation_journal_budget() {
+    let (count_budget, yield_budget, compare_budget) = if cfg!(debug_assertions) {
+        (100, 100, 1_500)
+    } else {
+        (25, 25, 50)
+    };
     let target = PathReference::parse("issue://owner/repo/new").expect("[C4] target");
     let count_session = session(16);
     let started = Instant::now();
@@ -603,7 +612,7 @@ async fn operation_journal_budget() {
     }
     let count_elapsed = started.elapsed();
     assert!(
-        count_elapsed <= Duration::from_millis(25),
+        count_elapsed <= Duration::from_millis(count_budget),
         "[C4] 10,000 journal transitions took {count_elapsed:?}"
     );
 
@@ -646,7 +655,7 @@ async fn operation_journal_budget() {
     ));
     let yield_elapsed = started.elapsed();
     assert!(
-        yield_elapsed <= Duration::from_millis(25),
+        yield_elapsed <= Duration::from_millis(yield_budget),
         "[C4] worst-case cache yield took {yield_elapsed:?}"
     );
     let mut evicted = 0;
@@ -687,7 +696,7 @@ async fn operation_journal_budget() {
     ));
     let compare_elapsed = started.elapsed();
     assert!(
-        compare_elapsed <= Duration::from_millis(50),
+        compare_elapsed <= Duration::from_millis(compare_budget),
         "[C4] 64 MiB fingerprint and exact comparison took {compare_elapsed:?}"
     );
 }
@@ -861,7 +870,7 @@ async fn target_mode_outcome_matrix() {
             mode: MutationTargetMode::CreationTarget,
             state: MutationState::Missing,
             outcome: Mutex::new(Some(Ok(MutationCommitOutcome::CreationTarget {
-                canonical_reference: created_path.clone(),
+                canonical_reference: Box::new(created_path.clone()),
             }))),
         }),
         session(22),
@@ -896,7 +905,7 @@ async fn target_mode_outcome_matrix() {
         (
             MutationTargetMode::AuthoredText,
             MutationCommitOutcome::CreationTarget {
-                canonical_reference: mismatch_reference.clone(),
+                canonical_reference: Box::new(mismatch_reference.clone()),
             },
         ),
         (
@@ -906,7 +915,7 @@ async fn target_mode_outcome_matrix() {
         (
             MutationTargetMode::AuthoritativeText,
             MutationCommitOutcome::CreationTarget {
-                canonical_reference: mismatch_reference.clone(),
+                canonical_reference: Box::new(mismatch_reference.clone()),
             },
         ),
         (

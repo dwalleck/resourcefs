@@ -11,7 +11,7 @@ use resourcefs_core::{
     ResourceError, SourceMutation, VersionTag,
 };
 
-use crate::{BoundedHttpResponse, HttpRequest};
+use crate::{BoundedHttpResponse, HttpRequest, http::HttpFetchFailure};
 
 use super::{
     GITHUB_API_VERSION, GITHUB_CACHE_NAMESPACE, GITHUB_JSON, GithubSource, USER_AGENT,
@@ -271,11 +271,18 @@ struct PullCreation<'a> {
 }
 
 impl GithubSource {
-    pub(super) fn field_is_mutable(&self, reference: &PathReference) -> bool {
-        GithubFieldTarget::parse(reference)
-            .ok()
-            .and_then(|target| self.config.repository(target.repository()))
-            .is_some_and(|repository| repository.grants().update())
+    pub(super) fn field_mutability(
+        &self,
+        reference: &PathReference,
+    ) -> Result<bool, ResourceError> {
+        match GithubFieldTarget::parse(reference) {
+            Ok(target) => Ok(self
+                .config
+                .repository(target.repository())
+                .is_some_and(|repository| repository.grants().update())),
+            Err(error) if error.category() == ErrorCategory::UnsupportedMutation => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     fn authorize_field_update(
@@ -328,21 +335,20 @@ impl GithubSource {
         wire::decode(response.body()).map_err(MutationCommitFailure::Conclusive)
     }
 
-    async fn field_content(
+    async fn field_snapshot(
         &self,
         target: &GithubFieldTarget,
         operation: &OperationGuard,
-    ) -> Result<String, MutationCommitFailure> {
+    ) -> Result<(String, u64), MutationCommitFailure> {
         match target {
-            GithubFieldTarget::IssueTitle { repository, number } => Ok(self
-                .mutation_issue(repository, *number, operation)
-                .await?
-                .title),
-            GithubFieldTarget::IssueBody { repository, number } => Ok(authoritative_body(
-                self.mutation_issue(repository, *number, operation)
-                    .await?
-                    .body,
-            )),
+            GithubFieldTarget::IssueTitle { repository, number } => {
+                let issue = self.mutation_issue(repository, *number, operation).await?;
+                Ok((issue.title, issue.id))
+            }
+            GithubFieldTarget::IssueBody { repository, number } => {
+                let issue = self.mutation_issue(repository, *number, operation).await?;
+                Ok((authoritative_body(issue.body), issue.id))
+            }
             GithubFieldTarget::IssueComment {
                 repository,
                 number,
@@ -352,17 +358,16 @@ impl GithubSource {
                 let comment = self
                     .mutation_comment(repository, *number, *id, operation)
                     .await?;
-                Ok(render::comment(&comment))
+                Ok((render::comment(&comment), comment.id))
             }
-            GithubFieldTarget::PullTitle { repository, number } => Ok(self
-                .mutation_pull(repository, *number, operation)
-                .await?
-                .title),
-            GithubFieldTarget::PullBody { repository, number } => Ok(authoritative_body(
-                self.mutation_pull(repository, *number, operation)
-                    .await?
-                    .body,
-            )),
+            GithubFieldTarget::PullTitle { repository, number } => {
+                let pull = self.mutation_pull(repository, *number, operation).await?;
+                Ok((pull.title, pull.id))
+            }
+            GithubFieldTarget::PullBody { repository, number } => {
+                let pull = self.mutation_pull(repository, *number, operation).await?;
+                Ok((authoritative_body(pull.body), pull.id))
+            }
             GithubFieldTarget::PullComment {
                 repository,
                 number,
@@ -372,7 +377,7 @@ impl GithubSource {
                 let comment = self
                     .mutation_comment(repository, *number, *id, operation)
                     .await?;
-                Ok(render::comment(&comment))
+                Ok((render::comment(&comment), comment.id))
             }
         }
     }
@@ -397,6 +402,10 @@ impl GithubSource {
                 "GitHub number names a pull request; address it through pr://",
             )));
         }
+        validate_object_web_url(&issue.html_url, repository, "issues", number)
+            .map_err(MutationCommitFailure::Conclusive)?;
+        validate_required_wire_string(&issue.title, "issue.title")
+            .map_err(MutationCommitFailure::Conclusive)?;
         Ok(issue)
     }
 
@@ -413,6 +422,10 @@ impl GithubSource {
             )
             .await?;
         super::validate_pull_identity(&pull, number).map_err(MutationCommitFailure::Conclusive)?;
+        validate_object_web_url(&pull.html_url, repository, "pull", number)
+            .map_err(MutationCommitFailure::Conclusive)?;
+        validate_required_wire_string(&pull.title, "pull.title")
+            .map_err(MutationCommitFailure::Conclusive)?;
         Ok(pull)
     }
 
@@ -468,7 +481,7 @@ impl GithubSource {
         target: &GithubFieldTarget,
         content: &str,
         operation: &OperationGuard,
-    ) -> Result<String, MutationCommitFailure> {
+    ) -> Result<(String, u64), MutationCommitFailure> {
         let url = self.endpoint(target.repository(), &target.mutation_suffix())?;
         let body = match target {
             GithubFieldTarget::IssueTitle { .. } | GithubFieldTarget::PullTitle { .. } => {
@@ -490,9 +503,9 @@ impl GithubSource {
         let request = Self::request_with_github_headers(HttpRequest::patch_json(url, body)?)?;
         let response = self
             .substrate
-            .fetch(request, operation)
+            .fetch_attempt(request, operation)
             .await
-            .map_err(MutationCommitFailure::Unknown)?;
+            .map_err(map_http_mutation_failure)?;
         classify_mutation_response(&response, 200, true)?;
         self.validate_patch_response(target, response.body())
     }
@@ -501,10 +514,10 @@ impl GithubSource {
         &self,
         target: &GithubFieldTarget,
         body: &[u8],
-    ) -> Result<String, MutationCommitFailure> {
+    ) -> Result<(String, u64), MutationCommitFailure> {
         match target {
-            GithubFieldTarget::IssueTitle { number, .. }
-            | GithubFieldTarget::IssueBody { number, .. } => {
+            GithubFieldTarget::IssueTitle { repository, number }
+            | GithubFieldTarget::IssueBody { repository, number } => {
                 let issue: Issue = wire::decode(body).map_err(MutationCommitFailure::Unknown)?;
                 super::validate_issue_identity(&issue, *number)
                     .map_err(MutationCommitFailure::Unknown)?;
@@ -513,23 +526,35 @@ impl GithubSource {
                         "GitHub issue mutation response changed object kind",
                     )));
                 }
-                Ok(match target {
-                    GithubFieldTarget::IssueTitle { .. } => issue.title,
+                validate_object_web_url(&issue.html_url, repository, "issues", *number)
+                    .map_err(invalid_success_response)?;
+                let content = match target {
+                    GithubFieldTarget::IssueTitle { .. } => {
+                        require_non_blank_success(&issue.title, "issue.title")?;
+                        issue.title
+                    }
                     GithubFieldTarget::IssueBody { .. } => authoritative_body(issue.body),
                     _ => unreachable!("issue response target"),
-                })
+                };
+                Ok((content, issue.id))
             }
-            GithubFieldTarget::PullTitle { number, .. }
-            | GithubFieldTarget::PullBody { number, .. } => {
+            GithubFieldTarget::PullTitle { repository, number }
+            | GithubFieldTarget::PullBody { repository, number } => {
                 let pull: PullRequest =
                     wire::decode(body).map_err(MutationCommitFailure::Unknown)?;
                 super::validate_pull_identity(&pull, *number)
                     .map_err(MutationCommitFailure::Unknown)?;
-                Ok(match target {
-                    GithubFieldTarget::PullTitle { .. } => pull.title,
+                validate_object_web_url(&pull.html_url, repository, "pull", *number)
+                    .map_err(invalid_success_response)?;
+                let content = match target {
+                    GithubFieldTarget::PullTitle { .. } => {
+                        require_non_blank_success(&pull.title, "pull.title")?;
+                        pull.title
+                    }
                     GithubFieldTarget::PullBody { .. } => authoritative_body(pull.body),
                     _ => unreachable!("pull response target"),
-                })
+                };
+                Ok((content, pull.id))
             }
             GithubFieldTarget::IssueComment {
                 repository,
@@ -554,10 +579,11 @@ impl GithubSource {
                 }
                 super::validate_parent(&comment.issue_url, repository, "issues", *number)
                     .map_err(invalid_success_response)?;
-                Ok(render::comment(&comment))
+                Ok((render::comment(&comment), comment.id))
             }
         }
     }
+
     fn authorize_creation(
         &self,
         target: &GithubCreationTarget,
@@ -642,9 +668,9 @@ impl GithubSource {
         let request = Self::request_with_github_headers(HttpRequest::post_json(url, encoded)?)?;
         let response = self
             .substrate
-            .fetch(request, operation)
+            .fetch_attempt(request, operation)
             .await
-            .map_err(MutationCommitFailure::Unknown)?;
+            .map_err(map_http_mutation_failure)?;
         classify_mutation_response(&response, 201, true)?;
         let canonical = match target {
             GithubCreationTarget::Issue { repository } => {
@@ -652,11 +678,14 @@ impl GithubSource {
                     wire::decode(response.body()).map_err(MutationCommitFailure::Unknown)?;
                 super::validate_issue_identity(&issue, issue.number)
                     .map_err(MutationCommitFailure::Unknown)?;
+                validate_object_web_url(&issue.html_url, repository, "issues", issue.number)
+                    .map_err(invalid_success_response)?;
                 if issue.pull_request.is_some() {
                     return Err(MutationCommitFailure::Unknown(malformed_upstream(
                         "GitHub issue creation response changed object kind",
                     )));
                 }
+                require_non_blank_success(&issue.title, "issue.title")?;
                 PathReference::issue(
                     IssueAddress::Item {
                         repository: repository.clone(),
@@ -673,6 +702,9 @@ impl GithubSource {
                     wire::decode(response.body()).map_err(MutationCommitFailure::Unknown)?;
                 super::validate_pull_identity(&pull, pull.number)
                     .map_err(MutationCommitFailure::Unknown)?;
+                validate_object_web_url(&pull.html_url, repository, "pull", pull.number)
+                    .map_err(invalid_success_response)?;
+                require_non_blank_success(&pull.title, "pull.title")?;
                 PathReference::pull_request(
                     PullRequestAddress::Item {
                         repository: repository.clone(),
@@ -843,15 +875,15 @@ fn parse_frontmatter(
             ));
         }
         if fields.contains_key(key) {
-            return Err(invalid_creation_document(format!(
-                "frontmatter field '{key}' must not be duplicated"
-            )));
+            return Err(invalid_creation_document(
+                "frontmatter fields must not be duplicated",
+            ));
         }
         let value = raw_value.trim();
         if value.is_empty() {
-            return Err(invalid_creation_document(format!(
-                "frontmatter field '{key}' must have a scalar value"
-            )));
+            return Err(invalid_creation_document(
+                "frontmatter field must have a scalar value",
+            ));
         }
         let parsed = if key == "draft" {
             match value {
@@ -869,9 +901,15 @@ fn parse_frontmatter(
 
 fn parse_string_scalar(value: &str) -> Result<String, ResourceError> {
     if value.starts_with('"') {
-        return serde_json::from_str::<String>(value).map_err(|_| {
+        let decoded = serde_json::from_str::<String>(value).map_err(|_| {
             invalid_creation_document("double-quoted frontmatter strings must use JSON escapes")
-        });
+        })?;
+        if decoded.contains(['\n', '\r']) {
+            return Err(invalid_creation_document(
+                "frontmatter strings must remain on one logical line",
+            ));
+        }
+        return Ok(decoded);
     }
     if value.starts_with('\'') {
         if !value.ends_with('\'') || value.len() < 2 {
@@ -898,18 +936,44 @@ fn parse_string_scalar(value: &str) -> Result<String, ResourceError> {
     }
     if value.ends_with('"')
         || value.ends_with('\'')
-        || value.starts_with(['[', '{', '&', '*', '!', '|', '>', '@', '`', '%'])
+        || value.starts_with(['[', '{', '&', '*', '!', '|', '>', '@', '`', '%', '#'])
         || value.starts_with("- ")
         || value.starts_with("? ")
-        || value.contains(" #")
+        || matches!(value, "-" | "?" | ":" | "..." | "---")
+        || has_yaml_comment(value)
         || value.contains(": ")
         || matches!(value, "null" | "Null" | "NULL" | "~" | "true" | "false")
+        || looks_numeric_yaml_scalar(value)
     {
         return Err(invalid_creation_document(
             "frontmatter value uses unsupported YAML syntax; quote one-line strings",
         ));
     }
     Ok(value.to_owned())
+}
+
+fn has_yaml_comment(value: &str) -> bool {
+    let mut previous = None;
+    for character in value.chars() {
+        if character == '#' && previous.is_none_or(char::is_whitespace) {
+            return true;
+        }
+        previous = Some(character);
+    }
+    false
+}
+
+fn looks_numeric_yaml_scalar(value: &str) -> bool {
+    let normalized = value.replace('_', "");
+    let unsigned = normalized
+        .strip_prefix(['+', '-'])
+        .unwrap_or(normalized.as_str());
+    let lower = unsigned.to_ascii_lowercase();
+    lower.starts_with("0x")
+        || lower.starts_with("0o")
+        || matches!(lower.as_str(), ".inf" | ".nan")
+        || normalized.parse::<i128>().is_ok()
+        || normalized.parse::<f64>().is_ok()
 }
 
 fn take_string(
@@ -931,10 +995,10 @@ fn reject_unknown_fields(
     fields: &BTreeMap<String, FrontmatterValue>,
     allowed: &[&str],
 ) -> Result<(), ResourceError> {
-    if let Some(key) = fields.keys().find(|key| !allowed.contains(&key.as_str())) {
-        return Err(invalid_creation_document(format!(
-            "frontmatter field '{key}' is not supported"
-        )));
+    if fields.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(invalid_creation_document(
+            "frontmatter contains an unsupported field",
+        ));
     }
     Ok(())
 }
@@ -1006,8 +1070,8 @@ impl MutationAdapter for GithubSource {
             return Ok(MutationState::Missing);
         }
         let target = GithubFieldTarget::parse(target.canonical_reference())?;
-        let content = self
-            .field_content(&target, operation)
+        let (content, _) = self
+            .field_snapshot(&target, operation)
             .await
             .map_err(MutationCommitFailure::into_error)?;
         Ok(MutationState::Text {
@@ -1030,7 +1094,7 @@ impl MutationAdapter for GithubSource {
         match mutation {
             SourceMutation::Replace {
                 target,
-                expected: _,
+                expected,
                 content,
             } => {
                 if target.mode() != MutationTargetMode::AuthoritativeText {
@@ -1041,7 +1105,20 @@ impl MutationAdapter for GithubSource {
                 }
                 let field = GithubFieldTarget::parse(target.canonical_reference())?;
                 Self::validate_replacement(&field, &content)?;
-                let authoritative = self.patch_field(&field, &content, operation).await?;
+                let (current, object_id) = self.field_snapshot(&field, operation).await?;
+                if VersionTag::from_content(current.as_bytes()) != expected {
+                    return Err(MutationCommitFailure::Conclusive(ResourceError::new(
+                        ErrorCategory::VersionConflict,
+                        "replacement Version Tag no longer matches authoritative GitHub content",
+                    )));
+                }
+                let (authoritative, response_id) =
+                    self.patch_field(&field, &content, operation).await?;
+                if response_id != object_id {
+                    return Err(MutationCommitFailure::Unknown(malformed_upstream(
+                        "GitHub mutation response object ID changed after authoritative preflight",
+                    )));
+                }
                 self.session
                     .cache_remove_namespace(GITHUB_CACHE_NAMESPACE)
                     .await
@@ -1063,7 +1140,7 @@ impl MutationAdapter for GithubSource {
                     .create_target(&creation, &submission, operation)
                     .await?;
                 Ok(MutationCommitOutcome::CreationTarget {
-                    canonical_reference: canonical,
+                    canonical_reference: Box::new(canonical),
                 })
             }
             SourceMutation::Delete { .. } | SourceMutation::Move { .. } => Err(
@@ -1085,6 +1162,68 @@ pub fn inspect_github_mutation_route_for_test(
         Ok(("PATCH".to_owned(), target.mutation_suffix()))
     }
 }
+fn map_http_mutation_failure(failure: HttpFetchFailure) -> MutationCommitFailure {
+    let unknown = failure.is_unknown_outcome();
+    let error = failure.into_error();
+    if unknown {
+        MutationCommitFailure::Unknown(error)
+    } else {
+        MutationCommitFailure::Conclusive(error)
+    }
+}
+
+fn validate_object_web_url(
+    value: &str,
+    repository: &GithubRepositoryIdentity,
+    family: &str,
+    number: u64,
+) -> Result<(), ResourceError> {
+    let url =
+        url::Url::parse(value).map_err(|_| malformed_upstream("GitHub object URL is malformed"))?;
+    if url.scheme() != "https" {
+        return Err(malformed_upstream("GitHub object URL must use HTTPS"));
+    }
+    let segments = url
+        .path_segments()
+        .ok_or_else(|| malformed_upstream("GitHub object URL has no hierarchical path"))?
+        .collect::<Vec<_>>();
+    let [owner, repo, actual_family, actual_number] = segments
+        .as_slice()
+        .split_at(segments.len().saturating_sub(4))
+        .1
+    else {
+        return Err(malformed_upstream(
+            "GitHub object URL does not name a repository object",
+        ));
+    };
+    let actual_number = actual_number
+        .parse::<u64>()
+        .map_err(|_| malformed_upstream("GitHub object URL number is invalid"))?;
+    if !owner.eq_ignore_ascii_case(repository.owner())
+        || !repo.eq_ignore_ascii_case(repository.repository())
+        || *actual_family != family
+        || actual_number != number
+    {
+        return Err(malformed_upstream(
+            "GitHub object URL does not match its requested repository identity",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_required_wire_string(value: &str, field: &str) -> Result<(), ResourceError> {
+    if value.trim().is_empty() {
+        return Err(malformed_upstream(&format!(
+            "GitHub upstream field '{field}' must not be blank"
+        )));
+    }
+    Ok(())
+}
+
+fn require_non_blank_success(value: &str, field: &str) -> Result<(), MutationCommitFailure> {
+    validate_required_wire_string(value, field).map_err(invalid_success_response)
+}
+
 fn invalid_success_response(error: ResourceError) -> MutationCommitFailure {
     MutationCommitFailure::Unknown(ResourceError::new(
         ErrorCategory::SourceUnavailable,

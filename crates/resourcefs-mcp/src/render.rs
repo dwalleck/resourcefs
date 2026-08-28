@@ -267,6 +267,9 @@ pub(crate) fn mutation_success(receipt: MutationReceipt) -> Result<CallToolResul
     if let Some(version_tag) = receipt.version_tag() {
         writeln!(text, "versionTag: {version_tag}")
             .expect("writing mutation Version Tag to String cannot fail");
+    } else if receipt.operation() == resourcefs_core::MutationOperation::Created {
+        writeln!(text, "versionTag: null")
+            .expect("writing null mutation Version Tag to String cannot fail");
     }
     if let (Some(ranges), Some(displayed_eof)) =
         (receipt.displayed_ranges(), receipt.displayed_eof())
@@ -1555,7 +1558,9 @@ mod tests {
         assert!(structured["versionTag"].is_null(), "[C16] nullable tag");
         assert!(
             value["content"][0]["text"].as_str().is_some_and(|text| {
-                !text.is_empty() && text.contains("canonicalReference: issue://owner/repo/77")
+                !text.is_empty()
+                    && text.contains("canonicalReference: issue://owner/repo/77")
+                    && text.contains("versionTag: null")
             }),
             "[C16] non-empty text carries canonical reference"
         );
