@@ -489,3 +489,105 @@ fn is_executable_in(directory: &Path, program: &str) -> bool {
     is_executable(&directory.join(program).with_extension("exe"))
         || is_executable(&directory.join(program).with_extension("com"))
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::{fs, path::Path};
+
+    use resourcefs_core::OperationGuard;
+
+    use super::check_profile;
+
+    /// Writes a credential helper that records its own execution: the marker
+    /// is positive evidence the credential was resolved, so its absence proves
+    /// the helper never ran rather than merely that its output went unused.
+    fn create_marking_helper(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(
+            path,
+            b"#!/bin/sh\n: > \"$RFS_CHECK_MARKER\"\nprintf fixture-secret\n",
+        )
+        .expect("write helper");
+        let mut permissions = fs::metadata(path).expect("helper metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("helper permissions");
+    }
+
+    /// C14 — a source whose kind the caller cannot mount is reported as
+    /// unsupported *before* its deferred credential is resolved, so refusing a
+    /// source never executes an operator's credential helper on its behalf.
+    ///
+    /// The launch path used to be fenced end-to-end with a `github` profile;
+    /// now that this binary mounts GitHub, no unmountable kind carries a
+    /// credential, so the gate is proven at the seam that implements it: the
+    /// same profile is probed twice, once with its kind excluded from
+    /// `mountable` and once included, and only the second run may execute the
+    /// helper. The second run is the positive control — without it, a helper
+    /// that never resolves would make the first assertion pass for the wrong
+    /// reason.
+    #[tokio::test]
+    async fn an_unmountable_kind_is_refused_before_its_credential_resolves() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let command_directory = temporary.path().join("command-bin");
+        fs::create_dir(&command_directory).expect("command directory");
+        create_marking_helper(&command_directory.join("credential-helper"));
+        let marker = temporary.path().join("credential-was-executed");
+        let profile_path = temporary.path().join("unmountable.json");
+        fs::write(
+            &profile_path,
+            format!(
+                r#"{{
+                    "schemaVersion":1,
+                    "sources":[{{
+                        "kind":"github","id":"forge","required":false,
+                        "apiBaseUrl":"https://127.0.0.1:9/",
+                        "allowPrivateNetwork":true,
+                        "credential":{{
+                            "kind":"command",
+                            "command":{{
+                                "argv":["credential-helper"],
+                                "environment":{{
+                                    "PATH":{{"kind":"literal","value":"{}"}},
+                                    "RFS_CHECK_MARKER":{{"kind":"literal","value":"{}"}}
+                                }}
+                            }}
+                        }},
+                        "repositories":[{{"name":"owner/repository"}}]
+                    }}]
+                }}"#,
+                // Absolute: the helper is spawned against the process cwd, not
+                // the profile directory, and this test does not chdir.
+                command_directory.display(),
+                marker.display()
+            ),
+        )
+        .expect("profile");
+
+        let mut checked = check_profile(&profile_path, |_| None).expect("static check");
+        let targets = checked
+            .probe_targets(&OperationGuard::new(), Some(&["https"]))
+            .await
+            .expect("probe targets without github mountable");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].kind(), "github");
+        assert!(
+            !targets[0].is_compiled(),
+            "a kind outside `mountable` must be reported as unsupported"
+        );
+        assert!(
+            !marker.exists(),
+            "the credential helper must not run for a source that cannot mount"
+        );
+
+        let targets = checked
+            .probe_targets(&OperationGuard::new(), Some(&["github"]))
+            .await
+            .expect("probe targets with github mountable");
+        assert!(targets[0].is_compiled());
+        assert!(
+            marker.exists(),
+            "positive control: the same helper runs once its kind is mountable"
+        );
+    }
+}

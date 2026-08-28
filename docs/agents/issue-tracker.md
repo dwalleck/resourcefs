@@ -10,6 +10,10 @@ Issues and specs for this repository live in the local Rivets store at `.rivets/
 - Use `-y` for non-interactive writes.
 - Pull requests are not a triage request surface.
 
+## Committing ticket changes
+
+`.rivets/issues.jsonl` is versioned, and its changes belong with the work they record. Commit a ticket closure, a durable note, or a newly filed follow-up in the same commit as the code and tests that produced it, and name the ticket IDs in the commit message. When a change spans several commits, the ticket store rides with the final one. Do not make standalone `chore(rivets): …` commits — a closure separated from its work leaves the history unable to say which commit finished the ticket.
+
 ## Conventions
 
 - **Create an issue**: `rivets create --json -y --title "..." --description "..." --kind task --priority 2`

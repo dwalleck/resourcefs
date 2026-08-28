@@ -58,6 +58,26 @@ fn enforces_dependency_direction() {
             "operator profile token '{forbidden}' leaked into resourcefs-sources"
         );
     }
+    // serde is admitted into resourcefs-sources for source-native wire
+    // decoding only. The invariant the old "no serde" fence protected was that
+    // operator profile syntax lives in resourcefs-mcp; naming a few DTO tokens
+    // cannot hold that line, but confining every serde use to the GitHub wire
+    // module can: a profile DTO or a serde derive on any other adapter's type
+    // fails here by location, whatever it is called.
+    let sources_src = sources_root.join("src");
+    let wire_module = sources_src.join("github");
+    let serde_users = files_containing_token(&sources_src, "serde");
+    assert!(
+        !serde_users.is_empty(),
+        "the GitHub wire module is expected to decode with serde"
+    );
+    for file in &serde_users {
+        assert!(
+            file.starts_with(&wire_module),
+            "serde reached {} outside the GitHub wire module src/github/",
+            file.display()
+        );
+    }
     let core_source = metadata
         .workspace_root
         .as_std_path()
