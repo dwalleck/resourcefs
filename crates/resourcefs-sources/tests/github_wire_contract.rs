@@ -80,7 +80,8 @@ fn official_nullable_and_distinct_shapes_decode() {
         "diff_hunk": "@@ -1 +1 @@",
         "created_at": "2026-08-20T01:02:03Z",
         "updated_at": "2026-08-20T01:02:03Z",
-        "pull_request_review_id": null
+        "pull_request_review_id": null,
+        "pull_request_url": "https://api.example/repos/owner/repo/pulls/42"
     }]"#;
     let observed = inspect_github_wire_for_test(GithubWireKindForTest::ReviewComments, inline)
         .expect("valid inline comments");

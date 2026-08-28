@@ -43,6 +43,9 @@ pub(super) struct PullRequest {
     pub(super) html_url: String,
     pub(super) created_at: String,
     pub(super) updated_at: String,
+    /// Optional in the official OpenAPI schema (older GHES omits it), so its
+    /// absence is a plain non-draft PR rather than malformed upstream data.
+    #[serde(default)]
     pub(super) draft: bool,
     pub(super) merged: bool,
     pub(super) merged_at: Option<String>,
@@ -59,6 +62,7 @@ pub(super) struct PullRequestSummary {
     pub(super) user: Option<SimpleUser>,
     pub(super) html_url: String,
     pub(super) updated_at: String,
+    #[serde(default)]
     pub(super) draft: bool,
     pub(super) merged_at: Option<String>,
 }
@@ -94,6 +98,9 @@ pub(super) struct ReviewComment {
     pub(super) created_at: String,
     pub(super) updated_at: String,
     pub(super) pull_request_review_id: Option<u64>,
+    /// The owning pull request, required so a comment fetched by its
+    /// repository-wide id can be refused under any other PR's number.
+    pub(super) pull_request_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -346,6 +353,7 @@ pub fn inspect_github_wire_for_test(
                         value.diff_hunk.as_str(),
                         value.created_at.as_str(),
                         value.updated_at.as_str(),
+                        value.pull_request_url.as_str(),
                     ]))
                     .saturating_add(user_bytes(&value.user)?);
             }

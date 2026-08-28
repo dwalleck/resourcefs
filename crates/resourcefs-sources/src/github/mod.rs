@@ -1,17 +1,18 @@
 mod render;
 mod wire;
 
-use std::{io::Cursor, sync::Arc};
+use std::{collections::HashSet, fmt::Write as _, io::Cursor, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use resourcefs_core::{
     DiscoveryAdapter, ErrorCategory, GithubRepositoryIdentity, GlobOptions, GlobTarget,
-    IssueAddress, IssueResource, OperationGuard, PathReference, PathSession, PullRequestAddress,
-    PullRequestResource, ResourceAddress, ResourceError, SearchOptions, SearchSourceResult,
-    SearchTarget, SessionCacheEntry, SessionCacheKey, SourceAdapter, SourceGlobResult,
-    SourceResource, select_utf8,
+    IssueAddress, IssueResource, OperationGuard, PathReference, PathSession, ProjectionSelector,
+    PullRequestAddress, PullRequestResource, ResourceAddress, ResourceError, SearchOptions,
+    SearchSourceResult, SearchTarget, SessionCacheEntry, SessionCacheKey, SourceAdapter,
+    SourceGlobResult, SourceResource, select_utf8,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use tokio::time::Instant;
 use url::Url;
 
 use crate::{
@@ -37,6 +38,13 @@ const GITHUB_JSON: &str = "application/vnd.github+json";
 const GITHUB_DIFF: &str = "application/vnd.github.diff";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const USER_AGENT: &str = "resourcefs/1.0";
+/// Objects requested per upstream page, and the pages followed inside one
+/// operation: together they bound a logical collection at 1,000 objects.
+const PAGE_SIZE: u64 = 100;
+const MAX_PAGES_PER_OPERATION: u64 = 10;
+/// Query for repository collections: every state, most recently updated first.
+const COLLECTION_QUERY: &[(&str, &str)] =
+    &[("state", "all"), ("sort", "updated"), ("direction", "desc")];
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CacheMetadata {
@@ -53,6 +61,87 @@ impl FetchedResponse {
     fn body(&self) -> &[u8] {
         &self.body
     }
+}
+
+/// One logical GitHub operation: the caller's cancellation guard and the
+/// deadline that every attempt, Retry-After wait, retry, and followed page
+/// inside it shares. The spec grants one logical deadline per operation, so a
+/// wait that cannot finish before it is refused rather than started.
+#[derive(Clone, Copy)]
+struct Operation<'a> {
+    guard: &'a OperationGuard,
+    deadline: Instant,
+}
+
+impl Operation<'_> {
+    fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+}
+
+/// A rendered projection plus the typed continuation naming what it omits.
+///
+/// Only one logical collection carries a structured continuation. An
+/// Aggregate composes several collections that may each have further pages;
+/// it names every one of them as a `Continuation:` line in its text — the
+/// same line every paginated rendering carries, so the reference survives at
+/// the end of a retained artifact — but it has no single next page of its own.
+struct Rendered {
+    content: String,
+    continuation: Option<PathReference>,
+}
+
+impl Rendered {
+    const fn complete(content: String) -> Self {
+        Self {
+            content,
+            continuation: None,
+        }
+    }
+
+    fn collection(mut content: String, next: Option<PathReference>) -> Self {
+        if let Some(reference) = &next {
+            write_continuation_line(&mut content, reference);
+        }
+        Self {
+            content,
+            continuation: next,
+        }
+    }
+
+    fn aggregate(mut content: String, continuations: &[PathReference]) -> Self {
+        for reference in continuations {
+            write_continuation_line(&mut content, reference);
+        }
+        Self::complete(content)
+    }
+}
+
+fn write_continuation_line(content: &mut String, reference: &PathReference) {
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str("\nContinuation: ");
+    content.push_str(reference.requested());
+    content.push('\n');
+}
+
+fn page_reference(base: &str, page: u64) -> Result<PathReference, ResourceError> {
+    PathReference::parse(format!("{base}:page:{page}"))
+}
+
+/// Renders one entry per item, each led by its own canonical reference so a
+/// listing row can be read or searched on its own.
+fn listing<T>(
+    items: &[T],
+    reference: impl Fn(&T) -> String,
+    render: impl Fn(&T) -> String,
+) -> String {
+    items
+        .iter()
+        .map(|item| format!("{}\n{}", reference(item), render(item)))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 #[derive(Clone)]
@@ -146,6 +235,26 @@ impl GithubSource {
             })
     }
 
+    /// The URL of one upstream page of a collection, at the fixed page size.
+    fn page_url(
+        &self,
+        repository: &GithubRepositoryIdentity,
+        suffix: &str,
+        parameters: &[(&str, &str)],
+        page: u64,
+    ) -> Result<Url, ResourceError> {
+        let mut url = self.endpoint(repository, suffix)?;
+        {
+            let mut query = url.query_pairs_mut();
+            for (name, value) in parameters {
+                query.append_pair(name, value);
+            }
+            query.append_pair("per_page", &PAGE_SIZE.to_string());
+            query.append_pair("page", &page.to_string());
+        }
+        Ok(url)
+    }
+
     fn request(url: Url, accept: &str, etag: Option<&str>) -> Result<HttpRequest, ResourceError> {
         let request = HttpRequest::get(url)
             .with_header("Accept", accept)
@@ -165,25 +274,35 @@ impl GithubSource {
         &self,
         url: Url,
         accept: &str,
-        operation: &OperationGuard,
+        operation: Operation<'_>,
     ) -> Result<FetchedResponse, ResourceError> {
         let key = Self::cache_key(&url, accept)?;
-        let cached = self.session.cache_get(&key).await?;
-        let cached_metadata = cached
+        let mut cached = self.session.cache_get(&key).await?;
+        let mut cached_metadata = cached
             .as_ref()
             .map(|entry| serde_json::from_slice::<CacheMetadata>(entry.metadata()))
             .transpose()
             .map_err(|_| malformed_upstream("GitHub session cache metadata is corrupt"))?;
+        // A validator the request header ceiling cannot carry is no validator:
+        // drop the entry and fetch unconditionally rather than leave a URL
+        // unreadable for the rest of the session behind a retained ETag.
+        if let Some(metadata) = cached_metadata.as_ref()
+            && let Err(error) = Self::request(url.clone(), accept, Some(&metadata.etag))
+        {
+            if error.category() != ErrorCategory::LimitExceeded {
+                return Err(error);
+            }
+            self.session.cache_remove(&key).await?;
+            cached = None;
+            cached_metadata = None;
+        }
+        let validator = cached_metadata
+            .as_ref()
+            .map(|metadata| metadata.etag.as_str());
         let mut attempt = 0_u8;
         loop {
-            let request = Self::request(
-                url.clone(),
-                accept,
-                cached_metadata
-                    .as_ref()
-                    .map(|metadata| metadata.etag.as_str()),
-            )?;
-            let response = match self.substrate.fetch_attempt(request, operation).await {
+            let request = Self::request(url.clone(), accept, validator)?;
+            let response = match self.substrate.fetch_attempt(request, operation.guard).await {
                 Ok(response) => response,
                 Err(failure) if attempt == 0 && failure.is_retryable() => {
                     attempt = 1;
@@ -207,10 +326,19 @@ impl GithubSource {
                 && matches!(response.status(), 429 | 503)
                 && let Some(delay) = response.retry_after()
             {
+                // Waiting is allowed only while time remains: a wait that would
+                // outlive the deadline is the rate-limit failure it postpones,
+                // reported now instead of after the deadline burns.
+                if delay > operation.remaining() {
+                    return Err(github_error(
+                        ErrorCategory::SourceUnavailable,
+                        "GitHub rate limit is exhausted and its Retry-After exceeds the remaining logical deadline",
+                    ));
+                }
                 attempt = 1;
                 tokio::select! {
                     biased;
-                    () = operation.cancelled() => {
+                    () = operation.guard.cancelled() => {
                         return Err(ResourceError::new(
                             ErrorCategory::Cancelled,
                             "GitHub retry wait was cancelled",
@@ -228,7 +356,8 @@ impl GithubSource {
                 ));
             }
             let etag = response.etag().map(str::to_owned);
-            let link = response.link().map(str::to_owned);
+            // An unreadable Link is a corrupt continuation, not the last page.
+            let link = response.link()?.map(str::to_owned);
             let body = response.into_body();
             let entry = SessionCacheEntry::new(
                 etag.as_ref().map_or_else(Vec::new, |etag| {
@@ -241,7 +370,7 @@ impl GithubSource {
                 body,
             )?;
             if etag.is_some() {
-                self.session.cache_put(key.clone(), entry.clone()).await?;
+                self.cache(key, &entry).await?;
             } else {
                 self.session.cache_remove(&key).await?;
             }
@@ -249,6 +378,27 @@ impl GithubSource {
                 body: Arc::clone(entry.content_arc()),
                 link,
             });
+        }
+    }
+
+    /// Caches a validated response for conditional revalidation.
+    ///
+    /// A ceiling refusal is not a read failure: the substrate accepted the
+    /// bytes and they are returned to the caller uncached. Any previous entry
+    /// under the key is dropped so a later `304` can never revive content the
+    /// refused response replaced. Every other cache failure is propagated.
+    async fn cache(
+        &self,
+        key: SessionCacheKey,
+        entry: &SessionCacheEntry,
+    ) -> Result<(), ResourceError> {
+        match self.session.cache_put(key.clone(), entry.clone()).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.category() == ErrorCategory::LimitExceeded => {
+                self.session.cache_remove(&key).await?;
+                Ok(())
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -290,36 +440,34 @@ impl GithubSource {
         }
     }
 
+    /// Resolves the `rel="next"` target of a page's Link header, confined to
+    /// the same API origin and the same repository endpoint family.
+    ///
+    /// Two path spellings are accepted for the family: the `/repos/{owner}/
+    /// {repo}/{suffix}` form this adapter requests, and `/repositories/{id}/
+    /// {suffix}`, which is what the live API actually returns (evidence P4).
+    /// The numeric id is the upstream's own name for the repository it was
+    /// just asked about, so following it discloses nothing new to the origin.
     fn next_link(
         &self,
         link: Option<&str>,
         repository: &GithubRepositoryIdentity,
-        expected_path: &str,
+        suffix: &str,
     ) -> Result<Option<Url>, ResourceError> {
-        let Some(target) = link.and_then(|link| {
-            link.split(',').find_map(|part| {
-                let part = part.trim();
-                part.contains("rel=\"next\"").then(|| {
-                    part.split_once('<')
-                        .and_then(|(_, rest)| rest.split_once('>'))
-                        .map(|(url, _)| url)
-                })?
-            })
-        }) else {
+        let Some(link) = link else {
             return Ok(None);
         };
-        let target = Url::parse(target)
-            .map_err(|_| malformed_upstream("GitHub pagination Link is malformed"))?;
-        if target.scheme() != self.api_base.scheme()
-            || target.host_str() != self.api_base.host_str()
-            || target.port_or_known_default() != self.api_base.port_or_known_default()
-            || target.path() != expected_path
-            || !target.path().contains(&format!(
-                "/repos/{}/{}/",
-                repository.owner(),
-                repository.repository()
-            ))
-        {
+        let Some(target) = next_link_target(link)? else {
+            return Ok(None);
+        };
+        let target = Url::parse(target).map_err(|_| malformed_link())?;
+        let repository_path = self.endpoint(repository, suffix)?.path().to_owned();
+        let same_origin = target.scheme() == self.api_base.scheme()
+            && target.host_str() == self.api_base.host_str()
+            && target.port_or_known_default() == self.api_base.port_or_known_default();
+        let same_family = target.path().eq_ignore_ascii_case(&repository_path)
+            || self.is_repository_id_path(target.path(), suffix);
+        if !same_origin || !same_family {
             return Err(ResourceError::new(
                 ErrorCategory::PermissionDenied,
                 "GitHub pagination Link leaves its repository endpoint authority",
@@ -328,28 +476,35 @@ impl GithubSource {
         Ok(Some(target))
     }
 
+    fn is_repository_id_path(&self, path: &str, suffix: &str) -> bool {
+        let Some(rest) = path.strip_prefix(self.api_base.path()) else {
+            return false;
+        };
+        let Some(rest) = rest.strip_prefix("repositories/") else {
+            return false;
+        };
+        let Some((id, rest)) = rest.split_once('/') else {
+            return false;
+        };
+        !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()) && rest == suffix
+    }
+
+    /// Fetches one logical collection from `start_page`, following at most
+    /// [`MAX_PAGES_PER_OPERATION`] Link targets, and returns the objects with
+    /// the number of the first page not fetched.
     async fn collection<T: DeserializeOwned>(
         &self,
         repository: &GithubRepositoryIdentity,
         suffix: &str,
         parameters: &[(&str, &str)],
         start_page: u64,
-        operation: &OperationGuard,
+        operation: Operation<'_>,
     ) -> Result<(Vec<T>, Option<u64>), ResourceError> {
-        let mut next = self.endpoint(repository, suffix)?;
-        {
-            let mut query = next.query_pairs_mut();
-            for (name, value) in parameters {
-                query.append_pair(name, value);
-            }
-            query.append_pair("per_page", "100");
-            query.append_pair("page", &start_page.to_string());
-        }
-        let expected_path = next.path().to_owned();
+        let mut next = self.page_url(repository, suffix, parameters, start_page)?;
         let mut values = Vec::new();
-        for _ in 0..10 {
+        for _ in 0..MAX_PAGES_PER_OPERATION {
             let response = self.fetch(next, GITHUB_JSON, operation).await?;
-            let following = self.next_link(response.link.as_deref(), repository, &expected_path)?;
+            let following = self.next_link(response.link.as_deref(), repository, suffix)?;
             let mut page: Vec<T> = wire::decode(response.body())?;
             values.append(&mut page);
             let Some(link) = following else {
@@ -368,31 +523,125 @@ impl GithubSource {
     async fn json<T: DeserializeOwned>(
         &self,
         url: Url,
-        operation: &OperationGuard,
+        operation: Operation<'_>,
     ) -> Result<T, ResourceError> {
         let response = self.fetch(url, GITHUB_JSON, operation).await?;
         wire::decode(response.body())
+    }
+
+    /// Fetches issue `number` and refuses a pull request wearing an issue
+    /// number: GitHub serves pull requests through the issues endpoint too,
+    /// and one object must never own two canonical namespaces.
+    async fn issue(
+        &self,
+        repository: &GithubRepositoryIdentity,
+        number: u64,
+        operation: Operation<'_>,
+    ) -> Result<Issue, ResourceError> {
+        let issue: Issue = self
+            .json(
+                self.endpoint(repository, &format!("issues/{number}"))?,
+                operation,
+            )
+            .await?;
+        validate_issue_identity(&issue, number)?;
+        if issue.pull_request.is_some() {
+            return Err(ResourceError::new(
+                ErrorCategory::NotFound,
+                "GitHub number names a pull request; address it through pr://",
+            ));
+        }
+        Ok(issue)
+    }
+
+    /// Fetches pull request `number`; the pulls endpoint itself refuses an
+    /// issue number, so the kind gate is the request.
+    async fn pull(
+        &self,
+        repository: &GithubRepositoryIdentity,
+        number: u64,
+        operation: Operation<'_>,
+    ) -> Result<PullRequest, ResourceError> {
+        let pull: PullRequest = self
+            .json(
+                self.endpoint(repository, &format!("pulls/{number}"))?,
+                operation,
+            )
+            .await?;
+        validate_pull_identity(&pull, number)?;
+        Ok(pull)
+    }
+
+    /// Fetches conversation comment `id` and refuses it unless its `issue_url`
+    /// names `number` in this repository: the endpoint is repository-wide, so
+    /// nothing else ties a comment to the path it was addressed under.
+    async fn conversation_comment(
+        &self,
+        repository: &GithubRepositoryIdentity,
+        number: u64,
+        id: u64,
+        operation: Operation<'_>,
+    ) -> Result<ConversationComment, ResourceError> {
+        let comment: ConversationComment = self
+            .json(
+                self.endpoint(repository, &format!("issues/comments/{id}"))?,
+                operation,
+            )
+            .await?;
+        validate_positive(comment.id, "comment.id")?;
+        validate_user(&comment.user, "comment.user.id")?;
+        if comment.id != id {
+            return Err(malformed_upstream(
+                "GitHub comment ID does not match its path",
+            ));
+        }
+        validate_parent(&comment.issue_url, repository, "issues", number)?;
+        Ok(comment)
+    }
+
+    /// Fetches inline review comment `id`, refused unless its
+    /// `pull_request_url` names `number` in this repository.
+    async fn review_comment(
+        &self,
+        repository: &GithubRepositoryIdentity,
+        number: u64,
+        id: u64,
+        operation: Operation<'_>,
+    ) -> Result<ReviewComment, ResourceError> {
+        let comment: ReviewComment = self
+            .json(
+                self.endpoint(repository, &format!("pulls/comments/{id}"))?,
+                operation,
+            )
+            .await?;
+        validate_positive(comment.id, "review_comment.id")?;
+        validate_user(&comment.user, "review_comment.user.id")?;
+        if comment.id != id {
+            return Err(malformed_upstream(
+                "GitHub review comment ID does not match its path",
+            ));
+        }
+        validate_parent(&comment.pull_request_url, repository, "pulls", number)?;
+        Ok(comment)
     }
 
     async fn issue_resource(
         &self,
         address: &IssueAddress,
         page: Option<u64>,
-        operation: &OperationGuard,
-    ) -> Result<String, ResourceError> {
+        operation: Operation<'_>,
+    ) -> Result<Rendered, ResourceError> {
         if let IssueAddress::Collection { repository } = address {
-            let (mut issues, continuation): (Vec<Issue>, Option<u64>) = self
+            let (mut issues, next): (Vec<Issue>, Option<u64>) = self
                 .collection(
                     repository,
                     "issues",
-                    &[("state", "all"), ("sort", "updated"), ("direction", "desc")],
+                    COLLECTION_QUERY,
                     page.unwrap_or(1),
                     operation,
                 )
                 .await?;
-            for issue in &issues {
-                validate_issue_identity(issue, issue.number)?;
-            }
+            validate_issue_listing(&issues)?;
             issues.retain(|issue| issue.pull_request.is_none());
             issues.sort_by(|left, right| {
                 right
@@ -400,38 +649,33 @@ impl GithubSource {
                     .cmp(&left.updated_at)
                     .then_with(|| left.number.cmp(&right.number))
             });
+            let base = format!("issue://{}", repository.as_str());
             let mut rendered = format!("# Issues: {}\n", repository.as_str());
             if issues.is_empty() {
-                rendered.push_str("\n(no issues)\n");
+                // Every row of a page can be a pull request, which this
+                // collection excludes; "(no issues)" would then contradict the
+                // continuation that follows it.
+                rendered.push_str(if next.is_some() {
+                    "\n(no issues on this page)\n"
+                } else {
+                    "\n(no issues)\n"
+                });
             } else {
-                for issue in issues {
-                    use std::fmt::Write as _;
+                for issue in &issues {
                     writeln!(
                         &mut rendered,
-                        "- issue://{}/{} — {} [{}] by {} (updated {})",
-                        repository.as_str(),
+                        "- {base}/{} — {} [{}] by {} (updated {})",
                         issue.number,
                         issue.title,
                         issue.state,
-                        issue
-                            .user
-                            .as_ref()
-                            .map_or("[deleted]", |user| user.login.as_str()),
+                        render::author(&issue.user),
                         issue.updated_at
                     )
                     .expect("String write");
                 }
             }
-            if let Some(page) = continuation {
-                use std::fmt::Write as _;
-                writeln!(
-                    &mut rendered,
-                    "\nContinuation: issue://{}:page:{page}",
-                    repository.as_str()
-                )
-                .expect("String write");
-            }
-            return Ok(rendered);
+            let next = next.map(|page| page_reference(&base, page)).transpose()?;
+            return Ok(Rendered::collection(rendered, next));
         }
         let IssueAddress::Item {
             repository,
@@ -445,15 +689,11 @@ impl GithubSource {
             return Err(unsupported_github_projection());
         }
         let number = number.get();
+        let base = format!("issue://{}/{number}", repository.as_str());
         match resource {
             IssueResource::Aggregate => {
-                let issue: Issue = self
-                    .json(
-                        self.endpoint(repository, &format!("issues/{number}"))?,
-                        operation,
-                    )
-                    .await?;
-                let (mut comments, continuation): (Vec<ConversationComment>, Option<u64>) = self
+                let issue = self.issue(repository, number, operation).await?;
+                let (mut comments, next): (Vec<ConversationComment>, Option<u64>) = self
                     .collection(
                         repository,
                         &format!("issues/{number}/comments"),
@@ -462,36 +702,24 @@ impl GithubSource {
                         operation,
                     )
                     .await?;
-                validate_issue_identity(&issue, number)?;
                 validate_comment_ids(&comments)?;
-                let mut rendered = render::issue_aggregate(repository, &issue, &mut comments);
-                if let Some(page) = continuation {
-                    use std::fmt::Write as _;
-                    writeln!(
-                        &mut rendered,
-                        "\nContinuation: issue://{}/{number}/comments:page:{page}",
-                        repository.as_str()
-                    )
-                    .expect("String write");
-                }
-                Ok(rendered)
+                let rendered = render::issue_aggregate(repository, &issue, &mut comments);
+                let continuations = next
+                    .map(|page| page_reference(&format!("{base}/comments"), page))
+                    .transpose()?;
+                Ok(Rendered::aggregate(rendered, continuations.as_slice()))
             }
-            IssueResource::Title | IssueResource::Body => {
-                let issue: Issue = self
-                    .json(
-                        self.endpoint(repository, &format!("issues/{number}"))?,
-                        operation,
-                    )
-                    .await?;
-                validate_issue_identity(&issue, number)?;
-                Ok(match resource {
-                    IssueResource::Title => issue.title,
-                    IssueResource::Body => authoritative_body(issue.body),
-                    _ => unreachable!("matched title/body"),
-                })
-            }
+            IssueResource::Title => Ok(Rendered::complete(
+                self.issue(repository, number, operation).await?.title,
+            )),
+            IssueResource::Body => Ok(Rendered::complete(authoritative_body(
+                self.issue(repository, number, operation).await?.body,
+            ))),
             IssueResource::Comments => {
-                let (mut comments, continuation): (Vec<ConversationComment>, Option<u64>) = self
+                // The kind gate costs one request, but without it a pull
+                // request's conversation would render under issue://.
+                self.issue(repository, number, operation).await?;
+                let (mut comments, next): (Vec<ConversationComment>, Option<u64>) = self
                     .collection(
                         repository,
                         &format!("issues/{number}/comments"),
@@ -501,49 +729,23 @@ impl GithubSource {
                     )
                     .await?;
                 validate_comment_ids(&comments)?;
-                comments.sort_by(|left, right| {
-                    left.created_at
-                        .cmp(&right.created_at)
-                        .then_with(|| left.id.cmp(&right.id))
-                });
-                let mut rendered = comments
-                    .iter()
-                    .map(|comment| {
-                        format!(
-                            "issue://{}/{number}/comments/{}\n{}",
-                            repository.as_str(),
-                            comment.id,
-                            render::comment(comment)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                if let Some(page) = continuation {
-                    use std::fmt::Write as _;
-                    writeln!(
-                        &mut rendered,
-                        "\nContinuation: issue://{}/{number}/comments:page:{page}",
-                        repository.as_str()
-                    )
-                    .expect("String write");
-                }
-                Ok(rendered)
+                render::sort_comments(&mut comments);
+                let rendered = listing(
+                    &comments,
+                    |comment| format!("{base}/comments/{}", comment.id),
+                    render::comment,
+                );
+                let next = next
+                    .map(|page| page_reference(&format!("{base}/comments"), page))
+                    .transpose()?;
+                Ok(Rendered::collection(rendered, next))
             }
             IssueResource::Comment(id) => {
-                let comment: ConversationComment = self
-                    .json(
-                        self.endpoint(repository, &format!("issues/comments/{}", id.get()))?,
-                        operation,
-                    )
+                self.issue(repository, number, operation).await?;
+                let comment = self
+                    .conversation_comment(repository, number, id.get(), operation)
                     .await?;
-                validate_positive(comment.id, "comment.id")?;
-                validate_user(&comment.user, "comment.user.id")?;
-                if comment.id != id.get() {
-                    return Err(malformed_upstream(
-                        "GitHub comment ID does not match its path",
-                    ));
-                }
-                Ok(render::comment(&comment))
+                Ok(Rendered::complete(render::comment(&comment)))
             }
         }
     }
@@ -552,14 +754,14 @@ impl GithubSource {
         &self,
         address: &PullRequestAddress,
         page: Option<u64>,
-        operation: &OperationGuard,
-    ) -> Result<String, ResourceError> {
+        operation: Operation<'_>,
+    ) -> Result<Rendered, ResourceError> {
         if let PullRequestAddress::Collection { repository } = address {
-            let (mut pulls, continuation): (Vec<PullRequestSummary>, Option<u64>) = self
+            let (mut pulls, next): (Vec<PullRequestSummary>, Option<u64>) = self
                 .collection(
                     repository,
                     "pulls",
-                    &[("state", "all"), ("sort", "updated"), ("direction", "desc")],
+                    COLLECTION_QUERY,
                     page.unwrap_or(1),
                     operation,
                 )
@@ -571,12 +773,16 @@ impl GithubSource {
                     .cmp(&left.updated_at)
                     .then_with(|| left.number.cmp(&right.number))
             });
+            let base = format!("pr://{}", repository.as_str());
             let mut rendered = format!("# Pull requests: {}\n", repository.as_str());
             if pulls.is_empty() {
-                rendered.push_str("\n(no pull requests)\n");
+                rendered.push_str(if next.is_some() {
+                    "\n(no pull requests on this page)\n"
+                } else {
+                    "\n(no pull requests)\n"
+                });
             } else {
-                for pull in pulls {
-                    use std::fmt::Write as _;
+                for pull in &pulls {
                     let merge = if pull.merged_at.is_some() {
                         "merged"
                     } else {
@@ -584,31 +790,20 @@ impl GithubSource {
                     };
                     writeln!(
                         &mut rendered,
-                        "- pr://{}/{} — {} [{}{}] by {} (updated {}; {})",
-                        repository.as_str(),
+                        "- {base}/{} — {} [{}{}] by {} (updated {}; {})",
                         pull.number,
                         pull.title,
                         merge,
                         if pull.draft { ", draft" } else { "" },
-                        pull.user
-                            .as_ref()
-                            .map_or("[deleted]", |user| user.login.as_str()),
+                        render::author(&pull.user),
                         pull.updated_at,
                         pull.html_url
                     )
                     .expect("String write");
                 }
             }
-            if let Some(page) = continuation {
-                use std::fmt::Write as _;
-                writeln!(
-                    &mut rendered,
-                    "\nContinuation: pr://{}:page:{page}",
-                    repository.as_str()
-                )
-                .expect("String write");
-            }
-            return Ok(rendered);
+            let next = next.map(|page| page_reference(&base, page)).transpose()?;
+            return Ok(Rendered::collection(rendered, next));
         }
         let PullRequestAddress::Item {
             repository,
@@ -630,14 +825,10 @@ impl GithubSource {
             return Err(unsupported_github_projection());
         }
         let number = number.get();
+        let base = format!("pr://{}/{number}", repository.as_str());
         match resource {
             PullRequestResource::Aggregate => {
-                let pull: PullRequest = self
-                    .json(
-                        self.endpoint(repository, &format!("pulls/{number}"))?,
-                        operation,
-                    )
-                    .await?;
+                let pull = self.pull(repository, number, operation).await?;
                 let (mut comments, comment_next): (Vec<ConversationComment>, Option<u64>) = self
                     .collection(
                         repository,
@@ -674,12 +865,11 @@ impl GithubSource {
                         operation,
                     )
                     .await?;
-                validate_pull_identity(&pull, number)?;
                 validate_comment_ids(&comments)?;
                 validate_review_ids(&reviews)?;
                 validate_review_comment_ids(&review_comments)?;
                 validate_files(&files)?;
-                let mut rendered = render::pull_request_aggregate(
+                let rendered = render::pull_request_aggregate(
                     repository,
                     &pull,
                     &mut comments,
@@ -687,7 +877,7 @@ impl GithubSource {
                     &mut review_comments,
                     &files,
                 );
-                use std::fmt::Write as _;
+                let mut continuations = Vec::new();
                 for (collection, next) in [
                     ("comments", comment_next),
                     ("reviews", review_next),
@@ -695,32 +885,22 @@ impl GithubSource {
                     ("diff", file_next),
                 ] {
                     if let Some(page) = next {
-                        writeln!(
-                            &mut rendered,
-                            "\nContinuation: pr://{}/{number}/{collection}:page:{page}",
-                            repository.as_str()
-                        )
-                        .expect("String write");
+                        continuations.push(page_reference(&format!("{base}/{collection}"), page)?);
                     }
                 }
-                Ok(rendered)
+                Ok(Rendered::aggregate(rendered, &continuations))
             }
-            PullRequestResource::Title | PullRequestResource::Body => {
-                let pull: PullRequest = self
-                    .json(
-                        self.endpoint(repository, &format!("pulls/{number}"))?,
-                        operation,
-                    )
-                    .await?;
-                validate_pull_identity(&pull, number)?;
-                Ok(match resource {
-                    PullRequestResource::Title => pull.title,
-                    PullRequestResource::Body => authoritative_body(pull.body),
-                    _ => unreachable!("matched title/body"),
-                })
-            }
+            PullRequestResource::Title => Ok(Rendered::complete(
+                self.pull(repository, number, operation).await?.title,
+            )),
+            PullRequestResource::Body => Ok(Rendered::complete(authoritative_body(
+                self.pull(repository, number, operation).await?.body,
+            ))),
             PullRequestResource::Comments => {
-                let (comments, continuation): (Vec<ConversationComment>, Option<u64>) = self
+                // `issues/{number}/comments` serves plain issues too; the pulls
+                // endpoint is the kind gate that keeps an issue out of pr://.
+                self.pull(repository, number, operation).await?;
+                let (mut comments, next): (Vec<ConversationComment>, Option<u64>) = self
                     .collection(
                         repository,
                         &format!("issues/{number}/comments"),
@@ -730,40 +910,26 @@ impl GithubSource {
                     )
                     .await?;
                 validate_comment_ids(&comments)?;
-                let mut rendered = comments
-                    .iter()
-                    .map(render::comment)
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                if let Some(page) = continuation {
-                    use std::fmt::Write as _;
-                    writeln!(
-                        &mut rendered,
-                        "\nContinuation: pr://{}/{number}/comments:page:{page}",
-                        repository.as_str()
-                    )
-                    .expect("String write");
-                }
-                Ok(rendered)
+                render::sort_comments(&mut comments);
+                let rendered = listing(
+                    &comments,
+                    |comment| format!("{base}/comments/{}", comment.id),
+                    render::comment,
+                );
+                let next = next
+                    .map(|page| page_reference(&format!("{base}/comments"), page))
+                    .transpose()?;
+                Ok(Rendered::collection(rendered, next))
             }
             PullRequestResource::Comment(id) => {
-                let comment: ConversationComment = self
-                    .json(
-                        self.endpoint(repository, &format!("issues/comments/{}", id.get()))?,
-                        operation,
-                    )
+                self.pull(repository, number, operation).await?;
+                let comment = self
+                    .conversation_comment(repository, number, id.get(), operation)
                     .await?;
-                validate_positive(comment.id, "comment.id")?;
-                validate_user(&comment.user, "comment.user.id")?;
-                if comment.id != id.get() {
-                    return Err(malformed_upstream(
-                        "GitHub comment ID does not match its path",
-                    ));
-                }
-                Ok(render::comment(&comment))
+                Ok(Rendered::complete(render::comment(&comment)))
             }
             PullRequestResource::Reviews => {
-                let (reviews, continuation): (Vec<Review>, Option<u64>) = self
+                let (mut reviews, next): (Vec<Review>, Option<u64>) = self
                     .collection(
                         repository,
                         &format!("pulls/{number}/reviews"),
@@ -773,21 +939,16 @@ impl GithubSource {
                     )
                     .await?;
                 validate_review_ids(&reviews)?;
-                let mut rendered = reviews
-                    .iter()
-                    .map(render::review)
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                if let Some(page) = continuation {
-                    use std::fmt::Write as _;
-                    writeln!(
-                        &mut rendered,
-                        "\nContinuation: pr://{}/{number}/reviews:page:{page}",
-                        repository.as_str()
-                    )
-                    .expect("String write");
-                }
-                Ok(rendered)
+                render::sort_reviews(&mut reviews);
+                let rendered = listing(
+                    &reviews,
+                    |review| format!("{base}/reviews/{}", review.id),
+                    render::review,
+                );
+                let next = next
+                    .map(|page| page_reference(&format!("{base}/reviews"), page))
+                    .transpose()?;
+                Ok(Rendered::collection(rendered, next))
             }
             PullRequestResource::Review(id) => {
                 let review: Review = self
@@ -803,10 +964,10 @@ impl GithubSource {
                         "GitHub review ID does not match its path",
                     ));
                 }
-                Ok(render::review(&review))
+                Ok(Rendered::complete(render::review(&review)))
             }
             PullRequestResource::ReviewComments => {
-                let (comments, continuation): (Vec<ReviewComment>, Option<u64>) = self
+                let (mut comments, next): (Vec<ReviewComment>, Option<u64>) = self
                     .collection(
                         repository,
                         &format!("pulls/{number}/comments"),
@@ -816,84 +977,25 @@ impl GithubSource {
                     )
                     .await?;
                 validate_review_comment_ids(&comments)?;
-                let mut rendered = comments
-                    .iter()
-                    .map(render::review_comment)
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                if let Some(page) = continuation {
-                    use std::fmt::Write as _;
-                    writeln!(
-                        &mut rendered,
-                        "\nContinuation: pr://{}/{number}/review-comments:page:{page}",
-                        repository.as_str()
-                    )
-                    .expect("String write");
-                }
-                Ok(rendered)
+                render::sort_review_comments(&mut comments);
+                let rendered = listing(
+                    &comments,
+                    |comment| format!("{base}/review-comments/{}", comment.id),
+                    render::review_comment,
+                );
+                let next = next
+                    .map(|page| page_reference(&format!("{base}/review-comments"), page))
+                    .transpose()?;
+                Ok(Rendered::collection(rendered, next))
             }
             PullRequestResource::ReviewComment(id) => {
-                let comment: ReviewComment = self
-                    .json(
-                        self.endpoint(repository, &format!("pulls/comments/{}", id.get()))?,
-                        operation,
-                    )
+                let comment = self
+                    .review_comment(repository, number, id.get(), operation)
                     .await?;
-                validate_positive(comment.id, "review_comment.id")?;
-                validate_user(&comment.user, "review_comment.user.id")?;
-                if comment.id != id.get() {
-                    return Err(malformed_upstream(
-                        "GitHub review comment ID does not match its path",
-                    ));
-                }
-                Ok(render::review_comment(&comment))
+                Ok(Rendered::complete(render::review_comment(&comment)))
             }
             PullRequestResource::Diff => {
-                if let Some(page) = page {
-                    let (files, continuation): (Vec<DiffFile>, Option<u64>) = self
-                        .collection(
-                            repository,
-                            &format!("pulls/{number}/files"),
-                            &[],
-                            page,
-                            operation,
-                        )
-                        .await?;
-                    validate_files(&files)?;
-                    let base_index = page
-                        .checked_sub(1)
-                        .and_then(|page| page.checked_mul(100))
-                        .ok_or_else(|| {
-                            ResourceError::new(
-                                ErrorCategory::LimitExceeded,
-                                "GitHub diff page index overflowed",
-                            )
-                        })?;
-                    let mut rendered = files
-                        .iter()
-                        .enumerate()
-                        .map(|(offset, file)| {
-                            format!(
-                                "pr://{}/{number}/diff/{} — {} ({})",
-                                repository.as_str(),
-                                base_index + offset as u64 + 1,
-                                file.filename,
-                                file.status
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    if let Some(page) = continuation {
-                        use std::fmt::Write as _;
-                        writeln!(
-                            &mut rendered,
-                            "\nContinuation: pr://{}/{number}/diff:page:{page}",
-                            repository.as_str()
-                        )
-                        .expect("String write");
-                    }
-                    Ok(rendered)
-                } else {
+                let Some(page) = page else {
                     let response = self
                         .fetch(
                             self.endpoint(repository, &format!("pulls/{number}"))?,
@@ -901,31 +1003,75 @@ impl GithubSource {
                             operation,
                         )
                         .await?;
-                    String::from_utf8(response.body().to_vec())
-                        .map_err(|_| malformed_upstream("GitHub unified diff is not valid UTF-8"))
-                }
-            }
-            PullRequestResource::DiffFile(index) => {
-                let files: Vec<DiffFile> = self
-                    .json(
-                        self.endpoint(repository, &format!("pulls/{number}/files"))?,
+                    let diff = String::from_utf8(response.body().to_vec()).map_err(|_| {
+                        malformed_upstream("GitHub unified diff is not valid UTF-8")
+                    })?;
+                    return Ok(Rendered::complete(diff));
+                };
+                let (files, next): (Vec<DiffFile>, Option<u64>) = self
+                    .collection(
+                        repository,
+                        &format!("pulls/{number}/files"),
+                        &[],
+                        page,
                         operation,
                     )
                     .await?;
                 validate_files(&files)?;
-                let offset = usize::try_from(index.get() - 1).map_err(|_| {
+                let base_index = page
+                    .checked_sub(1)
+                    .and_then(|page| page.checked_mul(PAGE_SIZE))
+                    .ok_or_else(|| {
+                        ResourceError::new(
+                            ErrorCategory::LimitExceeded,
+                            "GitHub diff page index overflowed",
+                        )
+                    })?;
+                let rendered = files
+                    .iter()
+                    .enumerate()
+                    .map(|(offset, file)| {
+                        format!(
+                            "{base}/diff/{} — {} ({})",
+                            base_index + offset as u64 + 1,
+                            file.filename,
+                            file.status
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let next = next
+                    .map(|page| page_reference(&format!("{base}/diff"), page))
+                    .transpose()?;
+                Ok(Rendered::collection(rendered, next))
+            }
+            PullRequestResource::DiffFile(index) => {
+                // Diff files are numbered across the same 100-per-page listing
+                // the aggregate and `/diff:page:<n>` advertise, so the index
+                // resolves on the page that lists it — never on the endpoint's
+                // default page size, which stops at 30.
+                let zero_based = index.get().saturating_sub(1);
+                let page = zero_based / PAGE_SIZE + 1;
+                let offset = usize::try_from(zero_based % PAGE_SIZE).map_err(|_| {
                     ResourceError::new(
                         ErrorCategory::NotFound,
                         "GitHub diff file index is outside the addressable range",
                     )
                 })?;
+                let files: Vec<DiffFile> = self
+                    .json(
+                        self.page_url(repository, &format!("pulls/{number}/files"), &[], page)?,
+                        operation,
+                    )
+                    .await?;
+                validate_files(&files)?;
                 let file = files.get(offset).ok_or_else(|| {
                     ResourceError::new(
                         ErrorCategory::NotFound,
                         "GitHub diff file index was not found",
                     )
                 })?;
-                Ok(render::diff_file(file))
+                Ok(Rendered::complete(render::diff_file(file)))
             }
         }
     }
@@ -933,11 +1079,11 @@ impl GithubSource {
     async fn read_resource(
         &self,
         reference: &PathReference,
-        operation: &OperationGuard,
+        operation: Operation<'_>,
     ) -> Result<SourceResource, ResourceError> {
         let projection = reference.projection();
-        let page = projection.and_then(resourcefs_core::ProjectionSelector::page_offset);
-        let (canonical, content) = match reference.address() {
+        let page = projection.and_then(ProjectionSelector::page_offset);
+        let (canonical, rendered) = match reference.address() {
             ResourceAddress::Issue(address) => {
                 let repository = address
                     .repository()
@@ -960,12 +1106,21 @@ impl GithubSource {
             }
             _ => return Err(unsupported_github_projection()),
         };
-        if projection.is_some_and(|projection| projection.line_selection().is_some()) {
+        let Rendered {
+            content,
+            continuation,
+        } = rendered;
+        let resource = if projection.is_some_and(|projection| projection.line_selection().is_some())
+        {
             let selected = select_utf8(Cursor::new(content), projection)?;
-            SourceResource::selected_text(canonical, selected)
+            SourceResource::selected_text(canonical, selected)?
         } else {
-            SourceResource::text(canonical, content)
-        }
+            SourceResource::text(canonical, content)?
+        };
+        Ok(match continuation {
+            Some(next) => resource.with_continuation(&next),
+            None => resource,
+        })
     }
 }
 
@@ -976,17 +1131,25 @@ impl SourceAdapter for GithubSource {
         reference: &PathReference,
         operation: &OperationGuard,
     ) -> Result<SourceResource, ResourceError> {
-        tokio::time::timeout(
-            self.substrate.ceilings().timeout(),
-            self.read_resource(reference, operation),
-        )
-        .await
-        .map_err(|_| {
+        let timeout = self.substrate.ceilings().timeout();
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
             ResourceError::new(
-                ErrorCategory::SourceUnavailable,
-                "GitHub operation exceeded the configured logical deadline",
+                ErrorCategory::LimitExceeded,
+                "GitHub logical deadline is not representable",
             )
-        })?
+        })?;
+        let operation = Operation {
+            guard: operation,
+            deadline,
+        };
+        tokio::time::timeout(timeout, self.read_resource(reference, operation))
+            .await
+            .map_err(|_| {
+                ResourceError::new(
+                    ErrorCategory::SourceUnavailable,
+                    "GitHub operation exceeded the configured logical deadline",
+                )
+            })?
     }
 }
 
@@ -1021,48 +1184,32 @@ impl DiscoveryAdapter for GithubSource {
         let reference = target
             .reference()
             .ok_or_else(unsupported_github_projection)?;
-        if !matches!(
-            reference.address(),
-            ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_)
-        ) {
-            return Err(unsupported_github_projection());
-        }
-        let source = self.read(reference, operation).await?;
-        let canonical = PathReference::parse(source.canonical_reference().to_owned())?;
-        let mut lines = source.content().lines().collect::<Vec<_>>();
-        while lines.last().is_some_and(|line| line.is_empty()) {
-            lines.pop();
-        }
-        let mut continuations = Vec::new();
-        while let Some(line) = lines
-            .last()
-            .and_then(|line| line.strip_prefix("Continuation: "))
-        {
-            continuations.push(PathReference::parse(line)?);
-            lines.pop();
-            while lines.last().is_some_and(|line| line.is_empty()) {
-                lines.pop();
+        // A search covers the whole rendered Resource — or the whole typed
+        // upstream page — never a line selection, so a hit's line number is
+        // the line an unselected read of the record's reference displays. The
+        // page spelling stays: page 2 is a different set of objects, not an
+        // offset into page 1, and only its own reference reproduces the hit.
+        let page = reference
+            .projection()
+            .filter(|projection| projection.page_offset().is_some())
+            .cloned();
+        let searched = match reference.address() {
+            ResourceAddress::Issue(address) => PathReference::issue(address.clone(), page)?,
+            ResourceAddress::PullRequest(address) => {
+                PathReference::pull_request(address.clone(), page)?
             }
-        }
-        continuations.reverse();
-        let content = lines.join("\n");
-        let continuation = match continuations.as_slice() {
-            [] => None,
-            [continuation] => Some(continuation.clone()),
-            many => {
-                let manifest = many
-                    .iter()
-                    .map(PathReference::requested)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let address = self.session.retain(&manifest, operation).await?;
-                Some(PathReference::artifact(address, None)?)
-            }
+            _ => return Err(unsupported_github_projection()),
         };
+        let source = self.read(&searched, operation).await?;
+        let continuation = source
+            .continuation()
+            .map(|next| PathReference::parse(next.to_owned()))
+            .transpose()?;
+        let content = source.content().to_owned();
         let pattern = pattern.to_owned();
         let case_sensitive = options.case_sensitive();
         let mut result = tokio::task::spawn_blocking(move || {
-            search_document(&content, &canonical, &pattern, case_sensitive)
+            search_document(&content, &searched, &pattern, case_sensitive)
         })
         .await
         .map_err(|error| {
@@ -1088,6 +1235,85 @@ impl DiscoveryAdapter for GithubSource {
             "GitHub Resources cannot be enumerated by glob; read a repository collection",
         ))
     }
+}
+
+/// Extracts the `rel="next"` target of a Link header (RFC 8288), or `None`
+/// when the header names no next relation.
+///
+/// Strict on shape: a link-value that does not open with `<`, never closes
+/// its `>`, or carries an unparseable parameter is an error, never "no next
+/// page" — an unlabeled partial listing is exactly what a lenient parse would
+/// produce. Lenient on spelling: `rel=next`, `rel="next"`, `rel="next last"`,
+/// and any parameter-name case all name the same relation.
+fn next_link_target(link: &str) -> Result<Option<&str>, ResourceError> {
+    let mut rest = link.trim_start();
+    let mut next = None;
+    while !rest.is_empty() {
+        let Some(after_open) = rest.strip_prefix('<') else {
+            return Err(malformed_link());
+        };
+        let Some((target, after_target)) = after_open.split_once('>') else {
+            return Err(malformed_link());
+        };
+        let (parameters, remainder) = split_first_outside_quotes(after_target, b',');
+        if link_value_is_next(parameters)? && next.replace(target).is_some() {
+            return Err(malformed_link());
+        }
+        rest = remainder.unwrap_or("").trim_start();
+    }
+    Ok(next)
+}
+
+fn link_value_is_next(parameters: &str) -> Result<bool, ResourceError> {
+    let mut is_next = false;
+    let mut rest = Some(parameters);
+    while let Some(remaining) = rest {
+        let (parameter, remainder) = split_first_outside_quotes(remaining, b';');
+        rest = remainder;
+        let parameter = parameter.trim();
+        if parameter.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = parameter.split_once('=') else {
+            return Err(malformed_link());
+        };
+        if name.trim().eq_ignore_ascii_case("rel")
+            && value
+                .trim()
+                .trim_matches('"')
+                .split_ascii_whitespace()
+                .any(|relation| relation.eq_ignore_ascii_case("next"))
+        {
+            is_next = true;
+        }
+    }
+    Ok(is_next)
+}
+
+/// Splits `value` at the first `delimiter` that sits outside a quoted-string,
+/// returning the head and the remainder after the delimiter, if any.
+fn split_first_outside_quotes(value: &str, delimiter: u8) -> (&str, Option<&str>) {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, byte) in value.bytes().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match byte {
+            b'\\' if quoted => escaped = true,
+            b'"' => quoted = !quoted,
+            _ if byte == delimiter && !quoted => {
+                return (&value[..index], Some(&value[index + 1..]));
+            }
+            _ => {}
+        }
+    }
+    (value, None)
+}
+
+fn malformed_link() -> ResourceError {
+    malformed_upstream("GitHub pagination Link is malformed")
 }
 
 fn validate_positive(value: u64, field: &str) -> Result<(), ResourceError> {
@@ -1123,6 +1349,38 @@ fn validate_issue_identity(issue: &Issue, expected: u64) -> Result<(), ResourceE
     Ok(())
 }
 
+/// Checks that an upstream parent URL ends in `repos/{owner}/{repo}/{family}/
+/// {number}`, so a comment fetched through a repository-wide endpoint is served
+/// only beneath the issue or pull request that owns it.
+fn validate_parent(
+    url: &str,
+    repository: &GithubRepositoryIdentity,
+    family: &str,
+    number: u64,
+) -> Result<(), ResourceError> {
+    let parsed =
+        Url::parse(url).map_err(|_| malformed_upstream("GitHub parent URL is malformed"))?;
+    let segments = parsed
+        .path_segments()
+        .map(Iterator::collect::<Vec<_>>)
+        .ok_or_else(|| malformed_upstream("GitHub parent URL is malformed"))?;
+    let owned = matches!(
+        segments.as_slice(),
+        [.., "repos", owner, name, observed_family, observed_number]
+            if owner.eq_ignore_ascii_case(repository.owner())
+                && name.eq_ignore_ascii_case(repository.repository())
+                && *observed_family == family
+                && observed_number.parse::<u64>().ok() == Some(number)
+    );
+    if !owned {
+        return Err(ResourceError::new(
+            ErrorCategory::NotFound,
+            "GitHub comment does not belong to the addressed issue or pull request",
+        ));
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::manual_unwrap_or_default,
     reason = "null remains typed absence until the approved empty body Field rendering boundary"
@@ -1146,9 +1404,29 @@ fn validate_pull_identity(pull: &PullRequest, expected: u64) -> Result<(), Resou
     Ok(())
 }
 
+fn validate_issue_listing(values: &[Issue]) -> Result<(), ResourceError> {
+    validate_unique_ids(values.iter().map(|value| value.id), "issue.id")?;
+    let mut numbers = HashSet::new();
+    for value in values {
+        validate_positive(value.number, "issue.number")?;
+        validate_user(&value.user, "issue.user.id")?;
+        if !numbers.insert(value.number)
+            || value.state.is_empty()
+            || value.title.is_empty()
+            || value.html_url.is_empty()
+            || value.updated_at.is_empty()
+        {
+            return Err(malformed_upstream(
+                "GitHub issue listing contains invalid required fields",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_pull_summaries(values: &[PullRequestSummary]) -> Result<(), ResourceError> {
     validate_unique_ids(values.iter().map(|value| value.id), "pull_request.id")?;
-    let mut numbers = std::collections::HashSet::new();
+    let mut numbers = HashSet::new();
     for value in values {
         validate_positive(value.number, "pull_request.number")?;
         validate_user(&value.user, "pull_request.user.id")?;
@@ -1170,7 +1448,7 @@ fn validate_unique_ids(
     values: impl IntoIterator<Item = u64>,
     field: &str,
 ) -> Result<(), ResourceError> {
-    let mut ids = std::collections::HashSet::new();
+    let mut ids = HashSet::new();
     for id in values {
         validate_positive(id, field)?;
         if !ids.insert(id) {
@@ -1207,6 +1485,11 @@ fn validate_review_comment_ids(values: &[ReviewComment]) -> Result<(), ResourceE
     validate_unique_ids(values.iter().map(|value| value.id), "review_comment.id")?;
     for value in values {
         validate_user(&value.user, "review_comment.user.id")?;
+        if value.pull_request_url.is_empty() {
+            return Err(malformed_upstream(
+                "GitHub review comment requires pull_request_url",
+            ));
+        }
     }
     Ok(())
 }

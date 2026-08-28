@@ -6,7 +6,7 @@ use super::wire::{
     ConversationComment, DiffFile, Issue, PullRequest, Review, ReviewComment, SimpleUser,
 };
 
-fn author(user: &Option<SimpleUser>) -> &str {
+pub(super) fn author(user: &Option<SimpleUser>) -> &str {
     user.as_ref()
         .map_or("[deleted]", |user| user.login.as_str())
 }
@@ -15,16 +15,39 @@ fn body(value: Option<&str>) -> &str {
     value.unwrap_or("(no body)")
 }
 
-pub(super) fn issue_aggregate(
-    repository: &GithubRepositoryIdentity,
-    issue: &Issue,
-    comments: &mut [ConversationComment],
-) -> String {
+/// Chronological order with the stable id as tie-breaker — the one order every
+/// comment projection (aggregate or listing) renders, so a reader can line up
+/// a listing against the aggregate it came from.
+pub(super) fn sort_comments(comments: &mut [ConversationComment]) {
     comments.sort_by(|left, right| {
         left.created_at
             .cmp(&right.created_at)
             .then_with(|| left.id.cmp(&right.id))
     });
+}
+
+pub(super) fn sort_reviews(reviews: &mut [Review]) {
+    reviews.sort_by(|left, right| {
+        left.submitted_at
+            .cmp(&right.submitted_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
+pub(super) fn sort_review_comments(comments: &mut [ReviewComment]) {
+    comments.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
+pub(super) fn issue_aggregate(
+    repository: &GithubRepositoryIdentity,
+    issue: &Issue,
+    comments: &mut [ConversationComment],
+) -> String {
+    sort_comments(comments);
     let base = format!(
         "issue://{}/{number}",
         repository.as_str(),
@@ -69,21 +92,9 @@ pub(super) fn pull_request_aggregate(
     review_comments: &mut [ReviewComment],
     files: &[DiffFile],
 ) -> String {
-    comments.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    reviews.sort_by(|left, right| {
-        left.submitted_at
-            .cmp(&right.submitted_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    review_comments.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
+    sort_comments(comments);
+    sort_reviews(reviews);
+    sort_review_comments(review_comments);
     let base = format!(
         "pr://{}/{number}",
         repository.as_str(),

@@ -105,7 +105,7 @@ async fn source_headers_and_response_metadata_are_typed_and_bounded() {
         .expect("bounded response");
     assert_eq!(response.etag(), Some("W/\"validator\""));
     assert_eq!(
-        response.link(),
+        response.link().expect("readable Link"),
         Some("<https://api.invalid/items?page=2>; rel=\"next\"")
     );
     assert_eq!(response.retry_after(), Some(Duration::from_secs(7)));
@@ -144,6 +144,44 @@ async fn retained_response_metadata_has_a_hard_byte_ceiling() {
         .await
         .expect_err("oversized retained header");
     assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+}
+
+/// A validator or Link the substrate cannot read as text must not fail a
+/// read that never uses it. The ETag degrades to absence at the point of use;
+/// the Link surfaces as an error only when a caller asks to paginate.
+#[tokio::test]
+async fn unreadable_metadata_headers_fail_only_the_callers_that_need_them() {
+    let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let listener =
+        TlsListener::serve_router(loopback, 0, MATCH_CERT, |_path| FixtureResponse::Response {
+            status: "200 OK",
+            headers: vec![
+                // obs-text bytes (0xC3 0xA9): valid on the wire, not visible ASCII.
+                ("ETag".to_owned(), "\"caf\u{e9}\"".to_owned()),
+                (
+                    "Link".to_owned(),
+                    "<https://api.invalid/items?page=caf\u{e9}>; rel=\"next\"".to_owned(),
+                ),
+            ],
+            body: b"body".to_vec(),
+        })
+        .await;
+    let port = listener.address.port();
+    let substrate = tls_substrate(fixture_allowlist(port, true), vec![loopback]);
+    let request = HttpRequest::get(
+        Url::parse(&format!("https://{FIXTURE_HOST}:{port}/odd-headers")).expect("fixture URL"),
+    );
+    let response = substrate
+        .fetch(request, &OperationGuard::new())
+        .await
+        .expect("a plain read is not failed by metadata it never uses");
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), b"body");
+    assert_eq!(response.etag(), None, "an unechoable validator is absent");
+    let error = response
+        .link()
+        .expect_err("an unreadable continuation is corrupt, not the last page");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
 }
 
 #[test]

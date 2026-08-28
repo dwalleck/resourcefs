@@ -269,7 +269,10 @@ pub struct BoundedHttpResponse {
     final_url: Url,
     content_type: Option<String>,
     etag: Option<String>,
-    link: Option<String>,
+    /// `Some(Err)` records a Link header that arrived but is not readable as
+    /// text — present-but-corrupt, which pagination must not mistake for
+    /// "no further pages".
+    link: Option<Result<String, ResourceError>>,
     retry_after: Option<std::time::Duration>,
     rate_limit_remaining: Option<u64>,
     body: Vec<u8>,
@@ -296,15 +299,28 @@ impl BoundedHttpResponse {
     }
 
     /// Returns the entity validator retained for conditional reads.
+    ///
+    /// A validator that is not readable as text is reported as absent: one
+    /// that cannot be echoed back in `If-None-Match` is no validator, and the
+    /// consequence — an unconditional refetch — is the safe one. A plain read
+    /// that never revalidates is therefore never failed by an odd ETag.
     #[must_use]
     pub fn etag(&self) -> Option<&str> {
         self.etag.as_deref()
     }
 
     /// Returns the pagination Link header exactly as received.
-    #[must_use]
-    pub fn link(&self) -> Option<&str> {
-        self.link.as_deref()
+    ///
+    /// A Link header that is present but not readable as text is an error
+    /// rather than `None`: a continuation the caller cannot follow must never
+    /// be mistaken for the last page. Callers that never paginate never ask,
+    /// so an opaque Link costs a plain read nothing.
+    pub fn link(&self) -> Result<Option<&str>, ResourceError> {
+        match &self.link {
+            None => Ok(None),
+            Some(Ok(link)) => Ok(Some(link)),
+            Some(Err(error)) => Err(error.clone()),
+        }
     }
 
     /// Returns a delta-seconds Retry-After value.
@@ -743,10 +759,23 @@ impl HttpSubstrate {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        let etag = Self::retained_header(response.headers(), &reqwest::header::ETAG)
-            .map_err(HttpFetchFailure::terminal)?;
-        let link = Self::retained_header(response.headers(), &reqwest::header::LINK)
-            .map_err(HttpFetchFailure::terminal)?;
+        // Retained metadata has a hard byte ceiling on every fetch, but text
+        // strictness is per header: see `etag()` and `link()` for why one
+        // degrades to absence and the other to an error at the point of use.
+        let etag = Self::header_within_ceiling(response.headers(), &reqwest::header::ETAG)
+            .map_err(HttpFetchFailure::terminal)?
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let link = Self::header_within_ceiling(response.headers(), &reqwest::header::LINK)
+            .map_err(HttpFetchFailure::terminal)?
+            .map(|value| {
+                value.to_str().map(str::to_owned).map_err(|_| {
+                    ResourceError::new(
+                        ErrorCategory::SourceUnavailable,
+                        "HTTP response header 'link' is not valid text",
+                    )
+                })
+            });
         let retry_after = response
             .headers()
             .get(reqwest::header::RETRY_AFTER)
@@ -784,19 +813,15 @@ impl HttpSubstrate {
         })
     }
 
-    fn retained_header(
-        headers: &reqwest::header::HeaderMap,
+    /// Returns a response header the substrate may retain, refusing one over
+    /// the metadata ceiling before any caller can copy it.
+    fn header_within_ceiling<'a>(
+        headers: &'a reqwest::header::HeaderMap,
         name: &reqwest::header::HeaderName,
-    ) -> Result<Option<String>, ResourceError> {
+    ) -> Result<Option<&'a reqwest::header::HeaderValue>, ResourceError> {
         let Some(value) = headers.get(name) else {
             return Ok(None);
         };
-        let value = value.to_str().map_err(|_| {
-            ResourceError::new(
-                ErrorCategory::SourceUnavailable,
-                format!("HTTP response header '{name}' is not valid text"),
-            )
-        })?;
         if value.len() > MAX_SOURCE_REQUEST_HEADER_BYTES {
             return Err(ResourceError::new(
                 ErrorCategory::LimitExceeded,
@@ -805,7 +830,7 @@ impl HttpSubstrate {
                 ),
             ));
         }
-        Ok(Some(value.to_owned()))
+        Ok(Some(value))
     }
 
     /// Performs one authorized request and returns its reader-mode Markdown.

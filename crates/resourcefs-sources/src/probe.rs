@@ -173,6 +173,18 @@ impl ProbeTarget {
             probe: None,
         }
     }
+
+    /// The configured source kind this target was built for.
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// Whether this target carries an adapter that will actually be probed.
+    #[must_use]
+    pub const fn is_compiled(&self) -> bool {
+        self.probe.is_some()
+    }
 }
 
 /// One ordered source row produced by a probe run.
