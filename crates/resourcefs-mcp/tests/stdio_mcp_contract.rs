@@ -107,6 +107,26 @@ impl McpProcess {
             None,
             None,
             Some(current_directory),
+            &[],
+        )
+    }
+    fn start_profile_with_env(
+        profile: &Path,
+        current_directory: &Path,
+        environment: &[(&str, &str)],
+    ) -> Self {
+        Self::start_arguments(
+            vec![
+                "serve".to_owned(),
+                "--config".to_owned(),
+                profile.display().to_string(),
+            ],
+            None,
+            None,
+            None,
+            None,
+            Some(current_directory),
+            environment,
         )
     }
     #[cfg(feature = "test-support")]
@@ -186,6 +206,7 @@ impl McpProcess {
             session_root,
             storage_failure,
             None,
+            &[],
         )
     }
 
@@ -196,6 +217,7 @@ impl McpProcess {
         session_root: Option<&Path>,
         storage_failure: Option<&str>,
         current_directory: Option<&Path>,
+        environment: &[(&str, &str)],
     ) -> Self {
         let mut command = Command::new(binary());
         command
@@ -217,6 +239,9 @@ impl McpProcess {
         }
         if let Some(storage_failure) = storage_failure {
             command.env("RESOURCEFS_TEST_STORAGE_FAILURE", storage_failure);
+        }
+        for (name, value) in environment {
+            command.env(name, value);
         }
         let mut child = command.spawn().expect("start resourcefs");
         let stdin = child.stdin.take().expect("child stdin");
@@ -1204,6 +1229,69 @@ fn invalid_operation_id_precedes_dispatch() {
         );
     }
 
+    process.finish();
+}
+
+#[test]
+fn github_non_target_mutation_is_refused() {
+    let fixture = WorkspaceFixture::new();
+    let profile = fixture.root.join("github-mutation-profile.json");
+    fs::write(
+        &profile,
+        serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "sources": [{
+                "kind": "github",
+                "id": "github",
+                "allowPrivateNetwork": false,
+                "required": true,
+                "grants": {"update": true},
+                "credential": {"kind": "environment", "name": "RFS_GITHUB_TEST_TOKEN"},
+                "repositories": [{
+                    "name": "owner/repo",
+                    "grants": {"update": true}
+                }]
+            }]
+        }))
+        .expect("[C14] profile JSON"),
+    )
+    .expect("[C14] profile");
+    let mut process = McpProcess::start_profile_with_env(
+        &profile,
+        &fixture.root,
+        &[("RFS_GITHUB_TEST_TOKEN", "fixture-token")],
+    );
+    process.initialize(VERSION_2026);
+    let tag = format!("sha256:{}", "0".repeat(64));
+
+    let aggregate = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_write",
+            "arguments": {
+                "path": "issue://owner/repo/42",
+                "content": "forbidden",
+                "ifVersion": tag
+            }
+        }),
+    );
+    assert!(aggregate.get("error").is_none(), "[C14] {aggregate}");
+    assert_tool_error(&aggregate["result"], "unsupported_mutation");
+
+    let edit = process.request(
+        "tools/call",
+        json!({
+            "name": "rfs_edit",
+            "arguments": {
+                "patch": format!(
+                    "[issue://owner/repo/42/title#{}]\nPUT 1.=1:\n+forbidden",
+                    format!("sha256:{}", "0".repeat(64))
+                )
+            }
+        }),
+    );
+    assert!(edit.get("error").is_none(), "[C14] {edit}");
+    assert_tool_error(&edit["result"], "unsupported_mutation");
     process.finish();
 }
 

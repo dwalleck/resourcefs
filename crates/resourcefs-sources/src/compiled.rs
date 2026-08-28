@@ -11,6 +11,7 @@ use crate::{
     ArtifactSource, FilesystemSource, GithubSource, HttpsSource, LocalSource,
     catalog::{NamespaceCatalog, SourceCatalogEntry, SourceCatalogMetadata},
     filesystem::mutation::FILESYSTEM_MUTATION_SOURCE_KEY,
+    github::GITHUB_MUTATION_SOURCE_KEY,
     local::LOCAL_MUTATION_SOURCE_KEY,
 };
 
@@ -135,10 +136,17 @@ impl MutationAdapter for CompiledSources {
                 ErrorCategory::UnsupportedMutation,
                 "https:// Resources are read-only; ResourceFS performs no remote writes",
             )),
-            ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => Err(ResourceError::new(
-                ErrorCategory::UnsupportedMutation,
-                "GitHub issue and pull request Resources are read-only",
-            )),
+            ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
+                self.github_source()?.resolve(reference, access).await
+            }
+        }
+    }
+
+    fn validate_write(&self, target: &MutationTarget, content: &str) -> Result<(), ResourceError> {
+        match self.mutation_adapter_for(target)? {
+            MutationRoute::Filesystem => self.filesystem.validate_write(target, content),
+            MutationRoute::Local => self.local.validate_write(target, content),
+            MutationRoute::Github => self.github_source()?.validate_write(target, content),
         }
     }
 
@@ -155,6 +163,7 @@ impl MutationAdapter for CompiledSources {
         match self.mutation_adapter_for(target)? {
             MutationRoute::Filesystem => self.filesystem.load(target, access, operation).await,
             MutationRoute::Local => self.local.load(target, access, operation).await,
+            MutationRoute::Github => self.github_source()?.load(target, access, operation).await,
         }
     }
 
@@ -172,6 +181,7 @@ impl MutationAdapter for CompiledSources {
         match self.mutation_adapter_for(target)? {
             MutationRoute::Filesystem => self.filesystem.commit(mutation, operation).await,
             MutationRoute::Local => self.local.commit(mutation, operation).await,
+            MutationRoute::Github => self.github_source()?.commit(mutation, operation).await,
         }
     }
 }
@@ -181,6 +191,7 @@ impl MutationAdapter for CompiledSources {
 enum MutationRoute {
     Filesystem,
     Local,
+    Github,
 }
 
 impl CompiledSources {
@@ -204,6 +215,7 @@ impl CompiledSources {
         match target.source_key().as_str() {
             FILESYSTEM_MUTATION_SOURCE_KEY => Ok(MutationRoute::Filesystem),
             LOCAL_MUTATION_SOURCE_KEY => Ok(MutationRoute::Local),
+            GITHUB_MUTATION_SOURCE_KEY => Ok(MutationRoute::Github),
             other => Err(ResourceError::new(
                 resourcefs_core::ErrorCategory::UnsupportedMutation,
                 format!("no compiled Source Adapter owns mutation source '{other}'"),

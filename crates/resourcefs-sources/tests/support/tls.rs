@@ -274,6 +274,32 @@ where
         received[head_end..head_end + content_length].to_vec(),
     ))
 }
+/// Complete request observation passed to a stateful fake-upstream router.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixtureRequest {
+    line: String,
+    target: String,
+    head: String,
+    body: Vec<u8>,
+}
+
+impl FixtureRequest {
+    pub fn method(&self) -> &str {
+        self.line.split_whitespace().next().unwrap_or("")
+    }
+
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    pub fn head(&self) -> &str {
+        &self.head
+    }
+
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+}
 
 async fn write_response<W>(stream: &mut W, response: &FixtureResponse, flushed: &AtomicUsize)
 where
@@ -369,6 +395,19 @@ impl TlsListener {
     where
         R: Fn(&str) -> FixtureResponse + Send + Sync + 'static,
     {
+        Self::serve_request_router(ip, port, cert, move |request| router(request.target())).await
+    }
+
+    /// Serves a response chosen from the complete request method/target/body.
+    pub async fn serve_request_router<R>(
+        ip: IpAddr,
+        port: u16,
+        cert: &'static [u8],
+        router: R,
+    ) -> Self
+    where
+        R: Fn(&FixtureRequest) -> FixtureResponse + Send + Sync + 'static,
+    {
         let key: &[u8] = if cert == MATCH_CERT {
             MATCH_KEY
         } else {
@@ -394,7 +433,8 @@ impl TlsListener {
         let heads = Arc::new(std::sync::Mutex::new(Vec::new()));
         let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
         let flushed = Arc::new(AtomicUsize::new(0));
-        let router: Arc<dyn Fn(&str) -> FixtureResponse + Send + Sync> = Arc::new(router);
+        let router: Arc<dyn Fn(&FixtureRequest) -> FixtureResponse + Send + Sync> =
+            Arc::new(router);
 
         let (accept_counter, done_counter, log, head_source, body_source, flush_counter) = (
             Arc::clone(&accepts),
@@ -423,6 +463,12 @@ impl TlsListener {
                     done.fetch_add(1, Ordering::SeqCst);
                     if let Ok((line, head, body)) = read_request(&mut tls).await {
                         let target = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+                        let request = FixtureRequest {
+                            line: line.clone(),
+                            target,
+                            head: head.clone(),
+                            body: body.clone(),
+                        };
                         log.lock().expect("request log is uncontended").push(line);
                         head_log
                             .lock()
@@ -432,7 +478,7 @@ impl TlsListener {
                             .lock()
                             .expect("request body log is uncontended")
                             .push(body);
-                        write_response(&mut tls, &router(&target), &flushed).await;
+                        write_response(&mut tls, &router(&request), &flushed).await;
                     }
                     let _ = tls.shutdown().await;
                 });

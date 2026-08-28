@@ -82,6 +82,14 @@ impl MutationAdapter for FakeAdapter {
         )
     }
 
+    fn validate_write(
+        &self,
+        _target: &MutationTarget,
+        _content: &str,
+    ) -> Result<(), ResourceError> {
+        Ok(())
+    }
+
     async fn load(
         &self,
         _target: &MutationTarget,
@@ -142,6 +150,14 @@ impl MutationAdapter for StatefulAdapter {
             MutationSourceKey::new("stateful").expect("source key"),
             MutationTargetMode::AuthoredText,
         )
+    }
+
+    fn validate_write(
+        &self,
+        _target: &MutationTarget,
+        _content: &str,
+    ) -> Result<(), ResourceError> {
+        Ok(())
     }
 
     async fn load(
@@ -695,6 +711,14 @@ impl MutationAdapter for OutcomeAdapter {
             MutationSourceKey::new("outcome").expect("[C7] source"),
             self.mode,
         )
+    }
+
+    fn validate_write(
+        &self,
+        _target: &MutationTarget,
+        _content: &str,
+    ) -> Result<(), ResourceError> {
+        Ok(())
     }
 
     async fn load(

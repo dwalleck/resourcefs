@@ -92,16 +92,7 @@ impl SessionCacheKey {
     ) -> Result<Self, ResourceError> {
         let namespace = namespace.into();
         let key = key.into();
-        if namespace.is_empty()
-            || !namespace
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-        {
-            return Err(ResourceError::new(
-                ErrorCategory::InvalidReference,
-                "session cache namespace must be non-empty canonical ASCII",
-            ));
-        }
+        validate_cache_namespace(&namespace)?;
         if key.is_empty() {
             return Err(ResourceError::new(
                 ErrorCategory::InvalidReference,
@@ -132,6 +123,20 @@ impl SessionCacheKey {
     pub const fn retained_bytes(&self) -> usize {
         self.namespace.len() + self.key.len()
     }
+}
+
+fn validate_cache_namespace(namespace: &str) -> Result<(), ResourceError> {
+    if namespace.is_empty()
+        || !namespace
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(ResourceError::new(
+            ErrorCategory::InvalidReference,
+            "session cache namespace must be non-empty canonical ASCII",
+        ));
+    }
+    Ok(())
 }
 
 /// Opaque metadata and content bytes retained without copying on cache hits.
@@ -1287,6 +1292,30 @@ impl PathSession {
         }
         let mut state = self.inner.admission.lock().await;
         Ok(release_cache_entry(&mut state, key))
+    }
+
+    /// Removes every reconstructible cache entry in one source namespace.
+    pub async fn cache_remove_namespace(&self, namespace: &str) -> Result<usize, ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_cache_error());
+        }
+        validate_cache_namespace(namespace)?;
+        let mut state = self.inner.admission.lock().await;
+        let keys = state
+            .cache
+            .keys()
+            .filter(|key| key.namespace() == namespace)
+            .cloned()
+            .collect::<Vec<_>>();
+        let removed = keys.len();
+        for key in keys {
+            let released = release_cache_entry(&mut state, &key);
+            debug_assert!(
+                released,
+                "collected cache key remains present until release"
+            );
+        }
+        Ok(removed)
     }
     /// Enumerates this Path Session's Session Scratch names in sorted order.
     pub async fn scratch_names(&self) -> Result<Vec<LocalName>, ResourceError> {

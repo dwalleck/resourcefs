@@ -164,6 +164,14 @@ impl MutationAdapter for LocalSource {
         }
     }
 
+    fn validate_write(
+        &self,
+        _target: &MutationTarget,
+        _content: &str,
+    ) -> Result<(), ResourceError> {
+        Ok(())
+    }
+
     async fn load(
         &self,
         target: &MutationTarget,

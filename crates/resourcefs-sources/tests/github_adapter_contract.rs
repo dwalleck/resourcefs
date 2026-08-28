@@ -471,7 +471,7 @@ async fn search_and_line_selectors_use_the_rendered_resource() {
     assert_eq!(selected.groups()[0].lines()[0].line(), 3);
 }
 #[tokio::test]
-async fn compiled_registry_mounts_dispatches_and_refuses_github_mutation() {
+async fn compiled_registry_mounts_dispatches_and_requires_github_grant() {
     let (_listener, github) = fixture_source(|path| match path {
         "/repos/owner/repo/issues/42" => response(ISSUE),
         other => panic!("unexpected route {other}"),
@@ -508,8 +508,8 @@ async fn compiled_registry_mounts_dispatches_and_refuses_github_mutation() {
     );
     let mutation = MutationAdapter::resolve(&compiled, &title_reference, MutationAccess::Update)
         .await
-        .expect_err("GitHub mutation unsupported");
-    assert_eq!(mutation.category(), ErrorCategory::UnsupportedMutation);
+        .expect_err("GitHub mutation requires repository update grant");
+    assert_eq!(mutation.category(), ErrorCategory::PermissionDenied);
 }
 
 #[tokio::test]

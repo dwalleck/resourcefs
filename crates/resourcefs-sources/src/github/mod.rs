@@ -1,3 +1,5 @@
+mod mutation;
+pub(crate) use mutation::GITHUB_MUTATION_SOURCE_KEY;
 mod render;
 mod wire;
 
@@ -38,6 +40,7 @@ const GITHUB_JSON: &str = "application/vnd.github+json";
 const GITHUB_DIFF: &str = "application/vnd.github.diff";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const USER_AGENT: &str = "resourcefs/1.0";
+pub(super) const GITHUB_CACHE_NAMESPACE: &str = "github-http";
 /// Objects requested per upstream page, and the pages followed inside one
 /// operation: together they bound a logical collection at 1,000 objects.
 const PAGE_SIZE: u64 = 100;
@@ -267,7 +270,7 @@ impl GithubSource {
     }
 
     fn cache_key(url: &Url, accept: &str) -> Result<SessionCacheKey, ResourceError> {
-        SessionCacheKey::new("github-http", format!("{accept}\n{url}"))
+        SessionCacheKey::new(GITHUB_CACHE_NAMESPACE, format!("{accept}\n{url}"))
     }
 
     async fn fetch(
@@ -1108,17 +1111,19 @@ impl GithubSource {
             }
             _ => return Err(unsupported_github_projection()),
         };
+        let mutable = self.field_is_mutable(&canonical);
         let Rendered {
             content,
             continuation,
         } = rendered;
-        let resource = if projection.is_some_and(|projection| projection.line_selection().is_some())
-        {
-            let selected = select_utf8(Cursor::new(content), projection)?;
-            SourceResource::selected_text(canonical, selected)?
-        } else {
-            SourceResource::text(canonical, content)?
-        };
+        let resource =
+            if projection.is_some_and(|projection| projection.line_selection().is_some()) {
+                let selected = select_utf8(Cursor::new(content), projection)?;
+                SourceResource::selected_text(canonical, selected)?
+            } else {
+                SourceResource::text(canonical, content)?
+            }
+            .with_mutability(mutable);
         Ok(match continuation {
             Some(next) => resource.with_continuation(&next),
             None => resource,

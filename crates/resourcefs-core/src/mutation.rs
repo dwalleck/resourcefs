@@ -1256,6 +1256,9 @@ pub trait MutationAdapter: Send + Sync {
         access: MutationAccess,
     ) -> Result<MutationTarget, ResourceError>;
 
+    /// Validates source-native submitted content before journal, state load, or I/O.
+    fn validate_write(&self, target: &MutationTarget, content: &str) -> Result<(), ResourceError>;
+
     async fn load(
         &self,
         target: &MutationTarget,
@@ -1355,6 +1358,7 @@ impl MutationEngine {
                 "authoritative text replacement requires ifVersion",
             ));
         }
+        self.adapter.validate_write(&target, &content)?;
 
         let mut journal_lease = if matches!(target.mode(), MutationTargetMode::CreationTarget) {
             let id = operation_id
@@ -1390,43 +1394,47 @@ impl MutationEngine {
         };
 
         let _locks = self.lock_resources([target.lock_key()]).await?;
-        let state = match self.adapter.load(&target, access, operation).await {
-            Ok(state) => state,
-            Err(error) => {
-                if let Some(lease) = journal_lease.take() {
-                    lease.finish(JournalOutcome::Conclusive(error.clone()));
+        let operation_kind = if !matches!(target.mode(), MutationTargetMode::CreationTarget) {
+            let state = match self.adapter.load(&target, access, operation).await {
+                Ok(state) => state,
+                Err(error) => {
+                    if let Some(lease) = journal_lease.take() {
+                        lease.finish(JournalOutcome::Conclusive(error.clone()));
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
-        };
-        let operation_kind = match (&if_version, &state) {
-            (None, MutationState::Missing) => Ok(MutationOperation::Created),
-            (None, MutationState::Text { .. }) => Err(ResourceError::new(
-                ErrorCategory::VersionConflict,
-                "create requires a missing destination",
-            )),
-            (Some(_), MutationState::Missing) => Err(ResourceError::new(
-                ErrorCategory::VersionConflict,
-                "replacement requires an existing Resource",
-            )),
-            (Some(expected), MutationState::Text { version_tag, .. })
-                if expected != version_tag =>
-            {
-                Err(ResourceError::new(
+            };
+            let operation_kind = match (&if_version, &state) {
+                (None, MutationState::Missing) => Ok(MutationOperation::Created),
+                (None, MutationState::Text { .. }) => Err(ResourceError::new(
                     ErrorCategory::VersionConflict,
-                    "replacement Version Tag does not match authoritative content",
-                ))
-            }
-            (Some(_), MutationState::Text { .. }) => Ok(MutationOperation::Replaced),
-        };
-        let operation_kind = match operation_kind {
-            Ok(operation_kind) => operation_kind,
-            Err(error) => {
-                if let Some(lease) = journal_lease.take() {
-                    lease.finish(JournalOutcome::Conclusive(error.clone()));
+                    "create requires a missing destination",
+                )),
+                (Some(_), MutationState::Missing) => Err(ResourceError::new(
+                    ErrorCategory::VersionConflict,
+                    "replacement requires an existing Resource",
+                )),
+                (Some(expected), MutationState::Text { version_tag, .. })
+                    if expected != version_tag =>
+                {
+                    Err(ResourceError::new(
+                        ErrorCategory::VersionConflict,
+                        "replacement Version Tag does not match authoritative content",
+                    ))
                 }
-                return Err(error);
+                (Some(_), MutationState::Text { .. }) => Ok(MutationOperation::Replaced),
+            };
+            match operation_kind {
+                Ok(operation_kind) => operation_kind,
+                Err(error) => {
+                    if let Some(lease) = journal_lease.take() {
+                        lease.finish(JournalOutcome::Conclusive(error.clone()));
+                    }
+                    return Err(error);
+                }
             }
+        } else {
+            MutationOperation::Created
         };
         let (authored_tag, displayed_ranges, mut reservation) =
             if matches!(target.mode(), MutationTargetMode::AuthoredText) {
@@ -1582,6 +1590,12 @@ impl MutationEngine {
             .adapter
             .resolve(patch.target(), MutationAccess::Update)
             .await?;
+        if !matches!(target.mode(), MutationTargetMode::AuthoredText) {
+            return Err(ResourceError::new(
+                ErrorCategory::UnsupportedMutation,
+                "hashline edits are supported only for authored text Resources",
+            ));
+        }
         let _locks = self.lock_resources([target.lock_key()]).await?;
         let snapshot = self
             .session

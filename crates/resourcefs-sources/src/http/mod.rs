@@ -825,7 +825,7 @@ impl HttpSubstrate {
         request: HttpRequest,
         operation: &OperationGuard,
     ) -> Result<BoundedHttpResponse, HttpFetchFailure> {
-        if !operation.is_active() {
+        if !operation.is_active() && !operation.is_committing() {
             return Err(HttpFetchFailure::terminal(ResourceError::new(
                 ErrorCategory::Cancelled,
                 "request was cancelled before egress",
