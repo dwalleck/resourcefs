@@ -47,7 +47,7 @@ Every tool result has:
 
 - a complete, non-empty TextContent representation, including all recovery and error information needed by a text-only client;
 - a structured object whose output schema has root `type: "object"`;
-- stable semantic fields for contract version, canonical reference, content type, Version Tag, mutability, boundedness, and Recovery Reference where applicable.
+- stable semantic fields for contract version, canonical reference, content type, Version Tag, mutability, boundedness, and Recovery Reference where applicable; a bounded read or search whose continuation walks an artifact chain also names the paginated source's next upstream page as a source continuation (ADR-0006).
 
 Operational failures are tool errors with stable categories: invalid reference, invalid pattern, invalid patch, not found, permission denied, version conflict, limit exceeded, source unavailable, unsupported projection, unsupported mutation, ambiguous reference, and cancelled. Protocol/schema failures remain MCP errors.
 

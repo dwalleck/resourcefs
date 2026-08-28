@@ -1102,6 +1102,7 @@ async fn source_continuations_survive_artifact_recovery() {
         Some("issue://owner/repo:page:11")
     );
     assert_eq!(fits.recovery_reference(), None);
+    assert_eq!(fits.source_continuation_reference(), None);
 
     let records = (1..=1_001)
         .map(|line| search_record("many.txt", line, format!("row {line}")))
@@ -1123,6 +1124,11 @@ async fn source_continuations_survive_artifact_recovery() {
         .continuation_reference()
         .expect("an overflowing result progresses through its artifact");
     assert!(continuation.starts_with("artifact://"), "{continuation}");
+    assert_eq!(
+        overflow.source_continuation_reference(),
+        Some("issue://owner/repo:page:11"),
+        "the source continuation the artifact chain would hide is named alongside it"
+    );
     let recovered = path_session
         .read_artifact(&artifact_address(
             overflow.recovery_reference().expect("recovery"),

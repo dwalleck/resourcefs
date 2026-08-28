@@ -269,12 +269,21 @@ fn live_stdio_profile_probe_serve_and_tools_hold_up() {
     let continuation = issues["structuredContent"]["continuationReference"]
         .as_str()
         .expect("S3 a ten-page collection is bounded");
-    assert!(
-        continuation == "issue://rust-lang/rust:page:11" || continuation.starts_with("artifact://"),
-        "S3 continuation is the typed page or the artifact chain: {continuation}"
-    );
+    let source_continuation = issues["structuredContent"]["sourceContinuationReference"].as_str();
+    if continuation.starts_with("artifact://") {
+        // The page overflowed: the artifact chain progresses the result and
+        // the source's next page is named alongside it (ADR-0006).
+        assert_eq!(
+            source_continuation,
+            Some("issue://rust-lang/rust:page:11"),
+            "S3 the upstream page is addressable from the first response"
+        );
+    } else {
+        assert_eq!(continuation, "issue://rust-lang/rust:page:11");
+        assert_eq!(source_continuation, None, "S3 not repeated when it fits");
+    }
     eprintln!(
-        "S3 github: title {title_text:?}; search 1 hit; issues {} bytes, continuation {continuation}",
+        "S3 github: title {title_text:?}; search 1 hit; issues {} bytes, continuation {continuation}, source continuation {source_continuation:?}",
         issues_text.len()
     );
 

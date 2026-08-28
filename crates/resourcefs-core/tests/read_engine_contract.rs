@@ -352,6 +352,11 @@ async fn source_continuations_surface_unless_the_page_itself_overflows() {
     );
     assert!(fits.is_bounded(), "a page with more upstream is bounded");
     assert_eq!(fits.recovery_reference(), None, "nothing was cut from it");
+    assert_eq!(
+        fits.source_continuation_reference(),
+        None,
+        "the continuation already names the source's next page, so it is not repeated"
+    );
 
     let overflow = read(sized_lines(TextLimits::default().bytes() * 2)).await;
     let continuation = overflow
@@ -359,6 +364,11 @@ async fn source_continuations_surface_unless_the_page_itself_overflows() {
         .expect("an overflowing page progresses through its artifact");
     assert!(continuation.starts_with("artifact://"), "{continuation}");
     assert!(overflow.recovery_reference().is_some());
+    assert_eq!(
+        overflow.source_continuation_reference(),
+        Some("issue://owner/repo:page:2"),
+        "the source continuation the artifact chain would hide is named alongside it"
+    );
 }
 
 #[test]

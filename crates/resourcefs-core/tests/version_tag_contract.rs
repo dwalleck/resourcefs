@@ -88,7 +88,7 @@ fn exposes_stable_read_contract_fields() {
     let resource =
         ReadResource::text(reference("empty.txt"), String::new()).expect("canonical reference");
 
-    assert_eq!(BEHAVIOR_CONTRACT_VERSION, "1.0.0");
+    assert_eq!(BEHAVIOR_CONTRACT_VERSION, "1.1.0");
     assert_eq!(
         resource.canonical_reference(),
         "rfs://workspace/workspace/empty.txt"

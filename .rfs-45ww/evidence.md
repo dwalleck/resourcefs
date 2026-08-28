@@ -93,7 +93,7 @@ Learned: `state=all` issue listings on a PR-heavy repository yield roughly a thi
 |----|-----|-------------|---------|
 | S1 | `rfs check --probe` | Exit 0; JSON report `ok: true`, both sources `available`; the token appears nowhere in the report. | PASS |
 | S2 | `rfs_read rfs://` | 977-byte catalog advertising `issue://`, `pr://`, and `https://`. | PASS |
-| S3 | `rfs_read pr://…/159232/title`, `rfs_search ^Kind: `, `rfs_read issue://rust-lang/rust` | Title Field with canonical reference; one search hit on the aggregate; the collection filled the 49,152-byte inline page and returned `continuationReference` = `artifact://<id>:page:49152` — the rfs-jsx9 case observed live: the typed `:page:11` sits at the end of the artifact chain. | PASS |
+| S3 | `rfs_read pr://…/159232/title`, `rfs_search ^Kind: `, `rfs_read issue://rust-lang/rust` | Title Field with canonical reference; one search hit on the aggregate; the collection filled the 49,152-byte inline page and returned `continuationReference` = `artifact://<id>:page:49152` — the rfs-jsx9 case observed live: the typed `:page:11` sat only at the end of the artifact chain. Re-run after rfs-jsx9 (ADR-0006): the same response now also carries `sourceContinuationReference` = `issue://rust-lang/rust:page:11`. | PASS |
 | S4 | `rfs_read` of the Rust Book installation page | 6,826 bytes of reader-mode text containing `rustup`, canonical reference preserved. | PASS |
 | S5 | `issue://rust-lang/rust/159232` (a PR), `issue://other/repo/1` | `not_found` and `permission_denied` as tool errors; the token appears nowhere on stderr. | PASS |
 

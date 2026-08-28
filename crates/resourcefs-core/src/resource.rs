@@ -5,7 +5,9 @@ use crate::{
     WorkspaceAddress,
 };
 
-pub const BEHAVIOR_CONTRACT_VERSION: &str = "1.0.0";
+/// SemVer of the tool-result Behavior Contract. 1.1.0 added the optional
+/// `sourceContinuationReference` to read and search results (ADR-0006).
+pub const BEHAVIOR_CONTRACT_VERSION: &str = "1.1.0";
 pub const MAX_TEXT_BYTES: usize = 48 * 1024;
 pub const MAX_TEXT_LINES: usize = 3_000;
 pub const MAX_TEXT_COLUMNS: usize = 512;
@@ -354,6 +356,10 @@ pub struct ReadResource {
     backing_file_uri: Option<String>,
     recovery_reference: Option<String>,
     continuation_reference: Option<String>,
+    /// The typed upstream continuation that remains once the artifact chain
+    /// named by `continuation_reference` is exhausted (ADR-0006). Present only
+    /// when that chain would otherwise hide it.
+    source_continuation_reference: Option<String>,
     content: String,
     displayed_ranges: Vec<DisplayedLineRange>,
     displayed_eof: bool,
@@ -380,7 +386,15 @@ impl ReadResource {
 
     fn from_source(source: SourceResource) -> Result<Self, ResourceError> {
         let content_len = source.content().len();
-        Self::from_parts(source.into_parts(), false, None, None, content_len, false)
+        Self::from_parts(
+            source.into_parts(),
+            false,
+            None,
+            None,
+            None,
+            content_len,
+            false,
+        )
     }
 
     pub(crate) fn from_parts(
@@ -388,6 +402,7 @@ impl ReadResource {
         bounded: bool,
         recovery_reference: Option<String>,
         continuation_reference: Option<String>,
+        source_continuation_reference: Option<String>,
         page_end: usize,
         numbered: bool,
     ) -> Result<Self, ResourceError> {
@@ -395,6 +410,14 @@ impl ReadResource {
             return Err(ResourceError::new(
                 ErrorCategory::InvalidReference,
                 "bounded reads must carry exactly one progressing continuation",
+            ));
+        }
+        if source_continuation_reference.is_some()
+            && source_continuation_reference == continuation_reference
+        {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "a source continuation is named separately only when the continuation hides it",
             ));
         }
         let (displayed_ranges, display_line_numbers, displayed_eof) = source
@@ -409,6 +432,7 @@ impl ReadResource {
             backing_file_uri: source.backing_file_uri,
             recovery_reference,
             continuation_reference,
+            source_continuation_reference,
             content: source.content,
             displayed_ranges,
             displayed_eof,
@@ -471,6 +495,13 @@ impl ReadResource {
 
     pub fn continuation_reference(&self) -> Option<&str> {
         self.continuation_reference.as_deref()
+    }
+
+    /// The typed upstream page that remains after the artifact chain named by
+    /// [`Self::continuation_reference`] is exhausted; `None` when the
+    /// continuation itself already names the source's next page.
+    pub fn source_continuation_reference(&self) -> Option<&str> {
+        self.source_continuation_reference.as_deref()
     }
 
     pub fn content(&self) -> &str {

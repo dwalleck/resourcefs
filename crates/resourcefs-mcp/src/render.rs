@@ -34,6 +34,10 @@ pub(crate) struct ReadToolOutput {
     recovery_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     continuation_reference: Option<String>,
+    /// The next upstream page of a paginated source that remains after the
+    /// artifact chain named by `continuationReference` (ADR-0006).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_continuation_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,13 +101,17 @@ pub(crate) fn success(
 ) -> Result<CallToolResult, String> {
     let recovery_reference = resource.recovery_reference().map(str::to_owned);
     let continuation_reference = resource.continuation_reference().map(str::to_owned);
+    let source_continuation_reference = resource.source_continuation_reference().map(str::to_owned);
     let mut text = String::with_capacity(
         resource.canonical_reference().len()
             + resource.version_tag().as_str().len()
             + resource.content().len()
             + recovery_reference.as_ref().map_or(0, String::len)
             + continuation_reference.as_ref().map_or(0, String::len)
-            + 48,
+            + source_continuation_reference
+                .as_ref()
+                .map_or(0, String::len)
+            + 80,
     );
     writeln!(
         text,
@@ -125,6 +133,10 @@ pub(crate) fn success(
     if let Some(reference) = continuation_reference.as_deref() {
         writeln!(text, "Continuation Reference: {reference}")
             .expect("writing a continuation reference to String cannot fail");
+    }
+    if let Some(reference) = source_continuation_reference.as_deref() {
+        writeln!(text, "Source Continuation Reference: {reference}")
+            .expect("writing a source continuation reference to String cannot fail");
     }
     write_read_content(&mut text, &resource);
     let output = ReadToolOutput {
@@ -148,6 +160,7 @@ pub(crate) fn success(
         displayed_eof: Some(resource.displayed_eof()),
         recovery_reference,
         continuation_reference,
+        source_continuation_reference,
         content: Some(resource.content().to_owned()),
         error: None,
     };
@@ -223,6 +236,7 @@ pub(crate) fn failure(
         displayed_ranges: None,
         displayed_eof: None,
         continuation_reference: None,
+        source_continuation_reference: None,
         content: None,
         error: Some(ReadErrorOutput {
             category: error.category().as_str().to_owned(),
@@ -339,6 +353,10 @@ pub(crate) struct SearchToolOutput {
     recovery_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     continuation_reference: Option<String>,
+    /// The next upstream page of a paginated source collection that remains
+    /// after the artifact chain named by `continuationReference` (ADR-0006).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_continuation_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<DiscoveryErrorOutput>,
 }
@@ -449,11 +467,15 @@ fn discovery_diagnostic_output(diagnostic: &DiscoveryDiagnostic) -> DiscoveryDia
 pub(crate) fn search_success(result: SearchResult) -> Result<CallToolResult, String> {
     let recovery_reference = result.recovery_reference().map(str::to_owned);
     let continuation_reference = result.continuation_reference().map(str::to_owned);
+    let source_continuation_reference = result.source_continuation_reference().map(str::to_owned);
     let mut text = String::with_capacity(
         result.text().len()
             + recovery_reference.as_ref().map_or(0, String::len)
             + continuation_reference.as_ref().map_or(0, String::len)
-            + 48,
+            + source_continuation_reference
+                .as_ref()
+                .map_or(0, String::len)
+            + 80,
     );
     if let Some(reference) = recovery_reference.as_deref() {
         writeln!(text, "Recovery Reference: {reference}")
@@ -462,6 +484,10 @@ pub(crate) fn search_success(result: SearchResult) -> Result<CallToolResult, Str
     if let Some(reference) = continuation_reference.as_deref() {
         writeln!(text, "Continuation Reference: {reference}")
             .expect("writing a continuation reference to String cannot fail");
+    }
+    if let Some(reference) = source_continuation_reference.as_deref() {
+        writeln!(text, "Source Continuation Reference: {reference}")
+            .expect("writing a source continuation reference to String cannot fail");
     }
     text.push_str(result.text());
     let output = SearchToolOutput {
@@ -496,6 +522,7 @@ pub(crate) fn search_success(result: SearchResult) -> Result<CallToolResult, Str
         total_records: Some(result.total_records()),
         recovery_reference,
         continuation_reference,
+        source_continuation_reference,
         error: None,
     };
     let structured = serde_json::to_value(output)
@@ -580,6 +607,7 @@ pub(crate) fn search_failure(
         total_records: None,
         recovery_reference: None,
         continuation_reference: None,
+        source_continuation_reference: None,
         error: Some(DiscoveryErrorOutput {
             category: error.category().as_str().to_owned(),
             message: error.message().to_owned(),
@@ -1301,5 +1329,186 @@ mod tests {
                 "maximum-page render took {elapsed:?}"
             );
         }
+    }
+
+    /// A source whose projection names a further upstream page.
+    struct ContinuingSource {
+        content: String,
+    }
+
+    #[async_trait::async_trait]
+    impl resourcefs_core::SourceAdapter for ContinuingSource {
+        async fn read(
+            &self,
+            _reference: &PathReference,
+            _operation: &OperationGuard,
+        ) -> Result<resourcefs_core::SourceResource, ResourceError> {
+            let next = PathReference::parse("issue://owner/repo:page:2".to_owned())?;
+            Ok(resourcefs_core::SourceResource::text(
+                PathReference::canonical(
+                    WorkspaceRootId::new("workspace").expect("root ID"),
+                    WorkspacePath::new("visible.txt").expect("workspace path"),
+                ),
+                self.content.clone(),
+            )?
+            .with_continuation(&next))
+        }
+    }
+
+    struct ContinuingSearch {
+        records: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl resourcefs_core::DiscoveryAdapter for ContinuingSearch {
+        async fn search(
+            &self,
+            _target: &SearchTarget,
+            _pattern: &str,
+            _options: SearchOptions,
+            _operation: &OperationGuard,
+        ) -> Result<resourcefs_core::SearchSourceResult, ResourceError> {
+            let reference = PathReference::canonical(
+                WorkspaceRootId::new("workspace").expect("root ID"),
+                WorkspacePath::new("many.txt").expect("workspace path"),
+            );
+            let records = (1..=self.records)
+                .map(|line| {
+                    resourcefs_core::SearchRecord::new(
+                        reference.clone(),
+                        line as u64,
+                        format!("row {line}"),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let next = PathReference::parse("issue://owner/repo:page:11".to_owned())?;
+            Ok(resourcefs_core::SearchSourceResult::new(
+                SearchEngine::RustRegex,
+                records,
+                Vec::new(),
+            )
+            .with_source_continuation(next))
+        }
+
+        async fn glob(
+            &self,
+            _target: &GlobTarget,
+            _options: GlobOptions,
+            _operation: &OperationGuard,
+        ) -> Result<resourcefs_core::SourceGlobResult, ResourceError> {
+            Ok(resourcefs_core::SourceGlobResult::new(
+                Vec::new(),
+                Vec::new(),
+            ))
+        }
+    }
+
+    /// ADR-0006: `sourceContinuationReference` appears only when the result's
+    /// continuation walks an artifact chain that would otherwise hide the
+    /// source's next page; when the page fits, the continuation already names
+    /// it and the result is unchanged from Behavior Contract 1.0.0.
+    #[tokio::test]
+    async fn source_continuation_references_are_rendered_only_when_hidden() {
+        let fixture = fixture().await;
+        let limits = resourcefs_core::ServerLimits::default();
+        let read = |content: String| {
+            let session = fixture.session.path_session().clone();
+            async move {
+                resourcefs_core::ReadEngine::new(
+                    Arc::new(ContinuingSource { content }),
+                    session,
+                    limits,
+                )
+                .read(
+                    resourcefs_core::ReadRequest {
+                        reference: PathReference::parse("visible.txt".to_owned())
+                            .expect("relative reference"),
+                        limits: resourcefs_core::TextLimits::default(),
+                        numbered: false,
+                    },
+                    &OperationGuard::new(),
+                )
+                .await
+                .expect("read")
+            }
+        };
+
+        let fits = success("visible.txt", read("one page\n".to_owned()).await).expect("rendered");
+        let structured = fits.structured_content.as_ref().expect("structured");
+        assert_eq!(
+            structured["continuationReference"],
+            "issue://owner/repo:page:2"
+        );
+        assert!(structured.get("sourceContinuationReference").is_none());
+        assert!(!rendered_text(&fits).contains("Source Continuation Reference:"));
+
+        let mut large = String::new();
+        while large.len() <= MAX_TEXT_BYTES {
+            large.push_str("line of a long collection listing\n");
+        }
+        let overflow = success("visible.txt", read(large).await).expect("rendered");
+        let structured = overflow.structured_content.as_ref().expect("structured");
+        let continuation = structured["continuationReference"]
+            .as_str()
+            .expect("artifact continuation");
+        assert!(continuation.starts_with("artifact://"), "{continuation}");
+        assert_eq!(
+            structured["sourceContinuationReference"],
+            "issue://owner/repo:page:2"
+        );
+        let text = rendered_text(&overflow);
+        let continuation_line = text
+            .find("Continuation Reference: artifact://")
+            .expect("continuation line");
+        let source_line = text
+            .find("Source Continuation Reference: issue://owner/repo:page:2\n")
+            .expect("source continuation line");
+        assert!(
+            continuation_line < source_line,
+            "source follows continuation"
+        );
+
+        let search = |records: usize| {
+            let session = fixture.session.path_session().clone();
+            async move {
+                DiscoveryEngine::new(Arc::new(ContinuingSearch { records }), session, limits)
+                    .search(
+                        SearchRequest::new(
+                            SearchTarget::primary(),
+                            "row",
+                            SearchOptions::default(),
+                            0,
+                            SearchLimits::default(),
+                        )
+                        .expect("search request"),
+                        &OperationGuard::new(),
+                    )
+                    .await
+                    .expect("search")
+            }
+        };
+        let fits = search_success(search(1).await).expect("rendered");
+        let structured = fits.structured_content.as_ref().expect("structured");
+        assert_eq!(
+            structured["continuationReference"],
+            "issue://owner/repo:page:11"
+        );
+        assert!(structured.get("sourceContinuationReference").is_none());
+
+        let overflow = search_success(search(1_001).await).expect("rendered");
+        let structured = overflow.structured_content.as_ref().expect("structured");
+        assert!(
+            structured["continuationReference"]
+                .as_str()
+                .is_some_and(|reference| reference.starts_with("artifact://"))
+        );
+        assert_eq!(
+            structured["sourceContinuationReference"],
+            "issue://owner/repo:page:11"
+        );
+        assert!(
+            rendered_text(&overflow)
+                .contains("Source Continuation Reference: issue://owner/repo:page:11\n")
+        );
     }
 }

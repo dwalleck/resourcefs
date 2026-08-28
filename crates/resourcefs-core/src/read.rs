@@ -159,6 +159,7 @@ impl ReadEngine {
                 continuation_reference.is_some(),
                 recovery_reference,
                 continuation_reference,
+                None,
                 page_end,
                 request.numbered,
             )?;
@@ -168,9 +169,10 @@ impl ReadEngine {
 
         // The page overflowed, so the artifact continuation must win: it is
         // the only reference that reaches the bytes cut from this page. The
-        // source continuation is not lost — the adapter names it inside its
-        // content, and the retained artifact holds that content in full — but
-        // it is reachable only at the end of the artifact chain.
+        // source continuation travels alongside it as the source continuation
+        // reference (ADR-0006), so the upstream page is addressable from this
+        // response and not only from the end of the artifact chain.
+        let source_continuation_reference = parts.continuation.take();
 
         let (recovery_address, origin) = match (requested_artifact, parts.artifact_origin) {
             (Some(address), Some(origin)) => (address, origin),
@@ -215,6 +217,7 @@ impl ReadEngine {
             true,
             Some(recovery_reference),
             Some(continuation_reference),
+            source_continuation_reference,
             page_end,
             request.numbered,
         )?;

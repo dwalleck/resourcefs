@@ -862,6 +862,17 @@ fn lists_and_calls_discovery_tools() {
                 schema["properties"][member]
             );
         }
+        // Reads and searches can cross a paginated source; glob cannot.
+        let names_source_continuation = accepts_type(
+            &schema["properties"]["sourceContinuationReference"],
+            "string",
+        );
+        assert_eq!(
+            names_source_continuation,
+            name != "rfs_glob",
+            "{name} output sourceContinuationReference: {}",
+            schema["properties"]["sourceContinuationReference"]
+        );
     }
     for (name, schema) in [
         ("rfs_write", &write["outputSchema"]),
@@ -1320,7 +1331,7 @@ fn renders_complete_success_and_errors() {
         let text = success["content"][0]["text"].as_str().expect("TextContent");
         let structured = &success["structuredContent"];
         assert_eq!(structured["ok"], true);
-        assert_eq!(structured["contractVersion"], "1.0.0");
+        assert_eq!(structured["contractVersion"], "1.1.0");
         assert_eq!(
             structured["canonicalReference"],
             "rfs://workspace/workspace/fixture.txt"

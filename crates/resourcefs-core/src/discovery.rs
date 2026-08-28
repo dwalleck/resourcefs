@@ -508,6 +508,10 @@ pub struct SearchResult {
     text: String,
     recovery_reference: Option<String>,
     continuation_reference: Option<String>,
+    /// The typed upstream continuation that remains once the artifact chain
+    /// named by `continuation_reference` is exhausted (ADR-0006). Present only
+    /// when that chain would otherwise hide it.
+    source_continuation_reference: Option<String>,
 }
 
 impl SearchResult {
@@ -541,6 +545,13 @@ impl SearchResult {
 
     pub fn continuation_reference(&self) -> Option<&str> {
         self.continuation_reference.as_deref()
+    }
+
+    /// The typed upstream page that remains after the artifact chain named by
+    /// [`Self::continuation_reference`] is exhausted; `None` when the
+    /// continuation itself already names the source's next page.
+    pub fn source_continuation_reference(&self) -> Option<&str> {
+        self.source_continuation_reference.as_deref()
     }
 }
 
@@ -693,6 +704,14 @@ impl DiscoveryEngine {
             )
             .await?;
 
+        // One continuation progresses this result: the artifact chain when the
+        // page overflowed, else the source's next page. When the chain wins,
+        // the source continuation is named separately so the upstream page is
+        // addressable from this response (ADR-0006).
+        let (continuation_reference, source_continuation_reference) = match recovery.continuation {
+            Some(artifact) => (Some(artifact), source_continuation),
+            None => (source_continuation, None),
+        };
         Ok(SearchResult {
             engine,
             groups: group_search_records(&records[page.record_range.clone()]),
@@ -701,7 +720,8 @@ impl DiscoveryEngine {
             total_records: records.len(),
             text: page.text,
             recovery_reference: recovery.reference,
-            continuation_reference: recovery.continuation.or(source_continuation),
+            continuation_reference,
+            source_continuation_reference,
         })
     }
 
