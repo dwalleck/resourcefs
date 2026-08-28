@@ -1,7 +1,9 @@
 use std::time::{Duration, Instant};
 
 use resourcefs_core::ErrorCategory;
-use resourcefs_sources::{GithubWireKindForTest, inspect_github_wire_for_test};
+use resourcefs_sources::{
+    GithubWireKindForTest, inspect_github_mutation_route_for_test, inspect_github_wire_for_test,
+};
 
 #[test]
 fn official_nullable_and_distinct_shapes_decode() {
@@ -95,6 +97,32 @@ fn official_nullable_and_distinct_shapes_decode() {
     let observed =
         inspect_github_wire_for_test(GithubWireKindForTest::DiffFiles, files).expect("valid files");
     assert_eq!(observed.absent_fields(), &["patch"]);
+}
+
+#[test]
+fn mutation_routes_match_empirical_contract() {
+    for (reference, method, suffix) in [
+        ("issue://owner/repo/42/title", "PATCH", "issues/42"),
+        ("pr://owner/repo/7/body", "PATCH", "pulls/7"),
+        (
+            "issue://owner/repo/42/comments/100",
+            "PATCH",
+            "issues/comments/100",
+        ),
+        ("issue://owner/repo/new", "POST", "issues"),
+        ("pr://owner/repo/new", "POST", "pulls"),
+        (
+            "pr://owner/repo/7/comments/new",
+            "POST",
+            "issues/7/comments",
+        ),
+    ] {
+        assert_eq!(
+            inspect_github_mutation_route_for_test(reference).expect("[C1] route"),
+            (method.to_owned(), suffix.to_owned()),
+            "[C1] {reference}"
+        );
+    }
 }
 
 #[test]

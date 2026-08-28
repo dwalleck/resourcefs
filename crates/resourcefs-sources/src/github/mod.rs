@@ -1,5 +1,7 @@
 mod mutation;
 pub(crate) use mutation::GITHUB_MUTATION_SOURCE_KEY;
+#[cfg(feature = "test-support")]
+pub use mutation::inspect_github_mutation_route_for_test;
 mod render;
 mod wire;
 

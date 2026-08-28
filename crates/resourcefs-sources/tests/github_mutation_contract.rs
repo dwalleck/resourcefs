@@ -3,21 +3,23 @@ mod session_support;
 #[path = "support/tls.rs"]
 mod tls;
 
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
 use resourcefs_core::{
-    ErrorCategory, MutationAccess, MutationAdapter, MutationEngine, MutationOperation,
-    OperationGuard, PathReference, SessionCacheEntry, SessionCacheKey, SourceAdapter,
-    SourceMutation, VersionSelector, VersionTag, WriteRequest,
+    ErrorCategory, MAX_ARTIFACT_BYTES, MAX_HTTP_FETCH_BYTES, MutationAccess, MutationAdapter,
+    MutationEngine, MutationOperation, OperationGuard, OperationId, PathReference,
+    SessionCacheEntry, SessionCacheKey, SourceAdapter, SourceMutation, VersionSelector, VersionTag,
+    WriteRequest,
 };
 use resourcefs_sources::{
     GithubConfig, GithubRepository, GithubSource, GithubSourceMount, HttpSubstrate, MutationGrants,
     SecretReference,
 };
 use serde_json::{Value, json};
-use std::{
-    net::{IpAddr, Ipv4Addr},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
 use tls::{
     FIXTURE_HOST, FixtureRequest, FixtureResponse, MATCH_CERT, TlsListener, fixture_allowlist,
     settle,
@@ -35,6 +37,9 @@ struct GithubState {
     patch_status: Option<&'static str>,
     rate_limited: bool,
     force_not_modified: bool,
+    posts: usize,
+    post_status: Option<&'static str>,
+    creation_response: &'static str,
 }
 
 impl Default for GithubState {
@@ -50,6 +55,9 @@ impl Default for GithubState {
             patch_status: None,
             rate_limited: false,
             force_not_modified: false,
+            posts: 0,
+            post_status: None,
+            creation_response: "valid",
         }
     }
 }
@@ -192,11 +200,112 @@ fn route(request: &FixtureRequest, state: &Arc<Mutex<GithubState>>) -> FixtureRe
                 other => panic!("[C8] unexpected PATCH {other}"),
             }
         }
+        ("POST", target) => {
+            state.posts += 1;
+            if let Some(status) = state.post_status {
+                let mut headers = vec![
+                    ("Content-Type".to_owned(), "application/json".to_owned()),
+                    ("Retry-After".to_owned(), "0".to_owned()),
+                ];
+                if status.starts_with("301") {
+                    headers.push(("Location".to_owned(), "/redirected".to_owned()));
+                }
+                return FixtureResponse::Response {
+                    status,
+                    headers,
+                    body: br#"{"message":"UPSTREAM_SECRET"}"#.to_vec(),
+                };
+            }
+            if state.creation_response == "malformed" {
+                return FixtureResponse::Response {
+                    status: "201 Created",
+                    headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
+                    body: b"{".to_vec(),
+                };
+            }
+            if state.creation_response == "truncated" {
+                return FixtureResponse::Response {
+                    status: "201 Created",
+                    headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
+                    body: vec![b'x'; MAX_HTTP_FETCH_BYTES + 1],
+                };
+            }
+            let request_body: Value =
+                serde_json::from_slice(request.body()).expect("[C20] creation request JSON");
+            let status = if state.creation_response == "wrong-status" {
+                "202 Accepted"
+            } else {
+                "201 Created"
+            };
+            let mut created = match target {
+                "/repos/owner/repo/issues" => json!({
+                    "id": 9077,
+                    "number": 77,
+                    "state": "open",
+                    "title": request_body["title"],
+                    "body": request_body["body"],
+                    "user": {"login": "alice", "id": 1},
+                    "html_url": "https://github.example/owner/repo/issues/77",
+                    "created_at": "2026-08-20T01:02:03Z",
+                    "updated_at": "2026-08-21T02:03:04Z"
+                }),
+                "/repos/owner/repo/pulls" => json!({
+                    "id": 8088,
+                    "number": 88,
+                    "state": "open",
+                    "title": request_body["title"],
+                    "body": request_body["body"],
+                    "user": {"login": "bob", "id": 2},
+                    "html_url": "https://github.example/owner/repo/pull/88",
+                    "created_at": "2026-08-20T01:02:03Z",
+                    "updated_at": "2026-08-21T02:03:04Z",
+                    "draft": request_body.get("draft").and_then(Value::as_bool).unwrap_or(false),
+                    "merged": false,
+                    "merged_at": null,
+                    "head": {"ref": request_body["head"]},
+                    "base": {"ref": request_body["base"]}
+                }),
+                "/repos/owner/repo/issues/42/comments" => {
+                    comment_json(101, 42, request_body["body"].as_str().expect("[C20] body"))
+                }
+                "/repos/owner/repo/issues/7/comments" => {
+                    comment_json(201, 7, request_body["body"].as_str().expect("[C20] body"))
+                }
+                other => panic!("[C10] unexpected POST {other}"),
+            };
+            if state.creation_response == "missing-identity" {
+                if target.ends_with("/comments") {
+                    created.as_object_mut().expect("[C19] object").remove("id");
+                } else {
+                    created
+                        .as_object_mut()
+                        .expect("[C19] object")
+                        .remove("number");
+                }
+            }
+            if state.creation_response == "wrong-parent" && target.ends_with("/comments") {
+                created["issue_url"] =
+                    json!("https://api.github.example/repos/owner/repo/issues/999");
+            }
+            response(status, created)
+        }
         other => panic!("[C8] unexpected request {other:?}"),
     }
 }
 
 async fn fixture(
+    update_grant: bool,
+) -> (
+    TlsListener,
+    GithubSource,
+    resourcefs_core::PathSession,
+    Arc<Mutex<GithubState>>,
+) {
+    fixture_with_grants(false, update_grant).await
+}
+
+async fn fixture_with_grants(
+    create_grant: bool,
     update_grant: bool,
 ) -> (
     TlsListener,
@@ -214,7 +323,7 @@ async fn fixture(
     let port = listener.address.port();
     let session_fixture = session_support::scratch_fixture().await;
     let session = session_fixture.path_session().clone();
-    let grants = MutationGrants::new(false, update_grant, false);
+    let grants = MutationGrants::new(create_grant, update_grant, false);
     let config = GithubConfig::new(
         "github",
         false,
@@ -779,5 +888,555 @@ async fn unsupported_mutation_matrix_has_zero_egress() {
     assert!(
         denied_listener.requests().is_empty(),
         "[C14] grant precedes egress"
+    );
+}
+
+#[tokio::test]
+async fn metadata_grant_target_matrix_precedes_egress() {
+    let (listener, denied, denied_session, _state) = fixture_with_grants(false, true).await;
+    let target = PathReference::parse("issue://owner/repo/new").expect("[C5] target");
+    let error = MutationAdapter::resolve(&denied, &target, MutationAccess::Create)
+        .await
+        .expect_err("[C5] create grant denied");
+    assert_eq!(error.category(), ErrorCategory::PermissionDenied);
+    let error = MutationEngine::new(Arc::new(denied), denied_session)
+        .write(
+            WriteRequest::new(target.clone(), valid_issue_document(), None, None)
+                .expect("[C5] missing-ID request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("[C5] operation ID required");
+    assert_eq!(error.category(), ErrorCategory::InvalidReference);
+    settle().await;
+    assert!(
+        listener.requests().is_empty(),
+        "[C5] denials precede egress"
+    );
+
+    let (listener, source, session, _state) = fixture_with_grants(true, true).await;
+    let resolved = MutationAdapter::resolve(&source, &target, MutationAccess::Create)
+        .await
+        .expect("[C5] granted Creation Target");
+    assert_eq!(
+        resolved.mode(),
+        resourcefs_core::MutationTargetMode::CreationTarget
+    );
+    assert!(listener.requests().is_empty(), "[C5] resolution has no I/O");
+    let engine = MutationEngine::new(Arc::new(source), session);
+    for request in [
+        WriteRequest::new(
+            target.clone(),
+            valid_issue_document(),
+            Some(VersionTag::from_content(b"not applicable")),
+            Some(OperationId::parse("with-version").expect("[C5] ID")),
+        )
+        .expect("[C5] ifVersion request"),
+        WriteRequest::new(
+            target.clone(),
+            "---\ntitle: malformed".to_owned(),
+            None,
+            Some(OperationId::parse("malformed").expect("[C5] ID")),
+        )
+        .expect("[C5] malformed request"),
+    ] {
+        let error = engine
+            .write(request, &OperationGuard::new())
+            .await
+            .expect_err("[C5] metadata/content rejection");
+        assert_eq!(error.category(), ErrorCategory::InvalidReference);
+    }
+    settle().await;
+    assert!(
+        listener.requests().is_empty(),
+        "[C5] metadata and parser validation precede egress"
+    );
+}
+
+fn valid_issue_document() -> String {
+    "---\ntitle: Created issue\n---\nIssue body\n".to_owned()
+}
+
+fn valid_pull_document() -> String {
+    "---\ntitle: \"Pull: created\"\nhead: feature\nbase: main\ndraft: true\n---\nPull body\n"
+        .to_owned()
+}
+
+#[tokio::test]
+async fn creation_document_strict_matrix() {
+    let (listener, source, _session, _state) = fixture_with_grants(true, false).await;
+    let issue = MutationAdapter::resolve(
+        &source,
+        &PathReference::parse("issue://owner/repo/new").expect("[C6] issue target"),
+        MutationAccess::Create,
+    )
+    .await
+    .expect("[C6] issue target");
+    let pull = MutationAdapter::resolve(
+        &source,
+        &PathReference::parse("pr://owner/repo/new").expect("[C6] pull target"),
+        MutationAccess::Create,
+    )
+    .await
+    .expect("[C6] pull target");
+    let comment = MutationAdapter::resolve(
+        &source,
+        &PathReference::parse("issue://owner/repo/42/comments/new").expect("[C6] comment target"),
+        MutationAccess::Create,
+    )
+    .await
+    .expect("[C6] comment target");
+
+    for content in [
+        valid_issue_document(),
+        "---\r\ntitle: 'It''s fixed'\r\n---\r\n".to_owned(),
+        "---\ntitle: Empty body\n---".to_owned(),
+    ] {
+        MutationAdapter::validate_write(&source, &issue, &content)
+            .expect("[C6] valid issue document");
+    }
+    MutationAdapter::validate_write(&source, &pull, &valid_pull_document())
+        .expect("[C6] valid pull document");
+    MutationAdapter::validate_write(&source, &comment, "Markdown **comment**\n")
+        .expect("[C6] valid comment Markdown");
+
+    for content in [
+        "title: no delimiters",
+        "---\ntitle: missing close",
+        "---\n---\n",
+        "---\ntitle: duplicate\ntitle: twice\n---\n",
+        "---\ntitle: ok\nlabels: bug\n---\n",
+        "---\ntitle: |\n  block\n---\n",
+        "---\ntitle: - sequence\n---\n",
+        "---\ntitle: %YAML\n---\n",
+        "---\ntitle: unquoted: colon\n---\n",
+        "---\ntitle: ok # comment\n---\n",
+    ] {
+        assert_eq!(
+            MutationAdapter::validate_write(&source, &issue, content)
+                .expect_err("[C6] invalid issue document")
+                .category(),
+            ErrorCategory::InvalidReference,
+            "[C6] {content:?}"
+        );
+    }
+    for content in [
+        "---\ntitle: PR\nhead: feature\nbase: main\ndraft: \"true\"\n---\n",
+        "---\ntitle: PR\nhead: feature\n---\n",
+        "---\ntitle: PR\nhead: \nbase: main\n---\n",
+    ] {
+        assert_eq!(
+            MutationAdapter::validate_write(&source, &pull, content)
+                .expect_err("[C6] invalid pull document")
+                .category(),
+            ErrorCategory::InvalidReference,
+            "[C6] {content:?}"
+        );
+    }
+    assert_eq!(
+        MutationAdapter::validate_write(&source, &comment, " \n")
+            .expect_err("[C6] blank comment")
+            .category(),
+        ErrorCategory::InvalidReference
+    );
+    settle().await;
+    assert!(
+        listener.requests().is_empty(),
+        "[C6] parsing performs no I/O"
+    );
+}
+
+#[tokio::test]
+#[ignore = "checkpointed-build production-scale budget"]
+async fn creation_document_budget() {
+    let (_listener, source, _session, _state) = fixture_with_grants(true, false).await;
+    let issue = MutationAdapter::resolve(
+        &source,
+        &PathReference::parse("issue://owner/repo/new").expect("[C6] issue target"),
+        MutationAccess::Create,
+    )
+    .await
+    .expect("[C6] issue target");
+    let prefix = "---\ntitle: Maximum\n---\n";
+    let document = format!("{prefix}{}", "x".repeat(MAX_ARTIFACT_BYTES - prefix.len()));
+    let started = Instant::now();
+    MutationAdapter::validate_write(&source, &issue, &document).expect("[C6] maximum document");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed <= Duration::from_millis(100),
+        "[C6] 64 MiB frontmatter/body validation took {elapsed:?}"
+    );
+}
+
+async fn create(
+    engine: &MutationEngine,
+    path: &str,
+    content: String,
+    operation_id: &str,
+) -> Result<resourcefs_core::MutationReceipt, resourcefs_core::ResourceError> {
+    engine
+        .write(
+            WriteRequest::new(
+                PathReference::parse(path).expect("[C10] target"),
+                content,
+                None,
+                Some(OperationId::parse(operation_id).expect("[C10] ID")),
+            )
+            .expect("[C10] request"),
+            &OperationGuard::new(),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn creation_receipts_use_returned_identity_without_seen_coverage() {
+    let (listener, source, session, _state) = fixture_with_grants(true, true).await;
+    let engine = MutationEngine::new(Arc::new(source), session.clone());
+    let rows = [
+        (
+            "issue://owner/repo/new",
+            valid_issue_document(),
+            "issue-create",
+            "issue://owner/repo/77",
+            vec!["POST /repos/owner/repo/issues HTTP/1.1"],
+            json!({"title": "Created issue", "body": "Issue body\n"}),
+        ),
+        (
+            "pr://owner/repo/new",
+            valid_pull_document(),
+            "pull-create",
+            "pr://owner/repo/88",
+            vec!["POST /repos/owner/repo/pulls HTTP/1.1"],
+            json!({
+                "title": "Pull: created",
+                "head": "feature",
+                "base": "main",
+                "draft": true,
+                "body": "Pull body\n"
+            }),
+        ),
+        (
+            "issue://owner/repo/42/comments/new",
+            "Issue comment\n".to_owned(),
+            "issue-comment-create",
+            "issue://owner/repo/42/comments/101",
+            vec![
+                "GET /repos/owner/repo/issues/42 HTTP/1.1",
+                "POST /repos/owner/repo/issues/42/comments HTTP/1.1",
+            ],
+            json!({"body": "Issue comment\n"}),
+        ),
+        (
+            "pr://owner/repo/7/comments/new",
+            "Pull comment\n".to_owned(),
+            "pull-comment-create",
+            "pr://owner/repo/7/comments/201",
+            vec![
+                "GET /repos/owner/repo/pulls/7 HTTP/1.1",
+                "POST /repos/owner/repo/issues/7/comments HTTP/1.1",
+            ],
+            json!({"body": "Pull comment\n"}),
+        ),
+    ];
+    for (path, content, id, canonical, expected_requests, expected_body) in rows {
+        let before = listener.requests().len();
+        let receipt = create(&engine, path, content.clone(), id)
+            .await
+            .expect("[C10] creation");
+        assert_eq!(receipt.operation(), MutationOperation::Created);
+        assert_eq!(receipt.canonical_reference().requested(), canonical);
+        assert_eq!(receipt.version_tag(), None);
+        assert_eq!(receipt.displayed_ranges(), None);
+        settle().await;
+        assert_eq!(
+            &listener.requests()[before..],
+            expected_requests,
+            "[C10] {path}"
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(listener.bodies().last().expect("[C20] POST body"))
+                .expect("[C20] JSON"),
+            expected_body,
+            "[C20] {path}"
+        );
+        assert_eq!(
+            session
+                .resolve_seen_for_test(
+                    canonical,
+                    &VersionSelector::full(VersionTag::from_content(content.as_bytes())),
+                )
+                .await
+                .expect_err("[C10] no seen coverage")
+                .category(),
+            ErrorCategory::InvalidReference,
+            "[C10] {path}"
+        );
+    }
+
+    let before = listener.requests().len();
+    let replay = create(
+        &engine,
+        "issue://owner/repo/new",
+        valid_issue_document(),
+        "issue-create",
+    )
+    .await
+    .expect("[C10] replay");
+    assert_eq!(
+        replay.canonical_reference().requested(),
+        "issue://owner/repo/77"
+    );
+    settle().await;
+    assert_eq!(
+        listener.requests().len(),
+        before,
+        "[C10] replay has no egress"
+    );
+    let conflict = create(
+        &engine,
+        "issue://owner/repo/new",
+        "---\ntitle: Different\n---\n".to_owned(),
+        "issue-create",
+    )
+    .await
+    .expect_err("[C10] conflicting ID");
+    assert_eq!(conflict.category(), ErrorCategory::VersionConflict);
+}
+
+#[tokio::test]
+async fn mutation_never_retries_or_redirects() {
+    for status in ["301 Moved Permanently", "503 Service Unavailable"] {
+        let (listener, source, session, state) = fixture_with_grants(true, false).await;
+        state.lock().expect("[C11] state").post_status = Some(status);
+        let engine = MutationEngine::new(Arc::new(source), session);
+        let error = create(
+            &engine,
+            "issue://owner/repo/new",
+            valid_issue_document(),
+            "once",
+        )
+        .await
+        .expect_err("[C11] creation error");
+        assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+        settle().await;
+        assert_eq!(
+            listener
+                .requests()
+                .iter()
+                .filter(|line| line.starts_with("POST "))
+                .count(),
+            1,
+            "[C11] {status} gets one POST"
+        );
+        assert_eq!(
+            listener.requests().len(),
+            1,
+            "[C11] {status} has zero redirect/retry follow-up"
+        );
+        if status.starts_with("503") {
+            let before = listener.requests().len();
+            let repeat = create(
+                &engine,
+                "issue://owner/repo/new",
+                valid_issue_document(),
+                "once",
+            )
+            .await
+            .expect_err("[C11] unknown repeat");
+            assert_eq!(repeat.category(), ErrorCategory::SourceUnavailable);
+            settle().await;
+            assert_eq!(
+                listener.requests().len(),
+                before,
+                "[C11] unknown blocks retry"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn operation_recovery_state_matrix() {
+    let (listener, source, session, state) = fixture_with_grants(true, false).await;
+    let engine = MutationEngine::new(Arc::new(source), session);
+    let first_guard = OperationGuard::new();
+    let second_guard = OperationGuard::new();
+    let first = engine.write(
+        WriteRequest::new(
+            PathReference::parse("issue://owner/repo/new").expect("[C18] target"),
+            valid_issue_document(),
+            None,
+            Some(OperationId::parse("concurrent-create").expect("[C18] ID")),
+        )
+        .expect("[C18] request"),
+        &first_guard,
+    );
+    let second = engine.write(
+        WriteRequest::new(
+            PathReference::parse("issue://owner/repo/new").expect("[C18] target"),
+            valid_issue_document(),
+            None,
+            Some(OperationId::parse("concurrent-create").expect("[C18] ID")),
+        )
+        .expect("[C18] request"),
+        &second_guard,
+    );
+    let (first, second) = tokio::join!(first, second);
+    assert_eq!(
+        first.expect("[C18] first").canonical_reference(),
+        second.expect("[C18] second").canonical_reference()
+    );
+    settle().await;
+    assert_eq!(
+        state.lock().expect("[C18] state").posts,
+        1,
+        "[C18] one POST"
+    );
+    assert_eq!(
+        listener
+            .requests()
+            .iter()
+            .filter(|line| line.starts_with("POST "))
+            .count(),
+        1,
+        "[C18] concurrent repeat coalesces"
+    );
+
+    let (listener, source, session, state) = fixture_with_grants(true, false).await;
+    state.lock().expect("[C18] state").post_status = Some("422 Unprocessable Entity");
+    let engine = MutationEngine::new(Arc::new(source), session);
+    for _ in 0..2 {
+        let error = create(
+            &engine,
+            "issue://owner/repo/new",
+            valid_issue_document(),
+            "conclusive",
+        )
+        .await
+        .expect_err("[C18] conclusive rejection");
+        assert_eq!(error.category(), ErrorCategory::InvalidReference);
+    }
+    settle().await;
+    assert_eq!(
+        listener
+            .requests()
+            .iter()
+            .filter(|line| line.starts_with("POST "))
+            .count(),
+        2,
+        "[C18] conclusive identical retry transmits"
+    );
+
+    let (listener, source, session, state) = fixture_with_grants(true, false).await;
+    state.lock().expect("[C18] state").post_status = Some("500 Internal Server Error");
+    let engine = MutationEngine::new(Arc::new(source), session);
+    for _ in 0..2 {
+        let error = create(
+            &engine,
+            "issue://owner/repo/new",
+            valid_issue_document(),
+            "unknown",
+        )
+        .await
+        .expect_err("[C18] unknown");
+        assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    }
+    settle().await;
+    assert_eq!(
+        listener
+            .requests()
+            .iter()
+            .filter(|line| line.starts_with("POST "))
+            .count(),
+        1,
+        "[C18] unknown blocks repeat"
+    );
+}
+
+#[tokio::test]
+async fn mutation_response_validation_matrix() {
+    for (mode, path) in [
+        ("missing-identity", "issue://owner/repo/new"),
+        ("malformed", "issue://owner/repo/new"),
+        ("truncated", "issue://owner/repo/new"),
+        ("wrong-status", "issue://owner/repo/new"),
+        ("wrong-parent", "issue://owner/repo/42/comments/new"),
+    ] {
+        let (listener, source, session, state) = fixture_with_grants(true, false).await;
+        state.lock().expect("[C19] state").creation_response = mode;
+        let engine = MutationEngine::new(Arc::new(source), session);
+        let content = if path.ends_with("comments/new") {
+            "comment".to_owned()
+        } else {
+            valid_issue_document()
+        };
+        let error = create(&engine, path, content.clone(), "invalid-success")
+            .await
+            .expect_err("[C19] invalid response");
+        assert_eq!(
+            error.category(),
+            ErrorCategory::SourceUnavailable,
+            "[C19] {mode}"
+        );
+        let before = listener.requests().len();
+        let repeat = create(&engine, path, content, "invalid-success")
+            .await
+            .expect_err("[C19] blocked repeat");
+        assert_eq!(repeat.category(), ErrorCategory::SourceUnavailable);
+        settle().await;
+        assert_eq!(listener.requests().len(), before, "[C19] {mode} is unknown");
+    }
+}
+
+#[tokio::test]
+async fn mutation_payloads_are_minimal_and_exact() {
+    let (listener, source, session, _state) = fixture_with_grants(true, true).await;
+    let engine = MutationEngine::new(Arc::new(source), session);
+    create(
+        &engine,
+        "issue://owner/repo/new",
+        valid_issue_document(),
+        "payload-issue",
+    )
+    .await
+    .expect("[C20] issue");
+    create(
+        &engine,
+        "pr://owner/repo/new",
+        valid_pull_document(),
+        "payload-pull",
+    )
+    .await
+    .expect("[C20] pull");
+    create(
+        &engine,
+        "issue://owner/repo/42/comments/new",
+        "comment bytes".to_owned(),
+        "payload-comment",
+    )
+    .await
+    .expect("[C20] comment");
+    settle().await;
+    let bodies = listener.bodies();
+    let post_bodies = listener
+        .requests()
+        .iter()
+        .zip(bodies.iter())
+        .filter(|(line, _)| line.starts_with("POST "))
+        .map(|(_, body)| serde_json::from_slice::<Value>(body).expect("[C20] JSON"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        post_bodies,
+        vec![
+            json!({"title": "Created issue", "body": "Issue body\n"}),
+            json!({
+                "title": "Pull: created",
+                "head": "feature",
+                "base": "main",
+                "draft": true,
+                "body": "Pull body\n"
+            }),
+            json!({"body": "comment bytes"})
+        ],
+        "[C20] only approved keys"
     );
 }
