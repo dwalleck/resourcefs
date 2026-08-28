@@ -526,6 +526,11 @@ mod tests {
     /// helper. The second run is the positive control — without it, a helper
     /// that never resolves would make the first assertion pass for the wrong
     /// reason.
+    ///
+    /// The `PATH` literal is deliberately relative. This test never changes
+    /// directory, so its positive control also fences rfs-7r1w: the helper is
+    /// found only because a declared relative `PATH` resolves against the
+    /// profile directory rather than the launch directory.
     #[tokio::test]
     async fn an_unmountable_kind_is_refused_before_its_credential_resolves() {
         let temporary = tempfile::tempdir().expect("temporary directory");
@@ -548,7 +553,7 @@ mod tests {
                             "command":{{
                                 "argv":["credential-helper"],
                                 "environment":{{
-                                    "PATH":{{"kind":"literal","value":"{}"}},
+                                    "PATH":{{"kind":"literal","value":"command-bin"}},
                                     "RFS_CHECK_MARKER":{{"kind":"literal","value":"{}"}}
                                 }}
                             }}
@@ -556,9 +561,6 @@ mod tests {
                         "repositories":[{{"name":"owner/repository"}}]
                     }}]
                 }}"#,
-                // Absolute: the helper is spawned against the process cwd, not
-                // the profile directory, and this test does not chdir.
-                command_directory.display(),
                 marker.display()
             ),
         )

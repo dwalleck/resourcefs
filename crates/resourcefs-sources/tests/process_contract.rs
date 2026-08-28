@@ -668,3 +668,114 @@ fn process_absent_or_zombie(pid: u32) -> bool {
     // SAFETY: The process handle remains live for this zero-time wait.
     unsafe { WaitForSingleObject(handle.as_raw_handle().cast(), 0) == WAIT_OBJECT_0 }
 }
+
+/// rfs-7r1w — a profile-declared relative `PATH` is resolved against the
+/// configuration base, never against the directory the server was launched
+/// from.
+///
+/// The profile checker validates a declared `PATH` by joining each
+/// non-absolute entry onto the configuration base, so the directory it
+/// accepted must be the directory the child actually searches. Forwarding the
+/// value verbatim left that to the child's inherited working directory, which
+/// is how one profile could pass `rfs check` from anywhere and then fail to
+/// find its credential helper under `rfs serve`.
+///
+/// The cargo working directory is never the temporary command base, so a child
+/// that received the relative value unchanged would search somewhere else
+/// entirely — the assertion below cannot pass by coincidence of layout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn declared_relative_path_resolves_against_the_command_base() {
+    let temporary = TempDir::new().expect("command base");
+    let base = temporary
+        .path()
+        .canonicalize()
+        .expect("canonical command base");
+    assert_ne!(
+        env::current_dir().expect("test working directory"),
+        base,
+        "this fence is only meaningful when the launch directory differs from the base"
+    );
+
+    let executor = CommandExecutor::new(1, temporary.path()).expect("executor");
+    let mut extra = BTreeMap::new();
+    extra.insert(
+        "PATH".to_owned(),
+        EnvironmentValue::literal("command-bin").expect("relative PATH literal"),
+    );
+    let output = executor
+        .run(
+            &fixture_spec("inspect", extra),
+            CommandRole::OneShot,
+            CommandInput::None,
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("inspect command");
+    let rendered = String::from_utf8(output.stdout().to_vec()).expect("UTF-8 fixture output");
+    let inspection = rendered
+        .split_once(INSPECT_BEGIN)
+        .and_then(|(_, tail)| tail.split_once(INSPECT_END).map(|(body, _)| body))
+        .expect("bounded inspection body");
+    let observed = inspection
+        .lines()
+        .find_map(|line| line.strip_prefix("ENV=PATH="))
+        .expect("the child reports the PATH it was handed");
+    assert_eq!(
+        observed,
+        base.join("command-bin").to_string_lossy(),
+        "the child must search the configuration base, not the launch directory"
+    );
+}
+
+/// The same rule, proven by an actual lookup rather than by the value handed
+/// to the child: a bare `argv[0]` resolves through a declared relative `PATH`.
+///
+/// Unix only because a two-line shell script is the cheapest helper that is
+/// unambiguously executable; the portable half of the rule is fenced above.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn declared_relative_path_resolves_a_bare_program() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = TempDir::new().expect("command base");
+    let base = temporary
+        .path()
+        .canonicalize()
+        .expect("canonical command base");
+    let directory = base.join("command-bin");
+    fs::create_dir(&directory).expect("command directory");
+    let marker = base.join("helper-ran");
+    let helper = directory.join("rfs-fixture-helper");
+    fs::write(&helper, "#!/bin/sh\n: > \"$RFS_MARKER\"\n").expect("helper script");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).expect("helper mode");
+
+    let mut environment = BTreeMap::new();
+    environment.insert(
+        "PATH".to_owned(),
+        EnvironmentValue::literal("command-bin").expect("relative PATH literal"),
+    );
+    environment.insert(
+        "RFS_MARKER".to_owned(),
+        EnvironmentValue::literal(marker.to_string_lossy().into_owned()).expect("marker path"),
+    );
+    let spec = CommandSpec::new(
+        vec!["rfs-fixture-helper".to_owned()],
+        ChildEnvironment::new(environment).expect("child environment"),
+    )
+    .expect("bare-program command");
+
+    CommandExecutor::new(1, temporary.path())
+        .expect("executor")
+        .run(
+            &spec,
+            CommandRole::OneShot,
+            CommandInput::None,
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("a bare program resolves through the declared relative PATH");
+    assert!(
+        marker.exists(),
+        "the helper under the configuration base ran"
+    );
+}

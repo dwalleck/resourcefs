@@ -584,7 +584,7 @@ fn build_command(
         command.arg(canonical);
     }
     command.env_clear();
-    command.envs(resolve_environment(spec, role)?);
+    command.envs(resolve_environment(spec, role, base)?);
     command.stdin(match input {
         CommandInput::Stdin(_) => Stdio::piped(),
         CommandInput::None | CommandInput::Path(_) => Stdio::null(),
@@ -616,6 +616,7 @@ fn contains_path_separator(value: &str) -> bool {
 fn resolve_environment(
     spec: &CommandSpec,
     role: CommandRole,
+    base: &Path,
 ) -> Result<BTreeMap<OsString, OsString>, CommandError> {
     let entries = spec.environment().entries();
     let explicit = entries
@@ -623,6 +624,9 @@ fn resolve_environment(
         .map(|name| name.to_uppercase())
         .collect::<HashSet<_>>();
     let mut resolved = BTreeMap::new();
+    // An inherited PATH is the operator's ambient environment rather than
+    // profile-declared configuration, so it is forwarded exactly as found;
+    // only a declared PATH is resolved against the base below.
     inherit_automatic(&mut resolved, &explicit, "PATH");
     #[cfg(windows)]
     inherit_automatic(&mut resolved, &explicit, "SystemRoot");
@@ -649,9 +653,50 @@ fn resolve_environment(
                 ));
             }
         };
+        let value = if destination.to_uppercase() == "PATH" {
+            resolve_declared_path(&value, base)?
+        } else {
+            value
+        };
         resolved.insert(OsString::from(destination), value);
     }
     Ok(resolved)
+}
+
+/// Resolves a profile-declared `PATH` against the configuration base.
+///
+/// One rule governs every relative path a command spec names: it is relative
+/// to the configuration base, never to whatever directory the server happened
+/// to be launched from. [`resolve_program`] already applies that rule to a
+/// relative `argv[0]`, and the profile checker applies it when it validates a
+/// declared `PATH` — it joins each non-absolute entry onto the same base
+/// before testing for an executable.
+///
+/// Forwarding a declared `PATH` verbatim broke that agreement, because the
+/// child resolves relative entries against its inherited working directory: a
+/// profile that `rfs check` accepted from any directory could fail to find its
+/// credential helper under `rfs serve` unless the operator happened to launch
+/// from the profile directory (rfs-7r1w). Rewriting the value here restores
+/// one rule and leaves the child's working directory untouched, so a helper
+/// that reads its own cwd keeps seeing what it saw before.
+///
+/// An empty entry — POSIX's spelling of "the current directory" — is
+/// non-absolute and so resolves to the base like any other relative entry,
+/// which is exactly how the checker already reads it.
+fn resolve_declared_path(value: &OsString, base: &Path) -> Result<OsString, CommandError> {
+    let resolved = env::split_paths(value).map(|entry| {
+        if entry.is_absolute() {
+            entry
+        } else {
+            base.join(entry)
+        }
+    });
+    env::join_paths(resolved).map_err(|_| {
+        CommandError::new(
+            CommandErrorKind::InvalidEnvironment,
+            "command PATH cannot be resolved against the configuration base",
+        )
+    })
 }
 
 fn inherit_automatic(
