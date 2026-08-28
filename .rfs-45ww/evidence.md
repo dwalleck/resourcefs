@@ -70,6 +70,21 @@
 - P5: new learning — no machine-only matrix can perfectly distinguish all permission, absence, and secondary-rate-limit responses. `401`, primary-limit remaining `0`, `429`, and `Retry-After` are machine-classifiable; upstream `404` intentionally collapses hidden and absent resources, while a secondary-limit `403` without rate headers is distinguishable only by human message text. The re-approved spec chooses the stable collapse: all `404` is `not_found`; `429` or signaled rate-limit `403` is `source_unavailable`; other `403` is `permission_denied`; message prose is never matched.
 - P6: validated prior understanding for the observed fixed query — numeric page 2 and GitHub's cursor-bearing Link target selected the same next object. The adapter can expose the approved numeric continuation, but must still treat Link as authoritative while following pages inside one operation.
 
+## Live read smoke (2026-08-27, after the review fixes)
+
+P1–P6 were live evidence about GitHub; the adapter itself had only ever met the deterministic fake upstream, whose fixture still spelled Link targets as `/repos/{owner}/{repo}` after P4 had captured the real `/repositories/{id}?…&after=…` form (review finding F1). `crates/resourcefs-sources/tests/github_live_smoke.rs` (ignored; `GITHUB_TOKEN="$(gh auth token)"`) now drives the real `GithubSource` + `HttpSubstrate` against public `rust-lang/rust`, GET only, on the rows the fake cannot be trusted to imitate. Run: one pass, 23.4 s, ~35 authenticated requests.
+
+| ID | Row | Observation | Verdict |
+|----|-----|-------------|---------|
+| L1 | `issue://rust-lang/rust`, then `:page:11` | Ten real `/repositories/724712/issues?…&after=<cursor>&page=n` Links followed; 350 issue rows rendered from 1,000 objects (PR rows filtered per spec) with typed continuation `issue://rust-lang/rust:page:11`; the page-11 read rendered 83 rows and named `:page:21`. | PASS |
+| L2 | `pr://rust-lang/rust/159232` aggregate and projections | 10,901-byte aggregate with `Kind: pull request`, `Merged: true`, review / review-comment references, and `diff/1`–`diff/4` rows; conversation comment 4959513954 and inline comment 3826494362 read under their real `issue_url` / `pull_request_url` parents; `diff/1` rendered `File:`. | PASS |
+| L3 | `pr://rust-lang/rust/161878/diff/45` (56 changed files) | Resolved on the 100-per-page listing page (`tests/ui/coercion/unboxing-needing-parenthases-issue-132924.stderr`), past the endpoint's 30-row default. | PASS |
+| L4 | kind and parent refusals | `issue://rust-lang/rust/159232` (a PR), `issue://rust-lang/rust/1/comments/4959513954` (a PR comment under another parent), and `issue://rust-lang/rust/999999999` all `not_found`. | PASS |
+| L5 | repeated `pr://…/159232/title` | Identical content and Version Tag on the second read through the real ETag revalidation path. | PASS |
+| L6 | `rfs_search ^Kind: ` over the aggregate | One record attributed to `pr://rust-lang/rust/159232` line 3. | PASS |
+
+Learned: `state=all` issue listings on a PR-heavy repository yield roughly a third issue rows per 1,000 objects fetched, so a `:page:` continuation can arrive with far fewer than 1,000 rendered rows; that is the approved bound behaving as specified, not a defect.
+
 ## Related issues
 - Consulted: rfs-jk0d (accepted GitHub source and direct-adapter behavior), rfs-g2z9 (bounded HTTP substrate evidence), rfs-by2z (future GitHub mutation boundary), rfs-q12y (HTTP dependency vetting).
-- Filed: none.
+- Filed (from the 2026-08-27 review fixes): rfs-7r1w (relative `PATH` in command credentials resolves against the profile directory at check time but the process cwd at serve time), rfs-jsx9 (structural source continuation alongside artifact recovery on overflow; related to rfs-ww6w).
