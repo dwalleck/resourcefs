@@ -779,3 +779,73 @@ async fn declared_relative_path_resolves_a_bare_program() {
         "the helper under the configuration base ran"
     );
 }
+
+/// rfs-7r1w — the same rule reaches an inherited `PATH`, not only a declared
+/// one.
+///
+/// When a spec declares no `PATH`, the child inherits the operator's ambient
+/// value; the profile checker validates that fallback against the
+/// configuration base exactly as it validates a declared one. Exempting the
+/// inherited value would leave the checker stricter than the executor for
+/// precisely the inputs this bug is about, so both are resolved in one place.
+///
+/// The ambient `PATH` is controlled by re-executing this test in a child
+/// process rather than by `set_var`, which would race every other test in this
+/// binary. The inner process never needs `PATH` to spawn anything — both it
+/// and the command it runs are named by absolute path — so replacing it
+/// wholesale is safe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inherited_relative_path_resolves_against_the_command_base() {
+    const NESTED: &str = "RFS_NESTED_INHERITED_PATH";
+    if env::var_os(NESTED).is_none() {
+        let output = Command::new(env::current_exe().expect("current test executable"))
+            .args([
+                "inherited_relative_path_resolves_against_the_command_base",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(NESTED, "1")
+            .env("PATH", "ambient-bin")
+            .output()
+            .expect("nested inherited PATH contract");
+        assert!(
+            output.status.success(),
+            "nested inherited PATH contract failed: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        return;
+    }
+
+    let temporary = TempDir::new().expect("command base");
+    let base = temporary
+        .path()
+        .canonicalize()
+        .expect("canonical command base");
+    let executor = CommandExecutor::new(1, temporary.path()).expect("executor");
+    // No declared PATH: the child's value is the ambient one this process was
+    // started with.
+    let output = executor
+        .run(
+            &fixture_spec("inspect", BTreeMap::new()),
+            CommandRole::OneShot,
+            CommandInput::None,
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("inspect command");
+    let rendered = String::from_utf8(output.stdout().to_vec()).expect("UTF-8 fixture output");
+    let inspection = rendered
+        .split_once(INSPECT_BEGIN)
+        .and_then(|(_, tail)| tail.split_once(INSPECT_END).map(|(body, _)| body))
+        .expect("bounded inspection body");
+    let observed = inspection
+        .lines()
+        .find_map(|line| line.strip_prefix("ENV=PATH="))
+        .expect("the child reports the PATH it was handed");
+    assert_eq!(
+        observed,
+        base.join("ambient-bin").to_string_lossy(),
+        "an inherited relative entry resolves against the base, like a declared one"
+    );
+}

@@ -624,9 +624,6 @@ fn resolve_environment(
         .map(|name| name.to_uppercase())
         .collect::<HashSet<_>>();
     let mut resolved = BTreeMap::new();
-    // An inherited PATH is the operator's ambient environment rather than
-    // profile-declared configuration, so it is forwarded exactly as found;
-    // only a declared PATH is resolved against the base below.
     inherit_automatic(&mut resolved, &explicit, "PATH");
     #[cfg(windows)]
     inherit_automatic(&mut resolved, &explicit, "SystemRoot");
@@ -653,37 +650,50 @@ fn resolve_environment(
                 ));
             }
         };
-        let value = if destination.to_uppercase() == "PATH" {
-            resolve_declared_path(&value, base)?
-        } else {
-            value
-        };
         resolved.insert(OsString::from(destination), value);
+    }
+
+    // One rule, applied once, to whichever PATH the child ends up with —
+    // declared by the profile or inherited from the operator's environment.
+    // Both reach the child through the same search, and the profile checker
+    // validates both against the same base, so resolving in one place is what
+    // keeps `rfs check` and `rfs serve` from disagreeing.
+    for (name, value) in &mut resolved {
+        if name.to_string_lossy().eq_ignore_ascii_case("PATH") {
+            *value = resolve_search_path(value, base)?;
+        }
     }
     Ok(resolved)
 }
 
-/// Resolves a profile-declared `PATH` against the configuration base.
+/// Resolves a child's `PATH` against the configuration base.
 ///
-/// One rule governs every relative path a command spec names: it is relative
-/// to the configuration base, never to whatever directory the server happened
-/// to be launched from. [`resolve_program`] already applies that rule to a
-/// relative `argv[0]`, and the profile checker applies it when it validates a
-/// declared `PATH` — it joins each non-absolute entry onto the same base
-/// before testing for an executable.
+/// One rule governs every relative path a command resolves: it is relative to
+/// the configuration base, never to whatever directory the server happened to
+/// be launched from. [`resolve_program`] already applies that rule to a
+/// relative `argv[0]`, and the profile checker applies it to whichever `PATH`
+/// it validates — the profile-declared value when there is one, otherwise the
+/// ambient value it falls back to — joining each non-absolute entry onto the
+/// same base before testing for an executable.
 ///
-/// Forwarding a declared `PATH` verbatim broke that agreement, because the
-/// child resolves relative entries against its inherited working directory: a
-/// profile that `rfs check` accepted from any directory could fail to find its
-/// credential helper under `rfs serve` unless the operator happened to launch
-/// from the profile directory (rfs-7r1w). Rewriting the value here restores
-/// one rule and leaves the child's working directory untouched, so a helper
-/// that reads its own cwd keeps seeing what it saw before.
+/// Forwarding `PATH` verbatim broke that agreement, because the child resolves
+/// relative entries against its inherited working directory: a profile that
+/// `rfs check` accepted from any directory could fail to find its credential
+/// helper under `rfs serve` unless the operator happened to launch from the
+/// profile directory (rfs-7r1w). Rewriting here restores one rule and leaves
+/// the child's working directory untouched, so a helper that reads its own cwd
+/// keeps seeing what it saw before.
+///
+/// Declared and inherited values are treated alike deliberately. A relative
+/// entry means the same thing whoever wrote it, and exempting the ambient
+/// value would leave the checker stricter than the executor for exactly the
+/// inputs this bug is about. A normal `PATH` holds only absolute entries, for
+/// which this is a no-op.
 ///
 /// An empty entry — POSIX's spelling of "the current directory" — is
 /// non-absolute and so resolves to the base like any other relative entry,
 /// which is exactly how the checker already reads it.
-fn resolve_declared_path(value: &OsString, base: &Path) -> Result<OsString, CommandError> {
+fn resolve_search_path(value: &OsString, base: &Path) -> Result<OsString, CommandError> {
     let resolved = env::split_paths(value).map(|entry| {
         if entry.is_absolute() {
             entry
