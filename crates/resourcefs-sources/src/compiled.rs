@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use resourcefs_core::{
     CatalogAddress, DiscoveryAdapter, ErrorCategory, GlobOptions, GlobSource, GlobTarget,
-    MutationAccess, MutationAdapter, MutationState, MutationTarget, OperationGuard, PathReference,
-    ResourceAddress, ResourceError, SearchOptions, SearchSourceResult, SearchTarget, SourceAdapter,
-    SourceGlobResult, SourceMutation, SourceResource, catalog_discovery_unsupported,
+    MutationAccess, MutationAdapter, MutationCommitFailure, MutationCommitOutcome, MutationState,
+    MutationTarget, OperationGuard, PathReference, ResourceAddress, ResourceError, SearchOptions,
+    SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult, SourceMutation,
+    SourceResource, catalog_discovery_unsupported,
 };
 
 use crate::{
@@ -161,7 +162,7 @@ impl MutationAdapter for CompiledSources {
         &self,
         mutation: SourceMutation,
         operation: &OperationGuard,
-    ) -> Result<(), ResourceError> {
+    ) -> Result<MutationCommitOutcome, MutationCommitFailure> {
         let target = match &mutation {
             SourceMutation::Create { target, .. }
             | SourceMutation::Replace { target, .. }

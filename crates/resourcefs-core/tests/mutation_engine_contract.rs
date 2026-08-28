@@ -10,11 +10,12 @@ use std::{
 use async_trait::async_trait;
 use resourcefs_core::{
     ArtifactId, DisplayedLineRange, ErrorCategory, MAX_HASHLINE_PATCH_BYTES, MutationAccess,
-    MutationAdapter, MutationEngine, MutationOperation, MutationOperationOutcome,
-    MutationOperationStart, MutationResourceKey, MutationSourceKey, MutationState, MutationTarget,
-    OperationGuard, OperationId, PathReference, PathSession, ResourceError, ServerLimits,
-    ServerLimitsInput, SessionCacheEntry, SessionCacheKey, SessionStorage, SessionToken,
-    SourceMutation, StorageLimitInput, VersionSelector, VersionTag, WriteRequest,
+    MutationAdapter, MutationCommitFailure, MutationCommitOutcome, MutationEngine,
+    MutationOperation, MutationOperationOutcome, MutationOperationStart, MutationResourceKey,
+    MutationSourceKey, MutationState, MutationTarget, MutationTargetMode, OperationGuard,
+    OperationId, PathReference, PathSession, ResourceError, ServerLimits, ServerLimitsInput,
+    SessionCacheEntry, SessionCacheKey, SessionStorage, SessionToken, SourceMutation,
+    StorageLimitInput, VersionSelector, VersionTag, WriteRequest,
 };
 use tokio::sync::Mutex;
 
@@ -77,6 +78,7 @@ impl MutationAdapter for FakeAdapter {
         MutationTarget::new(
             reference.clone(),
             MutationSourceKey::new("fake").expect("source key"),
+            MutationTargetMode::AuthoredText,
         )
     }
 
@@ -93,11 +95,12 @@ impl MutationAdapter for FakeAdapter {
         &self,
         _mutation: SourceMutation,
         _operation: &OperationGuard,
-    ) -> Result<(), ResourceError> {
+    ) -> Result<MutationCommitOutcome, MutationCommitFailure> {
         Err(ResourceError::new(
             ErrorCategory::UnsupportedMutation,
             "fake adapter does not commit",
-        ))
+        )
+        .into())
     }
 }
 
@@ -137,6 +140,7 @@ impl MutationAdapter for StatefulAdapter {
         MutationTarget::new(
             reference.clone(),
             MutationSourceKey::new("stateful").expect("source key"),
+            MutationTargetMode::AuthoredText,
         )
     }
 
@@ -153,12 +157,13 @@ impl MutationAdapter for StatefulAdapter {
         &self,
         mutation: SourceMutation,
         _operation: &OperationGuard,
-    ) -> Result<(), ResourceError> {
+    ) -> Result<MutationCommitOutcome, MutationCommitFailure> {
         if self.fail_commit.swap(false, Ordering::AcqRel) {
             return Err(ResourceError::new(
                 ErrorCategory::SourceUnavailable,
                 "injected commit failure",
-            ));
+            )
+            .into());
         }
         let mut state = self.state.lock().await;
         match mutation {
@@ -167,7 +172,8 @@ impl MutationAdapter for StatefulAdapter {
                     return Err(ResourceError::new(
                         ErrorCategory::VersionConflict,
                         "destination exists",
-                    ));
+                    )
+                    .into());
                 }
                 *state = MutationState::Text {
                     version_tag: VersionTag::from_content(content.as_bytes()),
@@ -181,13 +187,15 @@ impl MutationAdapter for StatefulAdapter {
                     return Err(ResourceError::new(
                         ErrorCategory::VersionConflict,
                         "destination is missing",
-                    ));
+                    )
+                    .into());
                 };
                 if version_tag != &expected {
                     return Err(ResourceError::new(
                         ErrorCategory::VersionConflict,
                         "stale destination",
-                    ));
+                    )
+                    .into());
                 }
                 *state = MutationState::Text {
                     version_tag: VersionTag::from_content(content.as_bytes()),
@@ -199,13 +207,15 @@ impl MutationAdapter for StatefulAdapter {
                     return Err(ResourceError::new(
                         ErrorCategory::VersionConflict,
                         "destination is missing",
-                    ));
+                    )
+                    .into());
                 };
                 if version_tag != &expected {
                     return Err(ResourceError::new(
                         ErrorCategory::VersionConflict,
                         "stale destination",
-                    ));
+                    )
+                    .into());
                 }
                 *state = MutationState::Missing;
             }
@@ -213,10 +223,11 @@ impl MutationAdapter for StatefulAdapter {
                 return Err(ResourceError::new(
                     ErrorCategory::UnsupportedMutation,
                     "unsupported fake mutation",
-                ));
+                )
+                .into());
             }
         }
-        Ok(())
+        Ok(MutationCommitOutcome::AuthoredText)
     }
 }
 
@@ -662,6 +673,243 @@ async fn operation_journal_budget() {
     assert!(
         compare_elapsed <= Duration::from_millis(50),
         "[C4] 64 MiB fingerprint and exact comparison took {compare_elapsed:?}"
+    );
+}
+
+#[derive(Debug)]
+struct OutcomeAdapter {
+    mode: MutationTargetMode,
+    state: MutationState,
+    outcome: Mutex<Option<Result<MutationCommitOutcome, MutationCommitFailure>>>,
+}
+
+#[async_trait]
+impl MutationAdapter for OutcomeAdapter {
+    async fn resolve(
+        &self,
+        reference: &PathReference,
+        _access: MutationAccess,
+    ) -> Result<MutationTarget, ResourceError> {
+        MutationTarget::new(
+            reference.clone(),
+            MutationSourceKey::new("outcome").expect("[C7] source"),
+            self.mode,
+        )
+    }
+
+    async fn load(
+        &self,
+        _target: &MutationTarget,
+        _access: MutationAccess,
+        _operation: &OperationGuard,
+    ) -> Result<MutationState, ResourceError> {
+        Ok(self.state.clone())
+    }
+
+    async fn commit(
+        &self,
+        _mutation: SourceMutation,
+        _operation: &OperationGuard,
+    ) -> Result<MutationCommitOutcome, MutationCommitFailure> {
+        self.outcome
+            .lock()
+            .await
+            .take()
+            .expect("[C7] one commit outcome")
+    }
+}
+
+async fn illegal_mode_outcome(
+    mode: MutationTargetMode,
+    outcome: MutationCommitOutcome,
+    session_id: u8,
+) -> ResourceError {
+    let old_tag = VersionTag::from_content(b"old");
+    let (reference, state, if_version, operation_id) = match mode {
+        MutationTargetMode::AuthoredText => (
+            PathReference::parse("rfs://workspace/workspace/mismatch.txt")
+                .expect("[C7] authored mismatch"),
+            MutationState::Missing,
+            None,
+            None,
+        ),
+        MutationTargetMode::AuthoritativeText => (
+            PathReference::parse("issue://owner/repo/1/title")
+                .expect("[C7] authoritative mismatch"),
+            MutationState::Text {
+                content: "old".to_owned(),
+                version_tag: old_tag.clone(),
+            },
+            Some(old_tag),
+            None,
+        ),
+        MutationTargetMode::CreationTarget => (
+            PathReference::parse("issue://owner/repo/new").expect("[C7] creation mismatch"),
+            MutationState::Missing,
+            None,
+            Some(OperationId::parse(format!("mismatch-{session_id}")).expect("[C7] mismatch ID")),
+        ),
+    };
+    MutationEngine::new(
+        Arc::new(OutcomeAdapter {
+            mode,
+            state,
+            outcome: Mutex::new(Some(Ok(outcome))),
+        }),
+        session(session_id),
+    )
+    .write(
+        WriteRequest::new(reference, "content".to_owned(), if_version, operation_id)
+            .expect("[C7] mismatch request"),
+        &OperationGuard::new(),
+    )
+    .await
+    .expect_err("[C7] illegal mode/outcome")
+}
+
+#[tokio::test]
+async fn target_mode_outcome_matrix() {
+    let authored_path =
+        PathReference::parse("rfs://workspace/workspace/authored.txt").expect("[C7] authored");
+    let authored = MutationEngine::new(
+        Arc::new(OutcomeAdapter {
+            mode: MutationTargetMode::AuthoredText,
+            state: MutationState::Missing,
+            outcome: Mutex::new(Some(Ok(MutationCommitOutcome::AuthoredText))),
+        }),
+        session(20),
+    )
+    .write(
+        WriteRequest::new(authored_path, "authored\n".to_owned(), None, None)
+            .expect("[C7] authored request"),
+        &OperationGuard::new(),
+    )
+    .await
+    .expect("[C7] authored outcome");
+    assert!(authored.version_tag().is_some(), "[C7] authored tag");
+    assert!(
+        authored.displayed_ranges().is_some(),
+        "[C7] authored coverage"
+    );
+
+    let old_tag = VersionTag::from_content(b"old");
+    let response_tag = VersionTag::from_content(b"normalized");
+    let authoritative_path =
+        PathReference::parse("issue://owner/repo/1/title").expect("[C7] authoritative");
+    let authoritative = MutationEngine::new(
+        Arc::new(OutcomeAdapter {
+            mode: MutationTargetMode::AuthoritativeText,
+            state: MutationState::Text {
+                content: "old".to_owned(),
+                version_tag: old_tag.clone(),
+            },
+            outcome: Mutex::new(Some(Ok(MutationCommitOutcome::AuthoritativeText {
+                version_tag: response_tag.clone(),
+            }))),
+        }),
+        session(21),
+    )
+    .write(
+        WriteRequest::new(
+            authoritative_path,
+            "submitted".to_owned(),
+            Some(old_tag),
+            None,
+        )
+        .expect("[C7] authoritative request"),
+        &OperationGuard::new(),
+    )
+    .await
+    .expect("[C7] authoritative outcome");
+    assert_eq!(authoritative.version_tag(), Some(&response_tag));
+    assert_eq!(
+        authoritative.displayed_ranges(),
+        None,
+        "[C7] no seen coverage"
+    );
+
+    let creation_path =
+        PathReference::parse("issue://owner/repo/new").expect("[C7] Creation Target");
+    let created_path =
+        PathReference::parse("issue://owner/repo/77").expect("[C7] created Resource");
+    let creation = MutationEngine::new(
+        Arc::new(OutcomeAdapter {
+            mode: MutationTargetMode::CreationTarget,
+            state: MutationState::Missing,
+            outcome: Mutex::new(Some(Ok(MutationCommitOutcome::CreationTarget {
+                canonical_reference: created_path.clone(),
+            }))),
+        }),
+        session(22),
+    )
+    .write(
+        WriteRequest::new(
+            creation_path,
+            "creation document".to_owned(),
+            None,
+            Some(OperationId::parse("create-77").expect("[C7] ID")),
+        )
+        .expect("[C7] creation request"),
+        &OperationGuard::new(),
+    )
+    .await
+    .expect("[C7] creation outcome");
+    assert_eq!(creation.canonical_reference(), &created_path);
+    assert_eq!(creation.version_tag(), None);
+    assert_eq!(creation.displayed_ranges(), None);
+
+    let mismatch_reference =
+        PathReference::parse("issue://owner/repo/88").expect("[C7] mismatch Resource");
+    let mismatch_tag = VersionTag::from_content(b"mismatch");
+    let mismatch_started = Instant::now();
+    for (index, (mode, outcome)) in [
+        (
+            MutationTargetMode::AuthoredText,
+            MutationCommitOutcome::AuthoritativeText {
+                version_tag: mismatch_tag.clone(),
+            },
+        ),
+        (
+            MutationTargetMode::AuthoredText,
+            MutationCommitOutcome::CreationTarget {
+                canonical_reference: mismatch_reference.clone(),
+            },
+        ),
+        (
+            MutationTargetMode::AuthoritativeText,
+            MutationCommitOutcome::AuthoredText,
+        ),
+        (
+            MutationTargetMode::AuthoritativeText,
+            MutationCommitOutcome::CreationTarget {
+                canonical_reference: mismatch_reference.clone(),
+            },
+        ),
+        (
+            MutationTargetMode::CreationTarget,
+            MutationCommitOutcome::AuthoredText,
+        ),
+        (
+            MutationTargetMode::CreationTarget,
+            MutationCommitOutcome::AuthoritativeText {
+                version_tag: mismatch_tag.clone(),
+            },
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let error = illegal_mode_outcome(mode, outcome, 30 + index as u8).await;
+        assert_eq!(
+            error.category(),
+            ErrorCategory::SourceUnavailable,
+            "[C7] mismatch {index}"
+        );
+    }
+    let mismatch_average = mismatch_started.elapsed() / 6;
+    assert!(
+        mismatch_average <= Duration::from_millis(1),
+        "[C7] target/outcome dispatch averaged {mismatch_average:?}"
     );
 }
 
@@ -1129,13 +1377,14 @@ fn mutation_identities_reject_empty_sources_and_relative_targets() {
     let source = MutationSourceKey::new("workspace").expect("source key");
     assert_eq!(source.as_str(), "workspace");
     let relative = PathReference::parse("fixture.txt").expect("relative reference");
-    let error =
-        MutationTarget::new(relative, source.clone()).expect_err("relative mutation target");
+    let error = MutationTarget::new(relative, source.clone(), MutationTargetMode::AuthoredText)
+        .expect_err("relative mutation target");
     assert_eq!(error.category(), ErrorCategory::InvalidReference);
 
     let canonical =
         PathReference::parse("rfs://workspace/workspace/fixture.txt").expect("canonical reference");
-    let target = MutationTarget::new(canonical.clone(), source).expect("mutation target");
+    let target = MutationTarget::new(canonical.clone(), source, MutationTargetMode::AuthoredText)
+        .expect("mutation target");
     assert_eq!(target.canonical_reference(), &canonical);
     assert_eq!(target.source_key().as_str(), "workspace");
 }

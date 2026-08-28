@@ -10,7 +10,10 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::{
     ErrorCategory, MAX_ARTIFACT_BYTES, OperationGuard, PathReference, PathSession, ResourceAddress,
-    ResourceError, VersionTag, WorkspaceAddress, session::SeenSnapshotData,
+    ResourceError, VersionTag, WorkspaceAddress,
+    session::{
+        MutationOperationOutcome as JournalOutcome, MutationOperationStart, SeenSnapshotData,
+    },
 };
 
 pub const MAX_HASHLINE_PATCH_BYTES: usize = MAX_ARTIFACT_BYTES;
@@ -1118,16 +1121,29 @@ impl MutationResourceKey {
     }
 }
 
+/// Receipt and snapshot authority for a resolved mutation target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationTargetMode {
+    /// Submitted bytes are the authoritative committed text.
+    AuthoredText,
+    /// The adapter's success response supplies the authoritative text tag.
+    AuthoritativeText,
+    /// A write-only target whose success supplies a new canonical Resource.
+    CreationTarget,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationTarget {
     canonical_reference: PathReference,
     source_key: MutationSourceKey,
+    mode: MutationTargetMode,
 }
 
 impl MutationTarget {
     pub fn new(
         canonical_reference: PathReference,
         source_key: MutationSourceKey,
+        mode: MutationTargetMode,
     ) -> Result<Self, ResourceError> {
         if let ResourceAddress::Workspace(address) = canonical_reference.address()
             && !matches!(address, WorkspaceAddress::Canonical { .. })
@@ -1140,6 +1156,7 @@ impl MutationTarget {
         Ok(Self {
             canonical_reference,
             source_key,
+            mode,
         })
     }
 
@@ -1149,6 +1166,10 @@ impl MutationTarget {
 
     pub const fn source_key(&self) -> &MutationSourceKey {
         &self.source_key
+    }
+
+    pub const fn mode(&self) -> MutationTargetMode {
+        self.mode
     }
 
     fn lock_key(&self) -> MutationResourceKey {
@@ -1187,6 +1208,46 @@ pub enum SourceMutation {
     },
 }
 
+/// Adapter-confirmed mutation result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MutationCommitOutcome {
+    /// Submitted bytes were committed exactly.
+    AuthoredText,
+    /// Adapter response supplied the authoritative post-commit tag.
+    AuthoritativeText { version_tag: VersionTag },
+    /// Creation returned the new canonical Resource identity.
+    CreationTarget { canonical_reference: PathReference },
+}
+
+/// Whether a failed adapter commit is known not to have committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MutationCommitFailure {
+    /// The adapter knows no mutation committed.
+    Conclusive(ResourceError),
+    /// The adapter cannot determine whether the mutation committed.
+    Unknown(ResourceError),
+}
+
+impl MutationCommitFailure {
+    pub const fn error(&self) -> &ResourceError {
+        match self {
+            Self::Conclusive(error) | Self::Unknown(error) => error,
+        }
+    }
+
+    pub fn into_error(self) -> ResourceError {
+        match self {
+            Self::Conclusive(error) | Self::Unknown(error) => error,
+        }
+    }
+}
+
+impl From<ResourceError> for MutationCommitFailure {
+    fn from(error: ResourceError) -> Self {
+        Self::Conclusive(error)
+    }
+}
+
 #[async_trait]
 pub trait MutationAdapter: Send + Sync {
     async fn resolve(
@@ -1206,7 +1267,7 @@ pub trait MutationAdapter: Send + Sync {
         &self,
         mutation: SourceMutation,
         operation: &OperationGuard,
-    ) -> Result<(), ResourceError>;
+    ) -> Result<MutationCommitOutcome, MutationCommitFailure>;
 }
 
 #[derive(Clone)]
@@ -1242,13 +1303,39 @@ impl MutationEngine {
             reference,
             content,
             if_version,
-            operation_id,
+            mut operation_id,
         } = request;
-        if operation_id.is_some() {
+        let is_creation_target = reference.is_creation_target();
+        if is_creation_target && reference.projection().is_some() {
             return Err(ResourceError::new(
                 ErrorCategory::InvalidReference,
-                "operationId is valid only for a remote Creation Target",
+                "Creation Target writes do not accept projection selectors",
             ));
+        }
+        match (
+            is_creation_target,
+            operation_id.is_some(),
+            if_version.is_some(),
+        ) {
+            (true, false, _) => {
+                return Err(ResourceError::new(
+                    ErrorCategory::InvalidReference,
+                    "remote Creation Target writes require operationId",
+                ));
+            }
+            (true, true, true) => {
+                return Err(ResourceError::new(
+                    ErrorCategory::InvalidReference,
+                    "Creation Target writes do not accept ifVersion",
+                ));
+            }
+            (false, true, _) => {
+                return Err(ResourceError::new(
+                    ErrorCategory::InvalidReference,
+                    "operationId is valid only for a remote Creation Target",
+                ));
+            }
+            (true, true, false) | (false, false, _) => {}
         }
         let access = if if_version.is_some() {
             MutationAccess::Update
@@ -1256,45 +1343,124 @@ impl MutationEngine {
             MutationAccess::Create
         };
         let target = self.adapter.resolve(&reference, access).await?;
+        if is_creation_target != matches!(target.mode(), MutationTargetMode::CreationTarget) {
+            return Err(ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                "Source Adapter resolved a mutation target with the wrong target mode",
+            ));
+        }
+        if matches!(target.mode(), MutationTargetMode::AuthoritativeText) && if_version.is_none() {
+            return Err(ResourceError::new(
+                ErrorCategory::VersionConflict,
+                "authoritative text replacement requires ifVersion",
+            ));
+        }
+
+        let mut journal_lease = if matches!(target.mode(), MutationTargetMode::CreationTarget) {
+            let id = operation_id
+                .take()
+                .expect("Creation Target metadata matrix requires operationId");
+            match self
+                .session
+                .begin_mutation_operation(
+                    id,
+                    target.canonical_reference().clone(),
+                    Arc::clone(&content),
+                )
+                .await?
+            {
+                MutationOperationStart::Owner(lease) => Some(lease),
+                MutationOperationStart::Wait(waiter) => {
+                    return match waiter.wait().await {
+                        JournalOutcome::Succeeded(reference) => {
+                            Ok(Self::creation_receipt(reference))
+                        }
+                        JournalOutcome::Conclusive(error) | JournalOutcome::Unknown(error) => {
+                            Err(error)
+                        }
+                    };
+                }
+                MutationOperationStart::Replay(reference) => {
+                    return Ok(Self::creation_receipt(reference));
+                }
+                MutationOperationStart::Unknown(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+
         let _locks = self.lock_resources([target.lock_key()]).await?;
-        let state = self.adapter.load(&target, access, operation).await?;
+        let state = match self.adapter.load(&target, access, operation).await {
+            Ok(state) => state,
+            Err(error) => {
+                if let Some(lease) = journal_lease.take() {
+                    lease.finish(JournalOutcome::Conclusive(error.clone()));
+                }
+                return Err(error);
+            }
+        };
         let operation_kind = match (&if_version, &state) {
-            (None, MutationState::Missing) => MutationOperation::Created,
-            (None, MutationState::Text { .. }) => {
-                return Err(ResourceError::new(
-                    ErrorCategory::VersionConflict,
-                    "create requires a missing destination",
-                ));
-            }
-            (Some(_), MutationState::Missing) => {
-                return Err(ResourceError::new(
-                    ErrorCategory::VersionConflict,
-                    "replacement requires an existing Resource",
-                ));
-            }
+            (None, MutationState::Missing) => Ok(MutationOperation::Created),
+            (None, MutationState::Text { .. }) => Err(ResourceError::new(
+                ErrorCategory::VersionConflict,
+                "create requires a missing destination",
+            )),
+            (Some(_), MutationState::Missing) => Err(ResourceError::new(
+                ErrorCategory::VersionConflict,
+                "replacement requires an existing Resource",
+            )),
             (Some(expected), MutationState::Text { version_tag, .. })
                 if expected != version_tag =>
             {
-                return Err(ResourceError::new(
+                Err(ResourceError::new(
                     ErrorCategory::VersionConflict,
                     "replacement Version Tag does not match authoritative content",
-                ));
+                ))
             }
-            (Some(_), MutationState::Text { .. }) => MutationOperation::Replaced,
+            (Some(_), MutationState::Text { .. }) => Ok(MutationOperation::Replaced),
         };
-        let version_tag = VersionTag::from_content(content.as_bytes());
-        let displayed_ranges = complete_content_ranges(&content)?;
-        let reservation = self
-            .session
-            .reserve_seen(
-                target.canonical_reference().requested(),
-                &version_tag,
-                &displayed_ranges,
-                true,
-            )
-            .await?;
+        let operation_kind = match operation_kind {
+            Ok(operation_kind) => operation_kind,
+            Err(error) => {
+                if let Some(lease) = journal_lease.take() {
+                    lease.finish(JournalOutcome::Conclusive(error.clone()));
+                }
+                return Err(error);
+            }
+        };
+        let (authored_tag, displayed_ranges, mut reservation) =
+            if matches!(target.mode(), MutationTargetMode::AuthoredText) {
+                let version_tag = VersionTag::from_content(content.as_bytes());
+                let displayed_ranges = complete_content_ranges(&content)?;
+                let reservation = match self
+                    .session
+                    .reserve_seen(
+                        target.canonical_reference().requested(),
+                        &version_tag,
+                        &displayed_ranges,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(reservation) => reservation,
+                    Err(error) => {
+                        if let Some(lease) = journal_lease.take() {
+                            lease.finish(JournalOutcome::Conclusive(error.clone()));
+                        }
+                        return Err(error);
+                    }
+                };
+                (Some(version_tag), Some(displayed_ranges), Some(reservation))
+            } else {
+                (None, None, None)
+            };
         if let Err(error) = operation.begin_commit() {
-            self.session.cancel_seen(reservation).await;
+            if let Some(reservation) = reservation.take() {
+                self.session.cancel_seen(reservation).await;
+            }
+            if let Some(lease) = journal_lease.take() {
+                lease.finish(JournalOutcome::Conclusive(error.clone()));
+            }
             return Err(error);
         }
         let mutation = match (&if_version, operation_kind) {
@@ -1314,21 +1480,89 @@ impl MutationEngine {
             operation.finish_commit(),
             "write commit transition must complete"
         );
-        if let Err(error) = committed {
-            self.session.cancel_seen(reservation).await;
-            return Err(error);
-        }
-        self.session.publish_seen(reservation).await;
-        Ok(MutationReceipt {
-            operation: operation_kind,
-            canonical_reference: target.canonical_reference().clone(),
-            source_reference: None,
-            version_tag: Some(version_tag),
-            coverage: Some(ReceiptCoverage {
-                displayed_ranges,
-                displayed_eof: true,
+        let outcome = match committed {
+            Ok(outcome) => outcome,
+            Err(failure) => {
+                if let Some(reservation) = reservation.take() {
+                    self.session.cancel_seen(reservation).await;
+                }
+                let error = failure.error().clone();
+                if let Some(lease) = journal_lease.take() {
+                    match failure {
+                        MutationCommitFailure::Conclusive(_) => {
+                            lease.finish(JournalOutcome::Conclusive(error.clone()));
+                        }
+                        MutationCommitFailure::Unknown(_) => {
+                            lease.finish(JournalOutcome::Unknown(error.clone()));
+                        }
+                    }
+                }
+                return Err(error);
+            }
+        };
+        match (target.mode(), outcome) {
+            (MutationTargetMode::AuthoredText, MutationCommitOutcome::AuthoredText) => {
+                let reservation = reservation
+                    .take()
+                    .expect("AuthoredText reserves seen coverage before commit");
+                self.session.publish_seen(reservation).await;
+                Ok(MutationReceipt {
+                    operation: operation_kind,
+                    canonical_reference: target.canonical_reference().clone(),
+                    source_reference: None,
+                    version_tag: authored_tag,
+                    coverage: Some(ReceiptCoverage {
+                        displayed_ranges: displayed_ranges
+                            .expect("AuthoredText computes displayed ranges"),
+                        displayed_eof: true,
+                    }),
+                })
+            }
+            (
+                MutationTargetMode::AuthoritativeText,
+                MutationCommitOutcome::AuthoritativeText { version_tag },
+            ) => Ok(MutationReceipt {
+                operation: operation_kind,
+                canonical_reference: target.canonical_reference().clone(),
+                source_reference: None,
+                version_tag: Some(version_tag),
+                coverage: None,
             }),
-        })
+            (
+                MutationTargetMode::CreationTarget,
+                MutationCommitOutcome::CreationTarget {
+                    canonical_reference,
+                },
+            ) => {
+                if let Some(lease) = journal_lease.take() {
+                    lease.finish(JournalOutcome::Succeeded(canonical_reference.clone()));
+                }
+                Ok(Self::creation_receipt(canonical_reference))
+            }
+            _ => {
+                if let Some(reservation) = reservation.take() {
+                    self.session.cancel_seen(reservation).await;
+                }
+                let error = ResourceError::new(
+                    ErrorCategory::SourceUnavailable,
+                    "Source Adapter returned a mutation outcome incompatible with its target mode",
+                );
+                if let Some(lease) = journal_lease.take() {
+                    lease.finish(JournalOutcome::Unknown(error.clone()));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn creation_receipt(canonical_reference: PathReference) -> MutationReceipt {
+        MutationReceipt {
+            operation: MutationOperation::Created,
+            canonical_reference,
+            source_reference: None,
+            version_tag: None,
+            coverage: None,
+        }
     }
 
     pub async fn edit(
@@ -1414,7 +1648,7 @@ impl MutationEngine {
             operation.finish_commit(),
             "edit commit transition must complete"
         );
-        if let Err(error) = committed {
+        if let Err(error) = Self::authored_commit_result(committed) {
             self.session.cancel_seen(reservation).await;
             return Err(error);
         }
@@ -1476,7 +1710,7 @@ impl MutationEngine {
             operation.finish_commit(),
             "REM commit transition must complete"
         );
-        committed?;
+        Self::authored_commit_result(committed)?;
         Ok(MutationReceipt {
             operation: MutationOperation::Deleted,
             canonical_reference: target.canonical_reference().clone(),
@@ -1556,7 +1790,7 @@ impl MutationEngine {
             operation.finish_commit(),
             "MV commit transition must complete"
         );
-        committed?;
+        Self::authored_commit_result(committed)?;
         Ok(MutationReceipt {
             operation: MutationOperation::Moved,
             canonical_reference: destination.canonical_reference().clone(),
@@ -1564,6 +1798,22 @@ impl MutationEngine {
             version_tag: Some(snapshot.version_tag),
             coverage: None,
         })
+    }
+
+    fn authored_commit_result(
+        committed: Result<MutationCommitOutcome, MutationCommitFailure>,
+    ) -> Result<(), ResourceError> {
+        match committed {
+            Ok(MutationCommitOutcome::AuthoredText) => Ok(()),
+            Ok(
+                MutationCommitOutcome::AuthoritativeText { .. }
+                | MutationCommitOutcome::CreationTarget { .. },
+            ) => Err(ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                "Source Adapter returned a non-authored outcome for an authored mutation",
+            )),
+            Err(failure) => Err(failure.into_error()),
+        }
     }
 
     pub fn parse_edit(&self, document: &str) -> Result<HashlinePatch, ResourceError> {

@@ -9,9 +9,10 @@ use std::{
 use async_trait::async_trait;
 use cap_std::fs::{Dir, File, OpenOptions, Permissions};
 use resourcefs_core::{
-    ErrorCategory, MAX_ARTIFACT_BYTES, MutationAccess, MutationAdapter, MutationSourceKey,
-    MutationState, MutationTarget, OperationGuard, PathReference, ResourceAddress, ResourceError,
-    SourceMutation, VersionTag, WorkspacePath, select_utf8,
+    ErrorCategory, MAX_ARTIFACT_BYTES, MutationAccess, MutationAdapter, MutationCommitFailure,
+    MutationCommitOutcome, MutationSourceKey, MutationState, MutationTarget, MutationTargetMode,
+    OperationGuard, PathReference, ResourceAddress, ResourceError, SourceMutation, VersionTag,
+    WorkspacePath, select_utf8,
 };
 
 use super::*;
@@ -67,6 +68,7 @@ impl MutationAdapter for FilesystemSource {
         MutationTarget::new(
             canonical,
             MutationSourceKey::new(FILESYSTEM_MUTATION_SOURCE_KEY)?,
+            MutationTargetMode::AuthoredText,
         )
     }
 
@@ -97,15 +99,16 @@ impl MutationAdapter for FilesystemSource {
         &self,
         mutation: SourceMutation,
         operation: &OperationGuard,
-    ) -> Result<(), ResourceError> {
+    ) -> Result<MutationCommitOutcome, MutationCommitFailure> {
         if !operation.is_committing() {
             return Err(ResourceError::new(
                 ErrorCategory::Cancelled,
                 "filesystem mutation commit requires a committing operation guard",
-            ));
+            )
+            .into());
         }
         let authority = self.mutation_authority_guard().await?;
-        match mutation {
+        let committed: Result<(), ResourceError> = match mutation {
             SourceMutation::Create { target, content } => {
                 commit_create(active_view(&authority), target, content)
             }
@@ -122,7 +125,10 @@ impl MutationAdapter for FilesystemSource {
                 destination,
                 expected,
             } => commit_move(active_view(&authority), source, *destination, expected),
-        }
+        };
+        committed
+            .map(|()| MutationCommitOutcome::AuthoredText)
+            .map_err(Into::into)
     }
 }
 

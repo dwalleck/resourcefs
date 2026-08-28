@@ -35,10 +35,11 @@ pub use limits::{
 };
 pub use mutation::{
     HashlinePatch, LineNumber, MAX_HASHLINE_PATCH_BYTES, MAX_OPERATION_ID_BYTES,
-    MIN_VERSION_PREFIX_HEX, MutationAccess, MutationAdapter, MutationEngine, MutationLockSet,
-    MutationOperation, MutationReceipt, MutationResourceKey, MutationSourceKey, MutationState,
-    MutationTarget, OperationId, OriginalLineRange, PatchOperation, PatchOperationRef, PutTarget,
-    SourceMutation, VersionSelector, WriteRequest,
+    MIN_VERSION_PREFIX_HEX, MutationAccess, MutationAdapter, MutationCommitFailure,
+    MutationCommitOutcome, MutationEngine, MutationLockSet, MutationOperation, MutationReceipt,
+    MutationResourceKey, MutationSourceKey, MutationState, MutationTarget, MutationTargetMode,
+    OperationId, OriginalLineRange, PatchOperation, PatchOperationRef, PutTarget, SourceMutation,
+    VersionSelector, WriteRequest,
 };
 pub use probe::{
     MAX_PROBE_DIAGNOSTIC_BYTES, ProbeDiagnostic, ProbeDiagnosticError, ProbeOutcome, ProbeState,

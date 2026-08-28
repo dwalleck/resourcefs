@@ -1045,6 +1045,23 @@ impl PathReference {
         ))
     }
 
+    /// Whether the address denotes a write-only GitHub Creation Target.
+    pub const fn is_creation_target(&self) -> bool {
+        matches!(
+            &self.address,
+            ResourceAddress::Issue(IssueAddress::New { .. })
+                | ResourceAddress::Issue(IssueAddress::Item {
+                    resource: IssueResource::CommentsNew,
+                    ..
+                })
+                | ResourceAddress::PullRequest(PullRequestAddress::New { .. })
+                | ResourceAddress::PullRequest(PullRequestAddress::Item {
+                    resource: PullRequestResource::CommentsNew,
+                    ..
+                })
+        )
+    }
+
     pub fn requested(&self) -> &str {
         &self.requested
     }

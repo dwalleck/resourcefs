@@ -114,6 +114,7 @@ fn creation_targets_round_trip_and_are_write_only() {
     for (input, canonical) in rows {
         let parsed = PathReference::parse(input)
             .unwrap_or_else(|error| panic!("[C2] {input} failed: {error}"));
+        assert!(parsed.is_creation_target(), "[C2] {input} target kind");
         assert_eq!(parsed.requested(), canonical, "[C2] {input}");
         assert_eq!(
             PathReference::parse(parsed.requested()),
@@ -121,6 +122,12 @@ fn creation_targets_round_trip_and_are_write_only() {
             "[C2] {input} round trip"
         );
     }
+    assert!(
+        !PathReference::parse("issue://owner/repo/1/title")
+            .expect("[C2] ordinary Field")
+            .is_creation_target(),
+        "[C2] ordinary Field is not a Creation Target"
+    );
 
     let issue = PathReference::parse("issue://owner/repo/new").expect("[C2] issue target");
     assert!(matches!(

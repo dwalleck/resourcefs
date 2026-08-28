@@ -3,10 +3,11 @@ use std::{fmt, io::Cursor};
 use async_trait::async_trait;
 use resourcefs_core::{
     DiscoveryAdapter, ErrorCategory, GlobEntry, GlobKind, GlobOptions, GlobTarget, LocalAddress,
-    LocalName, MutationAccess, MutationAdapter, MutationSourceKey, MutationState, MutationTarget,
-    OperationGuard, PathReference, PathSession, ResourceAddress, ResourceError, SearchOptions,
-    SearchRecord, SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult,
-    SourceMutation, SourceResource, VersionTag, select_utf8,
+    LocalName, MutationAccess, MutationAdapter, MutationCommitFailure, MutationCommitOutcome,
+    MutationSourceKey, MutationState, MutationTarget, MutationTargetMode, OperationGuard,
+    PathReference, PathSession, ResourceAddress, ResourceError, SearchOptions, SearchRecord,
+    SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult, SourceMutation,
+    SourceResource, VersionTag, select_utf8,
 };
 
 use crate::{
@@ -153,6 +154,7 @@ impl MutationAdapter for LocalSource {
             ResourceAddress::Local(LocalAddress::Named(name)) => MutationTarget::new(
                 PathReference::local(name.as_str())?,
                 MutationSourceKey::new(LOCAL_MUTATION_SOURCE_KEY)?,
+                MutationTargetMode::AuthoredText,
             ),
             ResourceAddress::Local(LocalAddress::Root) => Err(ResourceError::new(
                 ErrorCategory::PermissionDenied,
@@ -177,47 +179,53 @@ impl MutationAdapter for LocalSource {
         &self,
         mutation: SourceMutation,
         operation: &OperationGuard,
-    ) -> Result<(), ResourceError> {
-        match mutation {
-            SourceMutation::Create { target, content } => {
-                let name = target_name(&target)?;
-                if self.session.scratch_load(name).await?.is_some() {
-                    return Err(ResourceError::new(
-                        ErrorCategory::VersionConflict,
-                        format!(
-                            "Session Scratch Resource '{name}' already exists; supply ifVersion to replace it"
-                        ),
-                    ));
+    ) -> Result<MutationCommitOutcome, MutationCommitFailure> {
+        let committed: Result<(), ResourceError> = async {
+            match mutation {
+                SourceMutation::Create { target, content } => {
+                    let name = target_name(&target)?;
+                    if self.session.scratch_load(name).await?.is_some() {
+                        return Err(ResourceError::new(
+                            ErrorCategory::VersionConflict,
+                            format!(
+                                "Session Scratch Resource '{name}' already exists; supply ifVersion to replace it"
+                            ),
+                        ));
+                    }
+                    self.session.scratch_put(name, &content, operation).await?;
+                    Ok(())
                 }
-                self.session.scratch_put(name, &content, operation).await?;
-                Ok(())
-            }
-            SourceMutation::Replace {
-                target,
-                expected,
-                content,
-            } => {
-                let name = target_name(&target)?;
-                expect_current(self, name, &expected).await?;
-                self.session.scratch_put(name, &content, operation).await?;
-                Ok(())
-            }
-            SourceMutation::Delete { target, expected } => {
-                let name = target_name(&target)?;
-                expect_current(self, name, &expected).await?;
-                self.session.scratch_remove(name).await
-            }
-            SourceMutation::Move {
-                source,
-                destination,
-                expected,
-            } => {
-                let from = target_name(&source)?;
-                let to = target_name(&destination)?;
-                expect_current(self, from, &expected).await?;
-                self.session.scratch_rename(from, to).await
+                SourceMutation::Replace {
+                    target,
+                    expected,
+                    content,
+                } => {
+                    let name = target_name(&target)?;
+                    expect_current(self, name, &expected).await?;
+                    self.session.scratch_put(name, &content, operation).await?;
+                    Ok(())
+                }
+                SourceMutation::Delete { target, expected } => {
+                    let name = target_name(&target)?;
+                    expect_current(self, name, &expected).await?;
+                    self.session.scratch_remove(name).await
+                }
+                SourceMutation::Move {
+                    source,
+                    destination,
+                    expected,
+                } => {
+                    let from = target_name(&source)?;
+                    let to = target_name(&destination)?;
+                    expect_current(self, from, &expected).await?;
+                    self.session.scratch_rename(from, to).await
+                }
             }
         }
+        .await;
+        committed
+            .map(|()| MutationCommitOutcome::AuthoredText)
+            .map_err(Into::into)
     }
 }
 
