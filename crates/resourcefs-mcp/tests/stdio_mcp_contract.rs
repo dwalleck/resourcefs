@@ -1295,6 +1295,123 @@ fn github_non_target_mutation_is_refused() {
     process.finish();
 }
 
+#[test]
+fn github_mutation_schema_and_receipts_match() {
+    let fixture = WorkspaceFixture::new();
+    let profile = fixture.root.join("github-creation-profile.json");
+    let profile_json = |create: bool| {
+        json!({
+            "schemaVersion": 1,
+            "sources": [{
+                "kind": "github",
+                "id": "github",
+                "required": true,
+                "allowPrivateNetwork": false,
+                "grants": {"create": create, "update": true},
+                "credential": {"kind": "environment", "name": "RFS_GITHUB_TEST_TOKEN"},
+                "repositories": [{
+                    "name": "owner/repo",
+                    "grants": {"create": create, "update": true}
+                }]
+            }]
+        })
+    };
+    fs::write(
+        &profile,
+        serde_json::to_vec(&profile_json(true)).expect("[C16] profile JSON"),
+    )
+    .expect("[C16] profile");
+    let mut process = McpProcess::start_profile_with_env(
+        &profile,
+        &fixture.root,
+        &[("RFS_GITHUB_TEST_TOKEN", "fixture-token")],
+    );
+    process.initialize(VERSION_2026);
+
+    let listed = process.request("tools/list", json!({}));
+    let write = listed["result"]["tools"]
+        .as_array()
+        .expect("[C16] tools")
+        .iter()
+        .find(|tool| tool["name"] == "rfs_write")
+        .expect("[C16] rfs_write");
+    let operation_id = &write["inputSchema"]["properties"]["operationId"];
+    assert!(
+        accepts_type(operation_id, "string") && !accepts_type(operation_id, "null"),
+        "[C16] optional strict operationId schema: {operation_id}"
+    );
+    let version_tag = &write["outputSchema"]["properties"]["versionTag"];
+    assert!(
+        accepts_type(version_tag, "string") && accepts_type(version_tag, "null"),
+        "[C16] mutation output versionTag is nullable: {version_tag}"
+    );
+    assert!(
+        write["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("operationId")),
+        "[C16] tool description explains operationId"
+    );
+
+    for (arguments, category) in [
+        (
+            json!({
+                "path": "issue://owner/repo/new",
+                "content": "---\ntitle: missing close",
+                "operationId": "malformed"
+            }),
+            "invalid_reference",
+        ),
+        (
+            json!({
+                "path": "issue://owner/repo/42",
+                "content": "forbidden",
+                "ifVersion": format!("sha256:{}", "0".repeat(64))
+            }),
+            "unsupported_mutation",
+        ),
+    ] {
+        let response = process.request(
+            "tools/call",
+            json!({"name": "rfs_write", "arguments": arguments}),
+        );
+        assert!(response.get("error").is_none(), "[C16] {response}");
+        assert_tool_error(&response["result"], category);
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty()),
+            "[C16] non-empty operational error text"
+        );
+    }
+    process.finish();
+
+    fs::write(
+        &profile,
+        serde_json::to_vec(&profile_json(false)).expect("[C16] denied profile JSON"),
+    )
+    .expect("[C16] denied profile");
+    let mut denied = McpProcess::start_profile_with_env(
+        &profile,
+        &fixture.root,
+        &[("RFS_GITHUB_TEST_TOKEN", "fixture-token")],
+    );
+    denied.initialize(VERSION_2026);
+    let response = denied.request(
+        "tools/call",
+        json!({
+            "name": "rfs_write",
+            "arguments": {
+                "path": "issue://owner/repo/new",
+                "content": "---\ntitle: Denied\n---\n",
+                "operationId": "denied"
+            }
+        }),
+    );
+    assert!(response.get("error").is_none(), "[C16] {response}");
+    assert_tool_error(&response["result"], "permission_denied");
+    denied.finish();
+}
+
 #[cfg(feature = "test-support")]
 #[test]
 fn discovery_argument_matrix_precedes_io() {

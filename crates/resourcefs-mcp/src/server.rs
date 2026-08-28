@@ -608,7 +608,7 @@ impl ResourceFsServer {
 
     #[tool(
         name = "rfs_write",
-        description = "Start with rfs_read of rfs:// to discover mounted sources. Create one UTF-8 text Resource when create is granted and the parent exists; replace existing text only when update is granted and ifVersion matches its current content-derived Version Tag. Mutation policy remains authoritative. Returns a compact receipt without repeating Resource content.",
+        description = "Start with rfs_read of rfs:// to discover mounted sources. Create one UTF-8 text Resource when create is granted and the parent exists; replace existing text only when update is granted and ifVersion matches its current content-derived Version Tag. Remote paths ending in /new are write-only Creation Targets and require operationId; the same ID/target/exact content safely repeats only in this Path Session, while changed content conflicts and unknown outcomes require upstream reconciliation with a new ID. operationId is rejected everywhere else. Mutation policy remains authoritative. Returns a compact receipt without repeating Resource content.",
         output_schema = schema_for_type::<MutationToolOutput>()
     )]
     async fn write(

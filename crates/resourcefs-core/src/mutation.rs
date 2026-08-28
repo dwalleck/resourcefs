@@ -1046,6 +1046,22 @@ pub struct MutationReceipt {
 }
 
 impl MutationReceipt {
+    /// Test-support constructor for source-neutral protocol render contracts.
+    #[cfg(feature = "test-support")]
+    pub fn from_parts_for_test(
+        operation: MutationOperation,
+        canonical_reference: PathReference,
+        version_tag: Option<VersionTag>,
+    ) -> Self {
+        Self {
+            operation,
+            canonical_reference,
+            source_reference: None,
+            version_tag,
+            coverage: None,
+        }
+    }
+
     pub const fn operation(&self) -> MutationOperation {
         self.operation
     }

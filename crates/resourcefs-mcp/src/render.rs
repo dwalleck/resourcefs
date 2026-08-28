@@ -79,7 +79,7 @@ pub(crate) struct MutationToolOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     source_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    version_tag: Option<String>,
+    version_tag: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     displayed_ranges: Option<Vec<DisplayedRangeOutput>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -284,7 +284,13 @@ pub(crate) fn mutation_success(receipt: MutationReceipt) -> Result<CallToolResul
         source_reference: receipt
             .source_reference()
             .map(|reference| reference.requested().to_owned()),
-        version_tag: receipt.version_tag().map(ToString::to_string),
+        version_tag: if receipt.operation() == resourcefs_core::MutationOperation::Created
+            && receipt.version_tag().is_none()
+        {
+            Some(None)
+        } else {
+            receipt.version_tag().map(|tag| Some(tag.to_string()))
+        },
         displayed_ranges: receipt.displayed_ranges().map(|ranges| {
             ranges
                 .iter()
@@ -665,9 +671,9 @@ mod tests {
 
     use resourcefs_core::{
         BEHAVIOR_CONTRACT_VERSION, DiscoveryEngine, ErrorCategory, GlobKind, GlobLimits,
-        GlobOptions, GlobRequest, GlobTarget, MAX_TEXT_BYTES, OperationGuard, PathReference,
-        ReadResource, ResourceError, SearchEngine, SearchLimits, SearchOptions, SearchRequest,
-        SearchTarget, WorkspacePath, WorkspaceRootId,
+        GlobOptions, GlobRequest, GlobTarget, MAX_TEXT_BYTES, MutationOperation, MutationReceipt,
+        OperationGuard, PathReference, ReadResource, ResourceError, SearchEngine, SearchLimits,
+        SearchOptions, SearchRequest, SearchTarget, VersionTag, WorkspacePath, WorkspaceRootId,
     };
     use resourcefs_sources::{
         ArtifactSource, BackingPathVisibility, CompiledSources, FilesystemSource, LaunchRoot,
@@ -676,7 +682,9 @@ mod tests {
     use rmcp::model::{CallToolResult, ContentBlock};
     use tempfile::TempDir;
 
-    use super::{glob_failure, glob_success, search_failure, search_success, success};
+    use super::{
+        glob_failure, glob_success, mutation_success, search_failure, search_success, success,
+    };
 
     fn resource() -> ReadResource {
         let reference = PathReference::canonical(
@@ -1510,5 +1518,56 @@ mod tests {
             rendered_text(&overflow)
                 .contains("Source Continuation Reference: issue://owner/repo:page:11\n")
         );
+    }
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn creation_receipt_renders_nullable_tag_and_canonical_reference() {
+        let creation = MutationReceipt::from_parts_for_test(
+            MutationOperation::Created,
+            PathReference::parse("issue://owner/repo/77").expect("[C16] reference"),
+            None,
+        );
+        let iterations = 1_000_u32;
+        let started = Instant::now();
+        for _ in 0..iterations {
+            std::hint::black_box(mutation_success(creation.clone()).expect("[C16] budget render"));
+        }
+        let average = started.elapsed() / iterations;
+        assert!(
+            average <= Duration::from_millis(10),
+            "[C16] ordinary mutation rendering took {average:?}"
+        );
+        let rendered = mutation_success(creation).expect("[C16] render");
+        let value = serde_json::to_value(rendered).expect("[C16] result JSON");
+        let structured = &value["structuredContent"];
+        assert_eq!(
+            structured["canonicalReference"], "issue://owner/repo/77",
+            "[C16]"
+        );
+        assert_eq!(structured["operation"], "created", "[C16]");
+        assert!(
+            structured
+                .as_object()
+                .expect("[C16] structured object")
+                .contains_key("versionTag"),
+            "[C16] creation versionTag is explicit"
+        );
+        assert!(structured["versionTag"].is_null(), "[C16] nullable tag");
+        assert!(
+            value["content"][0]["text"].as_str().is_some_and(|text| {
+                !text.is_empty() && text.contains("canonicalReference: issue://owner/repo/77")
+            }),
+            "[C16] non-empty text carries canonical reference"
+        );
+
+        let tag = VersionTag::from_content(b"response");
+        let field = MutationReceipt::from_parts_for_test(
+            MutationOperation::Replaced,
+            PathReference::parse("issue://owner/repo/42/title").expect("[C16] Field"),
+            Some(tag.clone()),
+        );
+        let value = serde_json::to_value(mutation_success(field).expect("[C16] Field render"))
+            .expect("[C16] Field JSON");
+        assert_eq!(value["structuredContent"]["versionTag"], tag.to_string());
     }
 }
