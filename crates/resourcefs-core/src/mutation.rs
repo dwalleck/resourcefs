@@ -940,6 +940,36 @@ fn invalid_patch(message: impl Into<String>) -> ResourceError {
     ResourceError::new(ErrorCategory::InvalidPatch, message)
 }
 
+pub const MAX_OPERATION_ID_BYTES: usize = 128;
+
+/// Caller-chosen identity for one remote Creation Target operation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OperationId(String);
+
+impl OperationId {
+    pub fn parse(value: impl Into<String>) -> Result<Self, ResourceError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > MAX_OPERATION_ID_BYTES
+            || !value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+            })
+        {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                format!(
+                    "operationId must contain 1 to {MAX_OPERATION_ID_BYTES} characters from [A-Za-z0-9._:-]"
+                ),
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationAccess {
     Create,
@@ -950,8 +980,9 @@ pub enum MutationAccess {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteRequest {
     reference: PathReference,
-    content: String,
+    content: Arc<str>,
     if_version: Option<VersionTag>,
+    operation_id: Option<OperationId>,
 }
 
 impl WriteRequest {
@@ -959,6 +990,7 @@ impl WriteRequest {
         reference: PathReference,
         content: String,
         if_version: Option<VersionTag>,
+        operation_id: Option<OperationId>,
     ) -> Result<Self, ResourceError> {
         if content.len() > MAX_ARTIFACT_BYTES {
             return Err(ResourceError::new(
@@ -968,8 +1000,9 @@ impl WriteRequest {
         }
         Ok(Self {
             reference,
-            content,
+            content: Arc::from(content),
             if_version,
+            operation_id,
         })
     }
 }
@@ -1136,12 +1169,12 @@ pub enum MutationState {
 pub enum SourceMutation {
     Create {
         target: MutationTarget,
-        content: String,
+        content: Arc<str>,
     },
     Replace {
         target: MutationTarget,
         expected: VersionTag,
-        content: String,
+        content: Arc<str>,
     },
     Delete {
         target: MutationTarget,
@@ -1209,7 +1242,14 @@ impl MutationEngine {
             reference,
             content,
             if_version,
+            operation_id,
         } = request;
+        if operation_id.is_some() {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "operationId is valid only for a remote Creation Target",
+            ));
+        }
         let access = if if_version.is_some() {
             MutationAccess::Update
         } else {
@@ -1365,7 +1405,7 @@ impl MutationEngine {
                 SourceMutation::Replace {
                     target: target.clone(),
                     expected: snapshot.version_tag,
-                    content: edited_content,
+                    content: Arc::from(edited_content),
                 },
                 operation,
             )

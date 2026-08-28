@@ -100,7 +100,7 @@ async fn create_replace_state_matrix_preserves_bytes_and_permissions() {
 
     let created = engine
         .write(
-            WriteRequest::new(path.clone(), "alpha\r\nbeta\r\n".to_owned(), None)
+            WriteRequest::new(path.clone(), "alpha\r\nbeta\r\n".to_owned(), None, None)
                 .expect("create request"),
             &OperationGuard::new(),
         )
@@ -129,6 +129,7 @@ async fn create_replace_state_matrix_preserves_bytes_and_permissions() {
                 path.clone(),
                 "replacement\n".to_owned(),
                 Some(current.clone()),
+                None,
             )
             .expect("replace request"),
             &OperationGuard::new(),
@@ -156,7 +157,7 @@ async fn create_replace_state_matrix_preserves_bytes_and_permissions() {
     let before = fs::read(workspace.path().join("fixture.txt")).expect("before stale");
     let stale = engine
         .write(
-            WriteRequest::new(path.clone(), "stale\n".to_owned(), Some(current))
+            WriteRequest::new(path.clone(), "stale\n".to_owned(), Some(current), None)
                 .expect("stale request"),
             &OperationGuard::new(),
         )
@@ -223,6 +224,7 @@ async fn concurrent_replacements_serialize_and_reject_one_stale_contender() {
                     reference("fixture.txt"),
                     "first\n".to_owned(),
                     Some(first_tag),
+                    None,
                 )
                 .expect("first request"),
                 &OperationGuard::new(),
@@ -236,6 +238,7 @@ async fn concurrent_replacements_serialize_and_reject_one_stale_contender() {
                     reference("fixture.txt"),
                     "second\n".to_owned(),
                     Some(expected),
+                    None,
                 )
                 .expect("second request"),
                 &OperationGuard::new(),
@@ -270,7 +273,7 @@ async fn policy_precedes_state_and_creation_never_creates_parents() {
     for path in ["missing.txt", "existing.txt"] {
         let error = denied
             .write(
-                WriteRequest::new(reference(path), "content".to_owned(), None)
+                WriteRequest::new(reference(path), "content".to_owned(), None, None)
                     .expect("denied request"),
                 &OperationGuard::new(),
             )
@@ -282,8 +285,13 @@ async fn policy_precedes_state_and_creation_never_creates_parents() {
     let granted = engine(workspace.path(), MutationGrants::new(true, false, false)).await;
     let error = granted
         .write(
-            WriteRequest::new(reference("missing/child.txt"), "content".to_owned(), None)
-                .expect("missing-parent request"),
+            WriteRequest::new(
+                reference("missing/child.txt"),
+                "content".to_owned(),
+                None,
+                None,
+            )
+            .expect("missing-parent request"),
             &OperationGuard::new(),
         )
         .await
@@ -297,8 +305,13 @@ async fn mv_is_atomic_no_clobber_and_preserves_both_entries_on_conflict() {
     let engine = engine(workspace.path(), MutationGrants::new(true, false, true)).await;
     let created = engine
         .write(
-            WriteRequest::new(reference("source.txt"), "source bytes\n".to_owned(), None)
-                .expect("source create"),
+            WriteRequest::new(
+                reference("source.txt"),
+                "source bytes\n".to_owned(),
+                None,
+                None,
+            )
+            .expect("source create"),
             &OperationGuard::new(),
         )
         .await
@@ -406,6 +419,7 @@ async fn mv_can_cross_workspace_roots_with_exact_independent_grants() {
                 reference("rfs://workspace/alpha/source.txt"),
                 "cross-root\n".to_owned(),
                 None,
+                None,
             )
             .expect("source create"),
             &OperationGuard::new(),
@@ -481,6 +495,7 @@ async fn mv_never_copies_across_filesystems() {
                 reference("rfs://workspace/source/source.txt"),
                 "do not copy\n".to_owned(),
                 None,
+                None,
             )
             .expect("source create"),
             &OperationGuard::new(),
@@ -517,7 +532,7 @@ async fn retargeted_links_never_mutate_outside() {
     let engine = engine(workspace.path(), MutationGrants::new(true, false, true)).await;
     let created = engine
         .write(
-            WriteRequest::new(reference("source.txt"), "inside\n".to_owned(), None)
+            WriteRequest::new(reference("source.txt"), "inside\n".to_owned(), None, None)
                 .expect("source create"),
             &OperationGuard::new(),
         )
@@ -564,6 +579,7 @@ async fn linked_and_binary_targets_fail_without_state_change() {
                 reference("link.txt"),
                 "changed\n".to_owned(),
                 Some(VersionTag::from_content(b"target\n")),
+                None,
             )
             .expect("linked request"),
             &OperationGuard::new(),
@@ -583,6 +599,7 @@ async fn linked_and_binary_targets_fail_without_state_change() {
                 reference("binary.bin"),
                 "changed\n".to_owned(),
                 Some(VersionTag::from_content(&binary_before)),
+                None,
             )
             .expect("binary request"),
             &OperationGuard::new(),
@@ -604,7 +621,7 @@ async fn exact_limit_write_budget_and_one_over_rejection() {
     let started = Instant::now();
     engine
         .write(
-            WriteRequest::new(reference("maximum.txt"), content, None)
+            WriteRequest::new(reference("maximum.txt"), content, None, None)
                 .expect("exact-limit request"),
             &OperationGuard::new(),
         )
@@ -625,6 +642,7 @@ async fn exact_limit_write_budget_and_one_over_rejection() {
     let error = WriteRequest::new(
         reference("over.txt"),
         "x".repeat(MAX_ARTIFACT_BYTES + 1),
+        None,
         None,
     )
     .expect_err("one-over mutation input");
@@ -678,6 +696,7 @@ async fn replacement_has_no_missing_window() {
                     reference("fixture.txt"),
                     String::from_utf8(content.clone()).expect("ASCII fixture"),
                     Some(current),
+                    None,
                 )
                 .expect("replace request"),
                 &OperationGuard::new(),

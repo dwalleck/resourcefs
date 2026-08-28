@@ -29,6 +29,7 @@ async fn scratch_needs_no_grant() {
                 PathReference::local("plan.md").expect("scratch reference"),
                 "one\ntwo\nthree\n".to_owned(),
                 None,
+                None,
             )
             .expect("create request"),
             &OperationGuard::new(),
@@ -57,6 +58,7 @@ async fn scratch_needs_no_grant() {
                 PathReference::local("plan.md").expect("scratch reference"),
                 "ONE\ntwo\nthree\n".to_owned(),
                 Some(created.version_tag().expect("created tag").clone()),
+                None,
             )
             .expect("replace request"),
             &OperationGuard::new(),
@@ -157,6 +159,7 @@ async fn scratch_needs_no_grant() {
                     .expect("workspace reference"),
                 "forbidden\n".to_owned(),
                 None,
+                None,
             )
             .expect("workspace write request"),
             &OperationGuard::new(),
@@ -179,6 +182,7 @@ async fn cross_source_mv_rejected() {
             WriteRequest::new(
                 PathReference::local("source.md").expect("scratch reference"),
                 "scratch bytes\n".to_owned(),
+                None,
                 None,
             )
             .expect("create request"),

@@ -34,10 +34,11 @@ pub use limits::{
     TextLimitInput,
 };
 pub use mutation::{
-    HashlinePatch, LineNumber, MAX_HASHLINE_PATCH_BYTES, MIN_VERSION_PREFIX_HEX, MutationAccess,
-    MutationAdapter, MutationEngine, MutationLockSet, MutationOperation, MutationReceipt,
-    MutationResourceKey, MutationSourceKey, MutationState, MutationTarget, OriginalLineRange,
-    PatchOperation, PatchOperationRef, PutTarget, SourceMutation, VersionSelector, WriteRequest,
+    HashlinePatch, LineNumber, MAX_HASHLINE_PATCH_BYTES, MAX_OPERATION_ID_BYTES,
+    MIN_VERSION_PREFIX_HEX, MutationAccess, MutationAdapter, MutationEngine, MutationLockSet,
+    MutationOperation, MutationReceipt, MutationResourceKey, MutationSourceKey, MutationState,
+    MutationTarget, OperationId, OriginalLineRange, PatchOperation, PatchOperationRef, PutTarget,
+    SourceMutation, VersionSelector, WriteRequest,
 };
 pub use probe::{
     MAX_PROBE_DIAGNOSTIC_BYTES, ProbeDiagnostic, ProbeDiagnosticError, ProbeOutcome, ProbeState,
@@ -61,8 +62,10 @@ pub use resource::{
 pub use secret::{Redactor, Secret, SecretError};
 pub use selector::{SelectedText, select_utf8};
 pub use session::{
-    ArtifactId, MAX_SESSION_ARTIFACTS, MAX_SESSION_BYTES, OperationGuard, PathSession,
-    ScratchState, SessionCacheEntry, SessionCacheKey, SessionStorage, SessionToken,
+    ArtifactId, MAX_MUTATION_OPERATIONS, MAX_SESSION_ARTIFACTS, MAX_SESSION_BYTES,
+    MutationOperationLease, MutationOperationOutcome, MutationOperationStart,
+    MutationOperationWaiter, OperationGuard, PathSession, ScratchState, SessionCacheEntry,
+    SessionCacheKey, SessionStorage, SessionToken,
 };
 pub use source::SourceAdapter;
 pub use version::VersionTag;

@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -10,10 +10,11 @@ use std::{
 use async_trait::async_trait;
 use resourcefs_core::{
     ArtifactId, DisplayedLineRange, ErrorCategory, MAX_HASHLINE_PATCH_BYTES, MutationAccess,
-    MutationAdapter, MutationEngine, MutationOperation, MutationResourceKey, MutationSourceKey,
-    MutationState, MutationTarget, OperationGuard, PathReference, PathSession, ResourceError,
-    ServerLimits, SessionStorage, SessionToken, SourceMutation, VersionSelector, VersionTag,
-    WriteRequest,
+    MutationAdapter, MutationEngine, MutationOperation, MutationOperationOutcome,
+    MutationOperationStart, MutationResourceKey, MutationSourceKey, MutationState, MutationTarget,
+    OperationGuard, OperationId, PathReference, PathSession, ResourceError, ServerLimits,
+    ServerLimitsInput, SessionCacheEntry, SessionCacheKey, SessionStorage, SessionToken,
+    SourceMutation, StorageLimitInput, VersionSelector, VersionTag, WriteRequest,
 };
 use tokio::sync::Mutex;
 
@@ -61,7 +62,9 @@ impl SessionStorage for MemoryStorage {
 }
 
 #[derive(Debug)]
-struct FakeAdapter;
+struct FakeAdapter {
+    resolve_calls: Arc<AtomicUsize>,
+}
 
 #[async_trait]
 impl MutationAdapter for FakeAdapter {
@@ -70,6 +73,7 @@ impl MutationAdapter for FakeAdapter {
         reference: &PathReference,
         _access: MutationAccess,
     ) -> Result<MutationTarget, ResourceError> {
+        self.resolve_calls.fetch_add(1, Ordering::Relaxed);
         MutationTarget::new(
             reference.clone(),
             MutationSourceKey::new("fake").expect("source key"),
@@ -167,7 +171,7 @@ impl MutationAdapter for StatefulAdapter {
                 }
                 *state = MutationState::Text {
                     version_tag: VersionTag::from_content(content.as_bytes()),
-                    content,
+                    content: content.to_string(),
                 };
             }
             SourceMutation::Replace {
@@ -187,7 +191,7 @@ impl MutationAdapter for StatefulAdapter {
                 }
                 *state = MutationState::Text {
                     version_tag: VersionTag::from_content(content.as_bytes()),
-                    content,
+                    content: content.to_string(),
                 };
             }
             SourceMutation::Delete { expected, .. } => {
@@ -228,7 +232,437 @@ fn session(value: u8) -> PathSession {
 }
 
 fn engine() -> MutationEngine {
-    MutationEngine::new(Arc::new(FakeAdapter), session(1))
+    MutationEngine::new(
+        Arc::new(FakeAdapter {
+            resolve_calls: Arc::new(AtomicUsize::new(0)),
+        }),
+        session(1),
+    )
+}
+
+#[test]
+fn operation_id_validation_matrix() {
+    for valid in [
+        "a",
+        "A-Z_09.:",
+        "550e8400-e29b-41d4-a716-446655440000",
+        &"x".repeat(128),
+    ] {
+        assert_eq!(
+            OperationId::parse(valid)
+                .expect("[C3] valid operation ID")
+                .as_str(),
+            valid,
+            "[C3] {valid}"
+        );
+    }
+    for invalid in [
+        "",
+        "has space",
+        "line\nbreak",
+        "slash/value",
+        "unicode-é",
+        &"x".repeat(129),
+    ] {
+        assert_eq!(
+            OperationId::parse(invalid)
+                .expect_err("[C3] invalid operation ID")
+                .category(),
+            ErrorCategory::InvalidReference,
+            "[C3] {invalid:?}"
+        );
+    }
+}
+#[tokio::test]
+async fn operation_id_is_rejected_before_resolution() {
+    let resolve_calls = Arc::new(AtomicUsize::new(0));
+    let engine = MutationEngine::new(
+        Arc::new(FakeAdapter {
+            resolve_calls: Arc::clone(&resolve_calls),
+        }),
+        session(1),
+    );
+    let error = engine
+        .write(
+            WriteRequest::new(
+                PathReference::local("not-created.md").expect("[C3] local reference"),
+                "content".to_owned(),
+                None,
+                Some(OperationId::parse("local-op").expect("[C3] operation ID")),
+            )
+            .expect("[C3] write request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("[C3] non-Creation Target operation ID");
+    assert_eq!(error.category(), ErrorCategory::InvalidReference, "[C3]");
+    assert_eq!(
+        resolve_calls.load(Ordering::Relaxed),
+        0,
+        "[C3] resolve calls"
+    );
+}
+
+#[tokio::test]
+async fn operation_journal_trace_matches_model() {
+    let session = session(10);
+    let id = OperationId::parse("create-1").expect("[C4] operation ID");
+    let target = PathReference::parse("issue://owner/repo/new").expect("[C4] target");
+    let content: Arc<str> = Arc::from("---\ntitle: One\n---\nbody");
+    let created = PathReference::parse("issue://owner/repo/1").expect("[C4] created");
+
+    let owner = match session
+        .begin_mutation_operation(id.clone(), target.clone(), Arc::clone(&content))
+        .await
+        .expect("[C4] begin owner")
+    {
+        MutationOperationStart::Owner(owner) => owner,
+        other => panic!("[C4] expected owner, got {other:?}"),
+    };
+    let waiter = match session
+        .begin_mutation_operation(id.clone(), target.clone(), Arc::clone(&content))
+        .await
+        .expect("[C4] begin waiter")
+    {
+        MutationOperationStart::Wait(waiter) => waiter,
+        other => panic!("[C4] expected waiter, got {other:?}"),
+    };
+    owner.finish(MutationOperationOutcome::Succeeded(created.clone()));
+    assert_eq!(
+        waiter.wait().await,
+        MutationOperationOutcome::Succeeded(created.clone()),
+        "[C4] waiter result"
+    );
+    assert!(matches!(
+        session
+            .begin_mutation_operation(id.clone(), target.clone(), Arc::clone(&content))
+            .await
+            .expect("[C4] replay"),
+        MutationOperationStart::Replay(reference) if reference == created
+    ));
+
+    let conflict = session
+        .begin_mutation_operation(id, target.clone(), Arc::from("different"))
+        .await
+        .expect_err("[C4] changed content conflicts");
+    assert_eq!(conflict.category(), ErrorCategory::VersionConflict);
+
+    let retry_id = OperationId::parse("retry").expect("[C4] retry ID");
+    let first = match session
+        .begin_mutation_operation(retry_id.clone(), target.clone(), Arc::from("same"))
+        .await
+        .expect("[C4] retry owner")
+    {
+        MutationOperationStart::Owner(owner) => owner,
+        other => panic!("[C4] expected retry owner, got {other:?}"),
+    };
+    let rejected_waiter = match session
+        .begin_mutation_operation(retry_id.clone(), target.clone(), Arc::from("same"))
+        .await
+        .expect("[C4] rejected waiter")
+    {
+        MutationOperationStart::Wait(waiter) => waiter,
+        other => panic!("[C4] expected rejected waiter, got {other:?}"),
+    };
+    let rejected = ResourceError::new(ErrorCategory::PermissionDenied, "denied");
+    first.finish(MutationOperationOutcome::Conclusive(rejected.clone()));
+    assert_eq!(
+        rejected_waiter.wait().await,
+        MutationOperationOutcome::Conclusive(rejected),
+        "[C4] concurrent waiter shares conclusive result"
+    );
+    assert!(matches!(
+        session
+            .begin_mutation_operation(retry_id, target.clone(), Arc::from("same"))
+            .await
+            .expect("[C4] conclusive retry"),
+        MutationOperationStart::Owner(_)
+    ));
+
+    let unknown_id = OperationId::parse("unknown").expect("[C4] unknown ID");
+    let unknown_owner = match session
+        .begin_mutation_operation(unknown_id.clone(), target.clone(), Arc::from("unknown"))
+        .await
+        .expect("[C4] unknown owner")
+    {
+        MutationOperationStart::Owner(owner) => owner,
+        other => panic!("[C4] expected unknown owner, got {other:?}"),
+    };
+    let unknown = ResourceError::new(ErrorCategory::SourceUnavailable, "reconcile");
+    unknown_owner.finish(MutationOperationOutcome::Unknown(unknown.clone()));
+    assert!(matches!(
+        session
+            .begin_mutation_operation(unknown_id, target, Arc::from("unknown"))
+            .await
+            .expect("[C4] unknown replay"),
+        MutationOperationStart::Unknown(error) if error == unknown
+    ));
+}
+
+#[tokio::test]
+async fn operation_journal_concurrent_repeat_coalesces() {
+    let session = session(15);
+    let id = OperationId::parse("concurrent").expect("[C4] ID");
+    let target = PathReference::parse("issue://owner/repo/new").expect("[C4] target");
+    let content: Arc<str> = Arc::from("same bytes");
+    let created = PathReference::parse("issue://owner/repo/99").expect("[C4] created");
+    let owner = match session
+        .begin_mutation_operation(id.clone(), target.clone(), Arc::clone(&content))
+        .await
+        .expect("[C4] owner")
+    {
+        MutationOperationStart::Owner(owner) => owner,
+        other => panic!("[C4] expected owner, got {other:?}"),
+    };
+
+    let mut tasks = Vec::new();
+    for _ in 0..64 {
+        let waiter = match session
+            .begin_mutation_operation(id.clone(), target.clone(), Arc::clone(&content))
+            .await
+            .expect("[C4] waiter")
+        {
+            MutationOperationStart::Wait(waiter) => waiter,
+            other => panic!("[C4] expected waiter, got {other:?}"),
+        };
+        tasks.push(tokio::spawn(waiter.wait()));
+    }
+    owner.finish(MutationOperationOutcome::Succeeded(created.clone()));
+    for task in tasks {
+        assert_eq!(
+            task.await.expect("[C4] waiter task"),
+            MutationOperationOutcome::Succeeded(created.clone()),
+            "[C4] shared result"
+        );
+    }
+}
+
+#[tokio::test]
+async fn operation_journal_forced_fingerprint_collision_conflicts() {
+    let session = session(11);
+    let target = PathReference::parse("issue://owner/repo/new").expect("[C4] target");
+    let digest = [7_u8; 32];
+    let owner = match session
+        .begin_mutation_operation_with_fingerprint_for_test(
+            OperationId::parse("collision").expect("[C4] ID"),
+            target.clone(),
+            Arc::from("alpha"),
+            digest,
+        )
+        .await
+        .expect("[C4] owner")
+    {
+        MutationOperationStart::Owner(owner) => owner,
+        other => panic!("[C4] expected owner, got {other:?}"),
+    };
+    let error = session
+        .begin_mutation_operation_with_fingerprint_for_test(
+            OperationId::parse("collision").expect("[C4] ID"),
+            target,
+            Arc::from("bravo"),
+            digest,
+        )
+        .await
+        .expect_err("[C4] exact bytes conflict");
+    assert_eq!(error.category(), ErrorCategory::VersionConflict);
+    owner.finish(MutationOperationOutcome::Conclusive(ResourceError::new(
+        ErrorCategory::InvalidReference,
+        "fixture complete",
+    )));
+}
+
+#[tokio::test]
+async fn operation_journal_count_and_byte_ceilings() {
+    let session = session(12);
+    let target = PathReference::parse("issue://owner/repo/new").expect("[C4] target");
+    for index in 0..10_000 {
+        let owner = match session
+            .begin_mutation_operation(
+                OperationId::parse(format!("op-{index}")).expect("[C4] ID"),
+                target.clone(),
+                Arc::from("x"),
+            )
+            .await
+            .expect("[C4] admitted operation")
+        {
+            MutationOperationStart::Owner(owner) => owner,
+            other => panic!("[C4] expected owner, got {other:?}"),
+        };
+        owner.finish(MutationOperationOutcome::Conclusive(ResourceError::new(
+            ErrorCategory::PermissionDenied,
+            "fixture",
+        )));
+    }
+    let count_error = session
+        .begin_mutation_operation(
+            OperationId::parse("overflow").expect("[C4] overflow ID"),
+            target.clone(),
+            Arc::from("x"),
+        )
+        .await
+        .expect_err("[C4] count ceiling");
+    assert_eq!(count_error.category(), ErrorCategory::LimitExceeded);
+
+    let limits = ServerLimits::new(ServerLimitsInput {
+        storage: StorageLimitInput {
+            object_bytes: Some(1_024),
+            session_bytes: Some(1_024),
+        },
+        ..ServerLimitsInput::default()
+    })
+    .expect("[C4] limits");
+    let limited = PathSession::new(
+        SessionToken::parse("00000000000000000000000000000013").expect("[C4] token"),
+        Arc::new(MemoryStorage::default()),
+        limits,
+    );
+    let id = OperationId::parse("quota").expect("[C4] quota ID");
+    let retained_overhead = id.as_str().len() + target.requested().len();
+    let exact: Arc<str> = Arc::from("x".repeat(1_024 - retained_overhead));
+    assert!(matches!(
+        limited
+            .begin_mutation_operation(id, target.clone(), exact)
+            .await
+            .expect("[C4] exact byte ceiling"),
+        MutationOperationStart::Owner(_)
+    ));
+
+    let over = PathSession::new(
+        SessionToken::parse("00000000000000000000000000000014").expect("[C4] token"),
+        Arc::new(MemoryStorage::default()),
+        ServerLimits::new(ServerLimitsInput {
+            storage: StorageLimitInput {
+                object_bytes: Some(1_024),
+                session_bytes: Some(1_024),
+            },
+            ..ServerLimitsInput::default()
+        })
+        .expect("[C4] limits"),
+    );
+    let error = over
+        .begin_mutation_operation(
+            OperationId::parse("quota").expect("[C4] quota ID"),
+            target,
+            Arc::from("x".repeat(1_025 - retained_overhead)),
+        )
+        .await
+        .expect_err("[C4] one byte over");
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+}
+
+#[tokio::test]
+#[ignore = "checkpointed-build production-scale budget"]
+async fn operation_journal_budget() {
+    let target = PathReference::parse("issue://owner/repo/new").expect("[C4] target");
+    let count_session = session(16);
+    let started = Instant::now();
+    for index in 0..10_000 {
+        let owner = match count_session
+            .begin_mutation_operation(
+                OperationId::parse(format!("budget-{index}")).expect("[C4] ID"),
+                target.clone(),
+                Arc::from("x"),
+            )
+            .await
+            .expect("[C4] admitted")
+        {
+            MutationOperationStart::Owner(owner) => owner,
+            other => panic!("[C4] expected owner, got {other:?}"),
+        };
+        owner.finish(MutationOperationOutcome::Conclusive(ResourceError::new(
+            ErrorCategory::PermissionDenied,
+            "fixture",
+        )));
+    }
+    let count_elapsed = started.elapsed();
+    assert!(
+        count_elapsed <= Duration::from_millis(25),
+        "[C4] 10,000 journal transitions took {count_elapsed:?}"
+    );
+
+    let cache_limits = ServerLimits::new(ServerLimitsInput {
+        storage: StorageLimitInput {
+            object_bytes: Some(32 * 1024),
+            session_bytes: Some(32 * 1024),
+        },
+        ..ServerLimitsInput::default()
+    })
+    .expect("[C4] cache-yield limits");
+    let cache_session = PathSession::new(
+        SessionToken::parse("00000000000000000000000000000018").expect("[C4] token"),
+        Arc::new(MemoryStorage::default()),
+        cache_limits,
+    );
+    let mut cache_keys = Vec::new();
+    for index in 0..1_000 {
+        let key = SessionCacheKey::new("budget", format!("key-{index}")).expect("[C4] cache key");
+        cache_session
+            .cache_put(
+                key.clone(),
+                SessionCacheEntry::new(Vec::new(), Vec::new()).expect("[C4] cache entry"),
+            )
+            .await
+            .expect("[C4] cache put");
+        cache_keys.push(key);
+    }
+    let started = Instant::now();
+    assert!(matches!(
+        cache_session
+            .begin_mutation_operation(
+                OperationId::parse("cache-yield").expect("[C4] ID"),
+                target.clone(),
+                Arc::from("x".repeat(25 * 1024)),
+            )
+            .await
+            .expect("[C4] authoritative journal admission"),
+        MutationOperationStart::Owner(_)
+    ));
+    let yield_elapsed = started.elapsed();
+    assert!(
+        yield_elapsed <= Duration::from_millis(25),
+        "[C4] worst-case cache yield took {yield_elapsed:?}"
+    );
+    let mut evicted = 0;
+    for key in &cache_keys {
+        if cache_session
+            .cache_get(key)
+            .await
+            .expect("[C4] cache get")
+            .is_none()
+        {
+            evicted += 1;
+        }
+    }
+    assert!(evicted > 0, "[C4] authoritative journal yields cache bytes");
+
+    let compare_session = session(17);
+    let content: Arc<str> = Arc::from("x".repeat(64 * 1024 * 1024));
+    let id = OperationId::parse("maximum-content").expect("[C4] ID");
+    let owner = match compare_session
+        .begin_mutation_operation(id.clone(), target.clone(), Arc::clone(&content))
+        .await
+        .expect("[C4] owner")
+    {
+        MutationOperationStart::Owner(owner) => owner,
+        other => panic!("[C4] expected owner, got {other:?}"),
+    };
+    owner.finish(MutationOperationOutcome::Conclusive(ResourceError::new(
+        ErrorCategory::PermissionDenied,
+        "fixture",
+    )));
+    let started = Instant::now();
+    assert!(matches!(
+        compare_session
+            .begin_mutation_operation(id, target, content)
+            .await
+            .expect("[C4] compare"),
+        MutationOperationStart::Owner(_)
+    ));
+    let compare_elapsed = started.elapsed();
+    assert!(
+        compare_elapsed <= Duration::from_millis(50),
+        "[C4] 64 MiB fingerprint and exact comparison took {compare_elapsed:?}"
+    );
 }
 
 #[tokio::test]
@@ -241,7 +675,8 @@ async fn write_state_matrix_and_receipt_coverage() {
 
     let created = engine
         .write(
-            WriteRequest::new(path.clone(), "one\ntwo\n".to_owned(), None).expect("create request"),
+            WriteRequest::new(path.clone(), "one\ntwo\n".to_owned(), None, None)
+                .expect("create request"),
             &OperationGuard::new(),
         )
         .await
@@ -270,7 +705,7 @@ async fn write_state_matrix_and_receipt_coverage() {
 
     let duplicate = engine
         .write(
-            WriteRequest::new(path.clone(), "duplicate".to_owned(), None)
+            WriteRequest::new(path.clone(), "duplicate".to_owned(), None, None)
                 .expect("duplicate request"),
             &OperationGuard::new(),
         )
@@ -284,6 +719,7 @@ async fn write_state_matrix_and_receipt_coverage() {
                 path.clone(),
                 "replacement".to_owned(),
                 Some(VersionTag::from_content(b"stale")),
+                None,
             )
             .expect("stale request"),
             &OperationGuard::new(),
@@ -294,8 +730,13 @@ async fn write_state_matrix_and_receipt_coverage() {
 
     let replaced = engine
         .write(
-            WriteRequest::new(path.clone(), "replacement".to_owned(), Some(created_tag))
-                .expect("replace request"),
+            WriteRequest::new(
+                path.clone(),
+                "replacement".to_owned(),
+                Some(created_tag),
+                None,
+            )
+            .expect("replace request"),
             &OperationGuard::new(),
         )
         .await
@@ -535,7 +976,7 @@ async fn failed_commit_releases_seen_reservation() {
 
     let error = engine
         .write(
-            WriteRequest::new(path, "content".to_owned(), None).expect("write request"),
+            WriteRequest::new(path, "content".to_owned(), None, None).expect("write request"),
             &OperationGuard::new(),
         )
         .await
@@ -729,7 +1170,7 @@ async fn engine_drives_non_workspace_families() {
 
     let created = engine
         .write(
-            WriteRequest::new(reference.clone(), "scratch bytes\n".to_owned(), None)
+            WriteRequest::new(reference.clone(), "scratch bytes\n".to_owned(), None, None)
                 .expect("create request"),
             &OperationGuard::new(),
         )

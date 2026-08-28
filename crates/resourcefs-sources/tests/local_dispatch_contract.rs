@@ -30,6 +30,7 @@ async fn local_never_touches_filesystem() {
                 PathReference::local("tracked.txt").expect("scratch reference"),
                 "scratch content, not workspace content\n".to_owned(),
                 None,
+                None,
             )
             .expect("create request"),
             &OperationGuard::new(),
@@ -82,6 +83,7 @@ async fn workspace_never_touches_local() {
                 Some(resourcefs_core::VersionTag::from_content(
                     b"granted bytes\n",
                 )),
+                None,
             )
             .expect("replace request"),
             &OperationGuard::new(),
@@ -159,7 +161,7 @@ async fn artifact_and_catalog_immutable() {
         let error = fixture
             .engine
             .write(
-                WriteRequest::new(reference.clone(), "forbidden\n".to_owned(), None)
+                WriteRequest::new(reference.clone(), "forbidden\n".to_owned(), None, None)
                     .expect("write request"),
                 &OperationGuard::new(),
             )

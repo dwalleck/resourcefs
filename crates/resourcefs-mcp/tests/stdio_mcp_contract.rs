@@ -794,6 +794,13 @@ fn lists_and_calls_discovery_tools() {
         accepts_type(search_path, "string") && !accepts_type(search_path, "null"),
         "rfs_search optional path must reject explicit null: {search_path}"
     );
+    for field in ["ifVersion", "operationId"] {
+        let property = &write["inputSchema"]["properties"][field];
+        assert!(
+            accepts_type(property, "string") && !accepts_type(property, "null"),
+            "[C3] rfs_write optional {field} must reject explicit null: {property}"
+        );
+    }
 
     let assert_limits =
         |name: &str, schema: &Value, definition: &str, fields: &[(&str, u64, u64)]| {
@@ -1147,6 +1154,55 @@ fn versioned_write_receipts_and_catalog_policy_work_over_stdio() {
         process.call_read("moved.txt")["structuredContent"]["content"],
         "moved content\n"
     );
+
+    process.finish();
+}
+
+#[test]
+fn invalid_operation_id_precedes_dispatch() {
+    let fixture = WorkspaceFixture::new();
+    let profile = fixture.root.join("operation-id-profile.json");
+    fs::write(
+        &profile,
+        serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "workspace": {
+                "roots": [{
+                    "id": "workspace",
+                    "path": fixture.root,
+                    "grants": {"create": true}
+                }],
+                "primaryRoot": "workspace"
+            }
+        }))
+        .expect("[C3] profile JSON"),
+    )
+    .expect("[C3] profile");
+    let mut process = McpProcess::start_profile(&profile, &fixture.root);
+    process.initialize(VERSION_2026);
+
+    for (operation_id, path) in [
+        ("invalid id", "invalid-id.txt"),
+        ("local-op", "non-creation-target.txt"),
+    ] {
+        let response = process.request(
+            "tools/call",
+            json!({
+                "name": "rfs_write",
+                "arguments": {
+                    "path": path,
+                    "content": "must not land",
+                    "operationId": operation_id
+                }
+            }),
+        );
+        assert!(response.get("error").is_none(), "[C3] {response}");
+        assert_tool_error(&response["result"], "invalid_reference");
+        assert!(
+            !fixture.root.join(path).exists(),
+            "[C3] rejected before filesystem adapter access: {path}"
+        );
+    }
 
     process.finish();
 }

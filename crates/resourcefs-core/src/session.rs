@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
@@ -13,15 +13,19 @@ use tokio::sync::{Mutex, Notify};
 use crate::{
     ArtifactAddress, DisplayedLineRange, ErrorCategory, LocalAddress, LocalName,
     MAX_PATH_REFERENCE_BYTES, PathReference, ResourceAddress, ResourceError, ServerLimits,
-    VersionSelector, VersionTag, WorkspaceAddress,
+    VersionSelector, VersionTag, WorkspaceAddress, mutation::OperationId,
 };
 
+/// Bytes retained by artifacts, scratch, cache, snapshots, and exact mutation
+/// operation content in one live Path Session.
 pub const MAX_SESSION_BYTES: usize = 256 * 1024 * 1024;
 
-/// Objects one Path Session may hold, counted across every family it owns:
-/// immutable `artifact://` records and mutable `local://` Session Scratch
-/// Resources share this single ceiling.
+/// Artifact, Session Scratch, and cache objects share this count ceiling.
+/// Mutation journal entries have the independent [`MAX_MUTATION_OPERATIONS`]
+/// ceiling because their exact content is already charged to the byte ceiling.
 pub const MAX_SESSION_ARTIFACTS: usize = 1_000;
+/// Distinct operation identities retained by one live Path Session.
+pub const MAX_MUTATION_OPERATIONS: usize = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionToken(String);
@@ -308,6 +312,115 @@ struct SessionState {
     snapshots: HashMap<SnapshotKey, SeenSnapshot>,
     snapshot_bytes: usize,
     reserved_snapshot_bytes: usize,
+    mutation_operations: HashMap<OperationId, MutationJournalEntry>,
+}
+
+#[derive(Debug)]
+struct MutationJournalEntry {
+    target: String,
+    content: Arc<str>,
+    fingerprint: [u8; 32],
+    attempt: Arc<MutationAttempt>,
+}
+
+#[derive(Debug)]
+struct MutationAttempt {
+    outcome: OnceLock<MutationOperationOutcome>,
+    notify: Notify,
+}
+
+impl MutationAttempt {
+    fn new() -> Self {
+        Self {
+            outcome: OnceLock::new(),
+            notify: Notify::new(),
+        }
+    }
+
+    fn complete(&self, outcome: MutationOperationOutcome) {
+        let inserted = self.outcome.set(outcome).is_ok();
+        debug_assert!(inserted, "mutation operation attempt completes once");
+        if inserted {
+            self.notify.notify_waiters();
+        }
+    }
+
+    async fn wait(&self) -> MutationOperationOutcome {
+        loop {
+            if let Some(outcome) = self.outcome.get() {
+                return outcome.clone();
+            }
+            let notified = self.notify.notified();
+            if let Some(outcome) = self.outcome.get() {
+                return outcome.clone();
+            }
+            notified.await;
+        }
+    }
+}
+
+/// Terminal observation for one Creation Target attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MutationOperationOutcome {
+    /// Upstream creation succeeded and returned this canonical Resource.
+    Succeeded(PathReference),
+    /// Upstream conclusively rejected without creating; identical retry may own.
+    Conclusive(ResourceError),
+    /// Upstream may have created; all repeats are blocked for this session.
+    Unknown(ResourceError),
+}
+
+/// Result of binding an operation ID in one Path Session.
+#[derive(Debug)]
+pub enum MutationOperationStart {
+    /// This caller alone may execute and complete the attempt.
+    Owner(MutationOperationLease),
+    /// An identical attempt is in flight; wait for its exact outcome.
+    Wait(MutationOperationWaiter),
+    /// Creation already succeeded; return the recorded canonical Resource.
+    Replay(PathReference),
+    /// The last attempt may have created; return reconciliation guidance.
+    Unknown(ResourceError),
+}
+
+/// Exclusive right to complete one journal attempt.
+#[derive(Debug)]
+pub struct MutationOperationLease {
+    attempt: Arc<MutationAttempt>,
+    completed: bool,
+}
+
+impl MutationOperationLease {
+    /// Publishes the attempt outcome to waiters and later repeats.
+    pub fn finish(mut self, outcome: MutationOperationOutcome) {
+        self.attempt.complete(outcome);
+        self.completed = true;
+    }
+}
+
+impl Drop for MutationOperationLease {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.attempt
+                .complete(MutationOperationOutcome::Unknown(ResourceError::new(
+                    ErrorCategory::SourceUnavailable,
+                    "Creation Target outcome is unknown because its owner ended before completion; reconcile upstream state",
+                )));
+        }
+    }
+}
+
+/// Wait handle for an identical in-flight operation.
+#[derive(Debug)]
+pub struct MutationOperationWaiter {
+    attempt: Arc<MutationAttempt>,
+}
+
+impl MutationOperationWaiter {
+    /// Waits without polling and returns the owner's published outcome.
+    pub async fn wait(self) -> MutationOperationOutcome {
+        self.attempt.wait().await
+    }
 }
 
 /// One cached upstream representation plus when it was last used.
@@ -501,6 +614,7 @@ impl PathSession {
                     snapshots: HashMap::new(),
                     snapshot_bytes: 0,
                     reserved_snapshot_bytes: 0,
+                    mutation_operations: HashMap::new(),
                 }),
                 storage,
                 limits,
@@ -523,6 +637,122 @@ impl PathSession {
     pub async fn mark_disconnected(&self) -> Result<(), ResourceError> {
         self.invalidate();
         self.inner.storage.mark_disconnected().await
+    }
+
+    /// Binds one Creation Target identity/content pair or joins its current
+    /// attempt. Existing success/unknown states replay without new ownership.
+    pub async fn begin_mutation_operation(
+        &self,
+        id: OperationId,
+        target: PathReference,
+        content: Arc<str>,
+    ) -> Result<MutationOperationStart, ResourceError> {
+        let fingerprint: [u8; 32] = Sha256::digest(content.as_bytes()).into();
+        self.begin_mutation_operation_with_fingerprint(id, target, content, fingerprint)
+            .await
+    }
+
+    /// Test-only collision injection; exact bytes remain authoritative.
+    #[cfg(feature = "test-support")]
+    pub async fn begin_mutation_operation_with_fingerprint_for_test(
+        &self,
+        id: OperationId,
+        target: PathReference,
+        content: Arc<str>,
+        fingerprint: [u8; 32],
+    ) -> Result<MutationOperationStart, ResourceError> {
+        self.begin_mutation_operation_with_fingerprint(id, target, content, fingerprint)
+            .await
+    }
+
+    async fn begin_mutation_operation_with_fingerprint(
+        &self,
+        id: OperationId,
+        target: PathReference,
+        content: Arc<str>,
+        fingerprint: [u8; 32],
+    ) -> Result<MutationOperationStart, ResourceError> {
+        if !self.is_active() {
+            return Err(inactive_mutation_journal_error());
+        }
+        if content.len() > self.inner.limits.object_bytes() {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!(
+                    "mutation operation content exceeds the configured {}-byte object ceiling",
+                    self.inner.limits.object_bytes()
+                ),
+            ));
+        }
+        let target = target.requested().to_owned();
+        let mut state = self.inner.admission.lock().await;
+        if !self.is_active() {
+            return Err(inactive_mutation_journal_error());
+        }
+        if let Some(entry) = state.mutation_operations.get_mut(&id) {
+            if entry.target != target
+                || entry.fingerprint != fingerprint
+                || entry.content.as_ref() != content.as_ref()
+            {
+                return Err(ResourceError::new(
+                    ErrorCategory::VersionConflict,
+                    "operationId is already bound to a different Creation Target or exact content",
+                ));
+            }
+            return Ok(match entry.attempt.outcome.get() {
+                None => MutationOperationStart::Wait(MutationOperationWaiter {
+                    attempt: Arc::clone(&entry.attempt),
+                }),
+                Some(MutationOperationOutcome::Succeeded(reference)) => {
+                    MutationOperationStart::Replay(reference.clone())
+                }
+                Some(MutationOperationOutcome::Unknown(error)) => {
+                    MutationOperationStart::Unknown(error.clone())
+                }
+                Some(MutationOperationOutcome::Conclusive(_)) => {
+                    let attempt = Arc::new(MutationAttempt::new());
+                    entry.attempt = Arc::clone(&attempt);
+                    MutationOperationStart::Owner(MutationOperationLease {
+                        attempt,
+                        completed: false,
+                    })
+                }
+            });
+        }
+        if state.mutation_operations.len() >= MAX_MUTATION_OPERATIONS {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!(
+                    "Path Session mutation operation journal exceeds the {MAX_MUTATION_OPERATIONS}-entry ceiling"
+                ),
+            ));
+        }
+        let retained_bytes = id
+            .as_str()
+            .len()
+            .checked_add(target.len())
+            .and_then(|bytes| bytes.checked_add(content.len()))
+            .ok_or_else(|| session_quota_error(self.inner.limits.session_bytes()))?;
+        let session_limit = self.inner.limits.session_bytes();
+        yield_cache_until(&mut state, None, |state| {
+            scratch_resulting_bytes(state, 0, retained_bytes, session_limit).is_ok()
+        });
+        let resulting_bytes = scratch_resulting_bytes(&state, 0, retained_bytes, session_limit)?;
+        let attempt = Arc::new(MutationAttempt::new());
+        state.mutation_operations.insert(
+            id,
+            MutationJournalEntry {
+                target,
+                content,
+                fingerprint,
+                attempt: Arc::clone(&attempt),
+            },
+        );
+        state.used_bytes = resulting_bytes;
+        Ok(MutationOperationStart::Owner(MutationOperationLease {
+            attempt,
+            completed: false,
+        }))
     }
 
     pub async fn retain(
@@ -1326,6 +1556,13 @@ fn inactive_cache_error() -> ResourceError {
     ResourceError::new(
         ErrorCategory::SourceUnavailable,
         "Path Session disconnected before the cache operation",
+    )
+}
+
+fn inactive_mutation_journal_error() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::SourceUnavailable,
+        "Path Session disconnected before the mutation operation journal access",
     )
 }
 

@@ -9,9 +9,9 @@ use std::{
 
 use resourcefs_core::{
     DiscoveryEngine, ErrorCategory, GlobLimits, GlobOptions, GlobRequest, GlobTarget,
-    MutationEngine, OperationGuard, PathReference, PathSession, ReadEngine, ReadRequest,
-    ResourceError, SearchLimits, SearchOptions, SearchRequest, SearchTarget, ServerLimits,
-    TextLimits, VersionTag, WriteRequest,
+    MutationEngine, OperationGuard, OperationId, PathReference, PathSession, ReadEngine,
+    ReadRequest, ResourceError, SearchLimits, SearchOptions, SearchRequest, SearchTarget,
+    ServerLimits, TextLimits, VersionTag, WriteRequest,
 };
 #[cfg(feature = "test-support")]
 use resourcefs_sources::StorageFailurePoint;
@@ -135,9 +135,12 @@ struct WriteInput {
     path: String,
     content: String,
     #[serde(default, deserialize_with = "deserialize_optional_string")]
+    #[schemars(with = "String")]
     if_version: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    #[schemars(with = "String")]
+    operation_id: Option<String>,
 }
-
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct EditInput {
@@ -633,6 +636,13 @@ impl ResourceFsServer {
         input: WriteInput,
         operation: &OperationGuard,
     ) -> Result<CallToolResult, String> {
+        let operation_id = match input.operation_id {
+            Some(value) => match OperationId::parse(value) {
+                Ok(operation_id) => Some(operation_id),
+                Err(error) => return render::mutation_failure(&input.path, &error),
+            },
+            None => None,
+        };
         let reference = match PathReference::parse(&input.path) {
             Ok(reference) => reference,
             Err(error) => return render::mutation_failure(&input.path, &error),
@@ -644,7 +654,7 @@ impl ResourceFsServer {
             },
             None => None,
         };
-        let request = match WriteRequest::new(reference, input.content, if_version) {
+        let request = match WriteRequest::new(reference, input.content, if_version, operation_id) {
             Ok(request) => request,
             Err(error) => return render::mutation_failure(&input.path, &error),
         };

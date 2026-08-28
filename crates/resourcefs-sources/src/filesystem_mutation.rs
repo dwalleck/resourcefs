@@ -3,6 +3,7 @@ use std::{
     fmt::Write as _,
     io::Write as _,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use async_trait::async_trait;
@@ -306,7 +307,7 @@ fn load_current(
 fn commit_create(
     view: &WorkspaceView,
     target: MutationTarget,
-    content: String,
+    content: Arc<str>,
 ) -> Result<(), ResourceError> {
     let resolved = resolve_target(view, &target)?;
     enforce_grant(resolved.root.grants, MutationAccess::Create)?;
@@ -341,7 +342,7 @@ fn commit_replace(
     view: &WorkspaceView,
     target: MutationTarget,
     expected: VersionTag,
-    content: String,
+    content: Arc<str>,
 ) -> Result<(), ResourceError> {
     let resolved = resolve_target(view, &target)?;
     enforce_grant(resolved.root.grants, MutationAccess::Update)?;

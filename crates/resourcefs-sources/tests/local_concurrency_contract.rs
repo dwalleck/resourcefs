@@ -21,6 +21,7 @@ async fn same_name_serializes() {
                 PathReference::local("contended.md").expect("scratch reference"),
                 "original\n".to_owned(),
                 None,
+                None,
             )
             .expect("create request"),
             &OperationGuard::new(),
@@ -42,6 +43,7 @@ async fn same_name_serializes() {
                         PathReference::local("contended.md").expect("scratch reference"),
                         FIRST.to_owned(),
                         Some(tag),
+                        None,
                     )
                     .expect("replace request"),
                     &OperationGuard::new(),
@@ -59,6 +61,7 @@ async fn same_name_serializes() {
                         PathReference::local("contended.md").expect("scratch reference"),
                         SECOND.to_owned(),
                         Some(tag),
+                        None,
                     )
                     .expect("replace request"),
                     &OperationGuard::new(),

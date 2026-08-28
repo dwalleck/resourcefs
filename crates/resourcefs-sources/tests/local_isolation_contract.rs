@@ -34,6 +34,7 @@ async fn create(session: &ScratchSession, name: &str, content: &str) {
                 PathReference::local(name).expect("scratch reference"),
                 content.to_owned(),
                 None,
+                None,
             )
             .expect("create request"),
             &OperationGuard::new(),
@@ -177,6 +178,7 @@ async fn sessions_never_cross() {
                 PathReference::local(SHARED).expect("scratch reference"),
                 "alpha-replaced\n".to_owned(),
                 Some(a_tag),
+                None,
             )
             .expect("replace request"),
             &OperationGuard::new(),
@@ -258,6 +260,7 @@ async fn disconnect_invalidates() {
             WriteRequest::new(
                 PathReference::local("post-disconnect.md").expect("scratch reference"),
                 "should not land\n".to_owned(),
+                None,
                 None,
             )
             .expect("create request"),
