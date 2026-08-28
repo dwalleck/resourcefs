@@ -15,11 +15,12 @@ use std::{
 };
 
 use resourcefs_core::{
-    AllowedOrigin, ErrorCategory, HttpCeilings, OperationGuard, OriginAllowlist,
+    AllowedOrigin, ErrorCategory, HttpCeilings, MAX_ARTIFACT_BYTES, OperationGuard, OriginAllowlist,
 };
 use resourcefs_sources::{BoundedHttpResponse, HttpRequest, HttpSubstrate};
 use tls::{
-    FIXTURE_HOST, FixtureResponse, MATCH_CERT, TlsListener, fixture_allowlist, tls_substrate,
+    FIXTURE_HOST, FixtureResponse, MATCH_CERT, TlsListener, fixture_allowlist, settle,
+    tls_substrate,
 };
 use url::Url;
 
@@ -122,6 +123,117 @@ async fn source_headers_and_response_metadata_are_typed_and_bounded() {
     ] {
         assert!(head.contains(expected), "missing {expected} in {head}");
     }
+}
+
+#[tokio::test]
+async fn mutation_request_is_bounded_and_non_redirecting() {
+    let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let listener = TlsListener::serve_router(loopback, 0, MATCH_CERT, |path| match path {
+        "/mutate" => FixtureResponse::Redirect("/followed".to_owned()),
+        "/create" => FixtureResponse::Response {
+            status: "201 Created",
+            headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
+            body: br#"{"id":7}"#.to_vec(),
+        },
+        "/followed" => panic!("[C15] mutation redirect was followed"),
+        other => panic!("[C15] unexpected route {other}"),
+    })
+    .await;
+    let port = listener.address.port();
+    let substrate = tls_substrate(fixture_allowlist(port, true), vec![loopback]);
+    let url = |path: &str| {
+        Url::parse(&format!("https://{FIXTURE_HOST}:{port}{path}")).expect("[C15] fixture URL")
+    };
+    let patch_body = br#"{"title":"new"}"#.to_vec();
+    let patch = substrate
+        .fetch(
+            HttpRequest::patch_json(url("/mutate"), patch_body.clone())
+                .expect("[C15] PATCH request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("[C15] redirect response");
+    assert_eq!(
+        patch.status(),
+        302,
+        "[C15] redirect is returned, not followed"
+    );
+
+    let post_body = br#"{"title":"created"}"#.to_vec();
+    let post = substrate
+        .fetch(
+            HttpRequest::post_json(url("/create"), post_body.clone()).expect("[C15] POST request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("[C15] create response");
+    assert_eq!(post.status(), 201);
+
+    let exact = HttpRequest::post_json(url("/create"), vec![b'x'; MAX_ARTIFACT_BYTES])
+        .expect("[C15] exact request-body ceiling");
+    std::hint::black_box(exact);
+    assert_eq!(
+        HttpRequest::post_json(url("/create"), vec![b'x'; MAX_ARTIFACT_BYTES + 1])
+            .expect_err("[C15] one byte over request-body ceiling")
+            .category(),
+        ErrorCategory::LimitExceeded
+    );
+
+    settle().await;
+    assert_eq!(
+        listener.requests(),
+        vec![
+            "PATCH /mutate HTTP/1.1".to_owned(),
+            "POST /create HTTP/1.1".to_owned()
+        ],
+        "[C15] exact methods and zero redirect follow-up"
+    );
+    assert_eq!(
+        listener.bodies(),
+        vec![patch_body, post_body],
+        "[C15] complete request bodies"
+    );
+    assert!(
+        listener.heads().iter().all(|head| head
+            .to_ascii_lowercase()
+            .contains("content-type: application/json")),
+        "[C15] JSON content type"
+    );
+}
+
+#[tokio::test]
+#[ignore = "checkpointed-build production-scale budget"]
+async fn http_mutation_request_budget() {
+    let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let listener =
+        TlsListener::serve_router(loopback, 0, MATCH_CERT, |_path| FixtureResponse::Response {
+            status: "201 Created",
+            headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
+            body: b"{}".to_vec(),
+        })
+        .await;
+    let port = listener.address.port();
+    let substrate = tls_substrate(fixture_allowlist(port, true), vec![loopback]);
+    let url =
+        Url::parse(&format!("https://{FIXTURE_HOST}:{port}/maximum")).expect("[C15] fixture URL");
+    let request =
+        HttpRequest::post_json(url, vec![b'x'; MAX_ARTIFACT_BYTES]).expect("[C15] maximum request");
+    let started = Instant::now();
+    let response = substrate
+        .fetch(request, &OperationGuard::new())
+        .await
+        .expect("[C15] maximum request response");
+    assert_eq!(response.status(), 201);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed <= Duration::from_millis(100),
+        "[C15] 64 MiB loopback mutation request took {elapsed:?}"
+    );
+    assert_eq!(
+        listener.bodies().first().map(Vec::len),
+        Some(MAX_ARTIFACT_BYTES),
+        "[C15] complete maximum body observed"
+    );
 }
 
 #[tokio::test]

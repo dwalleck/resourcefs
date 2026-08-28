@@ -51,8 +51,8 @@ use std::{
 };
 
 use resourcefs_core::{
-    AddressPolicy, AllowedOrigin, ErrorCategory, HttpCeilings, OperationGuard, OriginAllowlist,
-    ResourceError, Secret,
+    AddressPolicy, AllowedOrigin, ErrorCategory, HttpCeilings, MAX_ARTIFACT_BYTES, OperationGuard,
+    OriginAllowlist, ResourceError, Secret,
 };
 use url::Url;
 
@@ -113,6 +113,7 @@ fn system_lookup() -> HostLookup {
 }
 
 /// Authorizes every resolved address before the client can connect to it.
+#[derive(Clone)]
 struct PolicyResolver {
     policies: HashMap<String, AddressPolicy>,
     lookup: HostLookup,
@@ -160,10 +161,36 @@ impl reqwest::dns::Resolve for PolicyResolver {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpMethod {
+    Get,
+    Post,
+    Patch,
+}
+
+impl HttpMethod {
+    const fn reqwest(self) -> reqwest::Method {
+        match self {
+            Self::Get => reqwest::Method::GET,
+            Self::Post => reqwest::Method::POST,
+            Self::Patch => reqwest::Method::PATCH,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RedirectBehavior {
+    FollowReads,
+    RefuseMutation,
+}
+
 /// One source-neutral request for the substrate to perform.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct HttpRequest {
     url: Url,
+    method: HttpMethod,
+    redirect: RedirectBehavior,
+    body: Option<Vec<u8>>,
     headers: Vec<SourceRequestHeader>,
     header_bytes: usize,
 }
@@ -174,9 +201,39 @@ impl HttpRequest {
     pub const fn get(url: Url) -> Self {
         Self {
             url,
+            method: HttpMethod::Get,
+            redirect: RedirectBehavior::FollowReads,
+            body: None,
             headers: Vec::new(),
             header_bytes: 0,
         }
+    }
+
+    /// Builds one bounded non-redirecting JSON POST request.
+    pub fn post_json(url: Url, body: Vec<u8>) -> Result<Self, ResourceError> {
+        Self::json(url, HttpMethod::Post, body)
+    }
+
+    /// Builds one bounded non-redirecting JSON PATCH request.
+    pub fn patch_json(url: Url, body: Vec<u8>) -> Result<Self, ResourceError> {
+        Self::json(url, HttpMethod::Patch, body)
+    }
+
+    fn json(url: Url, method: HttpMethod, body: Vec<u8>) -> Result<Self, ResourceError> {
+        if body.len() > MAX_ARTIFACT_BYTES {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!("HTTP mutation request body exceeds the {MAX_ARTIFACT_BYTES}-byte ceiling"),
+            ));
+        }
+        Ok(Self {
+            url,
+            method,
+            redirect: RedirectBehavior::RefuseMutation,
+            body: Some(body),
+            headers: Vec::new(),
+            header_bytes: 0,
+        })
     }
 
     /// Adds one validated non-secret end-to-end header.
@@ -197,6 +254,11 @@ impl HttpRequest {
         let value = value.into();
         let parsed_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
             .map_err(|_| invalid_source_header("HTTP request header name is invalid"))?;
+        if self.body.is_some() && parsed_name == reqwest::header::CONTENT_TYPE {
+            return Err(invalid_source_header(
+                "HTTP JSON mutation requests own their Content-Type header",
+            ));
+        }
         if is_authority_or_framing_header(&parsed_name) {
             return Err(invalid_source_header(
                 "HTTP source header must not control authority, cookies, host, or message framing",
@@ -441,6 +503,7 @@ fn authorize_literal_host(
 /// The workspace's single bounded HTTP egress point.
 pub struct HttpSubstrate {
     client: reqwest::Client,
+    mutation_client: reqwest::Client,
     allowlist: OriginAllowlist,
     ceilings: HttpCeilings,
     /// The same per-host policies the resolver holds, retained so the
@@ -527,6 +590,33 @@ impl fmt::Debug for OriginCredential {
     }
 }
 
+fn build_http_client(
+    resolver: PolicyResolver,
+    redirect: reqwest::redirect::Policy,
+    ceilings: HttpCeilings,
+    roots: &[&[u8]],
+) -> Result<reqwest::Client, ResourceError> {
+    let mut builder = reqwest::Client::builder()
+        .dns_resolver(Arc::new(resolver))
+        .redirect(redirect)
+        .timeout(ceilings.timeout());
+    for root in roots {
+        let certificate = reqwest::Certificate::from_der(root).map_err(|error| {
+            ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                format!("trust anchor could not be parsed: {error}"),
+            )
+        })?;
+        builder = builder.tls_certs_merge([certificate]);
+    }
+    builder.build().map_err(|error| {
+        ResourceError::new(
+            ErrorCategory::SourceUnavailable,
+            format!("HTTP client could not be constructed: {error}"),
+        )
+    })
+}
+
 impl HttpSubstrate {
     /// Builds the substrate over the system resolver.
     pub fn new(
@@ -610,9 +700,9 @@ impl HttpSubstrate {
             policies: policies.clone(),
             lookup,
         };
-        let mut builder = reqwest::Client::builder()
-            .dns_resolver(Arc::new(resolver))
-            .redirect(redirect_policy(
+        let client = build_http_client(
+            resolver.clone(),
+            redirect_policy(
                 allowlist.clone(),
                 policies.clone(),
                 credentials
@@ -620,25 +710,15 @@ impl HttpSubstrate {
                     .map(|credential| credential.origin().clone())
                     .collect(),
                 ceilings.redirect_depth(),
-            ))
-            .timeout(ceilings.timeout());
-        for root in roots {
-            let certificate = reqwest::Certificate::from_der(root).map_err(|error| {
-                ResourceError::new(
-                    ErrorCategory::SourceUnavailable,
-                    format!("trust anchor could not be parsed: {error}"),
-                )
-            })?;
-            builder = builder.tls_certs_merge([certificate]);
-        }
-        let client = builder.build().map_err(|error| {
-            ResourceError::new(
-                ErrorCategory::SourceUnavailable,
-                format!("HTTP client could not be constructed: {error}"),
-            )
-        })?;
+            ),
+            ceilings,
+            roots,
+        )?;
+        let mutation_client =
+            build_http_client(resolver, reqwest::redirect::Policy::none(), ceilings, roots)?;
         Ok(Self {
             client,
+            mutation_client,
             allowlist,
             ceilings,
             policies,
@@ -667,18 +747,35 @@ impl HttpSubstrate {
         Ok(())
     }
 
-    /// Builds the GET, attaching validated source headers and then the
+    /// Builds one request, attaching validated source headers and then the
     /// credential of the origin that owns this URL, if any.
     ///
     /// Source headers cannot name authority or framing fields, so only this
     /// method can cross `Secret::expose` and attach a credential.
-    fn credentialed(&self, request: &HttpRequest) -> reqwest::RequestBuilder {
-        let mut builder = self.client.get(request.url.clone());
-        for header in &request.headers {
-            builder = builder.header(header.name.clone(), header.value.clone());
+    fn credentialed(&self, request: HttpRequest) -> reqwest::RequestBuilder {
+        let HttpRequest {
+            url,
+            method,
+            redirect,
+            body,
+            headers,
+            ..
+        } = request;
+        let client = match redirect {
+            RedirectBehavior::FollowReads => &self.client,
+            RedirectBehavior::RefuseMutation => &self.mutation_client,
+        };
+        let mut builder = client.request(method.reqwest(), url.clone());
+        if let Some(body) = body {
+            builder = builder
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body);
+        }
+        for header in headers {
+            builder = builder.header(header.name, header.value);
         }
         for credential in &self.credentials {
-            if credential.origin.authorizes(request.url()) {
+            if credential.origin.authorizes(&url) {
                 builder = builder.header(&credential.header, credential.value.expose());
                 break;
             }
@@ -734,26 +831,26 @@ impl HttpSubstrate {
                 "request was cancelled before egress",
             )));
         }
-        self.refuse_degraded(request.url())
+        let request_url = request.url().clone();
+        self.refuse_degraded(&request_url)
             .map_err(HttpFetchFailure::terminal)?;
         self.allowlist
-            .authorize(request.url())
+            .authorize(&request_url)
             .map_err(HttpFetchFailure::terminal)?;
-        authorize_literal_host(&self.policies, request.url())
-            .map_err(HttpFetchFailure::terminal)?;
+        authorize_literal_host(&self.policies, &request_url).map_err(HttpFetchFailure::terminal)?;
 
         let response = tokio::select! {
             biased;
             () = operation.cancelled() => {
                 return Err(HttpFetchFailure::terminal(cancelled_mid_request()));
             }
-            sent = self.credentialed(&request).send() => {
+            sent = self.credentialed(request).send() => {
                 sent.map_err(classify_reqwest_failure)?
             }
         };
 
         let status = response.status().as_u16();
-        let final_url = Url::parse(response.url().as_str()).unwrap_or_else(|_| request.url.clone());
+        let final_url = Url::parse(response.url().as_str()).unwrap_or(request_url);
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)

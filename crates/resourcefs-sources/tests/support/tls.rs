@@ -212,6 +212,69 @@ impl FixtureResponse {
 /// peer was *sent*, measured here rather than inferred from what the client
 /// says it accepted. A write error ends the loop, which is how the listener
 /// observes the peer going away mid-body.
+async fn read_request<R>(stream: &mut R) -> io::Result<(String, String, Vec<u8>)>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024 + 64 * 1024;
+    let mut received = Vec::new();
+    let head_end = loop {
+        if let Some(position) = received.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
+        }
+        if received.len() >= MAX_REQUEST_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fixture request exceeds its observation ceiling",
+            ));
+        }
+        let mut chunk = [0_u8; 8 * 1024];
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "fixture request ended before its header",
+            ));
+        }
+        received.extend_from_slice(&chunk[..read]);
+    };
+    let head = String::from_utf8_lossy(&received[..head_end]).into_owned();
+    let line = head.lines().next().unwrap_or("").to_owned();
+    let content_length = head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .map(|(_, value)| value.trim().parse::<usize>())
+        .transpose()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid Content-Length"))?
+        .unwrap_or(0);
+    if head_end
+        .checked_add(content_length)
+        .is_none_or(|total| total > MAX_REQUEST_BYTES)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "fixture request body exceeds its observation ceiling",
+        ));
+    }
+    while received.len() < head_end + content_length {
+        let mut chunk = [0_u8; 8 * 1024];
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "fixture request body ended early",
+            ));
+        }
+        received.extend_from_slice(&chunk[..read]);
+    }
+    Ok((
+        line,
+        head,
+        received[head_end..head_end + content_length].to_vec(),
+    ))
+}
+
 async fn write_response<W>(stream: &mut W, response: &FixtureResponse, flushed: &AtomicUsize)
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -277,6 +340,8 @@ pub struct TlsListener {
     /// Full request heads (request line plus headers), so a fixture can assert
     /// what was transmitted on the wire — notably a credential header.
     heads: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Complete request bodies, aligned with [`Self::requests`].
+    bodies: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
     flushed: Arc<AtomicUsize>,
 }
 
@@ -327,14 +392,16 @@ impl TlsListener {
         let completed = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
         let heads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
         let flushed = Arc::new(AtomicUsize::new(0));
         let router: Arc<dyn Fn(&str) -> FixtureResponse + Send + Sync> = Arc::new(router);
 
-        let (accept_counter, done_counter, log, head_source, flush_counter) = (
+        let (accept_counter, done_counter, log, head_source, body_source, flush_counter) = (
             Arc::clone(&accepts),
             Arc::clone(&completed),
             Arc::clone(&requests),
             Arc::clone(&heads),
+            Arc::clone(&bodies),
             Arc::clone(&flushed),
         );
         tokio::spawn(async move {
@@ -344,6 +411,7 @@ impl TlsListener {
                 let done = Arc::clone(&done_counter);
                 let log = Arc::clone(&log);
                 let head_log = Arc::clone(&head_source);
+                let body_log = Arc::clone(&body_source);
                 let router = Arc::clone(&router);
                 let flushed = Arc::clone(&flush_counter);
                 tokio::spawn(async move {
@@ -353,25 +421,19 @@ impl TlsListener {
                         return;
                     };
                     done.fetch_add(1, Ordering::SeqCst);
-                    let mut buffer = [0_u8; 1024];
-                    let mut target = String::new();
-                    if let Ok(read) = tls.read(&mut buffer).await
-                        && read > 0
-                        && let Some(line) = String::from_utf8_lossy(&buffer[..read]).lines().next()
-                    {
-                        // The request target is the middle field of the
-                        // request line, recorded verbatim so a fixture can
-                        // assert what was transmitted byte for byte.
-                        target = line.split_whitespace().nth(1).unwrap_or("").to_owned();
-                        log.lock()
-                            .expect("request log is uncontended")
-                            .push(line.to_owned());
+                    if let Ok((line, head, body)) = read_request(&mut tls).await {
+                        let target = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+                        log.lock().expect("request log is uncontended").push(line);
                         head_log
                             .lock()
                             .expect("request head log is uncontended")
-                            .push(String::from_utf8_lossy(&buffer[..read]).into_owned());
+                            .push(head);
+                        body_log
+                            .lock()
+                            .expect("request body log is uncontended")
+                            .push(body);
+                        write_response(&mut tls, &router(&target), &flushed).await;
                     }
-                    write_response(&mut tls, &router(&target), &flushed).await;
                     let _ = tls.shutdown().await;
                 });
             }
@@ -383,6 +445,7 @@ impl TlsListener {
             completed,
             requests,
             heads,
+            bodies,
             flushed,
         }
     }
@@ -426,6 +489,14 @@ impl TlsListener {
         self.heads
             .lock()
             .expect("request head log is uncontended")
+            .clone()
+    }
+
+    /// Complete request bodies in request-log order.
+    pub fn bodies(&self) -> Vec<Vec<u8>> {
+        self.bodies
+            .lock()
+            .expect("request body log is uncontended")
             .clone()
     }
 
