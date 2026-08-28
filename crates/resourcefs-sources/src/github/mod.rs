@@ -740,6 +740,7 @@ impl GithubSource {
                     .transpose()?;
                 Ok(Rendered::collection(rendered, next))
             }
+            IssueResource::CommentsNew => Err(unsupported_github_projection()),
             IssueResource::Comment(id) => {
                 self.issue(repository, number, operation).await?;
                 let comment = self
@@ -921,6 +922,7 @@ impl GithubSource {
                     .transpose()?;
                 Ok(Rendered::collection(rendered, next))
             }
+            PullRequestResource::CommentsNew => Err(unsupported_github_projection()),
             PullRequestResource::Comment(id) => {
                 self.pull(repository, number, operation).await?;
                 let comment = self

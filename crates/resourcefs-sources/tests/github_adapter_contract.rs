@@ -155,6 +155,38 @@ where
 }
 
 #[tokio::test]
+async fn creation_target_reads_are_unsupported() {
+    let (listener, source) =
+        fixture_source(|path| panic!("[C2] Creation Target read reached {path}")).await;
+
+    for path in [
+        "issue://owner/repo/new",
+        "issue://owner/repo/42/comments/new",
+        "pr://owner/repo/new",
+        "pr://owner/repo/7/comments/new",
+        "issue://owner/repo/new:raw",
+        "pr://owner/repo/7/comments/new:1",
+    ] {
+        let error = source
+            .read(
+                &PathReference::parse(path).expect("[C2] reference"),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect_err("[C2] Creation Target is write-only");
+        assert_eq!(
+            error.category(),
+            ErrorCategory::UnsupportedProjection,
+            "[C2] {path}"
+        );
+    }
+
+    settle().await;
+    assert_eq!(listener.accepts(), 0, "[C2] no network connection");
+    assert!(listener.requests().is_empty(), "[C2] no GitHub request");
+}
+
+#[tokio::test]
 async fn issue_aggregate_and_fields_are_stable_and_read_only() {
     let (listener, source) = fixture_source(|path| match path {
         "/repos/owner/repo/issues/42" => response(ISSUE),

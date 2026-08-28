@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use resourcefs_core::{
     ConversationCommentId, DiffFileIndex, ErrorCategory, GithubRepositoryIdentity, IssueAddress,
-    IssueNumber, IssueResource, PathReference, PullRequestAddress, PullRequestNumber,
-    PullRequestResource, ResourceAddress, ReviewCommentId, ReviewId,
+    IssueNumber, IssueResource, MAX_PATH_REFERENCE_BYTES, PathReference, PullRequestAddress,
+    PullRequestNumber, PullRequestResource, ResourceAddress, ReviewCommentId, ReviewId,
 };
 
 #[test]
@@ -85,6 +85,105 @@ fn canonical_github_reference_table() {
             "{label} round trip"
         );
     }
+}
+
+#[test]
+fn creation_targets_round_trip_and_are_write_only() {
+    let rows = [
+        ("issue://Owner/Repo/new", "issue://owner/repo/new"),
+        (
+            "issue://Owner/Repo/42/comments/new",
+            "issue://owner/repo/42/comments/new",
+        ),
+        ("pr://Owner/Repo/new", "pr://owner/repo/new"),
+        (
+            "pr://Owner/Repo/7/comments/new",
+            "pr://owner/repo/7/comments/new",
+        ),
+        ("issue://owner/repo/new:raw", "issue://owner/repo/new:raw"),
+        (
+            "issue://owner/repo/18446744073709551615/comments/new:1",
+            "issue://owner/repo/18446744073709551615/comments/new:1",
+        ),
+        ("pr://owner/repo/new:raw", "pr://owner/repo/new:raw"),
+        (
+            "pr://owner/repo/18446744073709551615/comments/new:1",
+            "pr://owner/repo/18446744073709551615/comments/new:1",
+        ),
+    ];
+    for (input, canonical) in rows {
+        let parsed = PathReference::parse(input)
+            .unwrap_or_else(|error| panic!("[C2] {input} failed: {error}"));
+        assert_eq!(parsed.requested(), canonical, "[C2] {input}");
+        assert_eq!(
+            PathReference::parse(parsed.requested()),
+            Ok(parsed),
+            "[C2] {input} round trip"
+        );
+    }
+
+    let issue = PathReference::parse("issue://owner/repo/new").expect("[C2] issue target");
+    assert!(matches!(
+        issue.address(),
+        ResourceAddress::Issue(IssueAddress::New { repository })
+            if repository.as_str() == "owner/repo"
+    ));
+    let issue_comment =
+        PathReference::parse("issue://owner/repo/42/comments/new").expect("[C2] issue comment");
+    assert!(matches!(
+        issue_comment.address(),
+        ResourceAddress::Issue(IssueAddress::Item {
+            resource: IssueResource::CommentsNew,
+            ..
+        })
+    ));
+
+    let pull = PathReference::parse("pr://owner/repo/new").expect("[C2] pull target");
+    assert!(matches!(
+        pull.address(),
+        ResourceAddress::PullRequest(PullRequestAddress::New { repository })
+            if repository.as_str() == "owner/repo"
+    ));
+    let pull_comment =
+        PathReference::parse("pr://owner/repo/7/comments/new").expect("[C2] pull comment");
+    assert!(matches!(
+        pull_comment.address(),
+        ResourceAddress::PullRequest(PullRequestAddress::Item {
+            resource: PullRequestResource::CommentsNew,
+            ..
+        })
+    ));
+
+    for input in [
+        "issue://owner/repo/new/extra",
+        "issue://owner/repo/1/comments/new/extra",
+        "issue://owner/repo/-1/comments/new",
+        "issue://owner/repo/18446744073709551616/comments/new",
+        "pr://owner/repo/-1/comments/new",
+        "pr://owner/repo/18446744073709551616/comments/new",
+        "pr://owner/repo/new/extra",
+        "pr://owner/repo/1/comments/new/extra",
+    ] {
+        let error = PathReference::parse(input).expect_err("[C2] malformed target");
+        assert_eq!(
+            error.category(),
+            ErrorCategory::InvalidReference,
+            "[C2] {input}"
+        );
+    }
+    let prefix = "issue://owner/";
+    let boundary = format!(
+        "{prefix}{}",
+        "r".repeat(MAX_PATH_REFERENCE_BYTES - prefix.len())
+    );
+    assert_eq!(boundary.len(), MAX_PATH_REFERENCE_BYTES, "[C2] boundary");
+    assert_eq!(
+        PathReference::parse(&boundary)
+            .expect_err("[C2] overlong repository component")
+            .category(),
+        ErrorCategory::InvalidReference,
+        "[C2] exact Path Reference ceiling remains component-bounded"
+    );
 }
 
 #[test]
@@ -232,9 +331,7 @@ fn typed_github_constructors_and_accessors_round_trip() {
 fn reference_parse_budget() {
     let owner = "o".repeat(39);
     let repository = "r".repeat(100);
-    let input = format!(
-        "pr://{owner}/{repository}/18446744073709551615/review-comments/18446744073709551615"
-    );
+    let input = format!("pr://{owner}/{repository}/18446744073709551615/comments/new:1");
     let iterations = 10_000;
     let started = Instant::now();
     for _ in 0..iterations {

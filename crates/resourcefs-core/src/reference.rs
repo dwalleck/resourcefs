@@ -427,13 +427,15 @@ github_numeric_id!(ReviewId, "GitHub review ID");
 github_numeric_id!(ReviewCommentId, "GitHub review comment ID");
 github_numeric_id!(DiffFileIndex, "GitHub diff file index");
 
-/// Resource below one GitHub issue Aggregate.
+/// Addressable path below one GitHub issue Aggregate, including Creation Targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IssueResource {
     Aggregate,
     Title,
     Body,
     Comments,
+    /// Write-only issue-style conversation-comment Creation Target.
+    CommentsNew,
     Comment(ConversationCommentId),
 }
 
@@ -442,6 +444,10 @@ pub enum IssueResource {
 pub enum IssueAddress {
     Root,
     Collection {
+        repository: GithubRepositoryIdentity,
+    },
+    /// Write-only repository issue Creation Target.
+    New {
         repository: GithubRepositoryIdentity,
     },
     Item {
@@ -455,21 +461,23 @@ impl IssueAddress {
     pub fn repository(&self) -> Option<&GithubRepositoryIdentity> {
         match self {
             Self::Root => None,
-            Self::Collection { repository } | Self::Item { repository, .. } => Some(repository),
+            Self::Collection { repository }
+            | Self::New { repository }
+            | Self::Item { repository, .. } => Some(repository),
         }
     }
 
     pub const fn number(&self) -> Option<IssueNumber> {
         match self {
             Self::Item { number, .. } => Some(*number),
-            Self::Root | Self::Collection { .. } => None,
+            Self::Root | Self::Collection { .. } | Self::New { .. } => None,
         }
     }
 
     pub const fn resource(&self) -> Option<IssueResource> {
         match self {
             Self::Item { resource, .. } => Some(*resource),
-            Self::Root | Self::Collection { .. } => None,
+            Self::Root | Self::Collection { .. } | Self::New { .. } => None,
         }
     }
 
@@ -477,6 +485,9 @@ impl IssueAddress {
         match self {
             Self::Root => ISSUE_PREFIX.to_owned(),
             Self::Collection { repository } => format!("{ISSUE_PREFIX}{}", repository.as_str()),
+            Self::New { repository } => {
+                format!("{ISSUE_PREFIX}{}/new", repository.as_str())
+            }
             Self::Item {
                 repository,
                 number,
@@ -488,6 +499,7 @@ impl IssueAddress {
                     IssueResource::Title => format!("{base}/title"),
                     IssueResource::Body => format!("{base}/body"),
                     IssueResource::Comments => format!("{base}/comments"),
+                    IssueResource::CommentsNew => format!("{base}/comments/new"),
                     IssueResource::Comment(id) => format!("{base}/comments/{}", id.get()),
                 }
             }
@@ -495,13 +507,15 @@ impl IssueAddress {
     }
 }
 
-/// Resource below one GitHub pull-request Aggregate.
+/// Addressable path below one GitHub pull-request Aggregate, including Creation Targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PullRequestResource {
     Aggregate,
     Title,
     Body,
     Comments,
+    /// Write-only issue-style conversation-comment Creation Target.
+    CommentsNew,
     Comment(ConversationCommentId),
     Reviews,
     Review(ReviewId),
@@ -518,6 +532,10 @@ pub enum PullRequestAddress {
     Collection {
         repository: GithubRepositoryIdentity,
     },
+    /// Write-only repository pull-request Creation Target.
+    New {
+        repository: GithubRepositoryIdentity,
+    },
     Item {
         repository: GithubRepositoryIdentity,
         number: PullRequestNumber,
@@ -529,21 +547,23 @@ impl PullRequestAddress {
     pub fn repository(&self) -> Option<&GithubRepositoryIdentity> {
         match self {
             Self::Root => None,
-            Self::Collection { repository } | Self::Item { repository, .. } => Some(repository),
+            Self::Collection { repository }
+            | Self::New { repository }
+            | Self::Item { repository, .. } => Some(repository),
         }
     }
 
     pub const fn number(&self) -> Option<PullRequestNumber> {
         match self {
             Self::Item { number, .. } => Some(*number),
-            Self::Root | Self::Collection { .. } => None,
+            Self::Root | Self::Collection { .. } | Self::New { .. } => None,
         }
     }
 
     pub const fn resource(&self) -> Option<PullRequestResource> {
         match self {
             Self::Item { resource, .. } => Some(*resource),
-            Self::Root | Self::Collection { .. } => None,
+            Self::Root | Self::Collection { .. } | Self::New { .. } => None,
         }
     }
 
@@ -552,6 +572,9 @@ impl PullRequestAddress {
             Self::Root => PULL_REQUEST_PREFIX.to_owned(),
             Self::Collection { repository } => {
                 format!("{PULL_REQUEST_PREFIX}{}", repository.as_str())
+            }
+            Self::New { repository } => {
+                format!("{PULL_REQUEST_PREFIX}{}/new", repository.as_str())
             }
             Self::Item {
                 repository,
@@ -568,6 +591,7 @@ impl PullRequestAddress {
                     PullRequestResource::Title => format!("{base}/title"),
                     PullRequestResource::Body => format!("{base}/body"),
                     PullRequestResource::Comments => format!("{base}/comments"),
+                    PullRequestResource::CommentsNew => format!("{base}/comments/new"),
                     PullRequestResource::Comment(id) => {
                         format!("{base}/comments/{}", id.get())
                     }
@@ -1101,6 +1125,9 @@ fn parse_issue_address(input: &str) -> Result<IssueAddress, ResourceError> {
         [owner, repository] => Ok(IssueAddress::Collection {
             repository: github_repository(owner, repository)?,
         }),
+        [owner, repository, "new"] => Ok(IssueAddress::New {
+            repository: github_repository(owner, repository)?,
+        }),
         [owner, repository, number] => Ok(IssueAddress::Item {
             repository: github_repository(owner, repository)?,
             number: IssueNumber::new(github_number(number, "GitHub issue number")?)?,
@@ -1121,6 +1148,11 @@ fn parse_issue_address(input: &str) -> Result<IssueAddress, ResourceError> {
                 resource,
             })
         }
+        [owner, repository, number, "comments", "new"] => Ok(IssueAddress::Item {
+            repository: github_repository(owner, repository)?,
+            number: IssueNumber::new(github_number(number, "GitHub issue number")?)?,
+            resource: IssueResource::CommentsNew,
+        }),
         [owner, repository, number, "comments", comment] => Ok(IssueAddress::Item {
             repository: github_repository(owner, repository)?,
             number: IssueNumber::new(github_number(number, "GitHub issue number")?)?,
@@ -1141,6 +1173,9 @@ fn parse_pull_request_address(input: &str) -> Result<PullRequestAddress, Resourc
     let segments = body.split('/').collect::<Vec<_>>();
     match segments.as_slice() {
         [owner, repository] => Ok(PullRequestAddress::Collection {
+            repository: github_repository(owner, repository)?,
+        }),
+        [owner, repository, "new"] => Ok(PullRequestAddress::New {
             repository: github_repository(owner, repository)?,
         }),
         [owner, repository, number] => Ok(PullRequestAddress::Item {
@@ -1171,6 +1206,11 @@ fn parse_pull_request_address(input: &str) -> Result<PullRequestAddress, Resourc
                 resource,
             })
         }
+        [owner, repository, number, "comments", "new"] => Ok(PullRequestAddress::Item {
+            repository: github_repository(owner, repository)?,
+            number: PullRequestNumber::new(github_number(number, "GitHub pull request number")?)?,
+            resource: PullRequestResource::CommentsNew,
+        }),
         [owner, repository, number, collection, id] => {
             let repository = github_repository(owner, repository)?;
             let number =
