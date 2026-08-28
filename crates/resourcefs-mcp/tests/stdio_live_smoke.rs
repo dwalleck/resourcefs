@@ -1,0 +1,308 @@
+//! Live full-stack smoke: Server Profile → `rfs check --probe` → `rfs serve`
+//! → tools over stdio, against real upstreams.
+//!
+//! The adapter-level live smokes prove the Source Adapters; this one proves
+//! the path an operator actually runs — profile parsing, credential
+//! resolution from the environment, the startup probe, mounting, and tool
+//! result rendering — with the real `rfs` binary and real GitHub and HTTPS
+//! origins, GET only.
+//!
+//! Ignored by default; needs `RFS_LIVE=1` and `GITHUB_TOKEN`.
+//! `scripts/live-smoke.sh` supplies both.
+use std::{
+    fs,
+    io::{BufRead, BufReader, Write},
+    path::{Path, PathBuf},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+};
+
+use serde_json::{Value, json};
+use tempfile::TempDir;
+
+const PROTOCOL_VERSION: &str = "2026-07-28";
+const SMALL_PR: &str = "pr://rust-lang/rust/159232";
+const BOOK_PAGE: &str = "https://doc.rust-lang.org/stable/book/ch01-01-installation.html";
+
+fn binary() -> &'static str {
+    env!("CARGO_BIN_EXE_resourcefs")
+}
+
+fn live_token() -> Option<String> {
+    if std::env::var_os("RFS_LIVE").is_none_or(|value| value != "1") {
+        eprintln!("RFS_LIVE is not 1; skipping the live stdio smoke");
+        return None;
+    }
+    let token = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty());
+    if token.is_none() {
+        eprintln!("GITHUB_TOKEN is not set; skipping the live stdio smoke");
+    }
+    token
+}
+
+/// One GitHub source and one HTTPS source, both required, so a probe failure
+/// is a startup failure rather than a silently degraded mount.
+fn write_profile(directory: &Path) -> PathBuf {
+    let path = directory.join("live.json");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&json!({
+            "schemaVersion": 1,
+            "session": {"cacheDirectory": "live-cache"},
+            "sources": [
+                {
+                    "kind": "github",
+                    "id": "forge",
+                    "required": true,
+                    "allowPrivateNetwork": false,
+                    "credential": {"kind": "environment", "name": "GITHUB_TOKEN"},
+                    "repositories": [{"name": "rust-lang/rust"}]
+                },
+                {
+                    "kind": "https",
+                    "id": "docs",
+                    "required": true,
+                    "origins": [{"baseUrl": "https://doc.rust-lang.org/", "allowPrivateNetwork": false}]
+                }
+            ]
+        }))
+        .expect("profile JSON"),
+    )
+    .expect("write profile");
+    path
+}
+
+struct Server {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+    next_id: u64,
+}
+
+impl Server {
+    fn start(profile: &Path, token: &str) -> Self {
+        let mut child = Command::new(binary())
+            .args(["serve", "--config"])
+            .arg(profile)
+            .env("GITHUB_TOKEN", token)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start resourcefs");
+        let stdin = child.stdin.take().expect("child stdin");
+        let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        Self {
+            child,
+            stdin: Some(stdin),
+            stdout,
+            next_id: 1,
+        }
+    }
+
+    fn write(&mut self, message: &Value) {
+        let stdin = self.stdin.as_mut().expect("open child stdin");
+        serde_json::to_writer(&mut *stdin, message).expect("serialize message");
+        writeln!(stdin).expect("write delimiter");
+        stdin.flush().expect("flush message");
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        loop {
+            let mut line = String::new();
+            let bytes = self.stdout.read_line(&mut line).expect("read response");
+            assert_ne!(
+                bytes, 0,
+                "resourcefs closed stdout before responding to {method}"
+            );
+            let message: Value = serde_json::from_str(&line)
+                .unwrap_or_else(|error| panic!("stdout was not JSON-RPC: {error}: {line:?}"));
+            // This client declares no roots capability, so the server never
+            // asks for them; any other server-initiated message is skipped.
+            if message.get("id").and_then(Value::as_u64) == Some(id)
+                && message.get("method").is_none()
+            {
+                assert!(message.get("error").is_none(), "{method} failed: {message}");
+                return message["result"].clone();
+            }
+        }
+    }
+
+    fn initialize(&mut self) {
+        let result = self.request(
+            "initialize",
+            json!({
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "resourcefs-live-smoke", "version": "1.0.0"},
+            }),
+        );
+        assert_eq!(result["protocolVersion"], PROTOCOL_VERSION);
+        self.write(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    }
+
+    fn call(&mut self, tool: &str, arguments: Value) -> Value {
+        let result = self.request("tools/call", json!({"name": tool, "arguments": arguments}));
+        assert_eq!(
+            result["isError"], false,
+            "{tool} {arguments} returned a tool error: {result}"
+        );
+        assert_eq!(result["structuredContent"]["ok"], true);
+        result
+    }
+
+    fn call_err(&mut self, tool: &str, arguments: Value) -> Value {
+        let result = self.request("tools/call", json!({"name": tool, "arguments": arguments}));
+        assert_eq!(
+            result["isError"], true,
+            "{tool} {arguments} unexpectedly succeeded: {result}"
+        );
+        result
+    }
+
+    fn finish(mut self) -> String {
+        drop(self.stdin.take());
+        let output = self.child.wait_with_output().expect("resourcefs exit");
+        assert!(
+            output.status.success(),
+            "resourcefs exited {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+}
+
+#[test]
+#[ignore = "live full-stack smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
+fn live_stdio_profile_probe_serve_and_tools_hold_up() {
+    let Some(token) = live_token() else {
+        return;
+    };
+    let temporary = TempDir::new().expect("temporary directory");
+    let profile = write_profile(temporary.path());
+
+    // S1 — `rfs check --probe` reaches both real origins with the environment
+    // credential and reports every source available.
+    let check = Command::new(binary())
+        .args(["check", "--probe", "--config"])
+        .arg(&profile)
+        .env("GITHUB_TOKEN", &token)
+        .current_dir(temporary.path())
+        .output()
+        .expect("run rfs check");
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "S1 check failed: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let report: Value = serde_json::from_slice(&check.stdout).expect("S1 check report is JSON");
+    assert_eq!(report["ok"], true, "{report}");
+    assert_eq!(report["probe"], true);
+    let states = report["sources"]
+        .as_array()
+        .expect("sources")
+        .iter()
+        .map(|source| {
+            (
+                source["id"].as_str().unwrap_or("?").to_owned(),
+                source["state"].clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        states.iter().all(|(_, state)| state == "available"),
+        "S1 every source is available: {states:?}"
+    );
+    assert!(
+        !check
+            .stdout
+            .windows(token.len())
+            .any(|window| window == token.as_bytes()),
+        "S1 the credential never reaches the report"
+    );
+    eprintln!("S1 check --probe: {states:?}");
+
+    // S2 — the served catalog advertises the mounted families.
+    let mut server = Server::start(&profile, &token);
+    server.initialize();
+    let catalog = server.call("rfs_read", json!({"path": "rfs://"}));
+    let catalog_text = catalog["structuredContent"]["content"]
+        .as_str()
+        .expect("catalog text");
+    for family in ["issue://", "pr://", "https://"] {
+        assert!(catalog_text.contains(family), "S2 catalog lacks {family}");
+    }
+    eprintln!("S2 catalog: {} bytes", catalog_text.len());
+
+    // S3 — a GitHub Field, an Aggregate search, and a paginated collection
+    // over the tool surface.
+    let title = server.call("rfs_read", json!({"path": format!("{SMALL_PR}/title")}));
+    let title_text = title["structuredContent"]["content"]
+        .as_str()
+        .expect("title text");
+    assert!(!title_text.trim().is_empty());
+    assert_eq!(
+        title["structuredContent"]["canonicalReference"],
+        format!("{SMALL_PR}/title")
+    );
+    let search = server.call(
+        "rfs_search",
+        json!({"path": SMALL_PR, "pattern": "^Kind: "}),
+    );
+    assert_eq!(search["structuredContent"]["totalRecords"], 1);
+    assert_eq!(
+        search["structuredContent"]["groups"][0]["reference"],
+        SMALL_PR
+    );
+    let issues = server.call("rfs_read", json!({"path": "issue://rust-lang/rust"}));
+    let issues_text = issues["structuredContent"]["content"]
+        .as_str()
+        .expect("issues text");
+    assert!(issues_text.starts_with("# Issues: rust-lang/rust\n"));
+    assert!(issues_text.contains("\n- issue://rust-lang/rust/"));
+    let continuation = issues["structuredContent"]["continuationReference"]
+        .as_str()
+        .expect("S3 a ten-page collection is bounded");
+    assert!(
+        continuation == "issue://rust-lang/rust:page:11" || continuation.starts_with("artifact://"),
+        "S3 continuation is the typed page or the artifact chain: {continuation}"
+    );
+    eprintln!(
+        "S3 github: title {title_text:?}; search 1 hit; issues {} bytes, continuation {continuation}",
+        issues_text.len()
+    );
+
+    // S4 — an HTTPS reader-mode read over the same server.
+    let page = server.call("rfs_read", json!({"path": BOOK_PAGE}));
+    let page_text = page["structuredContent"]["content"]
+        .as_str()
+        .expect("page text");
+    assert!(page_text.contains("rustup"), "S4 reader mode lacks rustup");
+    assert_eq!(page["structuredContent"]["canonicalReference"], BOOK_PAGE);
+    eprintln!("S4 https: {} bytes", page_text.len());
+
+    // S5 — refusals keep their categories across the tool boundary.
+    let refused = server.call_err("rfs_read", json!({"path": "issue://rust-lang/rust/159232"}));
+    assert_eq!(
+        refused["structuredContent"]["error"]["category"], "not_found",
+        "S5 a PR under issue:// is not_found: {refused}"
+    );
+    let denied = server.call_err("rfs_read", json!({"path": "issue://other/repo/1"}));
+    assert_eq!(
+        denied["structuredContent"]["error"]["category"], "permission_denied",
+        "S5 an unallowlisted repository is permission_denied: {denied}"
+    );
+    eprintln!("S5 refusals: not_found, permission_denied");
+
+    let stderr = server.finish();
+    assert!(
+        !stderr.contains(&token),
+        "the credential never reaches the diagnostics channel"
+    );
+}

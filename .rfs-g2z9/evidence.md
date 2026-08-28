@@ -67,7 +67,19 @@
 
 **Residual, recorded rather than papered over:** the probe exercised the mechanism over plain HTTP, not TLS. Address authorization happens in the connector *below* TLS, and the structural reading above shows the TLS variants reuse the same resolver-driven `HttpConnector` — but the TLS path was not executed. Two items follow for `falsifiable-design` (both design concerns, not unverified premises): certificate verification must remain bound to the **hostname** while the connection is pinned to the validated **address**; and connection pooling means a reused connection does not re-enter the resolver, so the design should state that pooled reuse to an already-authorized address is the intended behavior.
 
+## Live read smoke (2026-08-27)
+
+P1–P6 proved the substrate's mechanisms; the HTTPS Source Adapter itself had only ever read fixture HTML from a local TLS listener. `crates/resourcefs-sources/tests/https_live_smoke.rs` (ignored; `RFS_LIVE=1`; run by `scripts/live-smoke.sh`) now drives the real `HttpsSource` + `HttpSubstrate` against public origins, GET only. First run: H4 failed — a real `404` page was rendered and returned as a successful 859-byte Resource because nothing consulted the status (the fixtures had only ever served `200` to the adapter). Filed and fixed as **rfs-0ox5**; the permanent fence is `https_status_contract.rs`. Second run: 5 rows, all PASS, 1.4 s.
+
+| ID | Row | Observation | Verdict |
+|----|-----|-------------|---------|
+| H1 | `https://doc.rust-lang.org/stable/book/ch01-01-installation.html` reader mode | 6,826 bytes / 165 lines of article containing `Installation` and `rustup`, no markup; a second read produced the same Version Tag. | PASS |
+| H2 | same reference `:raw`, then `:1-5` | 30,474 bytes of served markup under the same canonical identity; the slice was at most five lines. | PASS |
+| H3 | `https://docs.rs/serde` | The real `302` to `/serde/latest/serde/` was followed within the origin; 7,604 bytes rendered under the requested identity. | PASS |
+| H4 | a real `404` page; `https://www.rust-lang.org/` outside the allowlist | `not_found` (after rfs-0ox5); `permission_denied` before egress. | PASS |
+| H5 | `rfs_search rustup` over H1 | 12 records attributed to the canonical URL; the first hit's line (29) matched the read's line 29 verbatim. | PASS |
+
 ## Related issues
 
 - Consulted (copied from `spec.md`; no upstream search repeated): **rfs-r9m6** (closed) built and validated the HTTPS profile shape this change consumes — `HttpsSourceProfile` with per-origin `base_url`, `allow_private_network`, credential reference, the `required` flag, `MutationGrants`, and `StaticProbe::Network`; **rfs-vl0u** (closed) the `DiscoveryAdapter` search engine HTTPS search routes through; **rfs-34pz** (closed) bounded reads, selectors, `artifact://` recovery, and Path Session ownership reused unchanged; **rfs-73dz** (closed) `OperationGuard` cancellation semantics reused, and its read-only classification means `mutable: false` for HTTPS; **rfs-ewh2** (closed) `SourceCatalogMetadata`, so `https://` must self-list in `rfs://` once mounted; **rfs-45ww / rfs-by2z** (open, dependents) GitHub over native HTTP APIs consumes this substrate; **rfs-azd3** (open, dependent) downstream MCP over allowlisted Streamable HTTP consumes this substrate.
-- Filed: none — every premise passed and no underlying-system defect was found. The single disagreement (P4) was a probe defect, fixed and re-run, with the learning recorded above.
+- Filed: none during the prove-it phase — every premise passed and no underlying-system defect was found. The single disagreement (P4) was a probe defect, fixed and re-run, with the learning recorded above. Filed later from the 2026-08-27 live smoke: **rfs-0ox5** (upstream error pages were returned as Resources; closed with the fix).

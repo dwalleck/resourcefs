@@ -12,6 +12,14 @@ Triage uses the five default canonical label strings. See `docs/agents/triage-la
 
 This is a single-context repository with `CONTEXT.md` at the root and ADRs under `docs/adr/`. See `docs/agents/domain.md`.
 
+## Live smoke tests
+
+Every network-backed Source Adapter, and every primary tool path that crosses one, ships with a live smoke: an `#[ignore]` test named `live_*`, gated on an environment variable (`RFS_LIVE=1`; additionally `GITHUB_TOKEN` for GitHub rows) that skips cleanly when the gate is absent and drives the real adapter — or the real `rfs` binary over stdio — against a real public upstream, read-only. `scripts/live-smoke.sh` runs them all and sources the GitHub token from `gh auth token`; `cargo live` does the same once the environment is set. The deterministic fake-upstream contracts remain the permanent suite, and CI never runs the live rows.
+
+A live row targets what a fake cannot be trusted to imitate — pagination cursors, endpoint default page sizes, parent URLs, validators, redirect chains, real markup — and asserts shapes and invariants, never upstream counts, because upstream state moves. Record each run in the owning ticket's `evidence.md` (rfs-45ww's L1–L6 rows are the model). The reason this section exists: the rfs-45ww review found an adapter that could not paginate a real repository while its fake stayed green, because the fixture drifted from the very evidence that had been gathered for it. A live test is sometimes the only proof that something works.
+
+Existing rows: `crates/resourcefs-sources/tests/github_live_smoke.rs` (adapter), `crates/resourcefs-sources/tests/https_live_smoke.rs` (adapter), `crates/resourcefs-mcp/tests/stdio_live_smoke.rs` (profile → `rfs check --probe` → `rfs serve` → tools over stdio).
+
 ## Design Principles
 
 Make illegal states unrepresentable — use the type system to prevent bugs at compile time rather than catching them at runtime. ResourceFS already leans hard on this; keep it that way.

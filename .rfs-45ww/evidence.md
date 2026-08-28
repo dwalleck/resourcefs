@@ -85,6 +85,18 @@ P1–P6 were live evidence about GitHub; the adapter itself had only ever met th
 
 Learned: `state=all` issue listings on a PR-heavy repository yield roughly a third issue rows per 1,000 objects fetched, so a `:page:` continuation can arrive with far fewer than 1,000 rendered rows; that is the approved bound behaving as specified, not a defect.
 
+### Full stack over stdio (2026-08-27)
+
+`crates/resourcefs-mcp/tests/stdio_live_smoke.rs` (ignored; `RFS_LIVE=1` + `GITHUB_TOKEN`) runs the path an operator runs: a Server Profile with a required `github` source (environment credential, `rust-lang/rust`) and a required `https` source, `rfs check --probe`, then `rfs serve` with the real binary over stdio. One pass, 13.1 s.
+
+| ID | Row | Observation | Verdict |
+|----|-----|-------------|---------|
+| S1 | `rfs check --probe` | Exit 0; JSON report `ok: true`, both sources `available`; the token appears nowhere in the report. | PASS |
+| S2 | `rfs_read rfs://` | 977-byte catalog advertising `issue://`, `pr://`, and `https://`. | PASS |
+| S3 | `rfs_read pr://…/159232/title`, `rfs_search ^Kind: `, `rfs_read issue://rust-lang/rust` | Title Field with canonical reference; one search hit on the aggregate; the collection filled the 49,152-byte inline page and returned `continuationReference` = `artifact://<id>:page:49152` — the rfs-jsx9 case observed live: the typed `:page:11` sits at the end of the artifact chain. | PASS |
+| S4 | `rfs_read` of the Rust Book installation page | 6,826 bytes of reader-mode text containing `rustup`, canonical reference preserved. | PASS |
+| S5 | `issue://rust-lang/rust/159232` (a PR), `issue://other/repo/1` | `not_found` and `permission_denied` as tool errors; the token appears nowhere on stderr. | PASS |
+
 ## Related issues
 - Consulted: rfs-jk0d (accepted GitHub source and direct-adapter behavior), rfs-g2z9 (bounded HTTP substrate evidence), rfs-by2z (future GitHub mutation boundary), rfs-q12y (HTTP dependency vetting).
 - Filed (from the 2026-08-27 review fixes): rfs-7r1w (relative `PATH` in command credentials resolves against the profile directory at check time but the process cwd at serve time), rfs-jsx9 (structural source continuation alongside artifact recovery on overflow; related to rfs-ww6w).
