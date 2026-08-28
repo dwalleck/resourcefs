@@ -1070,6 +1070,82 @@ async fn bounded_pages_recover_the_complete_document() {
     );
 }
 
+/// A typed source continuation is the search's `continuationReference` when
+/// the result fits one page. When the result overflows, the artifact
+/// continuation wins — it alone reaches the omitted records — and the source
+/// continuation is written as the final trailer of the retained document, so
+/// paging to the end of the artifact chain finds it rather than a dead end.
+#[tokio::test]
+async fn source_continuations_survive_artifact_recovery() {
+    let (path_session, _storage) = session(23);
+    let next = PathReference::parse("issue://owner/repo:page:11".to_owned()).expect("continuation");
+
+    let few = SearchSourceResult::new(
+        SearchEngine::RustRegex,
+        vec![search_record("a.txt", 1, "row")],
+        Vec::new(),
+    )
+    .with_source_continuation(next.clone());
+    let discovery = engine(
+        Arc::new(FakeAdapter::new(move || few.clone(), empty_glob)),
+        path_session.clone(),
+    );
+    let fits = discovery
+        .search(
+            search_request("row", 0, SearchLimits::default()).expect("request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("search that fits");
+    assert_eq!(
+        fits.continuation_reference(),
+        Some("issue://owner/repo:page:11")
+    );
+    assert_eq!(fits.recovery_reference(), None);
+
+    let records = (1..=1_001)
+        .map(|line| search_record("many.txt", line, format!("row {line}")))
+        .collect::<Vec<_>>();
+    let many = SearchSourceResult::new(SearchEngine::RustRegex, records, Vec::new())
+        .with_source_continuation(next);
+    let discovery = engine(
+        Arc::new(FakeAdapter::new(move || many.clone(), empty_glob)),
+        path_session.clone(),
+    );
+    let overflow = discovery
+        .search(
+            search_request("row", 0, SearchLimits::default()).expect("request"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("search that overflows");
+    let continuation = overflow
+        .continuation_reference()
+        .expect("an overflowing result progresses through its artifact");
+    assert!(continuation.starts_with("artifact://"), "{continuation}");
+    let recovered = path_session
+        .read_artifact(&artifact_address(
+            overflow.recovery_reference().expect("recovery"),
+        ))
+        .await
+        .expect("recovery read");
+    let expected_records = (1..=1_001)
+        .map(|line| {
+            canonical_search_line(
+                "rfs://workspace/main/many.txt",
+                line,
+                &format!("row {line}"),
+            )
+        })
+        .collect::<String>();
+    assert_eq!(
+        recovered,
+        expected_records
+            + "!issue://owner/repo:page:11\tcontinuation\tfurther source pages remain; search this reference to continue\n",
+        "the retained document ends with the source continuation trailer"
+    );
+}
+
 #[tokio::test]
 async fn cancelled_operations_never_retain() {
     let source = || {

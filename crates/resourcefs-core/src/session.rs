@@ -301,10 +301,26 @@ struct SessionState {
     records: HashSet<ArtifactId>,
     digest_index: HashMap<[u8; 32], Vec<ArtifactId>>,
     scratch: HashMap<LocalName, ScratchEntry>,
-    cache: HashMap<SessionCacheKey, SessionCacheEntry>,
+    cache: HashMap<SessionCacheKey, CachedObject>,
+    /// Monotonic recency stamp handed to each cache access, so eviction can
+    /// pick the least recently used entry without a linked list.
+    cache_clock: u64,
     snapshots: HashMap<SnapshotKey, SeenSnapshot>,
     snapshot_bytes: usize,
     reserved_snapshot_bytes: usize,
+}
+
+/// One cached upstream representation plus when it was last used.
+///
+/// Cache entries are the only reconstructible object class in a Path Session:
+/// an artifact is a Recovery Reference a caller may hold, a scratch Resource is
+/// caller-authored state, but a cached response can always be fetched again.
+/// So when the shared object or byte ceiling is reached, the cache yields —
+/// least recently used first — before an authoritative object is refused.
+#[derive(Debug, Clone)]
+struct CachedObject {
+    entry: SessionCacheEntry,
+    last_used: u64,
 }
 
 /// One caller-authored Session Scratch Resource.
@@ -332,6 +348,54 @@ fn session_object_count(state: &SessionState) -> usize {
         .len()
         .saturating_add(state.scratch.len())
         .saturating_add(state.cache.len())
+}
+
+/// Hands out the next recency stamp for a cache access.
+fn next_cache_stamp(state: &mut SessionState) -> u64 {
+    state.cache_clock = state.cache_clock.wrapping_add(1);
+    state.cache_clock
+}
+
+/// Evicts least-recently-used cache entries until `admissible` holds or the
+/// cache (minus `keep`) is empty. Returns whether `admissible` holds now.
+///
+/// Callers pass the same predicate they are about to enforce, so an admission
+/// that fails after this returns `false` fails for a reason the cache cannot
+/// fix: authoritative objects alone exceed the ceiling.
+fn yield_cache_until(
+    state: &mut SessionState,
+    keep: Option<&SessionCacheKey>,
+    admissible: impl Fn(&SessionState) -> bool,
+) -> bool {
+    while !admissible(state) {
+        let victim = state
+            .cache
+            .iter()
+            .filter(|(key, _)| keep.is_none_or(|kept| kept != *key))
+            .min_by_key(|(_, object)| object.last_used)
+            .map(|(key, _)| key.clone());
+        let Some(key) = victim else {
+            return false;
+        };
+        release_cache_entry(state, &key);
+    }
+    true
+}
+
+/// Removes one cache entry and credits its bytes back to the session.
+fn release_cache_entry(state: &mut SessionState, key: &SessionCacheKey) -> bool {
+    let Some(object) = state.cache.remove(key) else {
+        return false;
+    };
+    let released_bytes = key
+        .retained_bytes()
+        .checked_add(object.entry.retained_bytes())
+        .expect("published cache entry byte count fits");
+    state.used_bytes = state
+        .used_bytes
+        .checked_sub(released_bytes)
+        .expect("cache bytes are charged before release");
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -433,6 +497,7 @@ impl PathSession {
                     digest_index: HashMap::new(),
                     scratch: HashMap::new(),
                     cache: HashMap::new(),
+                    cache_clock: 0,
                     snapshots: HashMap::new(),
                     snapshot_bytes: 0,
                     reserved_snapshot_bytes: 0,
@@ -552,6 +617,15 @@ impl PathSession {
             }
         }
 
+        // A Recovery Reference outranks cached upstream bytes: the cache yields
+        // before an artifact is refused for room the cache is holding.
+        let session_limit = self.inner.limits.session_bytes();
+        let content_len = content_bytes.len();
+        yield_cache_until(&mut state, None, |state| {
+            session_object_count(state) < MAX_SESSION_ARTIFACTS
+                && combined_session_bytes(state, next_snapshot_bytes, content_len, session_limit)
+                    .is_ok()
+        });
         if session_object_count(&state) >= MAX_SESSION_ARTIFACTS {
             return Err(ResourceError::new(
                 ErrorCategory::LimitExceeded,
@@ -560,12 +634,8 @@ impl PathSession {
                 ),
             ));
         }
-        let resulting_bytes = combined_session_bytes(
-            &state,
-            next_snapshot_bytes,
-            content_bytes.len(),
-            self.inner.limits.session_bytes(),
-        )?;
+        let resulting_bytes =
+            combined_session_bytes(&state, next_snapshot_bytes, content_len, session_limit)?;
 
         let id = ArtifactId::new(state.next_object_id)?;
         state.next_object_id = state.next_object_id.checked_add(1).ok_or_else(|| {
@@ -811,6 +881,16 @@ impl PathSession {
         ensure_commit_live(self, operation)?;
 
         let existing = state.scratch.get(name).cloned();
+        let released_bytes = existing.as_ref().map_or(0, |entry| entry.bytes);
+        let session_limit = self.inner.limits.session_bytes();
+        let content_len = content_bytes.len();
+        // Caller-authored state outranks cached upstream bytes: the cache
+        // yields before a scratch write is refused for room the cache holds.
+        yield_cache_until(&mut state, None, |state| {
+            (existing.is_some() || session_object_count(state) < MAX_SESSION_ARTIFACTS)
+                && scratch_resulting_bytes(state, released_bytes, content_len, session_limit)
+                    .is_ok()
+        });
         if existing.is_none() && session_object_count(&state) >= MAX_SESSION_ARTIFACTS {
             return Err(ResourceError::new(
                 ErrorCategory::LimitExceeded,
@@ -819,13 +899,8 @@ impl PathSession {
                 ),
             ));
         }
-        let released_bytes = existing.as_ref().map_or(0, |entry| entry.bytes);
-        let resulting_bytes = scratch_resulting_bytes(
-            &state,
-            released_bytes,
-            content_bytes.len(),
-            self.inner.limits.session_bytes(),
-        )?;
+        let resulting_bytes =
+            scratch_resulting_bytes(&state, released_bytes, content_len, session_limit)?;
 
         // Replacement reuses the existing object id: `write_atomic` swaps the
         // content atomically, so a failed write leaves the previous content
@@ -913,9 +988,20 @@ impl PathSession {
         if !self.is_active() {
             return Err(inactive_cache_error());
         }
-        Ok(self.inner.admission.lock().await.cache.get(key).cloned())
+        let mut state = self.inner.admission.lock().await;
+        let stamp = next_cache_stamp(&mut state);
+        Ok(state.cache.get_mut(key).map(|object| {
+            object.last_used = stamp;
+            object.entry.clone()
+        }))
     }
 
+    /// Admits one cached upstream representation under the shared ceilings.
+    ///
+    /// A new entry that would breach the object or byte ceiling first evicts
+    /// other cache entries, least recently used first; only when the ceiling is
+    /// held by authoritative objects — artifacts, scratch, snapshots — is the
+    /// put refused, and the caller decides whether serving uncached is fine.
     pub async fn cache_put(
         &self,
         key: SessionCacheKey,
@@ -933,16 +1019,23 @@ impl PathSession {
                 ),
             ));
         }
+        let session_limit = self.inner.limits.session_bytes();
         let added_bytes = key
             .retained_bytes()
             .checked_add(entry.retained_bytes())
-            .ok_or_else(|| session_quota_error(self.inner.limits.session_bytes()))?;
+            .ok_or_else(|| session_quota_error(session_limit))?;
         let mut state = self.inner.admission.lock().await;
         let released_bytes = state.cache.get(&key).map_or(0, |previous| {
             key.retained_bytes()
-                .saturating_add(previous.retained_bytes())
+                .saturating_add(previous.entry.retained_bytes())
         });
-        if released_bytes == 0 && session_object_count(&state) >= MAX_SESSION_ARTIFACTS {
+        let replacing = released_bytes != 0;
+        yield_cache_until(&mut state, Some(&key), |state| {
+            (replacing || session_object_count(state) < MAX_SESSION_ARTIFACTS)
+                && scratch_resulting_bytes(state, released_bytes, added_bytes, session_limit)
+                    .is_ok()
+        });
+        if !replacing && session_object_count(&state) >= MAX_SESSION_ARTIFACTS {
             return Err(ResourceError::new(
                 ErrorCategory::LimitExceeded,
                 format!(
@@ -950,13 +1043,10 @@ impl PathSession {
                 ),
             ));
         }
-        let resulting_bytes = scratch_resulting_bytes(
-            &state,
-            released_bytes,
-            added_bytes,
-            self.inner.limits.session_bytes(),
-        )?;
-        state.cache.insert(key, entry);
+        let resulting_bytes =
+            scratch_resulting_bytes(&state, released_bytes, added_bytes, session_limit)?;
+        let last_used = next_cache_stamp(&mut state);
+        state.cache.insert(key, CachedObject { entry, last_used });
         state.used_bytes = resulting_bytes;
         Ok(())
     }
@@ -966,18 +1056,7 @@ impl PathSession {
             return Err(inactive_cache_error());
         }
         let mut state = self.inner.admission.lock().await;
-        let Some(entry) = state.cache.remove(key) else {
-            return Ok(false);
-        };
-        let released_bytes = key
-            .retained_bytes()
-            .checked_add(entry.retained_bytes())
-            .expect("published cache entry byte count fits");
-        state.used_bytes = state
-            .used_bytes
-            .checked_sub(released_bytes)
-            .expect("cache bytes are charged before release");
-        Ok(true)
+        Ok(release_cache_entry(&mut state, key))
     }
     /// Enumerates this Path Session's Session Scratch names in sorted order.
     pub async fn scratch_names(&self) -> Result<Vec<LocalName>, ResourceError> {

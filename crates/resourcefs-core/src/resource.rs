@@ -168,6 +168,7 @@ pub struct SourceResource {
     artifact_origin: Option<ArtifactProjectionOrigin>,
     content: String,
     projection: ProjectionMetadata,
+    continuation: Option<String>,
 }
 
 impl SourceResource {
@@ -195,6 +196,7 @@ impl SourceResource {
             artifact_origin: None,
             content,
             projection,
+            continuation: None,
         })
     }
 
@@ -228,7 +230,21 @@ impl SourceResource {
             artifact_origin: None,
             content,
             projection,
+            continuation: None,
         })
+    }
+
+    /// Names the typed source continuation that reaches what this bounded
+    /// projection omits — the next upstream page of a collection, for example.
+    ///
+    /// The Read Engine surfaces it as the read's `continuationReference` when
+    /// the content fits one inline page. When the content itself overflows,
+    /// the artifact continuation must win so the omitted bytes stay reachable;
+    /// the adapter is expected to name the same continuation inside its text
+    /// so it survives at the end of the retained artifact.
+    pub fn with_continuation(mut self, reference: &PathReference) -> Self {
+        self.continuation = Some(reference.requested().to_owned());
+        self
     }
 
     pub fn with_artifact_origin(
@@ -286,6 +302,11 @@ impl SourceResource {
         &self.content
     }
 
+    /// The typed source continuation set by [`Self::with_continuation`].
+    pub fn continuation(&self) -> Option<&str> {
+        self.continuation.as_deref()
+    }
+
     pub(crate) fn into_parts(self) -> SourceResourceParts {
         SourceResourceParts {
             canonical_reference: self.canonical_reference,
@@ -296,6 +317,7 @@ impl SourceResource {
             artifact_origin: self.artifact_origin,
             content: self.content,
             projection: self.projection,
+            continuation: self.continuation,
         }
     }
 }
@@ -309,6 +331,7 @@ pub(crate) struct SourceResourceParts {
     pub artifact_origin: Option<ArtifactProjectionOrigin>,
     pub content: String,
     pub projection: ProjectionMetadata,
+    pub continuation: Option<String>,
 }
 
 impl SourceResourceParts {

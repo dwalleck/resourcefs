@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     fmt::{self, Write as _},
     ops::Range,
@@ -683,7 +684,13 @@ impl DiscoveryEngine {
         let document = render_search_document(&records, &diagnostics)?;
         let page = select_search_page(&document, &records, &diagnostics, request.skip, limits)?;
         let recovery = self
-            .retain_omitted(&document, page.omitted, page.next_record, operation)
+            .retain_omitted(
+                &document,
+                page.omitted,
+                page.next_record,
+                source_continuation.as_deref(),
+                operation,
+            )
             .await?;
 
         Ok(SearchResult {
@@ -726,7 +733,7 @@ impl DiscoveryEngine {
             limits,
         );
         let recovery = self
-            .retain_omitted(&document, page.omitted, page.next_record, operation)
+            .retain_omitted(&document, page.omitted, page.next_record, None, operation)
             .await?;
 
         Ok(GlobResult {
@@ -740,11 +747,20 @@ impl DiscoveryEngine {
         })
     }
 
+    /// Retains the omitted remainder of `document` as a Recovery Reference.
+    ///
+    /// `source_continuation` is the typed upstream continuation the source
+    /// returned. The artifact continuation must win the result's single
+    /// `continuationReference` — it is the only path to the records cut from
+    /// this page — so the source continuation is written as a final trailer
+    /// line of the retained document instead. A reader who pages to the end of
+    /// the artifact chain finds it there rather than a silent dead end.
     async fn retain_omitted(
         &self,
         document: &CanonicalDocument,
         omitted: bool,
         next_record: Option<usize>,
+        source_continuation: Option<&str>,
         operation: &OperationGuard,
     ) -> Result<Recovery, ResourceError> {
         if !omitted {
@@ -755,8 +771,16 @@ impl DiscoveryEngine {
             gate.block().await;
         }
         ensure_discovery_live(&self.session, operation)?;
+        let retained = match source_continuation {
+            Some(reference) => {
+                let mut text = document.text.clone();
+                text.push_str(&source_continuation_trailer(reference));
+                Cow::Owned(text)
+            }
+            None => Cow::Borrowed(document.text.as_str()),
+        };
         let retain_started_active = operation.is_active();
-        let address = match self.session.retain(&document.text, operation).await {
+        let address = match self.session.retain(&retained, operation).await {
             Ok(address) => address,
             Err(_) if retain_started_active && !operation.is_active() => return Err(cancelled()),
             Err(error) => return Err(error),
@@ -776,6 +800,16 @@ impl DiscoveryEngine {
             continuation,
         })
     }
+}
+
+/// The trailer that carries a typed source continuation into a retained
+/// search document. It reuses the diagnostic row shape (`!reference\tkind\t
+/// message`) with the kind `continuation`, which no `ErrorCategory` spells, so
+/// a reader can tell it from a real diagnostic at a glance.
+fn source_continuation_trailer(reference: &str) -> String {
+    format!(
+        "!{reference}\tcontinuation\tfurther source pages remain; search this reference to continue\n"
+    )
 }
 
 #[derive(Default)]
@@ -1198,13 +1232,15 @@ fn canonical_identity(reference: &PathReference) -> Result<String, ResourceError
         ResourceAddress::Https(address) => {
             reference.projection().is_none() && reference.requested() == address.as_str()
         }
+        // A typed `:page:<n>` continuation names a distinct bounded upstream
+        // page, not a byte offset into one Resource, so a hit inside it is
+        // reproducible only under the page-bearing spelling: line 1 of
+        // `issue://o/r:page:2` is what a read of that reference displays first.
         ResourceAddress::Issue(address) => {
-            reference.projection().is_none()
-                && reference.requested() == address.canonical_reference()
+            github_record_identity(reference, &address.canonical_reference())
         }
         ResourceAddress::PullRequest(address) => {
-            reference.projection().is_none()
-                && reference.requested() == address.canonical_reference()
+            github_record_identity(reference, &address.canonical_reference())
         }
         ResourceAddress::Workspace(_) => false,
     };
@@ -1215,6 +1251,16 @@ fn canonical_identity(reference: &PathReference) -> Result<String, ResourceError
         ));
     }
     Ok(reference.requested().to_owned())
+}
+
+fn github_record_identity(reference: &PathReference, canonical: &str) -> bool {
+    match reference.projection() {
+        None => reference.requested() == canonical,
+        Some(projection) => {
+            projection.page_offset().is_some()
+                && reference.requested() == format!("{canonical}:{}", projection.as_str())
+        }
+    }
 }
 
 fn ensure_discovery_live(

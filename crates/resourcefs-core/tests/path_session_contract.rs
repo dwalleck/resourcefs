@@ -793,6 +793,93 @@ async fn opaque_cache_replacement_is_quota_charged_and_zero_copy() {
     assert!(!session.cache_remove(&key).await.expect("missing remove"));
 }
 
+/// Cache entries are the only reconstructible object class in a session, so
+/// they yield — least recently used first — before an artifact or a newer
+/// cache entry is refused for room the cache holds. A session that has cached
+/// a thousand upstream responses must never wedge Recovery References.
+#[tokio::test]
+async fn opaque_cache_yields_to_authoritative_objects_least_recently_used_first() {
+    let storage = Arc::new(FakeStorage::default());
+    let session = session(94, storage);
+    let entry = || SessionCacheEntry::new(Vec::new(), b"c".to_vec()).expect("cache entry");
+    let keys = (0..MAX_SESSION_ARTIFACTS)
+        .map(|index| SessionCacheKey::new("github", format!("k{index}")).expect("cache key"))
+        .collect::<Vec<_>>();
+    for key in &keys {
+        session
+            .cache_put(key.clone(), entry())
+            .await
+            .expect("cache put under the object ceiling");
+    }
+    // Touching k0 makes k1 the least recently used entry.
+    session
+        .cache_get(&keys[0])
+        .await
+        .expect("cache get")
+        .expect("k0 cached");
+
+    let extra = SessionCacheKey::new("github", "extra").expect("extra key");
+    session
+        .cache_put(extra.clone(), entry())
+        .await
+        .expect("a new cache entry evicts the least recently used one");
+    assert!(
+        session.cache_get(&keys[1]).await.expect("get").is_none(),
+        "k1 was least recently used and yielded"
+    );
+    assert!(
+        session.cache_get(&keys[0]).await.expect("get").is_some(),
+        "a recently used entry survives"
+    );
+    assert!(session.cache_get(&extra).await.expect("get").is_some());
+
+    session
+        .retain("recovery bytes", &OperationGuard::new())
+        .await
+        .expect("an artifact evicts a cache entry rather than failing");
+    assert!(
+        session.cache_get(&keys[2]).await.expect("get").is_none(),
+        "the next least recently used entry yielded to the artifact"
+    );
+
+    // Bytes yield the same way: a small session whose quota is held by cache
+    // entries admits an artifact by releasing them.
+    let limits = ServerLimits::new(ServerLimitsInput {
+        storage: StorageLimitInput {
+            object_bytes: Some(48),
+            session_bytes: Some(64),
+        },
+        ..ServerLimitsInput::default()
+    })
+    .expect("limits");
+    let small = session_with_limits(95, Arc::new(FakeStorage::default()), limits);
+    let cached = SessionCacheKey::new("github", "a").expect("cache key");
+    small
+        .cache_put(
+            cached.clone(),
+            SessionCacheEntry::new(vec![b'm'; 8], vec![b'c'; 24]).expect("entry"),
+        )
+        .await
+        .expect("cache within quota");
+    small
+        .retain(&"x".repeat(40), &OperationGuard::new())
+        .await
+        .expect("the artifact fits once the cache yields its bytes");
+    assert!(small.cache_get(&cached).await.expect("get").is_none());
+    assert_eq!(small.used_bytes().await, 40);
+    // With only authoritative bytes left, a cache put that cannot fit is
+    // refused rather than evicting something it must not.
+    let refused = small
+        .cache_put(
+            cached,
+            SessionCacheEntry::new(Vec::new(), vec![b'c'; 40]).expect("entry"),
+        )
+        .await
+        .expect_err("authoritative bytes hold the quota");
+    assert_eq!(refused.category(), ErrorCategory::LimitExceeded);
+    assert_eq!(small.used_bytes().await, 40);
+}
+
 #[tokio::test]
 async fn opaque_cache_obeys_session_limits_and_disconnect_isolation() {
     let limits = ServerLimits::new(ServerLimitsInput {

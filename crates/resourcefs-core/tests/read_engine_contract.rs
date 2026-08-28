@@ -297,6 +297,70 @@ async fn read_forwards_the_callers_guard_to_the_source() {
     );
 }
 
+/// A source whose projection is complete on its side but names a further
+/// upstream page, the way a GitHub repository collection does.
+struct ContinuingSource {
+    content: String,
+}
+
+#[async_trait]
+impl SourceAdapter for ContinuingSource {
+    async fn read(
+        &self,
+        _reference: &PathReference,
+        _operation: &OperationGuard,
+    ) -> Result<SourceResource, ResourceError> {
+        let next = PathReference::parse("issue://owner/repo:page:2".to_owned())?;
+        Ok(
+            SourceResource::text(workspace_reference(), self.content.clone())?
+                .with_continuation(&next),
+        )
+    }
+}
+
+/// A typed source continuation is the read's `continuationReference` when the
+/// page fits inline. When the page itself overflows, the artifact continuation
+/// wins: it is the only reference that reaches the bytes cut from the page,
+/// and the source continuation stays reachable inside the retained content.
+#[tokio::test]
+async fn source_continuations_surface_unless_the_page_itself_overflows() {
+    let limits = ServerLimits::default();
+    let read = |content: String| async move {
+        let session = PathSession::new(
+            SessionToken::parse("00000000000000000000000000000042").expect("session token"),
+            Arc::new(MemoryStorage::default()),
+            limits,
+        );
+        let source: Arc<dyn SourceAdapter> = Arc::new(ContinuingSource { content });
+        ReadEngine::new(source, session, limits)
+            .read(
+                ReadRequest {
+                    reference: workspace_reference(),
+                    limits: TextLimits::default(),
+                    numbered: false,
+                },
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("read")
+    };
+
+    let fits = read("one page\n".to_owned()).await;
+    assert_eq!(
+        fits.continuation_reference(),
+        Some("issue://owner/repo:page:2")
+    );
+    assert!(fits.is_bounded(), "a page with more upstream is bounded");
+    assert_eq!(fits.recovery_reference(), None, "nothing was cut from it");
+
+    let overflow = read(sized_lines(TextLimits::default().bytes() * 2)).await;
+    let continuation = overflow
+        .continuation_reference()
+        .expect("an overflowing page progresses through its artifact");
+    assert!(continuation.starts_with("artifact://"), "{continuation}");
+    assert!(overflow.recovery_reference().is_some());
+}
+
 #[test]
 fn displayed_line_ranges_reject_zero_and_descending_bounds() {
     for (start, end) in [(0, 1), (2, 1)] {

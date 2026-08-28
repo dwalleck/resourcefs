@@ -150,17 +150,27 @@ impl ReadEngine {
                 None
             };
             ensure_live(&self.session, operation)?;
+            // Nothing was cut from this page, so the only thing left to reach
+            // is what the source itself omitted: its typed continuation names
+            // the next upstream page, and a read that carries one is bounded.
+            let continuation_reference = parts.continuation.take();
             let resource = ReadResource::from_parts(
                 parts,
-                false,
+                continuation_reference.is_some(),
                 recovery_reference,
-                None,
+                continuation_reference,
                 page_end,
                 request.numbered,
             )?;
             self.record_seen(&request.reference, &resource).await?;
             return Ok(resource);
         }
+
+        // The page overflowed, so the artifact continuation must win: it is
+        // the only reference that reaches the bytes cut from this page. The
+        // source continuation is not lost — the adapter names it inside its
+        // content, and the retained artifact holds that content in full — but
+        // it is reachable only at the end of the artifact chain.
 
         let (recovery_address, origin) = match (requested_artifact, parts.artifact_origin) {
             (Some(address), Some(origin)) => (address, origin),
