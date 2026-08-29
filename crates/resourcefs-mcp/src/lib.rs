@@ -8,6 +8,9 @@ mod logging;
 mod profile;
 mod render;
 mod server;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod test_support;
 
 pub type BoxError = Box<dyn Error + Send + Sync + 'static>;
 

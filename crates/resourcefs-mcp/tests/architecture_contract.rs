@@ -363,3 +363,59 @@ fn single_http_client_module() {
         offenders.join(", ")
     );
 }
+
+/// rfs-cek3 C3 — fixture trust is callable only from the integration-test
+/// harness; no production CLI, profile, or environment input can select it.
+#[test]
+fn profile_https_fixture_trust_is_test_harness_only() {
+    let metadata = MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .expect("workspace cargo metadata");
+    let root = metadata.workspace_root.as_std_path();
+    let mcp_root = root.join("crates/resourcefs-mcp");
+    let source_root = mcp_root.join("src");
+    let test_support_path = source_root.join("test_support.rs");
+
+    assert!(
+        test_support_path.is_file(),
+        "fixture trust must live in the gated test-support module"
+    );
+    let test_support =
+        std::fs::read_to_string(&test_support_path).expect("test-support module source");
+    assert!(
+        test_support.contains("serve_profile_with_https_root"),
+        "the test harness needs one explicit profile-launch interface"
+    );
+
+    let library = std::fs::read_to_string(source_root.join("lib.rs")).expect("library source");
+    assert!(
+        library
+            .contains("#[cfg(feature = \"test-support\")]\n#[doc(hidden)]\npub mod test_support;"),
+        "the profile fixture interface must be absent without test-support"
+    );
+
+    let production_input = format!("RESOURCEFS_TEST_HTTPS_{}", "ROOT");
+    assert!(
+        files_containing_token(&source_root, &production_input).is_empty(),
+        "the production source tree must not read a fixture-root environment input"
+    );
+    for entrypoint in ["main.rs", "cli.rs"] {
+        let source =
+            std::fs::read_to_string(source_root.join(entrypoint)).expect("production entrypoint");
+        assert!(
+            !source.contains("test_support"),
+            "{entrypoint} must not call the fixture launch adapter"
+        );
+    }
+
+    let package = metadata
+        .workspace_packages()
+        .into_iter()
+        .find(|package| package.name.as_str() == "resourcefs-mcp")
+        .expect("resourcefs-mcp package");
+    assert!(
+        !package.features.contains_key("default"),
+        "the shipped default feature set must not enable test-support"
+    );
+}

@@ -1,6 +1,8 @@
 use std::{collections::HashSet, fmt, path::Path};
 
 use resourcefs_core::{ProbeState, Redactor, Secret, ServerLimits};
+#[cfg(feature = "test-support")]
+use resourcefs_sources::TestRootCertificate;
 use resourcefs_sources::{
     BackingPathVisibility, FilesystemSource, GithubSourceMount, HttpsSource, LaunchRoot,
     LaunchRootSource, ProbeRun, SESSION_CLEANUP_TTL, SessionStorageConfig,
@@ -27,13 +29,30 @@ pub(crate) struct LaunchPlan {
     logging: LogConfig,
     redactor: Redactor,
 }
+enum HttpsTrust {
+    System,
+    #[cfg(feature = "test-support")]
+    Fixture(TestRootCertificate),
+}
 
 impl LaunchPlan {
     pub(crate) async fn from_profile(path: &Path) -> Result<Self, LaunchError> {
+        Self::from_profile_with_trust(path, HttpsTrust::System).await
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) async fn from_profile_with_https_root(
+        path: &Path,
+        root: TestRootCertificate,
+    ) -> Result<Self, LaunchError> {
+        Self::from_profile_with_trust(path, HttpsTrust::Fixture(root)).await
+    }
+
+    async fn from_profile_with_trust(path: &Path, trust: HttpsTrust) -> Result<Self, LaunchError> {
         let (checked, run) = profile::load_for_serve(path, COMPILED_PROFILE_SOURCE_KINDS)
             .await
             .map_err(LaunchError::configuration)?;
-        Self::from_checked_profile(checked, &run).await
+        Self::from_checked_profile(checked, &run, trust).await
     }
 
     /// Classifies one startup probe run into the launch outcome.
@@ -68,6 +87,7 @@ impl LaunchPlan {
     async fn from_checked_profile(
         checked: CheckedLaunchProfile,
         run: &ProbeRun,
+        trust: HttpsTrust,
     ) -> Result<Self, LaunchError> {
         // Ordered before the probe verdict on purpose. A kind this binary
         // cannot mount is not a reachability question, and answering it as one
@@ -90,9 +110,22 @@ impl LaunchPlan {
         )
         .await
         .map_err(LaunchError::configuration)?;
-        let https = profile::mount_https(checked.https, &checked.configuration_base, &degraded)
-            .await
-            .map_err(LaunchError::configuration)?;
+        let https = match trust {
+            HttpsTrust::System => {
+                profile::mount_https(checked.https, &checked.configuration_base, &degraded).await
+            }
+            #[cfg(feature = "test-support")]
+            HttpsTrust::Fixture(root) => {
+                profile::mount_https_with_root(
+                    checked.https,
+                    &checked.configuration_base,
+                    &degraded,
+                    root,
+                )
+                .await
+            }
+        }
+        .map_err(LaunchError::configuration)?;
         let github = profile::mount_github(checked.github, &checked.configuration_base, &degraded)
             .await
             .map_err(LaunchError::configuration)?;

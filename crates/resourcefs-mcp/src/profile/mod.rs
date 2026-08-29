@@ -4,6 +4,8 @@ use std::sync::Arc;
 use resourcefs_core::{
     AllowedOrigin, HttpCeilings, OperationGuard, OriginAllowlist, Redactor, ServerLimits,
 };
+#[cfg(feature = "test-support")]
+use resourcefs_sources::TestRootCertificate;
 use resourcefs_sources::{
     BackingPathVisibility, CommandExecutor, GithubConfig, GithubSourceMount, HttpSubstrate,
     HttpsConfig, HttpsSource, LaunchRootSource, MAX_LIVE_COMMAND_TREES, OriginCredential, ProbeRun,
@@ -120,6 +122,31 @@ pub(crate) async fn mount_https(
     base: &std::path::Path,
     degraded_ids: &std::collections::HashSet<String>,
 ) -> Result<Option<HttpsSource>, ProfileError> {
+    mount_https_with_trust(configs, base, degraded_ids, HttpsTrust::System).await
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) async fn mount_https_with_root(
+    configs: Vec<HttpsConfig>,
+    base: &std::path::Path,
+    degraded_ids: &std::collections::HashSet<String>,
+    root: TestRootCertificate,
+) -> Result<Option<HttpsSource>, ProfileError> {
+    mount_https_with_trust(configs, base, degraded_ids, HttpsTrust::Fixture(root)).await
+}
+
+enum HttpsTrust {
+    System,
+    #[cfg(feature = "test-support")]
+    Fixture(TestRootCertificate),
+}
+
+async fn mount_https_with_trust(
+    configs: Vec<HttpsConfig>,
+    base: &std::path::Path,
+    degraded_ids: &std::collections::HashSet<String>,
+    trust: HttpsTrust,
+) -> Result<Option<HttpsSource>, ProfileError> {
     if configs.is_empty() {
         return Ok(None);
     }
@@ -171,9 +198,18 @@ pub(crate) async fn mount_https(
     }
     let allowlist = OriginAllowlist::new(origins);
     // The signed ceilings: 8 MiB fetch, 5 redirect hops, 30-second timeout.
-    let substrate = HttpSubstrate::new(allowlist, HttpCeilings::default(), credentials)
-        .map_err(|error| ProfileError::invalid(format!("{error}")))?
-        .with_degraded_origins(degraded);
+    let substrate = match trust {
+        HttpsTrust::System => HttpSubstrate::new(allowlist, HttpCeilings::default(), credentials),
+        #[cfg(feature = "test-support")]
+        HttpsTrust::Fixture(root) => HttpSubstrate::with_system_lookup_and_root(
+            allowlist,
+            HttpCeilings::default(),
+            root,
+            credentials,
+        ),
+    }
+    .map_err(|error| ProfileError::invalid(format!("{error}")))?
+    .with_degraded_origins(degraded);
     Ok(Some(HttpsSource::new(Arc::new(substrate))))
 }
 
