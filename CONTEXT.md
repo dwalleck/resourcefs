@@ -24,6 +24,14 @@ _Avoid_: Process working directory when describing access authority
 A resource family whose state and credentials can be owned by the Path Resource Server without access to an agent harness's internal runtime.
 _Avoid_: OMP parity
 
+**Database Mount**:
+A configured Portable Source instance that binds one Server Profile-unique lowercase Mount ID to one database provider and one logical database, addressed through provider-neutral `db://` Path References for the lifetime of that ResourceFS process.
+_Avoid_: Database file, database server, connection string, implicit SQLite database, globally resolvable database URI
+
+**Database Value**:
+A lossless provider-neutral JSON scalar or recognized tagged extension for one authoritative database cell, used consistently in canonical row content and primary-key identity.
+_Avoid_: Provider-formatted text fallback, inferred SQLite affinity value, generic JSON number for every numeric type
+
 **Path Session**:
 The state owned by one MCP connection, including artifacts, scratch resources, edit snapshots, and caches; its references expire when the connection closes, even if storage is retained briefly for cleanup or diagnosis.
 _Avoid_: Conversation, workspace session
