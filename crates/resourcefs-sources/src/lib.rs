@@ -33,11 +33,11 @@ pub use github::{
     GithubWireKindForTest, GithubWireObservation, inspect_github_mutation_route_for_test,
     inspect_github_wire_for_test, render_issue_for_test,
 };
-#[cfg(feature = "test-support")]
-pub use http::extract_markdown_for_test;
 pub use http::{
     BoundedHttpResponse, HttpRequest, HttpSubstrate, OriginCredential, ReaderModeDocument,
 };
+#[cfg(feature = "test-support")]
+pub use http::{TestRootCertificate, extract_markdown_for_test};
 pub use https::HttpsSource;
 pub use local::LocalSource;
 

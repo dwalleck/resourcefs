@@ -518,6 +518,31 @@ fn authorize_literal_host(
     policy.authorize(address)
 }
 
+/// One DER trust anchor accepted only by test-support HTTP construction.
+///
+/// Validation happens at construction so malformed certificate bytes cannot
+/// reach either substrate client or any network operation.
+#[cfg(feature = "test-support")]
+pub struct TestRootCertificate {
+    der: Box<[u8]>,
+}
+
+#[cfg(feature = "test-support")]
+impl TestRootCertificate {
+    pub fn from_der(der: &[u8]) -> Result<Self, ResourceError> {
+        let certificate = parse_root_certificate(der)?;
+        reqwest::Client::builder()
+            .tls_certs_merge([certificate])
+            .build()
+            .map_err(trust_anchor_error)?;
+        Ok(Self { der: der.into() })
+    }
+
+    fn as_der(&self) -> &[u8] {
+        &self.der
+    }
+}
+
 /// The workspace's single bounded HTTP egress point.
 pub struct HttpSubstrate {
     client: reqwest::Client,
@@ -608,6 +633,17 @@ impl fmt::Debug for OriginCredential {
     }
 }
 
+fn trust_anchor_error(error: impl fmt::Display) -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::SourceUnavailable,
+        format!("trust anchor could not be parsed: {error}"),
+    )
+}
+
+fn parse_root_certificate(root: &[u8]) -> Result<reqwest::Certificate, ResourceError> {
+    reqwest::Certificate::from_der(root).map_err(trust_anchor_error)
+}
+
 fn build_http_client(
     resolver: PolicyResolver,
     redirect: reqwest::redirect::Policy,
@@ -619,13 +655,7 @@ fn build_http_client(
         .redirect(redirect)
         .timeout(ceilings.timeout());
     for root in roots {
-        let certificate = reqwest::Certificate::from_der(root).map_err(|error| {
-            ResourceError::new(
-                ErrorCategory::SourceUnavailable,
-                format!("trust anchor could not be parsed: {error}"),
-            )
-        })?;
-        builder = builder.tls_certs_merge([certificate]);
+        builder = builder.tls_certs_merge([parse_root_certificate(root)?]);
     }
     builder.build().map_err(|error| {
         ResourceError::new(
@@ -643,6 +673,24 @@ impl HttpSubstrate {
         credentials: Vec<OriginCredential>,
     ) -> Result<Self, ResourceError> {
         Self::build(allowlist, ceilings, system_lookup(), &[], credentials)
+    }
+
+    /// Builds the policy-preserving substrate over the system resolver with
+    /// one additional, already-validated fixture root.
+    #[cfg(feature = "test-support")]
+    pub fn with_system_lookup_and_root(
+        allowlist: OriginAllowlist,
+        ceilings: HttpCeilings,
+        root: TestRootCertificate,
+        credentials: Vec<OriginCredential>,
+    ) -> Result<Self, ResourceError> {
+        Self::build(
+            allowlist,
+            ceilings,
+            system_lookup(),
+            &[root.as_der()],
+            credentials,
+        )
     }
 
     /// Records origins whose source reported Degraded at startup.

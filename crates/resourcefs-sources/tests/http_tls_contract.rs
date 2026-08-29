@@ -214,3 +214,42 @@ async fn tls_certificate_binds_hostname() {
         "no request may be transmitted over a session whose certificate was rejected"
     );
 }
+
+#[test]
+fn system_lookup_substrate_accepts_valid_additional_root() {
+    use resourcefs_core::HttpCeilings;
+    use resourcefs_sources::{HttpSubstrate, TestRootCertificate};
+
+    let root = TestRootCertificate::from_der(tls::FIXTURE_CA).expect("fixture CA is valid DER");
+    HttpSubstrate::with_system_lookup_and_root(
+        fixture_allowlist(443, true),
+        HttpCeilings::default(),
+        root,
+        Vec::new(),
+    )
+    .expect("valid root builds the policy-preserving substrate");
+}
+
+#[test]
+fn malformed_additional_root_is_rejected_before_egress() {
+    use resourcefs_sources::TestRootCertificate;
+
+    let listener =
+        std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("no-egress oracle listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking no-egress listener");
+
+    let error = match TestRootCertificate::from_der(b"not a DER certificate") {
+        Ok(_) => panic!("malformed DER must not produce a trusted root"),
+        Err(error) => error,
+    };
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    assert_eq!(
+        listener
+            .accept()
+            .expect_err("root parsing must open no socket")
+            .kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}

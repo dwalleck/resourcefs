@@ -64,7 +64,7 @@ Slices 1–4 in dependency order. Mergeable definition: typed Markdown metadata,
 
 **Regression fence:** `crates/resourcefs-sources/tests/http_tls_contract.rs::{tls_certificate_binds_hostname, malformed_additional_root_is_rejected_before_egress}`, with the malformed row created in this slice and the existing hostname row retained.
 
-**Named mutation:** From C1 — enable invalid-hostname acceptance when an added root is present; the mismatching server records a completed session/request. From C2 — suppress the DER parsing error and continue with system roots; malformed construction succeeds. Each mutation turns its own row red, then restoration returns it green.
+**Named mutation:** From C1 — set `danger_accept_invalid_certs(true)` on the HTTP client builder; the equally trusted mismatching server completes TLS and receives `/doc`. From C2 — remove temporary client-builder validation from `TestRootCertificate::from_der` and store malformed bytes directly; malformed construction succeeds. Each mutation turns its own row red, then restoration returns it green.
 
 **Complexity/production scale:** N/A — no production loop changes. Test-support construction validates one bounded certificate once at launch; the existing client builder still owns root installation.
 
