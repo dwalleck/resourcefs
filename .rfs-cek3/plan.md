@@ -130,9 +130,9 @@ Slices 1–4 in dependency order. Mergeable definition: typed Markdown metadata,
 
 **Named mutation:** From C4 — in `crates/resourcefs-sources/src/https.rs`, replace `markdown_projection` with `text_projection`; the end-to-end content-type row turns red. From C5 — in `crates/resourcefs-core/src/read.rs`, mark the first bounded page complete and omit continuation publication; byte reassembly turns red. From C6 — in `crates/resourcefs-mcp/src/profile/mod.rs`, omit healthy origins from the mounted allowlist while still returning `Some(HttpsSource)`; the healthy request/body assertions turn red. Restore each independently and require green.
 
-**Complexity/production scale:** The only new loop is in test fixture code: O(c) accepted connections, with c ≤ 6 per test (one startup probe plus bounded read/continuation connections). Maximum accepted fixture work is 6 loopback connections and 8 MiB retained test body, matching the production fetch ceiling; exceeding either indicates a runaway test or request loop. Production algorithms are unchanged.
+**Complexity/production scale:** Test-only loops: the TLS fixture is O(c) accepted connections with c ≤ 6 per test (one startup probe plus read connections); the stdio child gate is O(w) condition waits with a hard bound of 16 active child processes and no polling. Maximum fixture work is 6 loopback connections and 8 MiB retained body; maximum simultaneous child work is 16 processes, selected by the observed green full-suite stress row. Production algorithms are unchanged.
 
-**Wall budget/phase:** N/A — one-off test execution. The fixture permits 10 seconds for child startup/shutdown and 5 seconds per expected request, test-only bounds chosen to avoid timing flakes while still detecting hangs.
+**Wall budget/phase:** N/A — one-off test execution. The fixture permits 10 seconds for child startup/shutdown and 5 seconds per expected request; the process gate blocks only excess test workers and introduces no production phase.
 
 **Files:** `crates/resourcefs-mcp/Cargo.toml`; `crates/resourcefs-mcp/tests/stdio_mcp_contract.rs`; `crates/resourcefs-mcp/tests/support/profile_tls.rs` (new); `crates/resourcefs-mcp/tests/fixtures/profile_https/ca.der` (new); `crates/resourcefs-mcp/tests/fixtures/profile_https/server.crt.der` (new); `crates/resourcefs-mcp/tests/fixtures/profile_https/server.key.der` (new).
 
@@ -148,6 +148,7 @@ Slices 1–4 in dependency order. Mergeable definition: typed Markdown metadata,
 - `cargo test -p resourcefs-mcp --test stdio_mcp_contract https_profile_read_recovers_bounded_markdown` → first page is bounded with artifact recovery/continuation; following the continuation reassembles exact expected Markdown bytes and reaches EOF.
 - `cargo test -p resourcefs-mcp --test stdio_mcp_contract optional_https_degrades_while_other_sources_serve` → closed origin alone reports startup degradation; live origin completes TLS, records `/doc`, and returns the literal document.
 - Apply C4, C5, and C6 mutations one at a time; rerun each owning command → its independent oracle fails for the named property; restore after each → owning command returns green.
+- `cargo test -p resourcefs-mcp --test stdio_mcp_contract` at the workstation’s default 32 test threads → all non-ignored rows pass while the gate keeps active child processes at or below 16; no child exits before its first response.
 
 ## Tracker taxonomy
 
@@ -158,7 +159,7 @@ No intended work is deferred. Permanent negative space is inherited from the app
 1. C1–C7 are each assigned exactly once; every PENDING design row is assigned to its implementing slice.
 2. Every slice carries all thirteen mandatory fields; conditional fields contain explicit N/A reasons.
 3. Each slice creates or retains its own permanent fence and carries the approved named mutation.
-4. New-loop complexity is stated only for the test TLS accept loop; production loop/scale changes are absent.
+4. New-loop complexity and bounds are stated for the test TLS accept loop and stdio process gate; production loop/scale changes are absent.
 5. 1,150 + 403 churn margin = 1,553; one mergeable PR increment is below 4,000 lines.
 6. No intended work is deferred; permanent negative space retains its rationale.
 7. No slice is declared complete here; checkpointed-build owns every completion decision.

@@ -1638,6 +1638,7 @@ dependencies = [
  "serde_path_to_error",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "url",
 ]
 

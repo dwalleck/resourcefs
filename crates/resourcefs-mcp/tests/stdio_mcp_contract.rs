@@ -3,6 +3,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{Condvar, LazyLock, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -11,6 +12,11 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const VERSION_2026: &str = "2026-07-28";
+
+#[cfg(feature = "test-support")]
+#[path = "support/profile_tls.rs"]
+mod profile_tls;
+
 const VERSION_2025: &str = "2025-11-25";
 const SOURCE_CATALOG_TEXT: &str = concat!(
     "Mounted sources\n",
@@ -76,6 +82,34 @@ impl WorkspaceFixture {
     }
 }
 
+const MAX_CONCURRENT_MCP_PROCESSES: usize = 16;
+static MCP_PROCESS_GATE: LazyLock<(Mutex<usize>, Condvar)> =
+    LazyLock::new(|| (Mutex::new(0), Condvar::new()));
+
+struct McpProcessPermit;
+
+impl McpProcessPermit {
+    fn acquire() -> Self {
+        let (active, available) = &*MCP_PROCESS_GATE;
+        let mut active = active.lock().expect("MCP process gate");
+        while *active >= MAX_CONCURRENT_MCP_PROCESSES {
+            active = available.wait(active).expect("wait for MCP process permit");
+        }
+        *active += 1;
+        Self
+    }
+}
+
+impl Drop for McpProcessPermit {
+    fn drop(&mut self) {
+        let (active, available) = &*MCP_PROCESS_GATE;
+        let mut active = active.lock().expect("MCP process gate");
+        assert!(*active > 0, "MCP process permit count underflow");
+        *active -= 1;
+        available.notify_one();
+    }
+}
+
 struct McpProcess {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -84,6 +118,8 @@ struct McpProcess {
     client_roots: Vec<Value>,
     root_list_calls: usize,
     cancelled_root_requests: usize,
+    allow_harness_output: bool,
+    _process_permit: McpProcessPermit,
 }
 
 impl McpProcess {
@@ -127,6 +163,32 @@ impl McpProcess {
             None,
             Some(current_directory),
             environment,
+        )
+    }
+
+    #[cfg(feature = "test-support")]
+    fn start_profile_with_https_root(profile: &Path, current_directory: &Path) -> Self {
+        let executable = std::env::current_exe().expect("stdio contract test executable");
+        let mut command = Command::new(executable);
+        command
+            .args([
+                "--ignored",
+                "--exact",
+                "profile_https_test_server",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(PROFILE_HTTPS_HELPER, "1")
+            .env(PROFILE_HTTPS_CONFIG, profile)
+            .current_dir(current_directory)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let permit = McpProcessPermit::acquire();
+        Self::from_child(
+            command.spawn().expect("start profile HTTPS test server"),
+            true,
+            permit,
         )
     }
     #[cfg(feature = "test-support")]
@@ -243,7 +305,15 @@ impl McpProcess {
         for (name, value) in environment {
             command.env(name, value);
         }
-        let mut child = command.spawn().expect("start resourcefs");
+        let permit = McpProcessPermit::acquire();
+        Self::from_child(command.spawn().expect("start resourcefs"), false, permit)
+    }
+
+    fn from_child(
+        mut child: Child,
+        allow_harness_output: bool,
+        process_permit: McpProcessPermit,
+    ) -> Self {
         let stdin = child.stdin.take().expect("child stdin");
         let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
         Self {
@@ -254,6 +324,8 @@ impl McpProcess {
             client_roots: Vec::new(),
             root_list_calls: 0,
             cancelled_root_requests: 0,
+            allow_harness_output,
+            _process_permit: process_permit,
         }
     }
 
@@ -295,6 +367,7 @@ impl McpProcess {
                 client_roots: &mut self.client_roots,
                 root_list_calls: &mut self.root_list_calls,
                 cancelled_root_requests: &mut self.cancelled_root_requests,
+                allow_harness_output: self.allow_harness_output,
             },
             None,
             id,
@@ -313,6 +386,7 @@ impl McpProcess {
                 client_roots,
                 root_list_calls,
                 cancelled_root_requests,
+                allow_harness_output,
                 ..
             } = self;
             scope.spawn(move || {
@@ -323,6 +397,7 @@ impl McpProcess {
                         client_roots,
                         root_list_calls,
                         cancelled_root_requests,
+                        allow_harness_output: *allow_harness_output,
                     },
                     Some(ignored_id),
                     id,
@@ -341,7 +416,7 @@ impl McpProcess {
     }
 
     fn read_message(&mut self) -> Value {
-        read_message_from(&mut self.stdout)
+        read_message_from(&mut self.stdout, self.allow_harness_output)
     }
 
     fn write_message(&mut self, message: &Value) {
@@ -494,10 +569,12 @@ impl McpProcess {
         self.stdout
             .read_to_string(&mut remaining_stdout)
             .expect("remaining stdout");
-        assert!(
-            remaining_stdout.trim().is_empty(),
-            "unexpected protocol stdout after final response: {remaining_stdout:?}"
-        );
+        if !self.allow_harness_output {
+            assert!(
+                remaining_stdout.trim().is_empty(),
+                "unexpected protocol stdout after final response: {remaining_stdout:?}"
+            );
+        }
 
         let mut stderr = String::new();
         self.child
@@ -511,14 +588,25 @@ impl McpProcess {
     }
 }
 
-fn read_message_from(stdout: &mut BufReader<ChildStdout>) -> Value {
-    let mut line = String::new();
-    let bytes = stdout.read_line(&mut line).expect("read response");
-    assert_ne!(bytes, 0, "resourcefs closed stdout before responding");
-    let response: Value = serde_json::from_str(&line)
-        .unwrap_or_else(|error| panic!("stdout was not JSON-RPC: {error}: {line:?}"));
-    assert_eq!(response["jsonrpc"], "2.0");
-    response
+fn read_message_from(stdout: &mut BufReader<ChildStdout>, allow_harness_output: bool) -> Value {
+    loop {
+        let mut line = String::new();
+        let bytes = stdout.read_line(&mut line).expect("read response");
+        assert_ne!(bytes, 0, "resourcefs closed stdout before responding");
+        let candidate = if allow_harness_output {
+            line.find('{').map_or(line.as_str(), |start| &line[start..])
+        } else {
+            line.as_str()
+        };
+        match serde_json::from_str::<Value>(candidate) {
+            Ok(response) => {
+                assert_eq!(response["jsonrpc"], "2.0");
+                return response;
+            }
+            Err(_) if allow_harness_output => continue,
+            Err(error) => panic!("stdout was not JSON-RPC: {error}: {line:?}"),
+        }
+    }
 }
 
 fn write_message_to(stdin: &mut Option<ChildStdin>, message: &Value) {
@@ -534,6 +622,7 @@ struct ResponseFields<'a> {
     client_roots: &'a mut Vec<Value>,
     root_list_calls: &'a mut usize,
     cancelled_root_requests: &'a mut usize,
+    allow_harness_output: bool,
 }
 
 fn receive_response_fields(
@@ -548,9 +637,10 @@ fn receive_response_fields(
         client_roots,
         root_list_calls,
         cancelled_root_requests,
+        allow_harness_output,
     } = fields;
     loop {
-        let response = read_message_from(stdout);
+        let response = read_message_from(stdout, allow_harness_output);
         assert_eq!(response["jsonrpc"], "2.0");
         if response.get("method") == Some(&Value::String("roots/list".to_owned())) {
             *root_list_calls += 1;
@@ -3297,10 +3387,10 @@ fn https_is_read_only() {
 /// that granularity, so a category-only fence would pass with the whole feature
 /// removed. Only the startup-specific phrasing separates the two.
 ///
-/// The final block is the controlled comparison: the same profile with the port
-/// open, differing in one variable, must not produce the degraded message —
-/// which is what rules out the degraded assertion being satisfied by the source
-/// simply never mounting.
+/// The final block is the controlled comparison: the same profile shape against
+/// a live TLS origin must serve `/doc`. That proves the degraded assertion is
+/// attributable to unreachability rather than to the source never mounting.
+#[cfg(feature = "test-support")]
 #[test]
 fn optional_https_degrades_while_other_sources_serve() {
     let fixture = WorkspaceFixture::new();
@@ -3309,30 +3399,10 @@ fn optional_https_degrades_while_other_sources_serve() {
     let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("closed-port listener");
     let closed_port = closed.local_addr().expect("closed address").port();
     drop(closed);
+    let closed_base = format!("https://localhost:{closed_port}/");
+    let profile = write_https_profile(&fixture, "degraded", &closed_base, false);
 
-    let profile = fixture.root.join("degraded.json");
-    fs::write(
-        &profile,
-        serde_json::to_vec(&json!({
-            "schemaVersion":1,
-            "workspace":{
-                "roots":[{"id":"workspace","path":"."}],
-                "primaryRoot":"workspace"
-            },
-            "session":{"cacheDirectory":"degraded-cache","retentionTtlSeconds":0},
-            "sources":[{
-                "kind":"https","id":"web","required":false,
-                "origins":[{
-                    "baseUrl":format!("https://127.0.0.1:{closed_port}/"),
-                    "allowPrivateNetwork":true
-                }]
-            }]
-        }))
-        .expect("serialize degraded profile"),
-    )
-    .expect("write degraded profile");
-
-    let mut process = McpProcess::start_profile(&profile, &fixture.root);
+    let mut process = McpProcess::start_profile_with_https_root(&profile, &fixture.root);
     process.initialize_with_roots(VERSION_2026, Vec::new());
 
     // Positive control: the server is alive and another source serves.
@@ -3342,7 +3412,7 @@ fn optional_https_degrades_while_other_sources_serve() {
         "a degraded optional source must not stop other sources serving"
     );
 
-    let refused = process.call_read(&format!("https://127.0.0.1:{closed_port}/doc"));
+    let refused = process.call_read(&format!("{closed_base}doc"));
     assert_tool_error(&refused, "source_unavailable");
     let text = refused["content"][0]["text"]
         .as_str()
@@ -3354,50 +3424,27 @@ fn optional_https_degrades_while_other_sources_serve() {
     );
     process.finish();
 
-    // Controlled comparison: identical profile, port open. One variable differs,
-    // so the degraded message above is attributable to unreachability rather
-    // than to the source never mounting.
-    let open = std::net::TcpListener::bind("127.0.0.1:0").expect("open-port listener");
-    let open_port = open.local_addr().expect("open address").port();
-    let reachable = fixture.root.join("reachable.json");
-    fs::write(
-        &reachable,
-        serde_json::to_vec(&json!({
-            "schemaVersion":1,
-            "workspace":{
-                "roots":[{"id":"workspace","path":"."}],
-                "primaryRoot":"workspace"
-            },
-            "session":{"cacheDirectory":"reachable-cache","retentionTtlSeconds":0},
-            "sources":[{
-                "kind":"https","id":"web","required":false,
-                "origins":[{
-                    "baseUrl":format!("https://127.0.0.1:{open_port}/"),
-                    "allowPrivateNetwork":true
-                }]
-            }]
-        }))
-        .expect("serialize reachable profile"),
-    )
-    .expect("write reachable profile");
-
-    let mut healthy = McpProcess::start_profile(&reachable, &fixture.root);
+    let server = profile_tls::ProfileTlsServer::start(
+        "<html><body><p>healthy origin served</p></body></html>",
+    );
+    let live_base = server.base_url();
+    let reachable = write_https_profile(&fixture, "reachable", &live_base, false);
+    let mut healthy = McpProcess::start_profile_with_https_root(&reachable, &fixture.root);
     healthy.initialize_with_roots(VERSION_2026, Vec::new());
-    // Startup probing completes before the server answers initialize, so the
-    // origin has already been observed reachable and mounted. Closing the port
-    // now keeps the read fast — it fails at connect rather than waiting out the
-    // 30-second TLS timeout — without changing what mounted.
-    drop(open);
-    let mounted = healthy.call_read(&format!("https://127.0.0.1:{open_port}/doc"));
-    let mounted_text = mounted["content"][0]["text"]
-        .as_str()
-        .expect("error TextContent")
-        .to_owned();
-    assert!(
-        !mounted_text.contains("unreachable at startup"),
-        "a reachable origin must mount; it failed as degraded instead: {mounted_text}"
+    let served = healthy.call_read(&format!("{live_base}doc"));
+    assert_eq!(
+        served["structuredContent"]["content"], "healthy origin served\n",
+        "a reachable optional origin must serve a real document"
     );
     healthy.finish();
+    assert!(
+        server.accepts() <= 6,
+        "healthy control exceeded its six-connection fixture budget"
+    );
+    assert!(
+        server.requests().iter().any(|target| target == "/doc"),
+        "the healthy control must observe the document request server-side"
+    );
 }
 
 /// C14 — probing happens once at startup and never on the read path.
@@ -3477,4 +3524,223 @@ fn probing_happens_once_at_startup_not_per_read() {
         "an ordinary read must not re-probe a configured source"
     );
     process.finish();
+}
+
+#[cfg(feature = "test-support")]
+const PROFILE_HTTPS_HELPER: &str = "RESOURCEFS_PROFILE_HTTPS_HELPER";
+#[cfg(feature = "test-support")]
+const PROFILE_HTTPS_CONFIG: &str = "RESOURCEFS_PROFILE_HTTPS_CONFIG";
+
+#[cfg(feature = "test-support")]
+fn write_https_profile(
+    fixture: &WorkspaceFixture,
+    name: &str,
+    base_url: &str,
+    required: bool,
+) -> PathBuf {
+    let profile = fixture.root.join(format!("{name}.json"));
+    fs::write(
+        &profile,
+        serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "workspace": {
+                "roots": [{"id": "workspace", "path": "."}],
+                "primaryRoot": "workspace"
+            },
+            "session": {
+                "cacheDirectory": format!("{name}-cache"),
+                "retentionTtlSeconds": 0
+            },
+            "sources": [{
+                "kind": "https",
+                "id": "web",
+                "required": required,
+                "origins": [{
+                    "baseUrl": base_url,
+                    "allowPrivateNetwork": true
+                }]
+            }]
+        }))
+        .expect("serialize profile HTTPS fixture"),
+    )
+    .expect("write profile HTTPS fixture");
+    profile
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+#[ignore = "re-executed by profile HTTPS contract tests as the child MCP server"]
+fn profile_https_test_server() {
+    if std::env::var_os(PROFILE_HTTPS_HELPER).is_none() {
+        return;
+    }
+    let profile =
+        PathBuf::from(std::env::var_os(PROFILE_HTTPS_CONFIG).expect("profile helper config path"));
+    let root = resourcefs_mcp::test_support::TestRootCertificate::from_der(include_bytes!(
+        "fixtures/profile_https/ca.der"
+    ))
+    .expect("profile fixture CA");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("profile helper runtime");
+    runtime
+        .block_on(resourcefs_mcp::test_support::serve_profile_with_https_root(
+            &profile, root,
+        ))
+        .expect("profile HTTPS test server");
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn https_uses_common_read_shape() {
+    const EXPECTED_MARKDOWN: &str = "# Profile Héllo\n\nserved end to end.\n";
+    const EXPECTED_TAG: &str =
+        "sha256:516f99a604023e18d9e0ea55ed2f8a8e2d0f4b1f5ecfda0c84a52d70213acaef";
+
+    let fixture = WorkspaceFixture::new();
+    let server = profile_tls::ProfileTlsServer::start(
+        "<html><body><h1>Profile Héllo</h1><p>served end to end.</p></body></html>",
+    );
+    let base_url = server.base_url();
+    let profile = write_https_profile(&fixture, "common-shape", &base_url, true);
+    let reference = format!("{base_url}doc");
+
+    let mut process = McpProcess::start_profile_with_https_root(&profile, &fixture.root);
+    process.initialize_with_roots(VERSION_2026, Vec::new());
+    let result = process.call_read(&reference);
+    let structured = result["structuredContent"]
+        .as_object()
+        .expect("structured HTTPS result");
+    let mut keys = structured.keys().map(String::as_str).collect::<Vec<_>>();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "bounded",
+            "canonicalReference",
+            "content",
+            "contentType",
+            "contractVersion",
+            "displayedEof",
+            "displayedRanges",
+            "mutable",
+            "ok",
+            "requestedPath",
+            "versionTag",
+        ]
+    );
+    assert_eq!(structured["canonicalReference"], reference);
+    assert_eq!(structured["contentType"], "text/markdown; charset=utf-8");
+    assert_eq!(structured["versionTag"], EXPECTED_TAG);
+    assert_eq!(structured["mutable"], false);
+    assert_eq!(structured["bounded"], false);
+    assert_eq!(structured["content"], EXPECTED_MARKDOWN);
+    assert_eq!(
+        structured["displayedRanges"],
+        json!([{"startLine": 1, "endLine": 3}])
+    );
+    assert_eq!(structured["displayedEof"], true);
+    assert!(structured.get("recoveryReference").is_none());
+    assert_eq!(
+        result["content"][0]["text"],
+        format!(
+            "[{reference}#{EXPECTED_TAG}]\nDisplayed Lines: 1-3\nDisplayed EOF: true\n{EXPECTED_MARKDOWN}"
+        )
+    );
+    process.finish();
+    assert!(
+        server.accepts() <= 6,
+        "common-shape read exceeded its six-connection fixture budget"
+    );
+    assert!(
+        server.requests().iter().any(|target| target == "/doc"),
+        "the profile-launched read must reach the TLS fixture"
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn https_profile_read_recovers_bounded_markdown() {
+    let fixture = WorkspaceFixture::new();
+    let line = "x".repeat(511);
+    let mut html = String::from("<html><body>");
+    let mut expected = String::new();
+    for index in 0..97 {
+        html.push_str("<p>");
+        html.push_str(&line);
+        html.push_str("</p>");
+        expected.push_str(&line);
+        expected.push('\n');
+        if index != 96 {
+            expected.push('\n');
+        }
+    }
+    html.push_str("</body></html>");
+    assert!(
+        expected.len() > 48 * 1024,
+        "stress fixture must exceed the inline ceiling"
+    );
+
+    let server = profile_tls::ProfileTlsServer::start(&html);
+    let base_url = server.base_url();
+    let profile = write_https_profile(&fixture, "bounded-shape", &base_url, true);
+    let reference = format!("{base_url}large");
+    let mut process = McpProcess::start_profile_with_https_root(&profile, &fixture.root);
+    process.initialize_with_roots(VERSION_2026, Vec::new());
+
+    let first = process.call_read(&reference);
+    let first_structured = &first["structuredContent"];
+    assert_eq!(first_structured["bounded"], true);
+    assert_eq!(first_structured["displayedEof"], false);
+    let recovery = first_structured["recoveryReference"]
+        .as_str()
+        .expect("bounded HTTPS recovery")
+        .to_owned();
+    assert!(recovery.starts_with("artifact://"));
+    let mut continuation = Some(
+        first_structured["continuationReference"]
+            .as_str()
+            .expect("bounded HTTPS continuation")
+            .to_owned(),
+    );
+    let mut reconstructed = first_structured["content"]
+        .as_str()
+        .expect("first Markdown page")
+        .to_owned();
+
+    for _ in 0..4 {
+        let Some(next) = continuation.take() else {
+            break;
+        };
+        let page = process.call_read(&next);
+        let structured = &page["structuredContent"];
+        assert_eq!(structured["recoveryReference"], recovery);
+        reconstructed.push_str(
+            structured["content"]
+                .as_str()
+                .expect("continued Markdown page"),
+        );
+        continuation = structured
+            .get("continuationReference")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+    }
+    assert!(
+        continuation.is_none(),
+        "artifact continuation must reach EOF within the fixture bound"
+    );
+    assert_eq!(
+        reconstructed, expected,
+        "artifact pages must recover every Markdown byte"
+    );
+    process.finish();
+    assert!(
+        server.accepts() <= 6,
+        "bounded read exceeded its six-connection fixture budget"
+    );
+    assert!(
+        server.requests().iter().any(|target| target == "/large"),
+        "the bounded read must fetch the real TLS document"
+    );
 }
