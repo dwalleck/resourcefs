@@ -13,6 +13,7 @@ pub const MAX_TEXT_LINES: usize = 3_000;
 pub const MAX_TEXT_COLUMNS: usize = 512;
 pub const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 pub const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
+pub const MARKDOWN_CONTENT_TYPE: &str = "text/markdown; charset=utf-8";
 
 /// Position of a contiguous artifact projection in its immutable root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,12 +186,30 @@ impl SourceResource {
         content: String,
         version_tag: VersionTag,
     ) -> Result<Self, ResourceError> {
+        Self::projection_with_content_type(reference, content, version_tag, TEXT_CONTENT_TYPE)
+    }
+
+    /// Build a selected Markdown projection carrying the authoritative whole-Resource Version Tag.
+    pub fn markdown_projection(
+        reference: PathReference,
+        content: String,
+        version_tag: VersionTag,
+    ) -> Result<Self, ResourceError> {
+        Self::projection_with_content_type(reference, content, version_tag, MARKDOWN_CONTENT_TYPE)
+    }
+
+    fn projection_with_content_type(
+        reference: PathReference,
+        content: String,
+        version_tag: VersionTag,
+        content_type: &'static str,
+    ) -> Result<Self, ResourceError> {
         validate_canonical_identity(&reference)?;
         let artifact_identity = matches!(reference.address(), ResourceAddress::Artifact(_));
         let projection = ProjectionMetadata::complete(&content);
         Ok(Self {
             canonical_reference: reference.requested().to_owned(),
-            content_type: TEXT_CONTENT_TYPE,
+            content_type,
             version_tag,
             mutable: false,
             backing_file_uri: None,
@@ -572,4 +591,41 @@ fn invalid_backing_uri() -> ResourceError {
         ErrorCategory::InvalidReference,
         "backing-file metadata must be a valid local file URI",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_projection_preserves_media_type_and_version() {
+        let reference =
+            PathReference::parse("https://example.com/guide".to_owned()).expect("HTTPS reference");
+        let content = "# Héllo\n".to_owned();
+        let version_tag = VersionTag::from_content(content.as_bytes());
+
+        let resource =
+            SourceResource::markdown_projection(reference, content.clone(), version_tag.clone())
+                .expect("Markdown Resource");
+
+        assert_eq!(resource.content_type(), "text/markdown; charset=utf-8");
+        assert_eq!(resource.content(), content);
+        assert_eq!(resource.version_tag(), &version_tag);
+        assert!(!resource.is_mutable());
+    }
+
+    #[test]
+    fn markdown_projection_accepts_empty_content() {
+        let reference =
+            PathReference::parse("https://example.com/empty".to_owned()).expect("HTTPS reference");
+        let version_tag = VersionTag::from_content(b"");
+
+        let resource =
+            SourceResource::markdown_projection(reference, String::new(), version_tag.clone())
+                .expect("empty Markdown Resource");
+
+        assert_eq!(resource.content_type(), "text/markdown; charset=utf-8");
+        assert_eq!(resource.content(), "");
+        assert_eq!(resource.version_tag(), &version_tag);
+    }
 }

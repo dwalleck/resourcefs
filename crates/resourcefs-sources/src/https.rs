@@ -79,11 +79,19 @@ impl HttpsSource {
             selector.line_selection().is_some() || selector.page_offset().is_some()
         });
         if !has_selection {
-            return SourceResource::text_projection(canonical, content, version_tag);
+            return if raw {
+                SourceResource::text_projection(canonical, content, version_tag)
+            } else {
+                SourceResource::markdown_projection(canonical, content, version_tag)
+            };
         }
         let selected = select_utf8(Cursor::new(content), projection)?;
         let (selected_content, selected_tag, _) = selected.into_parts();
-        SourceResource::text_projection(canonical, selected_content, selected_tag)
+        if raw {
+            SourceResource::text_projection(canonical, selected_content, selected_tag)
+        } else {
+            SourceResource::markdown_projection(canonical, selected_content, selected_tag)
+        }
     }
 }
 

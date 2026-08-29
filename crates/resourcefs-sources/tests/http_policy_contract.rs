@@ -671,13 +671,13 @@ async fn encoded_url_reaches_wire_unchanged() {
     );
 }
 
-/// C13 (read half) — an HTTPS read uses the common Resource shape.
+/// C13 (read half) — reader-mode HTTPS Resources carry Markdown metadata.
 ///
-/// The read-only refusal half lives in `stdio_mcp_contract.rs`, where the
-/// public tools are reachable; this asserts the shape a mounted source
-/// produces, which needs a real fetch.
+/// The complete and selected rows prove projection does not erase the media
+/// type. The raw row is the negative control: choosing Markdown at the MCP
+/// renderer or from the URL family would incorrectly relabel the original body.
 #[tokio::test]
-async fn https_read_uses_common_resource_shape() {
+async fn https_reader_mode_reports_markdown_for_complete_and_selected() {
     use resourcefs_core::{PathReference, SourceAdapter};
     use resourcefs_sources::HttpsSource;
 
@@ -701,32 +701,38 @@ async fn https_read_uses_common_resource_shape() {
         vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
     ));
     let source = HttpsSource::new(substrate);
-    let reference =
-        PathReference::parse(format!("https://{}:{port}/doc", tls::FIXTURE_HOST)).expect("parse");
+    let base = format!("https://{}:{port}/doc", tls::FIXTURE_HOST);
 
-    let resource = source
-        .read(&reference, &OperationGuard::new())
+    let complete = source
+        .read(
+            &PathReference::parse(base.clone()).expect("complete reference"),
+            &OperationGuard::new(),
+        )
         .await
-        .expect("read succeeds");
+        .expect("complete read");
+    assert_eq!(complete.content_type(), "text/markdown; charset=utf-8");
+    assert!(complete.content().contains("Title"));
+    assert!(!complete.is_mutable());
+    assert_eq!(complete.canonical_reference(), base);
 
-    assert!(
-        !resource.content().is_empty(),
-        "a successful read must carry content"
-    );
-    assert!(
-        resource.content().contains("Title"),
-        "reader mode must render the document, got {:?}",
-        resource.content()
-    );
-    // HTTPS is read-only: the family never reports itself mutable.
-    assert!(
-        !resource.is_mutable(),
-        "an https:// Resource must never report itself mutable"
-    );
-    // Identity is the canonical URL, so a later read under a selector is the
-    // same Resource rather than a second one.
-    assert_eq!(
-        resource.canonical_reference(),
-        format!("https://{}:{port}/doc", tls::FIXTURE_HOST)
-    );
+    let selected = source
+        .read(
+            &PathReference::parse(format!("{base}:1")).expect("selected reference"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("selected read");
+    assert_eq!(selected.content_type(), "text/markdown; charset=utf-8");
+    assert!(!selected.content().is_empty());
+    assert_eq!(selected.canonical_reference(), base);
+
+    let raw = source
+        .read(
+            &PathReference::parse(format!("{base}:raw")).expect("raw reference"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("raw read");
+    assert_eq!(raw.content_type(), "text/plain; charset=utf-8");
+    assert!(raw.content().starts_with("<html>"));
 }
