@@ -48,6 +48,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::Arc,
+    time::{Duration, SystemTime},
 };
 
 use resourcefs_core::{
@@ -59,6 +60,105 @@ use url::Url;
 const MAX_SOURCE_REQUEST_HEADERS: usize = 16;
 const MAX_SOURCE_REQUEST_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HTTP_MUTATION_REQUEST_BYTES: usize = MAX_ARTIFACT_BYTES * 6 + 64 * 1024;
+const RETRY_JITTER_MAX_MILLIS: u8 = 250;
+const RETRY_JITTER_SAMPLE_BYTES: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetryAfter {
+    Missing,
+    Invalid,
+    Delay(Duration),
+}
+
+impl RetryAfter {
+    const fn delay(self) -> Option<Duration> {
+        match self {
+            Self::Delay(delay) => Some(delay),
+            Self::Missing | Self::Invalid => None,
+        }
+    }
+}
+
+fn parse_retry_after_text(value: &str, now: SystemTime) -> RetryAfter {
+    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return value.parse::<u64>().map_or(RetryAfter::Invalid, |seconds| {
+            RetryAfter::Delay(Duration::from_secs(seconds))
+        });
+    }
+    let Ok(at) = httpdate::parse_http_date(value) else {
+        return RetryAfter::Invalid;
+    };
+    match at.duration_since(now) {
+        Ok(delay) => RetryAfter::Delay(delay),
+        Err(_) => RetryAfter::Invalid,
+    }
+}
+
+fn parse_retry_after(headers: &reqwest::header::HeaderMap, now: SystemTime) -> RetryAfter {
+    let mut values = headers.get_all(reqwest::header::RETRY_AFTER).iter();
+    let Some(value) = values.next() else {
+        return RetryAfter::Missing;
+    };
+    if values.next().is_some() || value.len() > MAX_SOURCE_REQUEST_HEADER_BYTES {
+        return RetryAfter::Invalid;
+    }
+    match value.to_str() {
+        Ok(value) => parse_retry_after_text(value, now),
+        Err(_) => RetryAfter::Invalid,
+    }
+}
+
+fn jitter_from_sample(sample: [u8; RETRY_JITTER_SAMPLE_BYTES]) -> Result<Duration, ResourceError> {
+    sample
+        .into_iter()
+        .find(|millis| *millis <= RETRY_JITTER_MAX_MILLIS)
+        .map(|millis| Duration::from_millis(u64::from(millis)))
+        .ok_or_else(|| {
+            ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                "HTTP retry jitter could not be sampled without bias",
+            )
+        })
+}
+
+fn random_retry_jitter() -> Result<Duration, ResourceError> {
+    let mut sample = [0_u8; RETRY_JITTER_SAMPLE_BYTES];
+    getrandom::fill(&mut sample).map_err(|error| {
+        ResourceError::new(
+            ErrorCategory::SourceUnavailable,
+            format!("HTTP retry jitter entropy was unavailable: {error}"),
+        )
+    })?;
+    jitter_from_sample(sample)
+}
+
+fn retry_wait_fits(remaining: Duration, delay: Duration, jitter: Duration) -> bool {
+    delay
+        .checked_add(jitter)
+        .is_some_and(|wait| wait < remaining)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LogicalDeadline(tokio::time::Instant);
+
+impl LogicalDeadline {
+    fn new(started: tokio::time::Instant, timeout: Duration) -> Result<Self, ResourceError> {
+        started.checked_add(timeout).map(Self).ok_or_else(|| {
+            ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                "HTTP logical read deadline is not representable",
+            )
+        })
+    }
+
+    fn remaining_at(self, now: tokio::time::Instant) -> Duration {
+        self.0.saturating_duration_since(now)
+    }
+
+    fn remaining(self) -> Duration {
+        self.remaining_at(tokio::time::Instant::now())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceRequestHeader {
@@ -320,6 +420,21 @@ impl HttpRequest {
     pub const fn url(&self) -> &Url {
         &self.url
     }
+
+    fn retry_copy(&self) -> Option<Self> {
+        if self.method != HttpMethod::Get {
+            return None;
+        }
+        debug_assert!(self.body.is_none(), "GET requests never carry a body");
+        Some(Self {
+            url: self.url.clone(),
+            method: self.method,
+            redirect: self.redirect,
+            body: None,
+            headers: self.headers.clone(),
+            header_bytes: self.header_bytes,
+        })
+    }
 }
 
 fn invalid_source_header(message: &'static str) -> ResourceError {
@@ -353,7 +468,7 @@ pub struct BoundedHttpResponse {
     /// text — present-but-corrupt, which pagination must not mistake for
     /// "no further pages".
     link: Option<Result<String, ResourceError>>,
-    retry_after: Option<std::time::Duration>,
+    retry_after: RetryAfter,
     rate_limit_remaining: Option<u64>,
     body: Vec<u8>,
     truncated: bool,
@@ -403,10 +518,10 @@ impl BoundedHttpResponse {
         }
     }
 
-    /// Returns a delta-seconds Retry-After value.
+    /// Returns usable Retry-After guidance in either standard wire form.
     #[must_use]
-    pub const fn retry_after(&self) -> Option<std::time::Duration> {
-        self.retry_after
+    pub const fn retry_after(&self) -> Option<Duration> {
+        self.retry_after.delay()
     }
 
     /// Returns GitHub-style remaining request budget when numeric.
@@ -543,6 +658,119 @@ impl TestRootCertificate {
     }
 }
 
+type RetryWallClock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
+type RetryJitter = Arc<dyn Fn() -> Result<Duration, ResourceError> + Send + Sync>;
+
+struct RetryRuntime {
+    wall_now: RetryWallClock,
+    jitter: RetryJitter,
+}
+
+impl Default for RetryRuntime {
+    fn default() -> Self {
+        Self {
+            wall_now: Arc::new(SystemTime::now),
+            jitter: Arc::new(random_retry_jitter),
+        }
+    }
+}
+
+/// One source-neutral logical read sharing one immutable deadline and retry budget.
+#[derive(Clone, Copy)]
+pub(crate) struct BoundedRead<'a> {
+    substrate: &'a HttpSubstrate,
+    operation: &'a OperationGuard,
+    deadline: LogicalDeadline,
+}
+
+impl BoundedRead<'_> {
+    pub(crate) async fn fetch(
+        self,
+        request: HttpRequest,
+    ) -> Result<BoundedHttpResponse, ResourceError> {
+        let Some(retry) = request.retry_copy() else {
+            return self
+                .substrate
+                .fetch_attempt(request, self.operation)
+                .await
+                .map_err(HttpFetchFailure::into_error);
+        };
+        tokio::time::timeout_at(self.deadline.0, self.fetch_idempotent(request, retry))
+            .await
+            .map_err(|_| {
+                ResourceError::new(
+                    ErrorCategory::SourceUnavailable,
+                    "HTTP logical read exceeded the configured deadline",
+                )
+            })?
+    }
+
+    async fn fetch_idempotent(
+        self,
+        mut request: HttpRequest,
+        retry: HttpRequest,
+    ) -> Result<BoundedHttpResponse, ResourceError> {
+        let mut retry = Some(retry);
+        loop {
+            let response = match self.substrate.fetch_attempt(request, self.operation).await {
+                Ok(response) => response,
+                Err(failure)
+                    if failure.is_retryable()
+                        && retry.is_some()
+                        && !self.deadline.remaining().is_zero() =>
+                {
+                    let Some(next) = retry.take() else {
+                        return Err(failure.into_error());
+                    };
+                    request = next;
+                    continue;
+                }
+                Err(failure) => return Err(failure.into_error()),
+            };
+            if !matches!(response.status(), 429 | 503) || retry.is_none() {
+                return Ok(response);
+            }
+            let Some(delay) = response.retry_after() else {
+                return Ok(response);
+            };
+            let jitter = (self.substrate.retry_runtime.jitter)()?;
+            let remaining = self.deadline.remaining();
+            if !retry_wait_fits(remaining, delay, jitter) {
+                return Err(ResourceError::new(
+                    ErrorCategory::SourceUnavailable,
+                    "HTTP Retry-After guidance exceeds the remaining logical deadline",
+                ));
+            }
+            let wait = delay.checked_add(jitter).ok_or_else(|| {
+                ResourceError::new(
+                    ErrorCategory::SourceUnavailable,
+                    "HTTP Retry-After guidance exceeds the remaining logical deadline",
+                )
+            })?;
+            tokio::select! {
+                biased;
+                () = self.operation.cancelled() => {
+                    return Err(ResourceError::new(
+                        ErrorCategory::Cancelled,
+                        "HTTP retry wait was cancelled",
+                    ));
+                }
+                () = tokio::time::sleep(wait) => {}
+            }
+            if self.deadline.remaining().is_zero() {
+                return Err(ResourceError::new(
+                    ErrorCategory::SourceUnavailable,
+                    "HTTP Retry-After guidance left no time for the follow-up request",
+                ));
+            }
+            let Some(next) = retry.take() else {
+                return Ok(response);
+            };
+            request = next;
+        }
+    }
+}
+
 /// The workspace's single bounded HTTP egress point.
 pub struct HttpSubstrate {
     client: reqwest::Client,
@@ -563,6 +791,7 @@ pub struct HttpSubstrate {
     /// from the allowlist and refused as `source_unavailable`, which is the
     /// state that is actually true: the source exists and is unreachable.
     degraded: Vec<AllowedOrigin>,
+    retry_runtime: RetryRuntime,
     #[cfg(feature = "test-support")]
     extractions: ExtractionCounter,
 }
@@ -704,6 +933,26 @@ impl HttpSubstrate {
         self
     }
 
+    /// Replaces wall-clock and jitter inputs for deterministic retry contracts.
+    #[cfg(feature = "test-support")]
+    pub fn with_retry_control_for_test(
+        mut self,
+        wall_now: SystemTime,
+        jitter: Duration,
+    ) -> Result<Self, ResourceError> {
+        if jitter > Duration::from_millis(u64::from(RETRY_JITTER_MAX_MILLIS)) {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "test retry jitter exceeds the 250-millisecond production bound",
+            ));
+        }
+        self.retry_runtime = RetryRuntime {
+            wall_now: Arc::new(move || wall_now),
+            jitter: Arc::new(move || Ok(jitter)),
+        };
+        Ok(self)
+    }
+
     /// Builds the substrate over an injected host lookup, for contract tests.
     ///
     /// The address policy is applied identically to the production path; only
@@ -790,6 +1039,7 @@ impl HttpSubstrate {
             policies,
             credentials,
             degraded: Vec::new(),
+            retry_runtime: RetryRuntime::default(),
             #[cfg(feature = "test-support")]
             extractions: ExtractionCounter::default(),
         })
@@ -875,15 +1125,29 @@ impl HttpSubstrate {
         self.ceilings
     }
 
-    /// Performs one authorized request and returns its bounded response.
+    /// Starts one bounded logical read using this substrate's configured timeout.
+    pub(crate) fn begin_read<'a>(
+        &'a self,
+        operation: &'a OperationGuard,
+    ) -> Result<BoundedRead<'a>, ResourceError> {
+        Ok(BoundedRead {
+            substrate: self,
+            operation,
+            deadline: LogicalDeadline::new(tokio::time::Instant::now(), self.ceilings.timeout())?,
+        })
+    }
+
+    /// Performs one bounded logical fetch.
+    ///
+    /// A GET may make exactly one follow-up for a conclusively retryable
+    /// transport failure or a 429/503 carrying usable Retry-After guidance.
+    /// POST and PATCH remain single-attempt.
     pub async fn fetch(
         &self,
         request: HttpRequest,
         operation: &OperationGuard,
     ) -> Result<BoundedHttpResponse, ResourceError> {
-        self.fetch_attempt(request, operation)
-            .await
-            .map_err(HttpFetchFailure::into_error)
+        self.begin_read(operation)?.fetch(request).await
     }
 
     pub(crate) async fn fetch_attempt(
@@ -939,12 +1203,14 @@ impl HttpSubstrate {
                     )
                 })
             });
-        let retry_after = response
+        let retry_after = if response
             .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok())
-            .map(std::time::Duration::from_secs);
+            .contains_key(reqwest::header::RETRY_AFTER)
+        {
+            parse_retry_after(response.headers(), (self.retry_runtime.wall_now)())
+        } else {
+            RetryAfter::Missing
+        };
         let rate_limit_remaining = response
             .headers()
             .get(reqwest::header::HeaderName::from_static(
@@ -1280,4 +1546,144 @@ fn host_policies(allowlist: &OriginAllowlist) -> HashMap<String, AddressPolicy> 
         .into_iter()
         .map(|(host, allow)| (host, AddressPolicy::new(allow)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use super::{
+        RetryAfter, jitter_from_sample, parse_retry_after, parse_retry_after_text, retry_wait_fits,
+    };
+
+    #[test]
+    fn retry_after_delta_and_http_date_have_one_typed_delay() {
+        let before_known_date = UNIX_EPOCH + Duration::from_secs(784_111_776);
+
+        assert_eq!(
+            parse_retry_after_text("0", before_known_date),
+            RetryAfter::Delay(Duration::ZERO)
+        );
+        assert_eq!(
+            parse_retry_after_text("7", before_known_date),
+            RetryAfter::Delay(Duration::from_secs(7))
+        );
+        assert_eq!(
+            parse_retry_after_text("Sun, 06 Nov 1994 08:49:37 GMT", before_known_date),
+            RetryAfter::Delay(Duration::from_secs(1))
+        );
+    }
+
+    #[test]
+    fn unusable_retry_after_never_becomes_zero_delay() {
+        let known_date = UNIX_EPOCH + Duration::from_secs(784_111_777);
+        for value in [
+            "",
+            "-1",
+            "18446744073709551616",
+            "+1",
+            " 1",
+            "1 ",
+            "not-a-date",
+            "Sun, 06 Nov 1994 08:49:36 GMT",
+            "0, 1",
+        ] {
+            assert_eq!(
+                parse_retry_after_text(value, known_date),
+                RetryAfter::Invalid,
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn retry_jitter_is_bounded_unbiased_and_deadline_checked() {
+        assert_eq!(
+            jitter_from_sample([0, 251, 252, 253, 254, 255, 251, 252])
+                .expect("zero is an accepted sample"),
+            Duration::ZERO
+        );
+        assert_eq!(
+            jitter_from_sample([251, 252, 137, 253, 254, 255, 251, 252])
+                .expect("the first in-range byte is accepted"),
+            Duration::from_millis(137)
+        );
+        assert_eq!(
+            jitter_from_sample([251, 252, 253, 254, 255, 250, 251, 252]).expect("250 is included"),
+            Duration::from_millis(250)
+        );
+        let failure = jitter_from_sample([251; 8]).expect_err("no biased fallback");
+        assert_eq!(failure.category(), ErrorCategory::SourceUnavailable);
+
+        assert!(retry_wait_fits(
+            Duration::from_millis(251),
+            Duration::ZERO,
+            Duration::from_millis(250)
+        ));
+        assert!(!retry_wait_fits(
+            Duration::from_millis(250),
+            Duration::ZERO,
+            Duration::from_millis(250)
+        ));
+        assert!(!retry_wait_fits(
+            Duration::MAX,
+            Duration::MAX,
+            Duration::from_millis(1)
+        ));
+    }
+
+    #[test]
+    fn logical_read_never_refreshes_its_deadline() {
+        let started = tokio::time::Instant::now();
+        let deadline = super::LogicalDeadline::new(started, Duration::from_secs(5))
+            .expect("representable deadline");
+
+        assert_eq!(
+            deadline.remaining_at(started + Duration::from_secs(2)),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            deadline.remaining_at(started + Duration::from_secs(4)),
+            Duration::from_secs(1)
+        );
+    }
+
+    use resourcefs_core::ErrorCategory;
+
+    #[test]
+    fn retry_after_equal_http_date_is_zero_delay() {
+        let known_date = SystemTime::UNIX_EPOCH + Duration::from_secs(784_111_777);
+        assert_eq!(
+            parse_retry_after_text("Sun, 06 Nov 1994 08:49:37 GMT", known_date),
+            RetryAfter::Delay(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    #[ignore = "checkpointed-build production-scale budget"]
+    fn retry_policy_budget() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("Sun, 06 Nov 1994 08:49:37 GMT"),
+        );
+        let now = UNIX_EPOCH + Duration::from_secs(784_111_776);
+        let iterations = 100_000_u32;
+        let started = std::time::Instant::now();
+        for _ in 0..iterations {
+            let guidance = parse_retry_after(&headers, now);
+            let jitter = jitter_from_sample([251, 252, 250, 253, 254, 255, 251, 252])
+                .expect("sample contains 250");
+            std::hint::black_box(retry_wait_fits(
+                Duration::from_secs(2),
+                guidance.delay().expect("known date is one second ahead"),
+                jitter,
+            ));
+        }
+        let average = started.elapsed() / iterations;
+        assert!(
+            average <= Duration::from_millis(1),
+            "worst-case retry policy took {average:?}"
+        );
+    }
 }

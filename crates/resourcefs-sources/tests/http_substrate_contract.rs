@@ -11,7 +11,11 @@ mod tls;
 use std::{
     io,
     net::{IpAddr, Ipv4Addr},
-    time::{Duration, Instant},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use resourcefs_core::{
@@ -64,6 +68,11 @@ async fn substrate_is_source_neutral() {
         substrate.ceilings().fetch_bytes(),
         HttpCeilings::default().fetch_bytes()
     );
+
+    let failure = substrate
+        .with_retry_control_for_test(SystemTime::now(), Duration::from_millis(251))
+        .expect_err("test control cannot exceed the production jitter bound");
+    assert_eq!(failure.category(), ErrorCategory::InvalidReference);
 }
 
 #[tokio::test]
@@ -349,6 +358,164 @@ fn source_header_count_bytes_and_duplicates_are_bounded() {
             .expect_err("duplicate header")
             .category(),
         ErrorCategory::InvalidReference
+    );
+}
+
+#[tokio::test]
+async fn idempotent_reads_honor_delta_and_http_date_once() {
+    let fixed_now = UNIX_EPOCH + Duration::from_secs(784_111_776);
+    for (status, guidance) in [
+        ("429 Too Many Requests", "0"),
+        ("503 Service Unavailable", "Sun, 06 Nov 1994 08:49:37 GMT"),
+    ] {
+        let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&attempts);
+        let listener = TlsListener::serve_router(loopback, 0, MATCH_CERT, move |_path| {
+            if counted.fetch_add(1, Ordering::AcqRel) == 0 {
+                FixtureResponse::Response {
+                    status,
+                    headers: vec![("Retry-After".to_owned(), guidance.to_owned())],
+                    body: Vec::new(),
+                }
+            } else {
+                FixtureResponse::Response {
+                    status: "200 OK",
+                    headers: Vec::new(),
+                    body: b"retried".to_vec(),
+                }
+            }
+        })
+        .await;
+        let port = listener.address.port();
+        let substrate = tls_substrate(fixture_allowlist(port, true), vec![loopback])
+            .with_retry_control_for_test(fixed_now, Duration::ZERO)
+            .expect("valid deterministic retry controls");
+        let response = substrate
+            .fetch(
+                HttpRequest::get(
+                    Url::parse(&format!("https://{FIXTURE_HOST}:{port}/retry"))
+                        .expect("fixture URL"),
+                ),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("valid guidance retries");
+
+        assert_eq!(response.body(), b"retried", "{status}");
+        assert_eq!(attempts.load(Ordering::Acquire), 2, "{status}");
+        settle().await;
+        assert_eq!(listener.requests().len(), 2, "{status}");
+    }
+}
+
+#[tokio::test]
+async fn retry_wait_is_promptly_cancelled() {
+    let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let listener =
+        TlsListener::serve_router(loopback, 0, MATCH_CERT, |_path| FixtureResponse::Response {
+            status: "429 Too Many Requests",
+            headers: vec![("Retry-After".to_owned(), "10".to_owned())],
+            body: Vec::new(),
+        })
+        .await;
+    let port = listener.address.port();
+    let substrate = Arc::new(
+        tls_substrate(fixture_allowlist(port, true), vec![loopback])
+            .with_retry_control_for_test(SystemTime::now(), Duration::ZERO)
+            .expect("valid deterministic retry controls"),
+    );
+    let guard = OperationGuard::new();
+    let worker_guard = guard.clone();
+    let worker_substrate = Arc::clone(&substrate);
+    let task = tokio::spawn(async move {
+        worker_substrate
+            .fetch(
+                HttpRequest::get(
+                    Url::parse(&format!("https://{FIXTURE_HOST}:{port}/cancel"))
+                        .expect("fixture URL"),
+                ),
+                &worker_guard,
+            )
+            .await
+    });
+
+    for _ in 0..100 {
+        if !listener.requests().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(listener.requests().len(), 1, "wait began after request one");
+    assert!(guard.cancel(), "active retry wait accepts cancellation");
+    let error = tokio::time::timeout(Duration::from_secs(1), task)
+        .await
+        .expect("cancellation is prompt")
+        .expect("retry task joins")
+        .expect_err("cancelled wait fails");
+
+    assert_eq!(error.category(), ErrorCategory::Cancelled);
+    settle().await;
+    assert_eq!(listener.requests().len(), 1, "no follow-up was sent");
+}
+
+#[tokio::test]
+async fn retry_is_limited_to_idempotent_429_and_503_reads() {
+    let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let listener =
+        TlsListener::serve_router(loopback, 0, MATCH_CERT, |_path| FixtureResponse::Response {
+            status: "500 Internal Server Error",
+            headers: vec![("Retry-After".to_owned(), "0".to_owned())],
+            body: Vec::new(),
+        })
+        .await;
+    let port = listener.address.port();
+    let substrate = tls_substrate(fixture_allowlist(port, true), vec![loopback])
+        .with_retry_control_for_test(SystemTime::now(), Duration::ZERO)
+        .expect("valid deterministic retry controls");
+    let response = substrate
+        .fetch(
+            HttpRequest::get(
+                Url::parse(&format!("https://{FIXTURE_HOST}:{port}/status")).expect("fixture URL"),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("non-retryable status remains a response");
+
+    assert_eq!(response.status(), 500);
+    settle().await;
+    assert_eq!(listener.requests().len(), 1);
+
+    let mutation_listener =
+        TlsListener::serve_router(loopback, 0, MATCH_CERT, |_path| FixtureResponse::Response {
+            status: "503 Service Unavailable",
+            headers: vec![("Retry-After".to_owned(), "0".to_owned())],
+            body: Vec::new(),
+        })
+        .await;
+    let mutation_port = mutation_listener.address.port();
+    let mutation_url = Url::parse(&format!("https://{FIXTURE_HOST}:{mutation_port}/mutation"))
+        .expect("fixture URL");
+    let mutation_substrate = tls_substrate(fixture_allowlist(mutation_port, true), vec![loopback])
+        .with_retry_control_for_test(SystemTime::now(), Duration::ZERO)
+        .expect("valid deterministic retry controls");
+    let guard = OperationGuard::new();
+    for request in [
+        HttpRequest::post_json(mutation_url.clone(), b"{}".to_vec()).expect("POST"),
+        HttpRequest::patch_json(mutation_url.clone(), b"{}".to_vec()).expect("PATCH"),
+    ] {
+        let response = mutation_substrate
+            .fetch(request, &guard)
+            .await
+            .expect("mutation response remains observable");
+        assert_eq!(response.status(), 503);
+    }
+    settle().await;
+    assert_eq!(
+        mutation_listener.requests().len(),
+        2,
+        "one request per mutation method"
     );
 }
 

@@ -12,15 +12,17 @@ mod tls;
 use std::{
     net::{IpAddr, Ipv4Addr},
     sync::Arc,
+    time::{Duration, UNIX_EPOCH},
 };
 
 use resourcefs_core::{
-    DiscoveryAdapter, ErrorCategory, OperationGuard, PathReference, SearchOptions, SearchTarget,
-    SourceAdapter,
+    DiscoveryAdapter, ErrorCategory, HttpCeilings, HttpCeilingsInput, OperationGuard,
+    PathReference, SearchOptions, SearchTarget, SourceAdapter,
 };
 use resourcefs_sources::HttpsSource;
 use tls::{
-    FIXTURE_HOST, FixtureResponse, MATCH_CERT, TlsListener, fixture_allowlist, tls_substrate,
+    FIXTURE_HOST, FixtureResponse, MATCH_CERT, TlsListener, fixture_allowlist, settle,
+    tls_substrate, tls_substrate_with_ceilings,
 };
 
 const ERROR_PAGE: &[u8] =
@@ -115,4 +117,58 @@ async fn upstream_statuses_map_to_stable_categories_before_any_body_is_content()
             .content()
             .contains("Sorry, this page could not be found")
     );
+}
+
+#[tokio::test]
+async fn unusable_retry_guidance_is_terminal_without_wait() {
+    let ceilings = HttpCeilings::new(HttpCeilingsInput {
+        timeout_millis: Some(1_000),
+        ..HttpCeilingsInput::default()
+    })
+    .expect("lowered logical deadline");
+    let fixed_now = UNIX_EPOCH + Duration::from_secs(784_111_777);
+    for guidance in [
+        None,
+        Some(""),
+        Some("-1"),
+        Some("+1"),
+        Some("18446744073709551616"),
+        Some("Sun, 06 Nov 1994 08:49:36 GMT"),
+        Some("0, 1"),
+        Some("60"),
+    ] {
+        let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let listener = TlsListener::serve_router(loopback, 0, MATCH_CERT, move |_path| {
+            FixtureResponse::Response {
+                status: "429 Too Many Requests",
+                headers: guidance
+                    .map(|value| vec![("Retry-After".to_owned(), value.to_owned())])
+                    .unwrap_or_default(),
+                body: Vec::new(),
+            }
+        })
+        .await;
+        let port = listener.address.port();
+        let substrate =
+            tls_substrate_with_ceilings(fixture_allowlist(port, true), vec![loopback], ceilings)
+                .with_retry_control_for_test(fixed_now, Duration::ZERO)
+                .expect("valid deterministic retry controls");
+        let source = HttpsSource::new(Arc::new(substrate));
+        let error = source
+            .read(
+                &PathReference::parse(format!("https://{FIXTURE_HOST}:{port}/retry:raw"))
+                    .expect("fixture reference"),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect_err("unusable guidance is terminal");
+
+        assert_eq!(
+            error.category(),
+            ErrorCategory::SourceUnavailable,
+            "{guidance:?}"
+        );
+        settle().await;
+        assert_eq!(listener.requests().len(), 1, "{guidance:?}");
+    }
 }

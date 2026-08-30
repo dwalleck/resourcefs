@@ -5,7 +5,7 @@ pub use mutation::inspect_github_mutation_route_for_test;
 mod render;
 mod wire;
 
-use std::{collections::HashSet, fmt::Write as _, io::Cursor, sync::Arc, time::Duration};
+use std::{collections::HashSet, fmt::Write as _, io::Cursor, sync::Arc};
 
 use async_trait::async_trait;
 use resourcefs_core::{
@@ -16,12 +16,12 @@ use resourcefs_core::{
     SourceGlobResult, SourceResource, select_utf8,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use tokio::time::Instant;
 use url::Url;
 
 use crate::{
     GithubConfig, HttpRequest, HttpSubstrate,
     catalog::{SourceCatalogEntry, SourceCatalogMetadata},
+    http::BoundedRead,
     pattern::search_document,
 };
 use wire::{
@@ -65,22 +65,6 @@ struct FetchedResponse {
 impl FetchedResponse {
     fn body(&self) -> &[u8] {
         &self.body
-    }
-}
-
-/// One logical GitHub operation: the caller's cancellation guard and the
-/// deadline that every attempt, Retry-After wait, retry, and followed page
-/// inside it shares. The spec grants one logical deadline per operation, so a
-/// wait that cannot finish before it is refused rather than started.
-#[derive(Clone, Copy)]
-struct Operation<'a> {
-    guard: &'a OperationGuard,
-    deadline: Instant,
-}
-
-impl Operation<'_> {
-    fn remaining(&self) -> Duration {
-        self.deadline.saturating_duration_since(Instant::now())
     }
 }
 
@@ -279,7 +263,7 @@ impl GithubSource {
         &self,
         url: Url,
         accept: &str,
-        operation: Operation<'_>,
+        operation: BoundedRead<'_>,
     ) -> Result<FetchedResponse, ResourceError> {
         let key = Self::cache_key(&url, accept)?;
         let cache_generation = self
@@ -310,99 +294,62 @@ impl GithubSource {
         let validator = cached_metadata
             .as_ref()
             .map(|metadata| metadata.etag.as_str());
-        let mut attempt = 0_u8;
-        loop {
-            let request = Self::request(url.clone(), accept, validator)?;
-            let response = match self.substrate.fetch_attempt(request, operation.guard).await {
-                Ok(response) => response,
-                Err(failure) if attempt == 0 && failure.is_retryable() => {
-                    attempt = 1;
-                    continue;
-                }
-                Err(failure) => return Err(failure.into_error()),
-            };
-            if response.status() == 304 {
-                if self
-                    .session
-                    .cache_generation(GITHUB_CACHE_NAMESPACE)
-                    .await?
-                    != cache_generation
-                {
-                    return Err(github_error(
-                        ErrorCategory::SourceUnavailable,
-                        "GitHub read was invalidated by a concurrent mutation; retry the read",
-                    ));
-                }
-                let (Some(entry), Some(metadata)) = (cached.as_ref(), cached_metadata.as_ref())
-                else {
-                    return Err(malformed_upstream(
-                        "GitHub returned 304 without a session cache entry",
-                    ));
-                };
-                return Ok(FetchedResponse {
-                    body: Arc::clone(entry.content_arc()),
-                    link: metadata.link.clone(),
-                });
-            }
-            if attempt == 0
-                && matches!(response.status(), 429 | 503)
-                && let Some(delay) = response.retry_after()
+        let request = Self::request(url, accept, validator)?;
+        let response = operation.fetch(request).await?;
+        if response.status() == 304 {
+            if self
+                .session
+                .cache_generation(GITHUB_CACHE_NAMESPACE)
+                .await?
+                != cache_generation
             {
-                // Waiting is allowed only while time remains: a wait that would
-                // outlive the deadline is the rate-limit failure it postpones,
-                // reported now instead of after the deadline burns.
-                if delay > operation.remaining() {
-                    return Err(github_error(
-                        ErrorCategory::SourceUnavailable,
-                        "GitHub rate limit is exhausted and its Retry-After exceeds the remaining logical deadline",
-                    ));
-                }
-                attempt = 1;
-                tokio::select! {
-                    biased;
-                    () = operation.guard.cancelled() => {
-                        return Err(ResourceError::new(
-                            ErrorCategory::Cancelled,
-                            "GitHub retry wait was cancelled",
-                        ));
-                    }
-                    () = tokio::time::sleep(delay) => {}
-                }
-                continue;
-            }
-            self.classify_status(&response)?;
-            if response.truncated() {
-                return Err(ResourceError::new(
-                    ErrorCategory::LimitExceeded,
-                    "GitHub response exceeds the bounded HTTP body ceiling",
+                return Err(github_error(
+                    ErrorCategory::SourceUnavailable,
+                    "GitHub read was invalidated by a concurrent mutation; retry the read",
                 ));
             }
-            let etag = response.etag().map(str::to_owned);
-            // An unreadable Link is a corrupt continuation, not the last page.
-            let link = response.link()?.map(str::to_owned);
-            let body = response.into_body();
-            let entry = SessionCacheEntry::new(
-                etag.as_ref().map_or_else(Vec::new, |etag| {
-                    serde_json::to_vec(&CacheMetadata {
-                        etag: etag.clone(),
-                        link: link.clone(),
-                    })
-                    .expect("CacheMetadata serialization cannot fail")
-                }),
-                body,
-            )?;
-            if etag.is_some() {
-                self.cache(key, &entry, cache_generation).await?;
-            } else {
-                self.session
-                    .cache_remove_if_generation(&key, cache_generation)
-                    .await?;
-            }
+            let (Some(entry), Some(metadata)) = (cached.as_ref(), cached_metadata.as_ref()) else {
+                return Err(malformed_upstream(
+                    "GitHub returned 304 without a session cache entry",
+                ));
+            };
             return Ok(FetchedResponse {
                 body: Arc::clone(entry.content_arc()),
-                link,
+                link: metadata.link.clone(),
             });
         }
+        self.classify_status(&response)?;
+        if response.truncated() {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                "GitHub response exceeds the bounded HTTP body ceiling",
+            ));
+        }
+        let etag = response.etag().map(str::to_owned);
+        // An unreadable Link is a corrupt continuation, not the last page.
+        let link = response.link()?.map(str::to_owned);
+        let body = response.into_body();
+        let entry = SessionCacheEntry::new(
+            etag.as_ref().map_or_else(Vec::new, |etag| {
+                serde_json::to_vec(&CacheMetadata {
+                    etag: etag.clone(),
+                    link: link.clone(),
+                })
+                .expect("CacheMetadata serialization cannot fail")
+            }),
+            body,
+        )?;
+        if etag.is_some() {
+            self.cache(key, &entry, cache_generation).await?;
+        } else {
+            self.session
+                .cache_remove_if_generation(&key, cache_generation)
+                .await?;
+        }
+        Ok(FetchedResponse {
+            body: Arc::clone(entry.content_arc()),
+            link,
+        })
     }
 
     /// Caches a validated response for conditional revalidation.
@@ -529,7 +476,7 @@ impl GithubSource {
         suffix: &str,
         parameters: &[(&str, &str)],
         start_page: u64,
-        operation: Operation<'_>,
+        operation: BoundedRead<'_>,
     ) -> Result<(Vec<T>, Option<u64>), ResourceError> {
         let mut next = self.page_url(repository, suffix, parameters, start_page)?;
         let mut values = Vec::new();
@@ -554,7 +501,7 @@ impl GithubSource {
     async fn json<T: DeserializeOwned>(
         &self,
         url: Url,
-        operation: Operation<'_>,
+        operation: BoundedRead<'_>,
     ) -> Result<T, ResourceError> {
         let response = self.fetch(url, GITHUB_JSON, operation).await?;
         wire::decode(response.body())
@@ -567,7 +514,7 @@ impl GithubSource {
         &self,
         repository: &GithubRepositoryIdentity,
         number: u64,
-        operation: Operation<'_>,
+        operation: BoundedRead<'_>,
     ) -> Result<Issue, ResourceError> {
         let issue: Issue = self
             .json(
@@ -591,7 +538,7 @@ impl GithubSource {
         &self,
         repository: &GithubRepositoryIdentity,
         number: u64,
-        operation: Operation<'_>,
+        operation: BoundedRead<'_>,
     ) -> Result<PullRequest, ResourceError> {
         let pull: PullRequest = self
             .json(
@@ -611,7 +558,7 @@ impl GithubSource {
         repository: &GithubRepositoryIdentity,
         number: u64,
         id: u64,
-        operation: Operation<'_>,
+        operation: BoundedRead<'_>,
     ) -> Result<ConversationComment, ResourceError> {
         let comment: ConversationComment = self
             .json(
@@ -637,7 +584,7 @@ impl GithubSource {
         repository: &GithubRepositoryIdentity,
         number: u64,
         id: u64,
-        operation: Operation<'_>,
+        operation: BoundedRead<'_>,
     ) -> Result<ReviewComment, ResourceError> {
         let comment: ReviewComment = self
             .json(
@@ -660,7 +607,7 @@ impl GithubSource {
         &self,
         address: &IssueAddress,
         page: Option<u64>,
-        operation: Operation<'_>,
+        operation: BoundedRead<'_>,
     ) -> Result<Rendered, ResourceError> {
         if let IssueAddress::Collection { repository } = address {
             let (mut issues, next): (Vec<Issue>, Option<u64>) = self
@@ -786,7 +733,7 @@ impl GithubSource {
         &self,
         address: &PullRequestAddress,
         page: Option<u64>,
-        operation: Operation<'_>,
+        operation: BoundedRead<'_>,
     ) -> Result<Rendered, ResourceError> {
         if let PullRequestAddress::Collection { repository } = address {
             let (mut pulls, next): (Vec<PullRequestSummary>, Option<u64>) = self
@@ -1112,7 +1059,7 @@ impl GithubSource {
     async fn read_resource(
         &self,
         reference: &PathReference,
-        operation: Operation<'_>,
+        operation: BoundedRead<'_>,
     ) -> Result<SourceResource, ResourceError> {
         if reference.is_creation_target() {
             return Err(unsupported_github_projection());
@@ -1170,16 +1117,7 @@ impl SourceAdapter for GithubSource {
         operation: &OperationGuard,
     ) -> Result<SourceResource, ResourceError> {
         let timeout = self.substrate.ceilings().timeout();
-        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
-            ResourceError::new(
-                ErrorCategory::LimitExceeded,
-                "GitHub logical deadline is not representable",
-            )
-        })?;
-        let operation = Operation {
-            guard: operation,
-            deadline,
-        };
+        let operation = self.substrate.begin_read(operation)?;
         tokio::time::timeout(timeout, self.read_resource(reference, operation))
             .await
             .map_err(|_| {

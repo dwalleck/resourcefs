@@ -127,6 +127,37 @@ async fn fixture_source_with_session<R>(
 where
     R: Fn(&str) -> FixtureResponse + Send + Sync + 'static,
 {
+    fixture_source_with_session_and_retry(router, ceilings, session, None).await
+}
+
+async fn fixture_source_with_retry_control<R>(
+    router: R,
+    ceilings: resourcefs_core::HttpCeilings,
+    wall_now: std::time::SystemTime,
+    jitter: Duration,
+) -> (TlsListener, GithubSource)
+where
+    R: Fn(&str) -> FixtureResponse + Send + Sync + 'static,
+{
+    let session_fixture = session_support::scratch_fixture().await;
+    fixture_source_with_session_and_retry(
+        router,
+        ceilings,
+        session_fixture.path_session().clone(),
+        Some((wall_now, jitter)),
+    )
+    .await
+}
+
+async fn fixture_source_with_session_and_retry<R>(
+    router: R,
+    ceilings: resourcefs_core::HttpCeilings,
+    session: PathSession,
+    retry_control: Option<(std::time::SystemTime, Duration)>,
+) -> (TlsListener, GithubSource)
+where
+    R: Fn(&str) -> FixtureResponse + Send + Sync + 'static,
+{
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let listener = TlsListener::serve_router(loopback, 0, MATCH_CERT, router).await;
     let port = listener.address.port();
@@ -140,7 +171,7 @@ where
         vec![GithubRepository::new("owner/repo", MutationGrants::default()).expect("repository")],
     )
     .expect("GitHub config");
-    let substrate = HttpSubstrate::with_host_lookup_and_roots(
+    let mut substrate = HttpSubstrate::with_host_lookup_and_roots(
         fixture_allowlist(port, true),
         ceilings,
         move |_host| async move { Ok::<_, std::io::Error>(vec![loopback]) },
@@ -148,6 +179,11 @@ where
         Vec::new(),
     )
     .expect("substrate");
+    if let Some((wall_now, jitter)) = retry_control {
+        substrate = substrate
+            .with_retry_control_for_test(wall_now, jitter)
+            .expect("valid deterministic retry controls");
+    }
     let source = GithubSourceMount::new(config, Arc::new(substrate))
         .bind(session)
         .expect("GitHub source");
@@ -926,6 +962,62 @@ async fn retry_after_beyond_the_deadline_is_refused_without_waiting() {
         "refused without burning the deadline"
     );
     assert_eq!(attempts.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn pagination_retries_share_the_original_logical_deadline() {
+    let ceilings = resourcefs_core::HttpCeilings::new(resourcefs_core::HttpCeilingsInput {
+        timeout_millis: Some(1_500),
+        ..resourcefs_core::HttpCeilingsInput::default()
+    })
+    .expect("lowered timeout");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&attempts);
+    let port = Arc::new(AtomicU16::new(0));
+    let observed_port = Arc::clone(&port);
+    let (listener, source) = fixture_source_with_retry_control(
+        move |_path| match counted.fetch_add(1, Ordering::AcqRel) {
+            0 | 2 => protocol_response(
+                "429 Too Many Requests",
+                [("Retry-After", "1".to_owned())],
+                Vec::new(),
+            ),
+            1 => protocol_response(
+                "200 OK",
+                [(
+                    "Link",
+                    format!(
+                        "<https://{FIXTURE_HOST}:{}/repos/owner/repo/issues?state=all&sort=updated&direction=desc&per_page=100&page=2>; rel=\"next\"",
+                        observed_port.load(Ordering::Acquire)
+                    ),
+                )],
+                b"[]".to_vec(),
+            ),
+            _ => response("[]"),
+        },
+        ceilings,
+        std::time::SystemTime::now(),
+        Duration::ZERO,
+    )
+    .await;
+    port.store(listener.address.port(), Ordering::Release);
+    let error = source
+        .read(
+            &PathReference::parse("issue://owner/repo").expect("collection"),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("page-two wait cannot refresh the original deadline");
+
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    assert!(
+        error.message().contains("Retry-After"),
+        "the second wait was refused before the outer timeout: {}",
+        error.message()
+    );
+    settle().await;
+    assert_eq!(attempts.load(Ordering::Acquire), 3);
+    assert_eq!(listener.requests().len(), 3);
 }
 
 #[tokio::test]
