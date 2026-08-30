@@ -1,0 +1,200 @@
+{
+  "version": 1,
+  "owner_marker": "ResourceFS disposable fixture / rfs-bcym / owned only",
+  "jira": {
+    "projects": [
+      {
+        "id": "primary-project",
+        "key": "RFSFIX",
+        "name": "ResourceFS Fixture Primary",
+        "marker": "ResourceFS disposable fixture / rfs-bcym / jira primary"
+      },
+      {
+        "id": "secondary-project",
+        "key": "RFSFLEX",
+        "name": "ResourceFS Fixture Secondary",
+        "marker": "ResourceFS disposable fixture / rfs-bcym / jira secondary"
+      }
+    ],
+    "issues": [
+      {
+        "id": "primary-root-issue",
+        "project": "primary-project",
+        "summary": "ResourceFS fixture root — spaces and unicode",
+        "marker": "rfs-owner:rfs-bcym:jira-issue:primary-root",
+        "description": {
+          "type": "doc",
+          "version": 1,
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                { "type": "text", "text": "ResourceFS fixture root — Unicode π and an embedded space." },
+                { "type": "text", "text": "rfs-owner:rfs-bcym:jira-issue:primary-root" }
+              ]
+            },
+            {
+              "type": "bulletList",
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    { "type": "paragraph", "content": [{ "type": "text", "text": "ADF list item" }] }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "comments": [
+          {
+            "id": "primary-root-comment",
+            "marker": "rfs-owner:rfs-bcym:jira-comment:primary-alpha",
+            "body": {
+              "type": "doc",
+              "version": 1,
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    { "type": "text", "text": "A primary issue comment with π and a space." },
+                    { "type": "text", "text": "rfs-owner:rfs-bcym:jira-comment:primary-alpha" }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "primary-root-comment-second",
+            "marker": "rfs-owner:rfs-bcym:jira-comment:primary-beta",
+            "body": {
+              "type": "doc",
+              "version": 1,
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    { "type": "text", "text": "Second root comment." },
+                    { "type": "text", "text": "rfs-owner:rfs-bcym:jira-comment:primary-beta" }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "primary-child-issue",
+        "project": "primary-project",
+        "parent": "primary-root-issue",
+        "summary": "ResourceFS fixture child issue",
+        "marker": "rfs-owner:rfs-bcym:jira-issue:primary-child",
+        "description": {
+          "type": "doc",
+          "version": 1,
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                { "type": "text", "text": "A child issue with an explicit parent field." },
+                { "type": "text", "text": "rfs-owner:rfs-bcym:jira-issue:primary-child" }
+              ]
+            }
+          ]
+        },
+        "comments": []
+      },
+      {
+        "id": "secondary-issue",
+        "project": "secondary-project",
+        "summary": "ResourceFS fixture secondary issue",
+        "marker": "rfs-owner:rfs-bcym:jira-issue:secondary",
+        "description": {
+          "type": "doc",
+          "version": 1,
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                { "type": "text", "text": "The second project keeps JQL pagination honest." },
+                { "type": "text", "text": "rfs-owner:rfs-bcym:jira-issue:secondary" }
+              ]
+            }
+          ]
+        },
+        "comments": []
+      }
+    ]
+  },
+  "confluence": {
+    "spaces": [
+      {
+        "id": "public-space",
+        "key": "RFSFIXTURE",
+        "name": "ResourceFS Fixture Public",
+        "marker": "ResourceFS disposable fixture / rfs-bcym / confluence public",
+        "private": false
+      },
+      {
+        "id": "private-space",
+        "key": "RFSHIDDEN",
+        "name": "ResourceFS Fixture Private",
+        "marker": "ResourceFS disposable fixture / rfs-bcym / confluence private",
+        "private": true
+      }
+    ],
+    "pages": [
+      {
+        "id": "public-root-page",
+        "space": "public-space",
+        "title": "ResourceFS Fixture Root / Unicode π",
+        "marker": "<!--rfs-owner:rfs-bcym:confluence-page:public-root-->",
+        "body": {
+          "representation": "storage",
+          "value": "<!--rfs-owner:rfs-bcym:confluence-page:public-root--><p>ResourceFS fixture public root — Unicode π and an embedded space.</p><table><tbody><tr><th>edge</th><td>&amp; &lt;encoded&gt;</td></tr></tbody></table>"
+        }
+      },
+      {
+        "id": "public-child-page",
+        "space": "public-space",
+        "parent": "public-root-page",
+        "title": "ResourceFS Fixture Child",
+        "marker": "<!--rfs-owner:rfs-bcym:confluence-page:public-child-->",
+        "body": {
+          "representation": "storage",
+          "value": "<!--rfs-owner:rfs-bcym:confluence-page:public-child--><p>Child page.</p><ac:structured-macro ac:name=\"info\"><ac:rich-text-body><p>macro edge</p></ac:rich-text-body></ac:structured-macro>"
+        }
+      },
+      {
+        "id": "private-root-page",
+        "space": "private-space",
+        "title": "ResourceFS Fixture Concealed Page",
+        "marker": "<!--rfs-owner:rfs-bcym:confluence-page:private-root-->",
+        "body": {
+          "representation": "storage",
+          "value": "<!--rfs-owner:rfs-bcym:confluence-page:private-root--><p>Provisioner-only page.</p>"
+        }
+      }
+    ],
+    "comments": [
+      {
+        "id": "public-page-comment",
+        "page": "public-root-page",
+        "marker": "<!--rfs-owner:rfs-bcym:confluence-comment:public-alpha-->",
+        "body": {
+          "representation": "storage",
+          "value": "<!--rfs-owner:rfs-bcym:confluence-comment:public-alpha--><p>Footer comment.</p>"
+        }
+      },
+      {
+        "id": "public-page-comment-second",
+        "page": "public-root-page",
+        "marker": "<!--rfs-owner:rfs-bcym:confluence-comment:public-beta-->",
+        "body": {
+          "representation": "storage",
+          "value": "<!--rfs-owner:rfs-bcym:confluence-comment:public-beta--><p>Second footer comment.</p>"
+        }
+      }
+    ]
+  }
+}

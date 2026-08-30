@@ -5,3 +5,6 @@
 /fuzz/corpus/
 /fuzz/target/
 /fuzz/Cargo.lock
+/.resourcefs/atlassian-fixture-state.json
+/.resourcefs/atlassian-fixture-state.json.lock/
+/.resourcefs/atlassian-fixture-state.json.tmp.*/

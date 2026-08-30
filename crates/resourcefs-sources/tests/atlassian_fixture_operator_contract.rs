@@ -1,0 +1,844 @@
+#![cfg(unix)]
+
+use std::collections::BTreeSet;
+use std::ffi::OsString;
+use std::fs;
+use std::os::unix::fs::{PermissionsExt, symlink};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use serde_json::{Value, json};
+use tempfile::TempDir;
+
+const SITE: &str = "https://example.test";
+const PROVISIONER_EMAIL: &str = "provisioner-canary@example.test";
+const PROVISIONER_TOKEN: &str = "provisioner-token-canary";
+const READER_EMAIL: &str = "reader-canary@example.test";
+const READER_TOKEN: &str = "reader-token-canary";
+const FIXTURE: &[u8] = include_bytes!("fixtures/atlassian_fixture_operator/fake_curl.py");
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("resourcefs-sources is nested under crates/")
+        .canonicalize()
+        .expect("repository root must canonicalize")
+}
+
+fn script_path() -> PathBuf {
+    repository_root()
+        .join("scripts/atlassian-fixture-bootstrap.sh")
+        .canonicalize()
+        .expect("operator script must canonicalize")
+}
+
+fn checked_in_manifest() -> PathBuf {
+    repository_root()
+        .join("fixtures/atlassian-live/manifest.json")
+        .canonicalize()
+        .expect("checked-in manifest must canonicalize")
+}
+
+fn write_executable(path: &Path, bytes: &[u8]) {
+    fs::write(path, bytes).expect("write fake curl");
+    let mut permissions = fs::metadata(path)
+        .expect("read fake curl metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(path, permissions).expect("make fake curl executable");
+}
+
+struct Harness {
+    temp: TempDir,
+    fake_bin: PathBuf,
+    store: PathBuf,
+    log: PathBuf,
+    state: PathBuf,
+}
+
+impl Harness {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().expect("create harness directory");
+        let fake_bin = temp.path().join("bin");
+        fs::create_dir(&fake_bin).expect("create fake bin directory");
+        write_executable(&fake_bin.join("curl"), FIXTURE);
+        Self {
+            store: temp.path().join("store.json"),
+            log: temp.path().join("requests.ndjson"),
+            state: temp.path().join("state.json"),
+            temp,
+            fake_bin,
+        }
+    }
+
+    fn command(&self, mode: &str) -> Output {
+        self.command_with(mode, SITE, None, None, "normal")
+    }
+
+    fn command_with(
+        &self,
+        mode: &str,
+        site: &str,
+        manifest: Option<&Path>,
+        state: Option<&Path>,
+        scenario: &str,
+    ) -> Output {
+        let original_path =
+            std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/bin:/bin"));
+        let mut path = OsString::from(self.fake_bin.as_os_str());
+        path.push(":");
+        path.push(original_path);
+        let manifest = manifest.map_or_else(checked_in_manifest, Path::to_path_buf);
+        let state = state.map_or_else(|| self.state.clone(), Path::to_path_buf);
+        Command::new(script_path())
+            .current_dir(repository_root())
+            .args([mode, "--site", site, "--manifest"])
+            .arg(manifest)
+            .arg("--state")
+            .arg(state)
+            .env("PATH", path)
+            .env("FAKE_CURL_STORE", &self.store)
+            .env("FAKE_CURL_LOG", &self.log)
+            .env("FAKE_CURL_SCENARIO", scenario)
+            .env("ATLASSIAN_PROVISIONER_EMAIL", PROVISIONER_EMAIL)
+            .env("ATLASSIAN_PROVISIONER_API_TOKEN", PROVISIONER_TOKEN)
+            .env("ATLASSIAN_READER_EMAIL", READER_EMAIL)
+            .env("ATLASSIAN_READER_API_TOKEN", READER_TOKEN)
+            .output()
+            .expect("invoke fixture operator")
+    }
+
+    fn read_log(&self) -> Vec<Value> {
+        let Ok(bytes) = fs::read(&self.log) else {
+            return Vec::new();
+        };
+        String::from_utf8(bytes)
+            .expect("request log is UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("request log row is JSON"))
+            .collect()
+    }
+
+    fn read_store(&self) -> Value {
+        serde_json::from_slice(&fs::read(&self.store).expect("fake store exists"))
+            .expect("fake store is JSON")
+    }
+    fn read_state(&self) -> Value {
+        serde_json::from_slice(&fs::read(&self.state).expect("state exists"))
+            .expect("state is JSON")
+    }
+
+    fn write_store(&self, store: &Value) {
+        fs::write(
+            &self.store,
+            serde_json::to_vec_pretty(store).expect("serialize fake store"),
+        )
+        .expect("seed fake store");
+    }
+
+    fn write_manifest(&self, value: &Value) -> PathBuf {
+        let path = self.temp.path().join("manifest.json");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(value).expect("serialize manifest"),
+        )
+        .expect("write test manifest");
+        path.canonicalize()
+            .expect("manifest path must canonicalize")
+    }
+
+    fn clear_log(&self) {
+        if self.log.exists() {
+            fs::remove_file(&self.log).expect("clear request log");
+        }
+    }
+}
+
+fn manifest() -> Value {
+    serde_json::from_slice(&fs::read(checked_in_manifest()).expect("read checked-in manifest"))
+        .expect("checked-in manifest is JSON")
+}
+
+fn operation_rows<'a>(rows: &'a [Value], operation: &str) -> Vec<&'a Value> {
+    rows.iter()
+        .filter(|row| row.get("operation").and_then(Value::as_str) == Some(operation))
+        .collect()
+}
+fn assert_no_new_mutations(before: &[Value], after: &[Value]) {
+    for operation in [
+        "project_create",
+        "issue_create",
+        "comment_create",
+        "space_create",
+        "page_create",
+        "jira_comment_delete",
+        "jira_issue_delete",
+        "jira_project_delete",
+        "confluence_comment_delete",
+        "confluence_page_delete",
+        "space_delete",
+    ] {
+        assert_eq!(
+            operation_rows(after, operation).len(),
+            operation_rows(before, operation).len(),
+            "repeated cleanup performed {operation}"
+        );
+    }
+}
+
+fn assert_success(output: &Output) {
+    assert!(
+        output.status.success(),
+        "stdout={:?} stderr={:?}",
+        output.stdout,
+        output.stderr
+    );
+}
+
+fn assert_failure(output: &Output, token: &str) {
+    assert!(
+        !output.status.success(),
+        "unexpected success: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(token), "stderr {stderr:?} omitted {token}");
+}
+
+fn assert_no_secrets(bytes: &[u8]) {
+    let text = String::from_utf8_lossy(bytes);
+    for secret in [
+        PROVISIONER_EMAIL,
+        PROVISIONER_TOKEN,
+        READER_EMAIL,
+        READER_TOKEN,
+    ] {
+        assert!(
+            !text.contains(secret),
+            "secret escaped execution boundary: {secret}"
+        );
+    }
+}
+
+fn assert_state_shape(state: &Value) {
+    let object = state.as_object().expect("state object");
+    let keys: BTreeSet<_> = object.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        BTreeSet::from(["confluence", "jira", "manifest", "site", "version"])
+    );
+    assert_eq!(state["version"], 1);
+    assert_eq!(state["site"]["id"], "atlassian-live");
+    assert_eq!(state["site"]["origin"], SITE);
+    for (product, collections) in [
+        ("jira", ["projects", "issues", "comments"]),
+        ("confluence", ["spaces", "pages", "comments"]),
+    ] {
+        for collection in collections {
+            for row in state[product][collection]
+                .as_array()
+                .expect("state collection")
+            {
+                let row_keys: BTreeSet<_> = row
+                    .as_object()
+                    .expect("state row")
+                    .keys()
+                    .map(String::as_str)
+                    .collect();
+                let expected = match (product, collection) {
+                    ("jira", "projects") | ("confluence", "spaces") => {
+                        BTreeSet::from(["id", "key", "logical_id"])
+                    }
+                    ("jira", "issues") => BTreeSet::from(["id", "key", "logical_id", "reference"]),
+                    ("jira", "comments") => BTreeSet::from(["id", "issue_id", "logical_id"]),
+                    ("confluence", "pages") => BTreeSet::from(["id", "logical_id", "reference"]),
+                    ("confluence", "comments") => BTreeSet::from(["id", "logical_id", "page_id"]),
+                    _ => unreachable!("known state collection"),
+                };
+                assert_eq!(row_keys, expected);
+                assert!(
+                    row["id"]
+                        .as_str()
+                        .is_some_and(|id| id.chars().all(|ch| ch.is_ascii_digit()))
+                );
+                if product == "jira" && collection == "issues" {
+                    let id = row["id"].as_str().expect("issue id");
+                    assert_eq!(
+                        row["reference"],
+                        format!("jira://atlassian-live/issues/{id}")
+                    );
+                }
+                if product == "confluence" && collection == "pages" {
+                    let id = row["id"].as_str().expect("page id");
+                    assert_eq!(
+                        row["reference"],
+                        format!("confluence://atlassian-live/pages/{id}")
+                    );
+                }
+            }
+        }
+    }
+    let serialized = serde_json::to_string(state).expect("serialize state");
+    for forbidden in [
+        "email",
+        "token",
+        "Authorization",
+        "timestamp",
+        "nextPageToken",
+        "cursor",
+        "body",
+        "summary",
+        "title",
+    ] {
+        assert!(
+            !serialized.contains(forbidden),
+            "mutable or secret state member {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn operator_interface_is_strict_and_independent() {
+    let harness = Harness::new();
+    let strict_path = format!("{}:/usr/bin:/bin", harness.fake_bin.display());
+    let help = Command::new(script_path())
+        .current_dir(repository_root())
+        .arg("--help")
+        .env("PATH", &strict_path)
+        .output()
+        .expect("invoke help");
+    assert_success(&help);
+    let help_text = String::from_utf8_lossy(&help.stdout);
+    for mode in ["bootstrap", "verify", "cleanup"] {
+        assert!(help_text.contains(mode), "help omitted {mode}");
+    }
+    let invalid = Command::new(script_path())
+        .current_dir(repository_root())
+        .args(["apply", "--site", SITE])
+        .env("PATH", &strict_path)
+        .output()
+        .expect("invoke invalid mode");
+    assert_failure(&invalid, "Usage: scripts/atlassian-fixture-bootstrap.sh");
+    assert!(harness.read_log().is_empty());
+}
+
+#[test]
+fn invalid_manifest_never_reaches_egress() {
+    for label in [
+        "malformed",
+        "empty",
+        "singleton-project",
+        "singleton-space",
+        "duplicate-key",
+        "bad-parent",
+    ] {
+        let harness = Harness::new();
+        let path = if label == "malformed" {
+            let path = harness.temp.path().join("malformed.json");
+            fs::write(&path, b"{not-json").expect("write malformed manifest");
+            path.canonicalize().expect("malformed path canonicalizes")
+        } else {
+            let mut value = manifest();
+            match label {
+                "empty" => value = json!({"version": 1, "jira": {}, "confluence": {}}),
+                "singleton-project" => {
+                    let first_project = value["jira"]["projects"][0].clone();
+                    value["jira"]["projects"] = json!([first_project]);
+                }
+                "singleton-space" => {
+                    let first_space = value["confluence"]["spaces"][0].clone();
+                    value["confluence"]["spaces"] = json!([first_space]);
+                }
+                "duplicate-key" => {
+                    value["jira"]["projects"][1]["key"] =
+                        value["jira"]["projects"][0]["key"].clone();
+                }
+                "bad-parent" => value["jira"]["issues"][1]["parent"] = json!("missing-parent"),
+                _ => unreachable!("malformed case handled above"),
+            }
+            harness.write_manifest(&value)
+        };
+        let output =
+            harness.command_with("bootstrap", SITE, Some(&path), None, "transport_failure");
+        assert_failure(&output, "invalid_manifest");
+        assert!(harness.read_log().is_empty(), "{label} reached fake curl");
+    }
+}
+
+#[test]
+fn credentials_never_escape_execution_boundary() {
+    let harness = Harness::new();
+    let bootstrap = harness.command("bootstrap");
+    assert_success(&bootstrap);
+    let verify = harness.command("verify");
+    assert_success(&verify);
+    let cleanup = harness.command("cleanup");
+    assert_success(&cleanup);
+    assert_no_secrets(&bootstrap.stdout);
+    assert_no_secrets(&bootstrap.stderr);
+    assert_no_secrets(&verify.stdout);
+    assert_no_secrets(&verify.stderr);
+    assert_no_secrets(&cleanup.stdout);
+    assert_no_secrets(&cleanup.stderr);
+    assert_no_secrets(&fs::read(&harness.log).expect("request log"));
+    assert_no_secrets(&fs::read(&harness.store).expect("fake store"));
+    for row in harness.read_log() {
+        assert_eq!(row["config_user_present"], true);
+        assert_eq!(row["argv_safe"], true);
+        assert_eq!(row["credential_env_absent"], true);
+        assert_eq!(row["credential_pair_valid"], true);
+        assert!(
+            row.get("user").is_none(),
+            "credential-bearing config was logged"
+        );
+        assert!(
+            row.get("argv").is_none(),
+            "credential-bearing argv was logged"
+        );
+    }
+}
+
+#[test]
+fn bootstrap_is_idempotent_and_collision_safe() {
+    let harness = Harness::new();
+    assert_success(&harness.command("bootstrap"));
+    let first = harness.read_log();
+    assert!(operation_rows(&first, "project_create").len() >= 2);
+    assert!(operation_rows(&first, "issue_create").len() >= 3);
+    assert!(operation_rows(&first, "space_create").len() >= 2);
+    assert!(operation_rows(&first, "page_create").len() >= 3);
+    assert_success(&harness.command("bootstrap"));
+    let second = harness.read_log();
+    for row in &second[first.len()..] {
+        let operation = row["operation"].as_str().expect("operation");
+        assert!(
+            !operation.ends_with("_create"),
+            "second bootstrap created {operation}"
+        );
+        assert_ne!(operation, "replace");
+    }
+
+    let foreign = Harness::new();
+    foreign.write_store(&json!({
+        "projects": [{
+            "id": "9000000001",
+            "key": "RFSFIX",
+            "name": "Foreign",
+            "description": "tenant-owned foreign object"
+        }]
+    }));
+    assert_failure(&foreign.command("bootstrap"), "foreign_collision");
+    assert!(operation_rows(&foreign.read_log(), "project_create").is_empty());
+
+    let duplicate = Harness::new();
+    duplicate.write_store(&json!({
+        "projects": [{
+            "id": "9000000003",
+            "key": "OTHERKEY",
+            "name": "Foreign",
+            "description": "ResourceFS disposable fixture / rfs-bcym / jira primary"
+        }]
+    }));
+    assert_failure(&duplicate.command("bootstrap"), "foreign_collision");
+    assert!(operation_rows(&duplicate.read_log(), "project_create").is_empty());
+
+    let drift = Harness::new();
+    assert_success(&drift.command("bootstrap"));
+    assert_success(&drift.command_with("bootstrap", SITE, None, None, "drift"));
+    assert!(operation_rows(&drift.read_log(), "jira_project_delete").len() >= 1);
+    assert!(operation_rows(&drift.read_log(), "project_create").len() >= 3);
+
+    let embedded_marker = Harness::new();
+    assert_success(&embedded_marker.command_with(
+        "bootstrap",
+        SITE,
+        None,
+        None,
+        "embedded_marker_foreign_issue",
+    ));
+    assert!(
+        embedded_marker.read_store()["issues"]
+            .as_array()
+            .expect("issues")
+            .iter()
+            .any(|issue| issue["id"] == "9000000004"),
+        "ADF metadata containing an ownership token was deleted"
+    );
+    assert!(
+        operation_rows(&embedded_marker.read_log(), "jira_issue_delete").is_empty(),
+        "ADF metadata was treated as fixture ownership"
+    );
+    assert!(
+        embedded_marker.read_store()["pages"]
+            .as_array()
+            .expect("pages")
+            .iter()
+            .any(|page| page["id"] == "9000000005"),
+        "non-leading HTML ownership token was treated as fixture ownership"
+    );
+    assert!(
+        operation_rows(&embedded_marker.read_log(), "confluence_page_delete").is_empty(),
+        "non-leading HTML ownership token caused deletion"
+    );
+
+    let mismatched_identity = Harness::new();
+    assert_failure(
+        &mismatched_identity.command_with(
+            "bootstrap",
+            SITE,
+            None,
+            None,
+            "mismatched_create_identity",
+        ),
+        "upstream_failure",
+    );
+    assert!(!mismatched_identity.state.exists());
+}
+
+#[test]
+fn state_commit_is_atomic_and_minimal() {
+    let harness = Harness::new();
+    fs::write(&harness.state, br#"{"version":1,"sentinel":"keep"}"#).expect("write sentinel state");
+    let mut permissions = fs::metadata(&harness.state)
+        .expect("state metadata")
+        .permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(&harness.state, permissions).expect("protect sentinel state");
+    let failed = harness.command_with("bootstrap", SITE, None, None, "raw400");
+    assert_failure(&failed, "upstream_failure");
+    assert_eq!(
+        fs::read_to_string(&harness.state).expect("preserved state"),
+        r#"{"version":1,"sentinel":"keep"}"#
+    );
+    assert_eq!(
+        fs::metadata(&harness.state)
+            .expect("state metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert!(
+        !fs::read_dir(harness.temp.path())
+            .expect("harness directory")
+            .any(|entry| {
+                entry
+                    .expect("temporary directory entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("state.tmp")
+            })
+    );
+    let denied = Harness::new();
+    fs::write(&denied.state, br#"{"version":1,"sentinel":"keep"}"#)
+        .expect("write commit-failure sentinel");
+    let denied_output = denied.command_with("bootstrap", SITE, None, None, "state_commit_denied");
+    fs::set_permissions(denied.temp.path(), fs::Permissions::from_mode(0o700))
+        .expect("restore harness permissions");
+    assert_failure(&denied_output, "state_commit");
+    assert_eq!(
+        fs::read_to_string(&denied.state).expect("preserved commit-failure state"),
+        r#"{"version":1,"sentinel":"keep"}"#
+    );
+
+    assert_success(&harness.command("bootstrap"));
+    let state = harness.read_state();
+    assert_state_shape(&state);
+    assert_eq!(
+        fs::metadata(&harness.state)
+            .expect("state metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    let symlinked = Harness::new();
+    let target = symlinked.temp.path().join("target-state.json");
+    fs::write(&target, b"keep").expect("write symlink target");
+    symlink(&target, &symlinked.state).expect("create state symlink");
+    assert_failure(&symlinked.command("bootstrap"), "state_symlink");
+    assert!(symlinked.read_log().is_empty());
+    let ancestor = Harness::new();
+    let target_directory = ancestor.temp.path().join("state-target");
+    fs::create_dir(&target_directory).expect("create symlink target directory");
+    let linked_directory = ancestor.temp.path().join("state-link");
+    symlink(&target_directory, &linked_directory).expect("create ancestor symlink");
+    let nested_state = linked_directory.join("nested/state.json");
+    assert_failure(
+        &ancestor.command_with("bootstrap", SITE, None, Some(&nested_state), "normal"),
+        "state_parent_symlink",
+    );
+    assert!(!target_directory.join("nested").exists());
+    assert!(ancestor.read_log().is_empty());
+
+    let locked = Harness::new();
+    fs::create_dir(locked.state.with_extension("json.lock")).expect("create lock directory");
+    assert_failure(&locked.command("bootstrap"), "lock_busy");
+    assert!(locked.read_log().is_empty());
+}
+
+#[test]
+fn verify_enforces_reader_visibility_boundary() {
+    let harness = Harness::new();
+    assert_success(&harness.command("bootstrap"));
+    harness.clear_log();
+    assert_success(&harness.command("verify"));
+    let rows = harness.read_log();
+    assert!(rows.iter().any(|row| row["actor"] == "provisioner"));
+    assert!(rows.iter().any(|row| row["actor"] == "reader"));
+    assert!(operation_rows(&rows, "reader_space_list").len() >= 1);
+    assert!(operation_rows(&rows, "reader_page_get").len() >= 1);
+
+    let private_visible = Harness::new();
+    assert_success(&private_visible.command("bootstrap"));
+    assert_failure(
+        &private_visible.command_with("verify", SITE, None, None, "reader_private_visible"),
+        "reader_visibility",
+    );
+
+    let public_hidden = Harness::new();
+    assert_success(&public_hidden.command("bootstrap"));
+    assert_failure(
+        &public_hidden.command_with("verify", SITE, None, None, "reader_public_hidden"),
+        "upstream_failure",
+    );
+    assert!(
+        String::from_utf8_lossy(
+            &public_hidden
+                .read_log()
+                .last()
+                .expect("reader request")
+                .to_string()
+                .into_bytes()
+        )
+        .contains("404")
+    );
+}
+
+#[test]
+fn cleanup_waits_for_owned_space_deletion() {
+    let harness = Harness::new();
+    assert_success(&harness.command("bootstrap"));
+    assert_success(&harness.command("cleanup"));
+    let after_first = harness.read_log();
+    assert!(
+        operation_rows(&after_first, "space_delete")
+            .iter()
+            .any(|row| row["status"] == 202)
+    );
+    assert!(
+        operation_rows(&after_first, "space_delete_poll")
+            .iter()
+            .any(|row| row["status"] == 200)
+    );
+    assert!(operation_rows(&after_first, "space_delete_poll").len() >= 4);
+    let store = harness.read_store();
+    for collection in [
+        "projects",
+        "issues",
+        "jira_comments",
+        "spaces",
+        "pages",
+        "confluence_comments",
+    ] {
+        assert!(
+            store[collection]
+                .as_array()
+                .expect("store collection")
+                .is_empty(),
+            "owned graph remained in {collection}"
+        );
+    }
+    assert!(!harness.state.exists());
+    assert_success(&harness.command("cleanup"));
+    assert_no_new_mutations(&after_first, &harness.read_log());
+}
+
+#[test]
+fn verify_forces_each_pagination_family() {
+    let harness = Harness::new();
+    assert_success(&harness.command("bootstrap"));
+    assert_success(&harness.command("verify"));
+    let rows = harness.read_log();
+    for operation in [
+        "project_search",
+        "issue_search",
+        "comment_list",
+        "space_list",
+        "page_list",
+    ] {
+        assert!(
+            operation_rows(&rows, operation).len() >= 2,
+            "{operation} did not cross a page boundary"
+        );
+    }
+    assert!(
+        rows.iter()
+            .any(|row| row["query"]["startAt"] == json!(["1"]))
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row["body"]["nextPageToken"].is_string())
+    );
+    assert!(rows.iter().any(|row| row["query"]["cursor"].is_array()));
+
+    let malformed = Harness::new();
+    assert_success(&malformed.command("bootstrap"));
+    assert_failure(
+        &malformed.command_with("verify", SITE, None, None, "malformed_paging"),
+        "invalid_pagination",
+    );
+}
+
+#[test]
+fn failures_are_bounded_and_redacted() {
+    let harness = Harness::new();
+    let output = harness.command_with("bootstrap", SITE, None, None, "raw400");
+    assert_failure(&output, "upstream_failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("status=400"));
+    assert!(stderr.contains("operation=project_create"));
+    assert!(stderr.len() < 512, "diagnostic is not bounded");
+    assert!(!stderr.contains("RAW_PROSE_CANARY_DO_NOT_PRINT"));
+    assert_no_secrets(&output.stderr);
+
+    let invalid_site =
+        harness.command_with("bootstrap", "http://example.test", None, None, "normal");
+    assert_failure(&invalid_site, "invalid_site");
+    assert!(
+        harness
+            .read_log()
+            .iter()
+            .all(|row| row["scenario"] == "raw400")
+    );
+}
+
+#[test]
+fn operator_contract_covers_lifecycle_matrix() {
+    let harness = Harness::new();
+    assert_success(&harness.command("bootstrap"));
+    let first = harness.read_log();
+    assert_success(&harness.command("bootstrap"));
+    assert_success(&harness.command("verify"));
+    assert_success(&harness.command("cleanup"));
+    let after_cleanup = harness.read_log();
+    assert_success(&harness.command_with("cleanup", SITE, None, None, "second_cleanup"));
+    let after_second_cleanup = harness.read_log();
+    assert!(
+        after_second_cleanup
+            .iter()
+            .any(|row| row["scenario"] == "second_cleanup"),
+        "lifecycle omitted second cleanup"
+    );
+    assert_no_new_mutations(&after_cleanup, &after_second_cleanup);
+    let operations: BTreeSet<_> = first
+        .iter()
+        .filter_map(|row| row["operation"].as_str())
+        .collect();
+    for operation in [
+        "account_get",
+        "issue_types",
+        "project_create",
+        "issue_create",
+        "comment_create",
+        "space_create",
+        "page_create",
+    ] {
+        assert!(
+            operations.contains(operation),
+            "lifecycle omitted {operation}"
+        );
+    }
+    assert!(operation_rows(&first, "issue_types").iter().all(|row| {
+        row["path"]
+            .as_str()
+            .is_some_and(|path| path.contains("/createmeta/") && path.contains("issuetypes"))
+    }));
+    assert!(
+        first
+            .iter()
+            .filter(|row| row["operation"] == "project_create")
+            .all(|row| {
+                row["body"]["projectTypeKey"] == "business"
+                    && row["body"]["projectTemplateKey"]
+                        == "com.atlassian.jira-core-project-templates:jira-core-simplified-project-management"
+                    && row["body"]["leadAccountId"] == "fixture-provisioner-account"
+            })
+    );
+    assert!(
+        first
+            .iter()
+            .filter(|row| row["operation"] == "space_create")
+            .all(|row| {
+                row["body"]["description"]["plain"]["representation"] == "plain"
+                    && row["body"]["description"]["plain"]["value"].is_string()
+            })
+    );
+    for row in first
+        .iter()
+        .filter(|row| row["operation"] == "issue_create")
+    {
+        let expected = if row["body"]["fields"]["parent"]["id"].is_string() {
+            "10002"
+        } else {
+            "10001"
+        };
+        assert_eq!(row["body"]["fields"]["issuetype"]["id"], expected);
+    }
+    assert!(
+        first
+            .iter()
+            .any(|row| row["body"]["fields"]["parent"]["id"].is_string())
+    );
+    assert!(first.iter().any(|row| row["body"]["parentId"].is_string()));
+    assert!(
+        first
+            .iter()
+            .any(|row| row["path"] == "/wiki/rest/api/space/_private")
+    );
+    for operation in [
+        "jira_comment_delete",
+        "jira_issue_delete",
+        "jira_project_delete",
+        "confluence_comment_delete",
+        "confluence_page_delete",
+        "space_delete",
+        "space_delete_poll",
+    ] {
+        assert!(
+            operation_rows(&after_cleanup, operation).len() >= 1,
+            "cleanup omitted {operation}"
+        );
+    }
+
+    let partial = Harness::new();
+    assert_failure(
+        &partial.command_with("bootstrap", SITE, None, None, "partial_once"),
+        "upstream_failure",
+    );
+    assert!(!partial.state.exists());
+    assert_success(&partial.command_with("bootstrap", SITE, None, None, "partial_once"));
+
+    let foreign_space = Harness::new();
+    assert_failure(
+        &foreign_space.command_with("bootstrap", SITE, None, None, "foreign_space_collision"),
+        "foreign_collision",
+    );
+    assert!(operation_rows(&foreign_space.read_log(), "space_create").is_empty());
+
+    let malformed_authority = Harness::new();
+    for site in [
+        "https://user:pass@example.test",
+        "https://example.test/path",
+        "https://example..test",
+        "https://π.example",
+    ] {
+        assert_failure(
+            &malformed_authority.command_with("bootstrap", site, None, None, "normal"),
+            "invalid_site",
+        );
+    }
+    assert!(malformed_authority.read_log().is_empty());
+}
