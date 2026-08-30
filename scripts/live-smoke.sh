@@ -5,11 +5,12 @@
 # "Live smoke tests".
 #
 # Gates:
-#   RFS_LIVE=1     enables network rows (set here)
-#   GITHUB_TOKEN   enables GitHub rows; taken from `gh auth token` when unset
+#   RFS_LIVE=1          enables network rows (set here)
+#   GITHUB_TOKEN        enables GitHub rows; taken from `gh auth token` when unset
+#   ATLASSIAN_*         enables the Jira row; see jira_live_smoke.rs for names
 #
 # Extra arguments are passed to the test harness, e.g. `scripts/live-smoke.sh
-# live_https` to run one row.
+# live_jira` to run one row.
 set -eu
 cd "$(dirname "$0")/.."
 

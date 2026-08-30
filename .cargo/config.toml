@@ -2,6 +2,6 @@
 PCRE2_SYS_STATIC = { value = "1", force = true }
 
 [alias]
-# Every ignored `live_*` smoke row; expects RFS_LIVE=1 and GITHUB_TOKEN in the
-# environment. `scripts/live-smoke.sh` sets both and is the usual entry point.
+# Every ignored `live_*` smoke row; expects RFS_LIVE=1 plus the source-specific
+# credential/fixture environment. `scripts/live-smoke.sh` is the usual entry point.
 live = "test --workspace --all-features -- --ignored --nocapture live_"
