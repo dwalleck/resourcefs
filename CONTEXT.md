@@ -24,6 +24,10 @@ _Avoid_: Process working directory when describing access authority
 A resource family whose state and credentials can be owned by the Path Resource Server without access to an agent harness's internal runtime.
 _Avoid_: OMP parity
 
+**Atlassian Site Mount**:
+A configured Portable Source child that binds one Server Profile-unique lowercase Site ID to one Atlassian Cloud tenant and one credentialed visibility graph, independently enabling Jira and Confluence resources.
+_Avoid_: Atlassian Site when referring to configured authority, Atlassian account, tenant URL
+
 **Database Mount**:
 A configured Portable Source instance that binds one Server Profile-unique lowercase Mount ID to one database provider and one logical database, addressed through provider-neutral `db://` Path References for the lifetime of that ResourceFS process.
 _Avoid_: Database file, database server, connection string, implicit SQLite database, globally resolvable database URI
@@ -47,6 +51,10 @@ _Avoid_: Default workspace, current-directory fallback
 **Recovery Reference**:
 A Path Reference returned with bounded output that addresses content omitted from the result.
 _Avoid_: Truncation notice when the omitted content remains recoverable
+
+**Atlassian Query Resource**:
+A read-only collection Resource scoped to one Atlassian Site Mount and one product (Jira or Confluence), whose address carries that product's exact native JQL or CQL and whose bounded result rows navigate to canonical stable-ID Resources.
+_Avoid_: ResourceFS query language, cross-site search, search snapshot
 
 **Primary Workspace Root**:
 The Workspace Root under which relative filesystem references resolve; every tool addresses resources in other declared roots with canonical `rfs://workspace/<root>/<path>` references.
