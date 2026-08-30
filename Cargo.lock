@@ -1653,6 +1653,7 @@ name = "resourcefs-sources"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "cap-std",
  "directories",
  "getrandom 0.4.3",

@@ -2,9 +2,9 @@
 
 ## Inputs and partition
 
-- Approved design: `.rfs-pm0y/design.md`, requester words “Approve design”, 2026-08-29, no accepted risks.
+- Approved design: `.rfs-pm0y/design.md`, requester words “Approve revised design”, 2026-08-29, no accepted risks.
 - Route/evidence: Empirical; `.rfs-pm0y/evidence.md` has P1–P5 `PASS`; C16 is the completed cheapest falsifier and every other claim is assigned below exactly once.
-- Projected changed lines: Slice 1 `1,000` + Slice 2 `900` + Slice 3 `1,300` + Slice 4 `1,500` + Slice 5 `2,200` + Slice 6 `300` = `7,200`.
+- Projected changed lines: Slice 1 `1,000` + Slice 2 `500` + Slice 3 `1,300` + Slice 4 `1,500` + Slice 5 `2,600` + Slice 6 `300` = `7,200`.
 - Churn margin: `25% = 1,800` lines. Rationale: exhaustive `ResourceAddress` migration and deterministic TLS matrices routinely add callsite/test-support rows after the first count.
 - Review-size projection: `7,200 + 1,800 = 9,000`, above the 4,000-line gate; use three independently mergeable increments.
 
@@ -50,35 +50,34 @@ Slices 5–6. Mergeable definition: the public multi-site Atlassian Source Adapt
 - `cargo test -p resourcefs-core --test jira_reference_contract` → every valid row round-trips to one canonical reference; invalid/dormant rows return the expected stable category; the C1 named mutation turns the noncanonical-segment row red and restoration returns green.
 - `cargo test -p resourcefs-core --tests` → all old address families and exhaustive engines retain their observable behavior with explicit Jira arms.
 
-## Slice 2: Confine Basic credentials and validate multi-site authority
+## Slice 2: Confine Basic credential composition to egress
 
-**Claim IDs:** C2, C15
+**Claim IDs:** C15
 
-**Expected behavior:** `OriginCredential::basic` validates the account identifier, composes `Basic base64(email:token)` while the token is exposed only inside the credential seam, and remains redacted. A crate-private Atlassian site/mount model accepts one or more distinct Site IDs/canonical HTTPS origins and rejects empty, duplicate, or ambiguous authority before request construction.
+**Expected behavior:** `OriginCredential::basic` validates the account identifier, composes `Basic base64(email:token)` while the token is exposed only inside the credential seam, bounds the final header value, and remains redacted.
 
-**Oracle:** Independent `printf email:token | base64` bytes for Authorization; independently normalized `(scheme, host, effective port)` origin tuples and Site-ID sets for mount validation.
+**Oracle:** Independent `printf email:token | base64` bytes for Authorization and a byte-level canary scan of Debug/errors/captured output.
 
-**Stress fixture:** Empty/colon/control/over-ceiling email; empty/valid canary token; one and maximum site count; duplicate IDs, case/port-normalized duplicate origins, same host different ports, userinfo/path/query/fragment/non-HTTPS URLs. Expected: exact Basic header only for valid input, no canary in Debug/errors/output, duplicate authority rejected.
+**Stress fixture:** Empty/colon/control email; valid canary email/token; a credential whose encoded header is exactly at/beyond the 16 KiB source-header ceiling. Expected: exact Basic header only for valid bounded input, `invalid_reference` or `limit_exceeded` before egress otherwise, and no canary in Debug/errors/output.
 
-**Regression fence:** `crates/resourcefs-sources/tests/http_substrate_contract.rs::basic_credential_composition`; new source-local `atlassian_mount_contract` test or equivalent integration target.
+**Regression fence:** `crates/resourcefs-sources/tests/http_substrate_contract.rs::basic_credential_composition_is_exact_and_redacted`.
 
-**Named mutation:** From C2, index mounts by insertion position instead of validated Site ID; duplicate-authority row turns red. From C15, encode token without `email:` in `OriginCredential::basic`; captured-header row turns red. Restore each and confirm green.
+**Named mutation:** From C15, encode token without `email:` in `OriginCredential::basic`; the captured-header row turns red. Restore and confirm green.
 
-**Complexity/production scale:** Site validation is $O(s)$ expected with two sets for `s ≤ MAX_CONFIGURATION_ENTRIES`; Basic composition is $O(e+t)$ once per credential for bounded email/token bytes. Resulting retained authority is linear and capped by existing configuration ceilings. Explicit maximum accepted CPU cost: 5 ms for the maximum site set and 16 KiB credential composition, because this is launch-time work.
+**Complexity/production scale:** Basic composition is $O(e+t)$ once per credential, with the final value capped by `MAX_SOURCE_REQUEST_HEADER_BYTES = 16 KiB`; the raw pair and encoded value are each allocated once and the temporary raw buffer is overwritten before return. Explicit maximum accepted CPU cost: 5 ms at the 16 KiB ceiling because this is launch-time work.
 
-**Wall budget/phase:** N/A — one-off mount/credential construction; no wall budget.
+**Wall budget/phase:** N/A — one-off credential construction; no wall budget.
 
-**Files:** root `Cargo.toml`/`Cargo.lock` only if a direct base64 dependency is required, `crates/resourcefs-sources/Cargo.toml`, `crates/resourcefs-sources/src/http/mod.rs`, `crates/resourcefs-sources/src/atlassian/mod.rs`, `crates/resourcefs-sources/src/lib.rs` only when the later public export can remain non-dormant, `crates/resourcefs-sources/tests/http_substrate_contract.rs`, and a focused mount contract test.
+**Files:** root `Cargo.toml`/`Cargo.lock`, `crates/resourcefs-sources/Cargo.toml`, `crates/resourcefs-sources/src/http/mod.rs`, and `crates/resourcefs-sources/tests/http_substrate_contract.rs`.
 
-**Estimate:** 3–4 hours.
+**Estimate:** 2–3 hours.
 
-**Diff estimate:** 900 changed lines.
+**Diff estimate:** 500 changed lines.
 
 **PR increment:** A — Typed and credential foundations.
 
 **Commands and expected results:**
-- `cargo test -p resourcefs-sources --test http_substrate_contract basic_credential` → captured Authorization equals the independent base64 oracle; invalid identifiers fail locally; canaries are absent; C15 mutation red/restored green.
-- `cargo test -p resourcefs-sources --test atlassian_mount_contract` → distinct sites route by typed ID; empty/duplicate/invalid authority fails; C2 mutation red/restored green.
+- `cargo test -p resourcefs-sources --test http_substrate_contract basic_credential` → captured Authorization equals the independent base64 oracle; invalid/over-limit identifiers fail locally; canaries are absent; C15 mutation red/restored green.
 
 ## Slice 3: Strictly decode Jira authority and canonicalize Field JSON
 
@@ -145,32 +144,33 @@ Slices 5–6. Mergeable definition: the public multi-site Atlassian Source Adapt
 
 ## Slice 5: Wire the compiled read Adapter through shared HTTP and cache semantics
 
-**Claim IDs:** C3, C8, C9, C10, C11, C12, C16
+**Claim IDs:** C2, C3, C8, C9, C10, C11, C12, C16
 
-**Expected behavior:** A source-neutral validated `Utf8ContentType` and complete/selected constructors preserve JSON/vendor-JSON/Markdown media and full-resource Version Tags. Public `AtlassianSourceMount::bind` yields one multi-site `AtlassianSource` implementing `SourceAdapter`; `CompiledSources` accepts/routes the optional Adapter and advertises Jira only when mounted. Stable ID/key reads use one direct v3 GET, validate identity, and return stable canonical Aggregate/index/Field Resources. Aggregate/index selectors preserve Markdown/tag; Fields reject selectors. Invalid local inputs are zero-egress. ETag/cache/retry/status/bounds/cancellation/redaction behavior is inherited from shared modules.
+**Expected behavior:** A source-neutral validated `Utf8ContentType` and complete/selected constructors preserve JSON/vendor-JSON/Markdown media and full-resource Version Tags. A public `AtlassianSourceMount` accepts only non-empty unique Site IDs/canonical HTTPS origins, binds the shared substrate, and yields one multi-site `AtlassianSource` implementing `SourceAdapter`; `CompiledSources` accepts/routes the optional Adapter and advertises Jira only when mounted. Stable ID/key reads use one direct v3 GET, validate identity, and return stable canonical Aggregate/index/Field Resources. Aggregate/index selectors preserve Markdown/tag; Fields reject selectors. Invalid local inputs are zero-egress. ETag/cache/retry/status/bounds/cancellation/redaction behavior is inherited from shared modules.
 
-**Oracle:** Server-side TLS request/send/flush counters, independently constructed canonical references/status table, direct full-content SHA-256, selector table, cache-generation observations, and architecture dependency/token scanner. C16 additionally compares the request contract to the approved evidence oracle.
+**Oracle:** Independently normalized `(scheme, host, effective port)`/Site-ID sets; server-side TLS request/send/flush counters; independently constructed canonical references/status table; direct full-content SHA-256; selector table; cache-generation observations; architecture dependency/token scanner. C16 additionally compares the request contract to the approved evidence oracle.
 
-**Stress fixture:** Valid stable/key requests; ID/self/site confusion; unknown site; unsupported/dormant path; every invalid identifier; Aggregate/index/Field selectors; first/conditional/304/changed/absent/oversized/orphan cache states; transport retry; delta/date Retry-After; deadline refusal; cancellation phases; body overflow; all mapped status classes; malicious prose and canary email/token; all pre-existing CompiledSources constructor call sites.
+**Stress fixture:** Empty/one/maximum site sets; duplicate Site ID/origin; same host with distinct port; userinfo/path/query/fragment/non-HTTPS origins; valid stable/key requests; ID/self/site confusion; unknown site; unsupported/dormant path; every invalid identifier; Aggregate/index/Field selectors; first/conditional/304/changed/absent/oversized/orphan cache states; transport retry; delta/date Retry-After; deadline refusal; cancellation phases; body overflow; all mapped status classes; malicious prose and canary email/token; all pre-existing CompiledSources constructor call sites.
 
 **Regression fence:** `crates/resourcefs-core/tests/source_resource_content_type_contract.rs`; `crates/resourcefs-sources/tests/atlassian_jira_adapter_contract.rs`; extended `compiled_sources_contract.rs`; core architecture contract; existing substrate contracts as positive controls.
 
-**Named mutation:** C3 build canonical reference from requested alias; C8 accept orphan 304; C9 bypass `BoundedRead`; C10 resolve site after egress; C11 select a Field as typed JSON and separately label selected Markdown as text/plain; C12 import provider/serde types into core; C16 use a guessed key-specific endpoint. Each named mutation must turn its named deterministic row red, then restore green.
+**Named mutation:** C2 index mounts by insertion position instead of validated Site ID; C3 build canonical reference from requested alias; C8 accept orphan 304; C9 bypass `BoundedRead`; C10 resolve site after egress; C11 select a Field as typed JSON and separately label selected Markdown as text/plain; C12 import provider/serde types into core; C16 use a guessed key-specific endpoint. Each named mutation must turn its named deterministic row red, then restore green.
 
-**Complexity/production scale:** Site lookup is $O(1)$ expected; one direct read sends at most two GET attempts and retains at most one 8 MiB response/cache body plus rendered output; selector work is $O(r)$ over rendered bytes. Explicit maximum accepted added CPU cost: 4 seconds for decode+render at the 8 MiB ceiling; network wall remains bounded by the immutable 30-second logical deadline and no Adapter phase may extend it.
+**Complexity/production scale:** Mount validation is $O(s)$ expected with two sets for `s ≤ MAX_CONFIGURATION_ENTRIES` and occurs once; site lookup is $O(1)$ expected; one direct read sends at most two GET attempts and retains at most one 8 MiB response/cache body plus rendered output; selector work is $O(r)$ over rendered bytes. Explicit maximum accepted mount cost: 5 ms at the site ceiling; added per-read CPU cost: 4 seconds for decode+render at the 8 MiB ceiling; network wall remains bounded by the immutable 30-second logical deadline.
 
-**Wall budget/phase:** always-on direct read; 30 seconds total wall-clock maximum from existing `HttpCeilings`, including retry wait and both attempts; Adapter-local CPU sub-budget 4 seconds at maximum body size.
+**Wall budget/phase:** mount validation is one-off with no wall budget; direct read is always-on with a 30-second total wall-clock maximum from existing `HttpCeilings`, including retry wait and both attempts, plus a 4-second Adapter-local CPU sub-budget at maximum body size.
 
 **Files:** `crates/resourcefs-core/src/resource.rs`, `crates/resourcefs-core/src/lib.rs`, `crates/resourcefs-core/tests/source_resource_content_type_contract.rs`, `crates/resourcefs-sources/src/atlassian/{mod.rs,jira.rs,wire.rs,render.rs}`, `crates/resourcefs-sources/src/lib.rs`, `crates/resourcefs-sources/src/compiled.rs`, `crates/resourcefs-sources/src/catalog.rs` if catalog metadata requires the new entry, every `CompiledSources::new` callsite found through LSP references, `crates/resourcefs-sources/tests/atlassian_jira_adapter_contract.rs`, `crates/resourcefs-sources/tests/compiled_sources_contract.rs`, test TLS/support files, and architecture contracts.
 
 **Estimate:** 8–12 hours.
 
-**Diff estimate:** 2,200 changed lines.
+**Diff estimate:** 2,600 changed lines.
 
 **PR increment:** C — Read Adapter and evidence.
 
 **Commands and expected results:**
 - `cargo test -p resourcefs-core --test source_resource_content_type_contract` → complete/selected MIME and full-content tags agree with direct byte/SHA-256 oracles; the C11 media mutation turns red and restoration returns green.
+- `cargo test -p resourcefs-sources --test atlassian_jira_adapter_contract mount_validation_and_site_routing` → distinct sites route by typed ID; empty/duplicate/invalid authority fails before egress; the C2 mutation turns red and restoration returns green.
 - `cargo test -p resourcefs-sources --test atlassian_jira_adapter_contract` → every request/identity/selector/cache/retry/status/bound/cancel/redaction/zero-egress row matches its independent oracle; named mutations C3/C8/C9/C10/C11/C16 each red then restore green.
 - `cargo test -p resourcefs-sources --test compiled_sources_contract` → mounted Jira routes and catalog entry work; absent Adapter returns the stable not-configured error; all old source families still route.
 - `cargo test -p resourcefs-core --test architecture_contract` → core remains source-neutral; C12 provider-import mutation turns red and restoration returns green.

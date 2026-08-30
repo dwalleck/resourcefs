@@ -51,6 +51,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use resourcefs_core::{
     AddressPolicy, AllowedOrigin, ErrorCategory, HttpCeilings, MAX_ARTIFACT_BYTES, OperationGuard,
     OriginAllowlist, ResourceError, Secret,
@@ -841,6 +842,70 @@ impl OriginCredential {
         Ok(Self {
             origin,
             header: header.into(),
+            value,
+        })
+    }
+
+    /// Composes an RFC 7617 Basic credential without exposing its value outside
+    /// the audited credential boundary.
+    pub fn basic(
+        origin: AllowedOrigin,
+        username: &str,
+        secret: &Secret,
+    ) -> Result<Self, ResourceError> {
+        if username.is_empty() || username.contains(':') || username.chars().any(char::is_control) {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "Basic credential username must be non-empty and contain neither ':' nor control characters",
+            ));
+        }
+        let raw_len = username
+            .len()
+            .checked_add(1)
+            .and_then(|length| length.checked_add(secret.expose().len()))
+            .ok_or_else(|| {
+                ResourceError::new(
+                    ErrorCategory::LimitExceeded,
+                    "Basic credential exceeds the bounded request-header ceiling",
+                )
+            })?;
+        let encoded_len = raw_len
+            .checked_add(2)
+            .and_then(|length| length.checked_div(3))
+            .and_then(|length| length.checked_mul(4))
+            .ok_or_else(|| {
+                ResourceError::new(
+                    ErrorCategory::LimitExceeded,
+                    "Basic credential exceeds the bounded request-header ceiling",
+                )
+            })?;
+        if encoded_len
+            .checked_add("Basic ".len())
+            .is_none_or(|length| length > MAX_SOURCE_REQUEST_HEADER_BYTES)
+        {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                "Basic credential exceeds the bounded request-header ceiling",
+            ));
+        }
+
+        let mut raw = Vec::with_capacity(raw_len);
+        raw.extend_from_slice(username.as_bytes());
+        raw.push(b':');
+        raw.extend_from_slice(secret.expose().as_bytes());
+        let mut composed = String::with_capacity("Basic ".len() + encoded_len);
+        composed.push_str("Basic ");
+        STANDARD.encode_string(&raw, &mut composed);
+        raw.fill(0);
+        let value = Secret::new(composed).map_err(|_| {
+            ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                "Basic origin credential could not be composed",
+            )
+        })?;
+        Ok(Self {
+            origin,
+            header: "Authorization".to_owned(),
             value,
         })
     }

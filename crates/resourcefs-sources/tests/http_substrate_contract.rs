@@ -19,12 +19,13 @@ use std::{
 };
 
 use resourcefs_core::{
-    AllowedOrigin, ErrorCategory, HttpCeilings, MAX_ARTIFACT_BYTES, OperationGuard, OriginAllowlist,
+    AllowedOrigin, ErrorCategory, HttpCeilings, MAX_ARTIFACT_BYTES, OperationGuard,
+    OriginAllowlist, Secret,
 };
-use resourcefs_sources::{BoundedHttpResponse, HttpRequest, HttpSubstrate};
+use resourcefs_sources::{BoundedHttpResponse, HttpRequest, HttpSubstrate, OriginCredential};
 use tls::{
     FIXTURE_HOST, FixtureResponse, MATCH_CERT, TlsListener, fixture_allowlist, settle,
-    tls_substrate,
+    tls_substrate, tls_substrate_with_credentials,
 };
 use url::Url;
 
@@ -73,6 +74,89 @@ async fn substrate_is_source_neutral() {
         .with_retry_control_for_test(SystemTime::now(), Duration::from_millis(251))
         .expect_err("test control cannot exceed the production jitter bound");
     assert_eq!(failure.category(), ErrorCategory::InvalidReference);
+}
+
+#[tokio::test]
+async fn basic_credential_composition_is_exact_and_redacted() {
+    const EMAIL: &str = "agent@example.com";
+    const TOKEN: &str = "token-canary";
+    const ENCODED: &str = "YWdlbnRAZXhhbXBsZS5jb206dG9rZW4tY2FuYXJ5";
+
+    let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let listener =
+        TlsListener::serve_router(loopback, 0, MATCH_CERT, |_path| FixtureResponse::Response {
+            status: "200 OK",
+            headers: Vec::new(),
+            body: b"{}".to_vec(),
+        })
+        .await;
+    let port = listener.address.port();
+    let origin = AllowedOrigin::new(&format!("https://{FIXTURE_HOST}:{port}/"), true)
+        .expect("fixture origin");
+    let token = Secret::new(TOKEN.to_owned()).expect("token");
+    let credential =
+        OriginCredential::basic(origin.clone(), EMAIL, &token).expect("Basic credential");
+    let debug = format!("{credential:?}");
+    for forbidden in [EMAIL, TOKEN, ENCODED] {
+        assert!(!debug.contains(forbidden), "Debug leaked {forbidden}");
+    }
+
+    let substrate = tls_substrate_with_credentials(
+        OriginAllowlist::new(vec![origin.clone()]),
+        vec![loopback],
+        vec![credential],
+    );
+    let url = Url::parse(&format!("https://{FIXTURE_HOST}:{port}/issue")).expect("URL");
+    neutral_consumer(&substrate, url)
+        .await
+        .expect("authenticated fetch");
+    let heads = listener.heads();
+    assert_eq!(heads.len(), 1);
+    let authorization = heads[0].lines().find_map(|line| {
+        let (name, value) = line.split_once(": ")?;
+        name.eq_ignore_ascii_case("Authorization").then_some(value)
+    });
+    let expected = format!("Basic {ENCODED}");
+    assert_eq!(
+        authorization,
+        Some(expected.as_str()),
+        "wire header differs from independent base64 oracle: {}",
+        heads[0]
+    );
+
+    for invalid in ["", "agent:other@example.com", "agent\n@example.com"] {
+        let error = OriginCredential::basic(origin.clone(), invalid, &token)
+            .expect_err("invalid Basic username");
+        assert_eq!(error.category(), ErrorCategory::InvalidReference);
+        let message = error.message();
+        assert!(invalid.is_empty() || !message.contains(invalid));
+        assert!(!message.contains(TOKEN));
+    }
+
+    let maximum_username = "x".repeat(12_269);
+    OriginCredential::basic(origin.clone(), &maximum_username, &token)
+        .expect("largest encoded Basic value below the 16 KiB ceiling");
+    let over_ceiling_username = "x".repeat(12_270);
+    let error = OriginCredential::basic(origin, &over_ceiling_username, &token)
+        .expect_err("encoded Basic value above the 16 KiB ceiling");
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+    assert!(!error.message().contains(&over_ceiling_username));
+}
+
+#[test]
+fn basic_credential_maximum_stays_within_budget() {
+    let origin = AllowedOrigin::new("https://budget.invalid/", false).expect("origin");
+    let token = Secret::new("token-canary".to_owned()).expect("token");
+    let username = "x".repeat(12_269);
+    let started = Instant::now();
+    for _ in 0..1_000 {
+        OriginCredential::basic(origin.clone(), &username, &token)
+            .expect("maximum bounded Basic credential");
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "1,000 maximum Basic credentials must average below the 5 ms budget"
+    );
 }
 
 #[tokio::test]
