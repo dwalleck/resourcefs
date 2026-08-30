@@ -305,6 +305,7 @@ fn classify(input: &str) -> GrammarExpectation {
             ResourceAddress::Artifact(_) => GrammarExpectation::OtherFamily("artifact"),
             ResourceAddress::Catalog(_) => GrammarExpectation::OtherFamily("catalog"),
             ResourceAddress::Issue(_) => GrammarExpectation::OtherFamily("issue"),
+            ResourceAddress::Jira(_) => GrammarExpectation::OtherFamily("jira"),
             ResourceAddress::PullRequest(_) => GrammarExpectation::OtherFamily("pullRequest"),
         },
         Err(error) => GrammarExpectation::Rejected(error.category()),

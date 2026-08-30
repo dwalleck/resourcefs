@@ -1,10 +1,10 @@
 use std::{fs, sync::Arc};
 
 use resourcefs_core::{
-    DiscoveryEngine, ErrorCategory, GlobKind, GlobLimits, GlobOptions, GlobRequest, GlobTarget,
-    MutationAccess, MutationAdapter, OperationGuard, PathReference, ProjectionSelector,
-    SearchLimits, SearchOptions, SearchRequest, SearchTarget, SourceAdapter, WorkspacePath,
-    WorkspaceRootId,
+    DiscoveryAdapter, DiscoveryEngine, ErrorCategory, GlobKind, GlobLimits, GlobOptions,
+    GlobRequest, GlobTarget, MutationAccess, MutationAdapter, OperationGuard, PathReference,
+    ProjectionSelector, SearchLimits, SearchOptions, SearchRequest, SearchTarget, SourceAdapter,
+    WorkspacePath, WorkspaceRootId,
 };
 use resourcefs_sources::{
     ArtifactSource, BackingPathVisibility, ClientRoot, CompiledSources, FilesystemSource,
@@ -158,6 +158,39 @@ async fn routes_every_reference_by_typed_address_family_only() {
     }
 
     assert_eq!(fixture.session.path_session().artifact_count().await, 1);
+}
+
+#[tokio::test]
+async fn unmounted_jira_routes_fail_honestly_without_fallthrough() {
+    let fixture = fixture().await;
+    let reference = PathReference::parse("jira://acme/issues/10001").expect("Jira reference");
+    let operation = OperationGuard::new();
+
+    let read = fixture
+        .compiled
+        .read(&reference, &operation)
+        .await
+        .expect_err("no Atlassian source is mounted");
+    assert_eq!(read.category(), ErrorCategory::SourceUnavailable);
+
+    let mutation = fixture
+        .compiled
+        .resolve(&reference, MutationAccess::Update)
+        .await
+        .expect_err("read-only Jira Resource");
+    assert_eq!(mutation.category(), ErrorCategory::UnsupportedMutation);
+
+    let search = fixture
+        .compiled
+        .search(
+            &SearchTarget::resource(reference),
+            "sentinel",
+            SearchOptions::default(),
+            &operation,
+        )
+        .await
+        .expect_err("no Atlassian discovery Adapter is mounted");
+    assert_eq!(search.category(), ErrorCategory::SourceUnavailable);
 }
 
 #[tokio::test]

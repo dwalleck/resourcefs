@@ -382,6 +382,7 @@ impl GlobEntry {
             // Remote families are never filesystem-style glob entries.
             ResourceAddress::Https(_)
             | ResourceAddress::Issue(_)
+            | ResourceAddress::Jira(_)
             | ResourceAddress::PullRequest(_) => false,
         };
         if !kind_matches_source {
@@ -1261,6 +1262,10 @@ fn canonical_identity(reference: &PathReference) -> Result<String, ResourceError
         }
         ResourceAddress::PullRequest(address) => {
             github_record_identity(reference, &address.canonical_reference())
+        }
+        ResourceAddress::Jira(address) => {
+            reference.projection().is_none()
+                && reference.requested() == address.canonical_reference()
         }
         ResourceAddress::Workspace(_) => false,
     };

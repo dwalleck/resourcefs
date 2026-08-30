@@ -119,6 +119,7 @@ impl ReadEngine {
             | ResourceAddress::Local(_)
             | ResourceAddress::Https(_)
             | ResourceAddress::Issue(_)
+            | ResourceAddress::Jira(_)
             | ResourceAddress::PullRequest(_) => None,
         };
         let requested_artifact_projection = request.reference.projection().is_some();

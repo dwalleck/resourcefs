@@ -106,6 +106,7 @@ impl SourceAdapter for CompiledSources {
             ResourceAddress::Artifact(_) => self.artifacts.read(reference, operation).await,
             ResourceAddress::Local(_) => self.local.read(reference, operation).await,
             ResourceAddress::Https(_) => self.https_source()?.read(reference, operation).await,
+            ResourceAddress::Jira(_) => Err(atlassian_source_unavailable()),
             ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
                 self.github_source()?.read(reference, operation).await
             }
@@ -135,6 +136,10 @@ impl MutationAdapter for CompiledSources {
             ResourceAddress::Https(_) => Err(ResourceError::new(
                 ErrorCategory::UnsupportedMutation,
                 "https:// Resources are read-only; ResourceFS performs no remote writes",
+            )),
+            ResourceAddress::Jira(_) => Err(ResourceError::new(
+                ErrorCategory::UnsupportedMutation,
+                "jira:// Resources are read-only in Behavior Contract 1.2.0",
             )),
             ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
                 self.github_source()?.resolve(reference, access).await
@@ -235,6 +240,13 @@ fn github_source_unavailable() -> ResourceError {
     )
 }
 
+fn atlassian_source_unavailable() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::SourceUnavailable,
+        "no Atlassian source is configured in the Server Profile",
+    )
+}
+
 #[async_trait]
 impl DiscoveryAdapter for CompiledSources {
     async fn search(
@@ -269,6 +281,7 @@ impl DiscoveryAdapter for CompiledSources {
                     .search(target, pattern, options, operation)
                     .await
             }
+            Some(ResourceAddress::Jira(_)) => Err(atlassian_source_unavailable()),
             Some(ResourceAddress::Issue(_)) | Some(ResourceAddress::PullRequest(_)) => {
                 self.github_source()?
                     .search(target, pattern, options, operation)

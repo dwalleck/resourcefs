@@ -554,6 +554,10 @@ fn validate_canonical_identity(reference: &PathReference) -> Result<(), Resource
             reference.projection().is_none()
                 && reference.requested() == address.canonical_reference()
         }
+        ResourceAddress::Jira(address) => {
+            reference.projection().is_none()
+                && reference.requested() == address.canonical_reference()
+        }
         ResourceAddress::PullRequest(address) => {
             reference.projection().is_none()
                 && reference.requested() == address.canonical_reference()
