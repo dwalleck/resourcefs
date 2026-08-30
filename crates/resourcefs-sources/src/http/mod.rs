@@ -1254,10 +1254,15 @@ impl HttpSubstrate {
         // Retained metadata has a hard byte ceiling on every fetch, but text
         // strictness is per header: see `etag()` and `link()` for why one
         // degrades to absence and the other to an error at the point of use.
-        let etag = Self::header_within_ceiling(response.headers(), &reqwest::header::ETAG)
-            .map_err(HttpFetchFailure::unknown)?
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
+        let etag = match Self::header_within_ceiling(response.headers(), &reqwest::header::ETAG) {
+            Ok(value) => value
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            // ETag is optional optimization, never response authority. A value
+            // too large to echo safely is therefore the same as no validator.
+            Err(error) if error.category() == ErrorCategory::LimitExceeded => None,
+            Err(error) => return Err(HttpFetchFailure::unknown(error)),
+        };
         let link = Self::header_within_ceiling(response.headers(), &reqwest::header::LINK)
             .map_err(HttpFetchFailure::unknown)?
             .map(|value| {

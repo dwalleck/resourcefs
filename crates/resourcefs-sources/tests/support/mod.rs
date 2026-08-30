@@ -86,6 +86,7 @@ pub async fn scratch_fixture() -> ScratchFixture {
             local.clone(),
             None,
             None,
+            None,
         )
         .await
         .expect("compiled sources"),
@@ -218,6 +219,7 @@ async fn build_scratch_session(
             filesystem.clone(),
             ArtifactSource::new(session.path_session().clone()),
             local.clone(),
+            None,
             None,
             None,
         )

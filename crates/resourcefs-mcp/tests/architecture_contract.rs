@@ -40,7 +40,7 @@ fn enforces_dependency_direction() {
     for required in ["serde", "serde_json", "serde_path_to_error"] {
         assert!(
             sources.contains(required),
-            "GitHub native-wire decoding requires resourcefs-sources -> {required}"
+            "source-native wire decoding requires resourcefs-sources -> {required}"
         );
     }
     assert!(
@@ -60,21 +60,20 @@ fn enforces_dependency_direction() {
     }
     // serde is admitted into resourcefs-sources for source-native wire
     // decoding only. The invariant the old "no serde" fence protected was that
-    // operator profile syntax lives in resourcefs-mcp; naming a few DTO tokens
-    // cannot hold that line, but confining every serde use to the GitHub wire
-    // module can: a profile DTO or a serde derive on any other adapter's type
-    // fails here by location, whatever it is called.
+    // operator profile syntax lives in resourcefs-mcp. Confining serde to
+    // provider wire modules holds that line: profile DTOs or serde derives in
+    // transport/core-facing modules fail here regardless of their type names.
     let sources_src = sources_root.join("src");
-    let wire_module = sources_src.join("github");
+    let wire_modules = [sources_src.join("github"), sources_src.join("atlassian")];
     let serde_users = files_containing_token(&sources_src, "serde");
     assert!(
         !serde_users.is_empty(),
-        "the GitHub wire module is expected to decode with serde"
+        "provider wire modules are expected to decode with serde"
     );
     for file in &serde_users {
         assert!(
-            file.starts_with(&wire_module),
-            "serde reached {} outside the GitHub wire module src/github/",
+            wire_modules.iter().any(|module| file.starts_with(module)),
+            "serde reached {} outside provider wire modules src/github/ and src/atlassian/",
             file.display()
         );
     }

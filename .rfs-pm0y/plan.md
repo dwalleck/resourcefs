@@ -4,21 +4,21 @@
 
 - Approved design: `.rfs-pm0y/design.md`, requester words “Approve revised design”, 2026-08-29, no accepted risks.
 - Route/evidence: Empirical; `.rfs-pm0y/evidence.md` has P1–P5 `PASS`; C16 is the completed cheapest falsifier and every other claim is assigned below exactly once.
-- Projected changed lines: Slice 1 `1,000` + Slice 2 `500` + Slice 3 `1,300` + Slice 4 `1,500` + Slice 5 `2,600` + Slice 6 `300` = `7,200`.
+- Projected changed lines: Slice 1 `1,000` + Slice 2 `500` + Slice 3 `5,400` + Slice 4 `300` = `7,200`.
 - Churn margin: `25% = 1,800` lines. Rationale: exhaustive `ResourceAddress` migration and deterministic TLS matrices routinely add callsite/test-support rows after the first count.
 - Review-size projection: `7,200 + 1,800 = 9,000`, above the 4,000-line gate; use three independently mergeable increments.
 
 ### PR increment A — Typed and credential foundations
 
-Slices 1–2. Mergeable definition: core recognizes and rejects the complete direct Jira grammar, Basic credentials compose only at egress, and validated site sets exist behind the not-yet-exported Atlassian module. Core/HTTP/mount contracts pass without native Jira decoding or network reads.
+Slices 1–2. Mergeable definition: core recognizes and rejects the complete direct Jira grammar, and bounded Basic credentials compose only at the audited egress seam. Core/HTTP contracts pass without native Jira decoding, mount state, or network-backed Jira reads.
 
-### PR increment B — Native authority and deterministic projections
+### PR increment B — Complete direct Jira Source Adapter
 
-Slices 3–4. Mergeable definition: private Atlassian wire/render modules strictly decode committed production-shaped fixtures, canonicalize JSON/ADF, and render deterministic Aggregate/index content. They remain behind crate-private interfaces; no Jira namespace is advertised or sent over the network. Native-wire/render contracts verify without Adapter wiring.
+Slice 3. Mergeable definition: the public multi-site Atlassian Source Adapter strictly decodes native authority, canonicalizes JSON/ADF Fields, renders deterministic Aggregate/index Markdown, uses shared HTTP/cache/retry/cancellation, supports direct search, and is routed/cataloged by `CompiledSources`. Deterministic native-wire/TLS/oracle contracts verify it without profile launch integration.
 
-### PR increment C — Read Adapter and evidence
+### PR increment C — Live evidence
 
-Slices 5–6. Mergeable definition: the public multi-site Atlassian Source Adapter, compiled dispatch/catalog, shared HTTP/cache behavior, deterministic TLS matrix, and ignored live row work end to end. It depends only on increments A and B and is the first increment that advertises usable direct Jira references.
+Slice 4. Mergeable definition: the ignored real Jira read row and live-smoke registration prove the already complete Adapter against a configured read-only tenant. It changes no production behavior and depends only on increment B.
 
 ## Slice 1: Add canonical Jira reference types
 
@@ -79,134 +79,72 @@ Slices 5–6. Mergeable definition: the public multi-site Atlassian Source Adapt
 **Commands and expected results:**
 - `cargo test -p resourcefs-sources --test http_substrate_contract basic_credential` → captured Authorization equals the independent base64 oracle; invalid/over-limit identifiers fail locally; canaries are absent; C15 mutation red/restored green.
 
-## Slice 3: Strictly decode Jira authority and canonicalize Field JSON
+## Slice 3: Implement the complete direct Jira Source Adapter
 
-**Claim IDs:** C4, C5
+**Claim IDs:** C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C14, C16
 
-**Expected behavior:** A private duplicate-preserving recursive JSON decoder admits vendor-optional shapes but validates every ResourceFS authority member after decode; direct issue identity, self URL, present fields, names, and schemas become typed source-local values or one atomic `ResourceError`. Every ordinary field canonicalizes to compact recursively sorted JSON bytes that distinguish all native value kinds.
+**Expected behavior:** A source-neutral UTF-8 envelope preserves JSON/vendor-JSON/Markdown media and whole-resource tags. One validated multi-site `AtlassianSourceMount` binds the shared substrate and yields `AtlassianSource`; stable-ID/key reads use Jira REST v3, validate returned authority, and return stable canonical Aggregate/index/Field Resources. Strict recursive JSON rejects duplicates/missing authority and produces deterministic compact Field bytes. Complete ADF remains lossless; supported nodes render Markdown, unsupported well-formed nodes/marks emit typed positional warnings, malformed ADF fails atomically. Aggregate/index facts are complete and field-ID ordered. ETag/cache/retry/status/bounds/cancellation/redaction/zero-egress behavior uses shared seams. `CompiledSources` routes/searches/catalogs mounted Jira and preserves honest unmounted errors.
 
-**Oracle:** A hand-authored required-authority presence table plus a separate test-only canonical writer over fixture literals; the oracle never imports the production decoder/canonicalizer.
+**Oracle:** Hand-authored authority/status/grammar tables; independent compact-JSON fixture writer; fixture-side ADF tree walk/source-position list; raw-field set difference and sorted IDs; direct SHA-256; normalized Site-ID/origin sets; TLS request/send/flush transcript; session cache-generation observations; evidence oracle for the vendor endpoint; Cargo metadata/architecture scanner.
 
-**Stress fixture:** Full required/null/wrong-type matrix; duplicate known top-level members; duplicate nested field members; empty/single/multi maps; extra metadata; foreign/wrong-family/wrong-ID self URLs; reordered Unicode-key objects; null/empty/string/array/object/numeric distinctions; 8 MiB near-ceiling nested data. Expected: complete valid shapes become one typed issue, every ambiguity fails atomically, canonical equivalents share bytes/tags, distinct values do not.
+**Stress fixture:** Empty/one/maximum site sets; duplicate IDs/origins and non-origin URLs; full required/null/type/duplicate JSON matrix; empty/single/multi/reordered/Unicode/native-value distinctions; foreign/wrong-family/wrong-ID self URLs; minimal/supported/unknown/malformed ADF; shuffled fields/duplicate names/extra metadata; 8 MiB JSON and ADF; stable/key identity; unknown site/dormant path/Field selectors; ETag absent/valid/changed/oversized/orphan; transport/rate/status/body/cancellation branches; malicious prose/canaries; every `CompiledSources::new` callsite. Expected outcomes are the claim table’s exact categories/content/media/tags/request counts and zero-egress refusals.
 
-**Regression fence:** `crates/resourcefs-sources/tests/jira_wire_contract.rs` with source-local test-support inspection only.
+**Regression fence:** `crates/resourcefs-core/tests/source_resource_content_type_contract.rs`; `crates/resourcefs-sources/tests/jira_wire_contract.rs`; `jira_render_contract.rs`; `atlassian_jira_adapter_contract.rs`; extended `compiled_sources_contract.rs`; `resourcefs-core/tests/architecture_contract.rs`; existing substrate contracts as positive controls.
 
-**Named mutation:** From C4, default absent `fields` to an empty map; authority presence matrix turns red. From C5, emit object members in input order; reordered-equivalent row turns red. Restore each and confirm green.
+**Named mutation:** C2 route an unknown Site ID to the first mount; C3 build canonical identity from the requested alias; C4 default absent `fields`; C5 reverse canonical object order; C6 skip unsupported ADF nodes; C7 reverse rendered field order; C8 accept orphan 304; C9 bypass `BoundedRead`; C10 let unknown sites reach the first origin; C11 accept Field selectors and label selected Markdown text/plain; C12 import provider/serde types into core; C14 synthesize fields from extra `names`; C16 use a guessed key-specific endpoint. Every mutation must turn its named row red, then restore green.
 
-**Complexity/production scale:** Strict decode is $O(b)$ and canonical encoding is $O(b + \sum k_i \log k_i)$ for response bytes `b ≤ MAX_HTTP_FETCH_BYTES = 8 MiB` and object member counts `k_i`; peak retained memory is bounded to decoded authority plus one canonical Field at a time, no more than a small constant multiple of 8 MiB. Explicit maximum accepted CPU cost: 2 seconds for the committed 8 MiB adversarial fixture in release mode, leaving the network deadline dominant while preventing an accidental quadratic writer.
+**Complexity/production scale:** Mount validation is $O(s)$ expected for `s ≤ MAX_CONFIGURATION_ENTRIES`, once; site lookup is $O(1)$ expected. Strict decode/ADF render is $O(b)$ plus $O(\\sum k_i \\log k_i)$ object sorting and $O(f \\log f)$ field ordering for `b ≤ 8 MiB`; one logical read retains a bounded response/cache/projection constant multiple and sends at most two GET attempts. Explicit maxima: mount validation ≤5 ms; 8 MiB canonical JSON ≤2 s release; 8 MiB ADF ≤2 s release; assembled Adapter-local CPU ≤4 s; network wall ≤30 s immutable logical deadline.
 
-**Wall budget/phase:** always-on for each successful issue response; 2 seconds at the 8 MiB hard ceiling, justified by the existing 30-second logical HTTP ceiling and single-issue scope.
+**Wall budget/phase:** mount validation is one-off with no wall budget; direct read/search is always-on with 30 seconds total from `HttpCeilings`, including retry wait/attempts, and 4 seconds Adapter-local CPU at the body ceiling.
 
-**Files:** `crates/resourcefs-sources/src/atlassian/wire.rs`, `crates/resourcefs-sources/src/atlassian/mod.rs`, `crates/resourcefs-sources/tests/jira_wire_contract.rs`, and committed production-shaped JSON fixtures under `crates/resourcefs-sources/tests/fixtures/atlassian/`.
+**Files:** `crates/resourcefs-core/src/{resource.rs,lib.rs}`; `crates/resourcefs-core/tests/source_resource_content_type_contract.rs`; `crates/resourcefs-sources/src/atlassian/{mod.rs,jira.rs,wire.rs,render.rs}`; `crates/resourcefs-sources/src/{lib.rs,compiled.rs}`; all LSP-enumerated `CompiledSources::new` callsites in sources/MCP; `crates/resourcefs-sources/tests/{jira_wire_contract.rs,jira_render_contract.rs,atlassian_jira_adapter_contract.rs,compiled_sources_contract.rs}`; TLS/session support as required; architecture contracts.
 
-**Estimate:** 5–7 hours.
+**Estimate:** 20–30 hours.
 
-**Diff estimate:** 1,300 changed lines.
+**Diff estimate:** 5,400 changed lines.
 
-**PR increment:** B — Native authority and deterministic projections.
-
-**Commands and expected results:**
-- `cargo test -p resourcefs-sources --test jira_wire_contract authority_presence_matrix` → every presence/null/type/duplicate/identity cell matches the independent table and no partial value escapes; C4 mutation red/restored green.
-- `cargo test -p resourcefs-sources --test jira_wire_contract canonical_json_roundtrip_and_distinction_matrix` → equivalent objects agree byte-for-byte; distinct native values remain distinct; C5 mutation red/restored green.
-- `cargo test -p resourcefs-sources --release --test jira_wire_contract canonical_json_maximum_fixture` → 8 MiB fixture is lossless and completes at or below 2 seconds on the project verification host.
-
-## Slice 4: Render lossless ADF, issue Aggregates, and Field indexes
-
-**Claim IDs:** C6, C7, C14
-
-**Expected behavior:** Complete ADF Fields retain the canonical whole tree and ADF media type; supported nodes/marks render stable Markdown, well-formed unsupported constructs emit typed source-position markers and warnings with authoritative Field references, and malformed known/root shapes fail atomically. Aggregate and Field index enumerate exactly present fields in stable ID order with names, types, immutability, references; Aggregate also renders readable values and hashes returned Markdown.
-
-**Oracle:** Fixture-side tree walk/source-position list; set difference between raw field keys and rendered references; independently sorted IDs and direct SHA-256 of returned Markdown.
-
-**Stress fixture:** Minimal empty ADF; nested paragraphs/headings/lists/code/blockquote/hard breaks/marks; unknown node and mark with children; malformed supported nodes/root; shuffled fields with duplicate names, extra metadata, empty/single/multi sets, Unicode names, mixed scalar/JSON/ADF values, and warning-bearing fields. Expected: no Field data loss, visible markers/warnings in source order, atomic malformed failure, exact field-set equality and sorted output.
-
-**Regression fence:** `crates/resourcefs-sources/tests/jira_wire_contract.rs::adf_lossless_matrix`; new pure-render tests and the render rows in `atlassian_jira_adapter_contract.rs` if the Adapter fixture is not needed yet.
-
-**Named mutation:** From C6, skip unknown ADF nodes; unsupported marker row turns red. From C7, iterate upstream order; shuffled field-order row turns red. From C14, iterate `names` instead of present `fields`; extra-metadata row turns red. Restore each and confirm green.
-
-**Complexity/production scale:** ADF traversal/rendering is $O(n)$ nodes/bytes; field ordering is $O(f \log f)$ for `f` visible fields contained within the 8 MiB response; canonical Field bytes are produced once and reused. Explicit maximum accepted CPU cost: 2 seconds for an 8 MiB ADF/10,000-field adversarial fixture in release mode, preventing quadratic concatenation while respecting the one-issue operation bound.
-
-**Wall budget/phase:** always-on for Aggregate/index reads; 2 seconds at the 8 MiB/10,000-field stress ceiling, same rationale as the CPU bound.
-
-**Files:** `crates/resourcefs-sources/src/atlassian/render.rs`, `crates/resourcefs-sources/src/atlassian/wire.rs`, focused render tests or `crates/resourcefs-sources/tests/jira_wire_contract.rs`, `crates/resourcefs-sources/tests/atlassian_jira_adapter_contract.rs`, and ADF fixtures.
-
-**Estimate:** 6–8 hours.
-
-**Diff estimate:** 1,500 changed lines.
-
-**PR increment:** B — Native authority and deterministic projections.
+**PR increment:** B — Complete direct Jira Source Adapter.
 
 **Commands and expected results:**
-- `cargo test -p resourcefs-sources --test jira_wire_contract adf_lossless_matrix` → complete trees retain every member; malformed rows fail atomically; C6 mutation red/restored green.
-- `cargo test -p resourcefs-sources --test atlassian_jira_adapter_contract aggregate_orders_and_links_all_visible_fields` → field set/order/facts/content/tag agree item-by-item with the oracle; C7 mutation red/restored green.
-- `cargo test -p resourcefs-sources --test atlassian_jira_adapter_contract field_index_uses_present_values_only` → empty/single/multi/extra-metadata rows match raw present keys; C14 mutation red/restored green.
-- `cargo test -p resourcefs-sources --release --test jira_wire_contract adf_maximum_fixture` → adversarial maximum finishes at or below 2 seconds and preserves full authority.
+- `cargo test -p resourcefs-core --test source_resource_content_type_contract` → complete/selected MIME and full tags match direct byte/SHA-256 oracles; C11 media mutations red/restored green.
+- `cargo test -p resourcefs-sources --test jira_wire_contract` → authority/duplicate/identity/canonical-value matrices agree item-by-item; C4/C5/C14 mutations red/restored green.
+- `cargo test -p resourcefs-sources --test jira_render_contract` → ADF losslessness/warnings/atomic failures and Aggregate/index order/set facts agree; C6/C7/C14 mutations red/restored green.
+- `cargo test -p resourcefs-sources --test atlassian_jira_adapter_contract` → mount, stable/key identity, media/tags, cache, retry, bounds, cancellation, redaction, zero-egress, compiled routing/catalog/search all agree; C2/C3/C8/C9/C10/C11/C16 mutations red/restored green.
+- `cargo test -p resourcefs-sources --release --test jira_wire_contract canonical_json_maximum_fixture` and `cargo test -p resourcefs-sources --release --test jira_render_contract adf_maximum_fixture` → each 8 MiB fixture completes ≤2 seconds and remains lossless.
+- `cargo test -p resourcefs-mcp --test architecture_contract` → core remains source-neutral and serde remains confined to provider wire modules; C12 core-provider mutation red/restored green.
+- `cargo test -p resourcefs-sources --tests` and `cargo test -p resourcefs-mcp --tests` → all migrated constructor callsites and existing source/tool behavior remain green.
 
-## Slice 5: Wire the compiled read Adapter through shared HTTP and cache semantics
-
-**Claim IDs:** C2, C3, C8, C9, C10, C11, C12, C16
-
-**Expected behavior:** A source-neutral validated `Utf8ContentType` and complete/selected constructors preserve JSON/vendor-JSON/Markdown media and full-resource Version Tags. A public `AtlassianSourceMount` accepts only non-empty unique Site IDs/canonical HTTPS origins, binds the shared substrate, and yields one multi-site `AtlassianSource` implementing `SourceAdapter`; `CompiledSources` accepts/routes the optional Adapter and advertises Jira only when mounted. Stable ID/key reads use one direct v3 GET, validate identity, and return stable canonical Aggregate/index/Field Resources. Aggregate/index selectors preserve Markdown/tag; Fields reject selectors. Invalid local inputs are zero-egress. ETag/cache/retry/status/bounds/cancellation/redaction behavior is inherited from shared modules.
-
-**Oracle:** Independently normalized `(scheme, host, effective port)`/Site-ID sets; server-side TLS request/send/flush counters; independently constructed canonical references/status table; direct full-content SHA-256; selector table; cache-generation observations; architecture dependency/token scanner. C16 additionally compares the request contract to the approved evidence oracle.
-
-**Stress fixture:** Empty/one/maximum site sets; duplicate Site ID/origin; same host with distinct port; userinfo/path/query/fragment/non-HTTPS origins; valid stable/key requests; ID/self/site confusion; unknown site; unsupported/dormant path; every invalid identifier; Aggregate/index/Field selectors; first/conditional/304/changed/absent/oversized/orphan cache states; transport retry; delta/date Retry-After; deadline refusal; cancellation phases; body overflow; all mapped status classes; malicious prose and canary email/token; all pre-existing CompiledSources constructor call sites.
-
-**Regression fence:** `crates/resourcefs-core/tests/source_resource_content_type_contract.rs`; `crates/resourcefs-sources/tests/atlassian_jira_adapter_contract.rs`; extended `compiled_sources_contract.rs`; core architecture contract; existing substrate contracts as positive controls.
-
-**Named mutation:** C2 index mounts by insertion position instead of validated Site ID; C3 build canonical reference from requested alias; C8 accept orphan 304; C9 bypass `BoundedRead`; C10 resolve site after egress; C11 select a Field as typed JSON and separately label selected Markdown as text/plain; C12 import provider/serde types into core; C16 use a guessed key-specific endpoint. Each named mutation must turn its named deterministic row red, then restore green.
-
-**Complexity/production scale:** Mount validation is $O(s)$ expected with two sets for `s ≤ MAX_CONFIGURATION_ENTRIES` and occurs once; site lookup is $O(1)$ expected; one direct read sends at most two GET attempts and retains at most one 8 MiB response/cache body plus rendered output; selector work is $O(r)$ over rendered bytes. Explicit maximum accepted mount cost: 5 ms at the site ceiling; added per-read CPU cost: 4 seconds for decode+render at the 8 MiB ceiling; network wall remains bounded by the immutable 30-second logical deadline.
-
-**Wall budget/phase:** mount validation is one-off with no wall budget; direct read is always-on with a 30-second total wall-clock maximum from existing `HttpCeilings`, including retry wait and both attempts, plus a 4-second Adapter-local CPU sub-budget at maximum body size.
-
-**Files:** `crates/resourcefs-core/src/resource.rs`, `crates/resourcefs-core/src/lib.rs`, `crates/resourcefs-core/tests/source_resource_content_type_contract.rs`, `crates/resourcefs-sources/src/atlassian/{mod.rs,jira.rs,wire.rs,render.rs}`, `crates/resourcefs-sources/src/lib.rs`, `crates/resourcefs-sources/src/compiled.rs`, `crates/resourcefs-sources/src/catalog.rs` if catalog metadata requires the new entry, every `CompiledSources::new` callsite found through LSP references, `crates/resourcefs-sources/tests/atlassian_jira_adapter_contract.rs`, `crates/resourcefs-sources/tests/compiled_sources_contract.rs`, test TLS/support files, and architecture contracts.
-
-**Estimate:** 8–12 hours.
-
-**Diff estimate:** 2,600 changed lines.
-
-**PR increment:** C — Read Adapter and evidence.
-
-**Commands and expected results:**
-- `cargo test -p resourcefs-core --test source_resource_content_type_contract` → complete/selected MIME and full-content tags agree with direct byte/SHA-256 oracles; the C11 media mutation turns red and restoration returns green.
-- `cargo test -p resourcefs-sources --test atlassian_jira_adapter_contract mount_validation_and_site_routing` → distinct sites route by typed ID; empty/duplicate/invalid authority fails before egress; the C2 mutation turns red and restoration returns green.
-- `cargo test -p resourcefs-sources --test atlassian_jira_adapter_contract` → every request/identity/selector/cache/retry/status/bound/cancel/redaction/zero-egress row matches its independent oracle; named mutations C3/C8/C9/C10/C11/C16 each red then restore green.
-- `cargo test -p resourcefs-sources --test compiled_sources_contract` → mounted Jira routes and catalog entry work; absent Adapter returns the stable not-configured error; all old source families still route.
-- `cargo test -p resourcefs-core --test architecture_contract` → core remains source-neutral; C12 provider-import mutation turns red and restoration returns green.
-- `cargo test -p resourcefs-sources --tests` → the completed Source Adapter and all pre-existing source contracts are green together.
-
-## Slice 6: Add the gated real Jira read smoke and final evidence seam
+## Slice 4: Add the gated real Jira read smoke and final evidence seam
 
 **Claim IDs:** C13
 
-**Expected behavior:** An ignored `live_jira_issue_read` test skips cleanly unless `RFS_LIVE=1` and required Atlassian reader/fixture environment is present; when present it performs GET-only stable-ID, key-alias, Aggregate/index/Field, repeated-read, identity, media, tag, and redaction invariants against a real site without asserting mutable counts or requiring ETag.
+**Expected behavior:** An ignored `live_jira_issue_read` skips cleanly unless `RFS_LIVE=1` and required reader/fixture environment is present; when present it performs GET-only stable-ID, key-alias, Aggregate/index/Field, repeated-read, identity, media, tag, and redaction invariants without asserting moving counts or ETag presence.
 
-**Oracle:** Real upstream stable IDs and returned shape invariants; Field tag recomputed directly from returned bytes; stable/key canonical references compared; deterministic TLS remains the permanent branch oracle; the Rust test harness list independently proves registration without credentials.
+**Oracle:** Real upstream stable IDs/shapes; direct Field-byte tag recomputation; stable/key canonical comparison; deterministic TLS permanent branch oracle; Rust test-harness list independently proves registration without credentials.
 
-**Stress fixture:** Gate absent/partial/present; real fixture with at least ordinary JSON and ADF Fields; repeated read with ETag absent or present. Expected: clean skip without secrets, read-only success when fully configured, stable invariants independent of tenant counts/timestamps/validator presence.
+**Stress fixture:** Gate absent/partial/present; real fixture with ordinary JSON and ADF Fields; repeated read with ETag absent or present. Expected: clean secret-free skip, read-only success when configured, tenant-state-independent invariants.
 
-**Regression fence:** `cargo test -p resourcefs-sources --test jira_live_smoke -- --list` must contain `live_jira_issue_read: test`, plus the ignored row, deterministic Adapter suite, and inclusion in `scripts/live-smoke.sh`/`cargo live` discovery.
+**Regression fence:** `cargo test -p resourcefs-sources --test jira_live_smoke -- --list` contains `live_jira_issue_read: test`, plus the ignored row, deterministic Adapter suite, and `scripts/live-smoke.sh`/`cargo live` registration.
 
-**Named mutation:** Rename `live_jira_issue_read` to `jira_issue_read`; the harness-list fence must no longer find the required `live_*` row and turn red without credentials. Restore the name and confirm the list/skip are green.
+**Named mutation:** Rename `live_jira_issue_read` to `jira_issue_read`; harness-list fence loses the required `live_*` row and turns red without credentials; restore green.
 
-**Complexity/production scale:** Fixed $O(1)$ number of direct issue reads/Fields chosen from one fixture; each response remains under configured 8 MiB and each logical read under 30 seconds. Explicit maximum accepted requests: six GET logical reads, each with at most one bounded retry, because the row proves shapes rather than tenant enumeration.
+**Complexity/production scale:** Fixed $O(1)$ direct reads/Fields; each response ≤8 MiB and logical read ≤30 seconds. Maximum six logical GET reads, each with at most one bounded retry, because the row proves shapes rather than tenant enumeration.
 
 **Wall budget/phase:** N/A — one-off ignored live evidence; no always-on phase.
 
-**Files:** `crates/resourcefs-sources/tests/jira_live_smoke.rs`, `scripts/live-smoke.sh` only if explicit registration is required, `.cargo/config.toml` only if the existing `cargo live` alias enumerates tests, and `.rfs-pm0y/evidence.md` only when a real run occurs.
+**Files:** `crates/resourcefs-sources/tests/jira_live_smoke.rs`, `scripts/live-smoke.sh` if explicit registration is required, `.cargo/config.toml` if the alias enumerates targets, `.rfs-pm0y/evidence.md` only when a real run occurs.
 
-**Estimate:** 2–3 hours plus external credential availability for execution.
+**Estimate:** 2–3 hours plus external credential availability.
 
 **Diff estimate:** 300 changed lines.
 
-**PR increment:** C — Read Adapter and evidence.
+**PR increment:** C — Live evidence.
 
 **Commands and expected results:**
-- `cargo test -p resourcefs-sources --test jira_live_smoke -- --list` → output contains `live_jira_issue_read: test`; the C13 rename mutation removes that row and turns the fence red, restoration returns green.
-- `cargo test -p resourcefs-sources --test jira_live_smoke -- --ignored` with gates absent → test exits successfully after a clean skip and emits no credential/account email.
-- `RFS_LIVE=1 ... cargo test -p resourcefs-sources --test jira_live_smoke -- --ignored --nocapture` when the external fixture variables are available → stable/key canonical identity, JSON/ADF media, byte-derived tags, repeated-read invariants, and redaction all pass; record the dated result in `.rfs-pm0y/evidence.md`.
-- `cargo test -p resourcefs-sources --tests --no-run` → the ignored live row and deterministic suite compile together without requiring live secrets.
+- `cargo test -p resourcefs-sources --test jira_live_smoke -- --list` → contains `live_jira_issue_read: test`; rename mutation removes it/red, restoration green.
+- `cargo test -p resourcefs-sources --test jira_live_smoke -- --ignored` with gates absent → clean successful skip with no credential/account email.
+- `RFS_LIVE=1 ... cargo test -p resourcefs-sources --test jira_live_smoke -- --ignored --nocapture` when external variables exist → stable/key identity, JSON/ADF media, byte tags, repeated-read, redaction invariants pass; record dated run in evidence.
+- `cargo test -p resourcefs-sources --tests --no-run` → ignored live and deterministic suites compile without secrets.
 
 ## Tracker taxonomy
 

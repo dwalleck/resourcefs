@@ -796,6 +796,7 @@ mod tests {
                 resourcefs_sources::LocalSource::new(session.path_session().clone()),
                 None,
                 None,
+                None,
             )
             .await
             .expect("render fixture compiled sources"),

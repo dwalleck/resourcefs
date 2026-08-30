@@ -32,7 +32,7 @@ def fetch_text(url: str) -> tuple[str, str, str]:
 def main() -> None:
     jira, jira_url, jira_sha256 = fetch_json(JIRA_OPENAPI)
     adf, adf_url, adf_sha256 = fetch_json(ADF_SCHEMA)
-    basic_auth, basic_auth_url, basic_auth_sha256 = fetch_text(BASIC_AUTH)
+    basic_auth, basic_auth_url, _basic_auth_page_sha256 = fetch_text(BASIC_AUTH)
 
     issue_get = jira["paths"]["/rest/api/3/issue/{issueIdOrKey}"]["get"]
     issue = jira["components"]["schemas"]["IssueBean"]
@@ -46,6 +46,15 @@ def main() -> None:
         if parameter["in"] == "path"
     )
     description = issue_get["description"]
+    basic_auth_facts = {
+        "email_and_token": "email address" in basic_auth and "API token" in basic_auth,
+        "colon_join": "useremail:api_token" in basic_auth,
+        "base64_encoding": "BASE64 encode the string" in basic_auth,
+        "authorization_scheme": "Authorization: Basic" in basic_auth,
+    }
+    basic_auth_facts_sha256 = hashlib.sha256(
+        json.dumps(basic_auth_facts, sort_keys=True).encode("utf-8")
+    ).hexdigest()
     result = {
         "sources": {
             "jira": {
@@ -59,7 +68,7 @@ def main() -> None:
             },
             "basic_auth": {
                 "url": basic_auth_url,
-                "sha256": basic_auth_sha256,
+                "facts_sha256": basic_auth_facts_sha256,
             },
         },
         "issue_lookup": {
@@ -95,12 +104,7 @@ def main() -> None:
             "content_type": adf_doc["properties"]["content"]["type"],
             "root_allows_unknown_members": adf_doc["additionalProperties"],
         },
-        "basic_auth": {
-            "email_and_token": "email address" in basic_auth and "API token" in basic_auth,
-            "colon_join": "useremail:api_token" in basic_auth,
-            "base64_encoding": "BASE64 encode the string" in basic_auth,
-            "authorization_scheme": "Authorization: Basic" in basic_auth,
-        },
+        "basic_auth": basic_auth_facts,
     }
     print(json.dumps(result, indent=2, sort_keys=True))
 

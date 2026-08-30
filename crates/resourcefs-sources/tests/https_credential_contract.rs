@@ -362,6 +362,7 @@ async fn cancellation_survives_source_dispatch() {
         LocalSource::new(session.path_session().clone()),
         Some(source(port, Vec::new())),
         None,
+        None,
     )
     .await
     .expect("compiled sources");

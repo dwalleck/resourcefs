@@ -1,6 +1,7 @@
 //! Compiled ResourceFS Source Adapters.
 
 mod artifact;
+mod atlassian;
 mod catalog;
 mod compiled;
 mod configuration;
@@ -15,6 +16,13 @@ mod process;
 pub mod secret;
 mod session_storage;
 pub use artifact::ArtifactSource;
+pub use atlassian::{AtlassianSite, AtlassianSource, AtlassianSourceMount};
+#[cfg(feature = "test-support")]
+pub use atlassian::{
+    JiraProjectionWarningObservation, JiraRenderFieldObservation, JiraRenderObservation,
+    JiraWireFieldObservation, JiraWireLookupForTest, JiraWireObservation,
+    inspect_jira_render_for_test, inspect_jira_wire_for_test,
+};
 pub use compiled::CompiledSources;
 pub use configuration::{
     AgentExportConfig, ChildEnvironment, CommandSpec, ConfigurationDirectory, ConfigurationError,

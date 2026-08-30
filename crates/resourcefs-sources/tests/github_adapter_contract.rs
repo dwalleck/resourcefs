@@ -523,6 +523,7 @@ async fn compiled_registry_mounts_dispatches_and_requires_github_grant() {
         scratch.local.clone(),
         None,
         Some(github),
+        None,
     )
     .await
     .expect("compiled GitHub source");

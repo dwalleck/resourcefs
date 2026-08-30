@@ -328,24 +328,42 @@ async fn http_mutation_request_budget() {
 }
 
 #[tokio::test]
-async fn retained_response_metadata_has_a_hard_byte_ceiling() {
+async fn oversized_etag_degrades_but_link_metadata_ceiling_is_hard() {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener =
+    let etag_listener =
         TlsListener::serve_router(loopback, 0, MATCH_CERT, |_path| FixtureResponse::Response {
             status: "200 OK",
             headers: vec![("ETag".to_owned(), "x".repeat(16 * 1024 + 1))],
             body: Vec::new(),
         })
         .await;
-    let port = listener.address.port();
-    let substrate = tls_substrate(fixture_allowlist(port, true), vec![loopback]);
+    let etag_port = etag_listener.address.port();
+    let substrate = tls_substrate(fixture_allowlist(etag_port, true), vec![loopback]);
     let request = HttpRequest::get(
-        Url::parse(&format!("https://{FIXTURE_HOST}:{port}/oversized")).expect("fixture URL"),
+        Url::parse(&format!("https://{FIXTURE_HOST}:{etag_port}/oversized")).expect("fixture URL"),
+    );
+    let response = substrate
+        .fetch(request, &OperationGuard::new())
+        .await
+        .expect("oversized optional validator degrades to absence");
+    assert_eq!(response.etag(), None);
+
+    let link_listener =
+        TlsListener::serve_router(loopback, 0, MATCH_CERT, |_path| FixtureResponse::Response {
+            status: "200 OK",
+            headers: vec![("Link".to_owned(), "x".repeat(16 * 1024 + 1))],
+            body: Vec::new(),
+        })
+        .await;
+    let link_port = link_listener.address.port();
+    let substrate = tls_substrate(fixture_allowlist(link_port, true), vec![loopback]);
+    let request = HttpRequest::get(
+        Url::parse(&format!("https://{FIXTURE_HOST}:{link_port}/oversized")).expect("fixture URL"),
     );
     let error = substrate
         .fetch(request, &OperationGuard::new())
         .await
-        .expect_err("oversized retained header");
+        .expect_err("oversized authoritative continuation metadata");
     assert_eq!(error.category(), ErrorCategory::LimitExceeded);
 }
 

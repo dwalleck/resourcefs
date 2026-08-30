@@ -15,7 +15,7 @@
 ## Data
 
 - Source: production-shaped — Atlassian's current published Jira REST v3 OpenAPI document, canonical ADF JSON Schema, and API-token Basic-authentication guide.
-- Shape: the vendor schemas and wire-authentication instructions used to publish the production endpoint path, response model, field metadata model, response statuses, complete ADF document grammar, and Authorization header; Jira schema version `1001.0.0-SNAPSHOT-699dda19a3d49050afba1f0e24e0b62d363c1be4`, SHA-256 `7b92e6a64584be28d2222e38e8752db7b9f422aa91ed0d20995cfaf6168293d4`; resolved ADF schema `@atlaskit/adf-schema@57.2.5`, SHA-256 `75f080928a970250eb8289e9cae5374e3c2a6c0ac3ca22478acaa9d3f39484a3`; Basic-authentication page SHA-256 `aa3043328c85958190810317cd0b6724e137c0ef13ee1a557295d8f3c9c8027f`.
+- Shape: the vendor schemas and wire-authentication instructions used to publish the production endpoint path, response model, field metadata model, response statuses, complete ADF document grammar, and Authorization header; Jira schema version `1001.0.0-SNAPSHOT-699dda19a3d49050afba1f0e24e0b62d363c1be4`, SHA-256 `7b92e6a64584be28d2222e38e8752db7b9f422aa91ed0d20995cfaf6168293d4`; resolved ADF schema `@atlaskit/adf-schema@57.2.5`, SHA-256 `75f080928a970250eb8289e9cae5374e3c2a6c0ac3ca22478acaa9d3f39484a3`; normalized Basic-auth fact-set SHA-256 `2533908d075f45cf9f860436789fe5db9a8ea275da5c14250b6c8c72573e4cc5` (raw documentation HTML is intentionally not pinned because page-shell metadata changes independently of the four extracted facts).
 - Safety: read-only anonymous fetches of public vendor documentation; no tenant, credentials, production state, or mutation involved. | Approval: N/A — safe public production-shaped data.
 
 ## Probe

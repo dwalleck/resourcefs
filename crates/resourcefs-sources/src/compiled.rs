@@ -8,7 +8,7 @@ use resourcefs_core::{
 };
 
 use crate::{
-    ArtifactSource, FilesystemSource, GithubSource, HttpsSource, LocalSource,
+    ArtifactSource, AtlassianSource, FilesystemSource, GithubSource, HttpsSource, LocalSource,
     catalog::{NamespaceCatalog, SourceCatalogEntry, SourceCatalogMetadata},
     filesystem::mutation::FILESYSTEM_MUTATION_SOURCE_KEY,
     github::GITHUB_MUTATION_SOURCE_KEY,
@@ -23,6 +23,7 @@ pub struct CompiledSources {
     local: LocalSource,
     https: Option<HttpsSource>,
     github: Option<GithubSource>,
+    atlassian: Option<AtlassianSource>,
 }
 
 impl CompiledSources {
@@ -32,6 +33,7 @@ impl CompiledSources {
         local: LocalSource,
         https: Option<HttpsSource>,
         github: Option<GithubSource>,
+        atlassian: Option<AtlassianSource>,
     ) -> Result<Self, ResourceError> {
         let compiled = Self {
             filesystem,
@@ -39,6 +41,7 @@ impl CompiledSources {
             local,
             https,
             github,
+            atlassian,
         };
         let source_document = NamespaceCatalog::source_document(compiled.catalog_entries()?)?;
         let workspace_document = NamespaceCatalog::workspace_document(&compiled.filesystem).await?;
@@ -62,6 +65,9 @@ impl CompiledSources {
         }
         if let Some(github) = &self.github {
             sources.push(github);
+        }
+        if let Some(atlassian) = &self.atlassian {
+            sources.push(atlassian);
         }
         sources
     }
@@ -106,7 +112,7 @@ impl SourceAdapter for CompiledSources {
             ResourceAddress::Artifact(_) => self.artifacts.read(reference, operation).await,
             ResourceAddress::Local(_) => self.local.read(reference, operation).await,
             ResourceAddress::Https(_) => self.https_source()?.read(reference, operation).await,
-            ResourceAddress::Jira(_) => Err(atlassian_source_unavailable()),
+            ResourceAddress::Jira(_) => self.atlassian_source()?.read(reference, operation).await,
             ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
                 self.github_source()?.read(reference, operation).await
             }
@@ -231,6 +237,12 @@ impl CompiledSources {
     fn github_source(&self) -> Result<&GithubSource, ResourceError> {
         self.github.as_ref().ok_or_else(github_source_unavailable)
     }
+
+    fn atlassian_source(&self) -> Result<&AtlassianSource, ResourceError> {
+        self.atlassian
+            .as_ref()
+            .ok_or_else(atlassian_source_unavailable)
+    }
 }
 
 fn github_source_unavailable() -> ResourceError {
@@ -281,7 +293,11 @@ impl DiscoveryAdapter for CompiledSources {
                     .search(target, pattern, options, operation)
                     .await
             }
-            Some(ResourceAddress::Jira(_)) => Err(atlassian_source_unavailable()),
+            Some(ResourceAddress::Jira(_)) => {
+                self.atlassian_source()?
+                    .search(target, pattern, options, operation)
+                    .await
+            }
             Some(ResourceAddress::Issue(_)) | Some(ResourceAddress::PullRequest(_)) => {
                 self.github_source()?
                     .search(target, pattern, options, operation)
@@ -349,6 +365,7 @@ mod tests {
             filesystem,
             ArtifactSource::new(session.path_session().clone()),
             crate::LocalSource::new(session.path_session().clone()),
+            None,
             None,
             None,
         )
@@ -423,6 +440,7 @@ mod tests {
             ArtifactSource::new(session.path_session().clone()),
             crate::LocalSource::new(session.path_session().clone()),
             Some(HttpsSource::new(substrate)),
+            None,
             None,
         )
         .await

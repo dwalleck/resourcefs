@@ -181,9 +181,13 @@ async fn rebinding_never_reaches_denied_address() {
     settle().await;
 
     assert_eq!(
-        (first.accepts(), second.accepts()),
-        (1, 1),
-        "each request must land on the address its own resolution returned"
+        first.accepts(),
+        1,
+        "only the first request may reach the first resolved address"
+    );
+    assert!(
+        second.accepts() >= 1,
+        "the second request and any TLS reconnects must reach only the second resolved address"
     );
 }
 

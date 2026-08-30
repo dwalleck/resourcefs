@@ -72,6 +72,7 @@ async fn fixture() -> Fixture {
             LocalSource::new(session.path_session().clone()),
             None,
             None,
+            None,
         )
         .await
         .expect("compiled sources"),

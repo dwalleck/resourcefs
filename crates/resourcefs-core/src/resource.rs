@@ -15,6 +15,52 @@ pub const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 pub const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
 pub const MARKDOWN_CONTENT_TYPE: &str = "text/markdown; charset=utf-8";
 
+/// Validated static media type for one complete UTF-8 Source Resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Utf8ContentType(&'static str);
+
+impl Utf8ContentType {
+    pub const TEXT: Self = Self(TEXT_CONTENT_TYPE);
+    pub const MARKDOWN: Self = Self(MARKDOWN_CONTENT_TYPE);
+
+    pub fn new(value: &'static str) -> Result<Self, ResourceError> {
+        let Some(media_type) = value.strip_suffix("; charset=utf-8") else {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "UTF-8 Source content type must end with exactly '; charset=utf-8'",
+            ));
+        };
+        let Some((kind, subtype)) = media_type.split_once('/') else {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "UTF-8 Source content type must contain one type/subtype pair",
+            ));
+        };
+        if subtype.contains('/') || !is_media_token(kind) || !is_media_token(subtype) {
+            return Err(ResourceError::new(
+                ErrorCategory::InvalidReference,
+                "UTF-8 Source content type must use canonical ASCII media-token syntax",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+fn is_media_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+                )
+        })
+}
+
 /// Position of a contiguous artifact projection in its immutable root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArtifactProjectionOrigin {
@@ -180,13 +226,33 @@ impl SourceResource {
         Self::text_projection(reference, content, version_tag)
     }
 
+    /// Builds one complete UTF-8 Resource with a source-selected canonical media type.
+    pub fn utf8(
+        reference: PathReference,
+        content: String,
+        content_type: Utf8ContentType,
+    ) -> Result<Self, ResourceError> {
+        let version_tag = VersionTag::from_content(content.as_bytes());
+        Self::utf8_projection(reference, content, version_tag, content_type)
+    }
+
+    /// Builds one complete UTF-8 projection carrying an authoritative whole-Resource tag.
+    pub fn utf8_projection(
+        reference: PathReference,
+        content: String,
+        version_tag: VersionTag,
+        content_type: Utf8ContentType,
+    ) -> Result<Self, ResourceError> {
+        Self::projection_with_content_type(reference, content, version_tag, content_type)
+    }
+
     /// Build a selected projection carrying the authoritative whole-Resource Version Tag.
     pub fn text_projection(
         reference: PathReference,
         content: String,
         version_tag: VersionTag,
     ) -> Result<Self, ResourceError> {
-        Self::projection_with_content_type(reference, content, version_tag, TEXT_CONTENT_TYPE)
+        Self::projection_with_content_type(reference, content, version_tag, Utf8ContentType::TEXT)
     }
 
     /// Build a selected Markdown projection carrying the authoritative whole-Resource Version Tag.
@@ -195,21 +261,26 @@ impl SourceResource {
         content: String,
         version_tag: VersionTag,
     ) -> Result<Self, ResourceError> {
-        Self::projection_with_content_type(reference, content, version_tag, MARKDOWN_CONTENT_TYPE)
+        Self::projection_with_content_type(
+            reference,
+            content,
+            version_tag,
+            Utf8ContentType::MARKDOWN,
+        )
     }
 
     fn projection_with_content_type(
         reference: PathReference,
         content: String,
         version_tag: VersionTag,
-        content_type: &'static str,
+        content_type: Utf8ContentType,
     ) -> Result<Self, ResourceError> {
         validate_canonical_identity(&reference)?;
         let artifact_identity = matches!(reference.address(), ResourceAddress::Artifact(_));
         let projection = ProjectionMetadata::complete(&content);
         Ok(Self {
             canonical_reference: reference.requested().to_owned(),
-            content_type,
+            content_type: content_type.as_str(),
             version_tag,
             mutable: false,
             backing_file_uri: None,
@@ -224,6 +295,15 @@ impl SourceResource {
     pub fn selected_text(
         reference: PathReference,
         selected: crate::selector::SelectedText,
+    ) -> Result<Self, ResourceError> {
+        Self::selected_utf8(reference, selected, Utf8ContentType::TEXT)
+    }
+
+    /// Builds a selected UTF-8 projection retaining the whole-Resource tag and media type.
+    pub fn selected_utf8(
+        reference: PathReference,
+        selected: crate::selector::SelectedText,
+        content_type: Utf8ContentType,
     ) -> Result<Self, ResourceError> {
         validate_canonical_identity(&reference)?;
         let artifact_identity = matches!(reference.address(), ResourceAddress::Artifact(_));
@@ -243,7 +323,7 @@ impl SourceResource {
         };
         Ok(Self {
             canonical_reference: reference.requested().to_owned(),
-            content_type: TEXT_CONTENT_TYPE,
+            content_type: content_type.as_str(),
             version_tag,
             mutable: false,
             backing_file_uri: None,
