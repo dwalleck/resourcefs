@@ -3,10 +3,10 @@
 ## Inputs and partition
 
 - Approved design: `.rfs-pm0y/design.md`, requester words “Approve revised design”, 2026-08-29, no accepted risks.
-- Route/evidence: Empirical; `.rfs-pm0y/evidence.md` has P1–P5 `PASS`; C16 is the completed cheapest falsifier and every other claim is assigned below exactly once.
-- Projected changed lines: Slice 1 `1,000` + Slice 2 `500` + Slice 3 `5,400` + Slice 4 `300` = `7,200`.
-- Churn margin: `25% = 1,800` lines. Rationale: exhaustive `ResourceAddress` migration and deterministic TLS matrices routinely add callsite/test-support rows after the first count.
-- Review-size projection: `7,200 + 1,800 = 9,000`, above the 4,000-line gate; use three independently mergeable increments.
+- Route/evidence: Empirical; `.rfs-pm0y/evidence.md` has P1–P5 `PASS`; C16 is the completed cheapest falsifier. Initial slices assign every claim exactly once; review-fix Slice 5 traces accepted findings back to their existing claims.
+- Projected changed lines: Slice 1 `1,000` + Slice 2 `500` + Slice 3 `5,400` + Slice 4 `300` + Slice 5 `600` = `7,800`.
+- Churn margin: `25% = 1,950` lines. Rationale: exhaustive `ResourceAddress` migration, deterministic TLS matrices, and accepted review corrections add callsite/test-support rows after the first count.
+- Review-size projection: `7,800 + 1,950 = 9,750`, above the 4,000-line gate; retain three independently mergeable increments.
 
 ### PR increment A — Typed and credential foundations
 
@@ -16,9 +16,9 @@ Slices 1–2. Mergeable definition: core recognizes and rejects the complete dir
 
 Slice 3. Mergeable definition: the public multi-site Atlassian Source Adapter strictly decodes native authority, canonicalizes JSON/ADF Fields, renders deterministic Aggregate/index Markdown, uses shared HTTP/cache/retry/cancellation, supports direct search, and is routed/cataloged by `CompiledSources`. Deterministic native-wire/TLS/oracle contracts verify it without profile launch integration.
 
-### PR increment C — Live evidence
+### PR increment C — Live evidence and review corrections
 
-Slice 4. Mergeable definition: the ignored real Jira read row and live-smoke registration prove the already complete Adapter against a configured read-only tenant. It changes no production behavior and depends only on increment B.
+Slices 4–5. Mergeable definition: the ignored real Jira row proves the complete Adapter against a configured read-only tenant, and accepted post-build review findings harden exact numeric authority, projection scope, stable search identity, and redirect/redaction behavior. This increment depends only on increment B.
 
 ## Slice 1: Add canonical Jira reference types
 
@@ -146,6 +146,40 @@ Slice 4. Mergeable definition: the ignored real Jira read row and live-smoke reg
 - `RFS_LIVE=1 ... cargo test -p resourcefs-sources --test jira_live_smoke -- --ignored --nocapture` when external variables exist → stable/key identity, JSON/ADF media, byte tags, repeated-read, redaction invariants pass; record dated run in evidence.
 - `cargo test -p resourcefs-sources --tests --no-run` → ignored live and deterministic suites compile without secrets.
 
+## Slice 5: Apply accepted Jira review corrections
+
+**Claim IDs:** C3, C4, C5, C6, C9, C10, C12, C14
+
+**Expected behavior:** `JiraCodeReview-P1`/`JiraSpecReview-P5` preserve arbitrary-precision JSON numbers through canonicalization; `JiraCodeReview-P2`/`JiraSpecReview-P6` scope ADF rendering to Aggregate or the requested ADF Field so unrelated malformed ADF cannot poison Field/index reads; the post-fix depth review caps recursive JSON at 128 containers; `JiraSpecReview-P1` uses resolved stable identity for SearchRecords; `JiraSpecReview-P3` rejects every direct-issue redirect; `JiraSpecReview-P4` redacts redirected/policy URLs. The proposed 1.2.0 bump is rejected here because `rfs-lzbn` owns publication after profile/Confluence read release; the premature version claim is removed.
+
+**Oracle:** Exact decimal normalization table over original number lexemes; explicit 512-level nesting refusal; direct Field/index vs Aggregate malformed-ADF matrix; SearchRecord stable-reference assertion; TLS same-origin/out-of-origin redirect transcript and canary scan; verified future release ticket `rfs-lzbn`.
+
+**Stress fixture:** High-precision decimal, exponent, negative zero, numeric equivalence; 512 nested arrays; malformed unrelated ADF beside valid ordinary Field; alias search; same-origin and forbidden-origin redirect carrying canary path. Expected: lossless normalized bytes, bounded `source_unavailable` depth refusal without stack overflow, Field/index success with Aggregate atomic failure, stable SearchRecords, `source_unavailable` for unexpected same-origin redirect, fixed redacted `permission_denied` for egress refusal.
+
+**Regression fence:** `jira_wire_contract::{canonical_json_preserves_arbitrary_precision_numbers,excessive_json_depth_fails_without_stack_overflow}`; `atlassian_jira_adapter_contract::{ordinary_field_read_ignores_unrelated_malformed_adf_projection,compiled_registry_routes_and_advertises_mounted_jira,unexpected_redirects_fail_without_url_disclosure}` plus full Jira/source suites.
+
+**Named mutation:** Restore f64 number parsing; disable the JSON depth guard; render the entire issue before resource selection; pass the requested alias to `search_document`; omit final-URL comparison; inject/preserve full URL error prose. Each must turn its corresponding review regression row red, then restore green.
+
+**Complexity/production scale:** Lossless number parsing/canonicalization remains $O(b)$ within the existing 8 MiB body bound, caps recursive descent at 128, and avoids exponent-driven output expansion by scientific notation outside fixed decimal thresholds. Projection scoping performs no more work than Slice 3; redirects/search remain $O(1)$ identity checks. Existing 2-second wire, 4-second Adapter CPU, and 30-second logical wall maxima remain unchanged.
+
+**Wall budget/phase:** always-on decode/read/search paths retain Slice 3’s 4-second Adapter-local CPU and 30-second total wall limits; no new phase.
+
+**Files:** `crates/resourcefs-sources/src/atlassian/{wire.rs,render.rs,jira.rs}`, `crates/resourcefs-sources/src/compiled.rs`, `crates/resourcefs-sources/tests/{jira_wire_contract.rs,atlassian_jira_adapter_contract.rs}`, `.rfs-pm0y/plan.md`.
+
+**Estimate:** 3–5 hours.
+
+**Diff estimate:** 600 changed lines.
+
+**PR increment:** C — Live evidence and review corrections.
+
+**Commands and expected results:**
+- `cargo test -p resourcefs-sources --test jira_wire_contract canonical_json_preserves_arbitrary_precision_numbers` → exact decimal table agrees; f64 mutation red/restored green.
+- `cargo test -p resourcefs-sources --test jira_wire_contract excessive_json_depth_fails_without_stack_overflow` → 512-level input fails safely; disabled-depth mutation red/restored green.
+- `cargo test -p resourcefs-sources --test atlassian_jira_adapter_contract ordinary_field_read_ignores_unrelated_malformed_adf_projection` → Field/index succeed and Aggregate fails atomically; unconditional-render mutation red/restored green.
+- `cargo test -p resourcefs-sources --test atlassian_jira_adapter_contract compiled_registry_routes_and_advertises_mounted_jira` → alias search records use stable reference; alias-record mutation red/restored green.
+- `cargo test -p resourcefs-sources --test atlassian_jira_adapter_contract unexpected_redirects_fail_without_url_disclosure` → same-origin redirect fails and forbidden redirect remains redacted; final-URL/error-prose mutations red/restored green.
+- `cargo test --workspace --all-features` → assembled implementation and every migrated caller remain green.
+
 ## Tracker taxonomy
 
 - Permanent non-goals: ACLI, a second HTTP client/policy, comment inlining, rendered HTML authority, Aggregate/alias mutation, Markdown-to-ADF conversion. Rationale: each contradicts the approved parent architecture or native-authority contract; no tracker ticket is appropriate.
@@ -153,10 +187,10 @@ Slice 4. Mergeable definition: the ignored real Jira read row and live-smoke reg
 
 ## Self-review
 
-- [x] Every design claim C1–C16 is assigned exactly once; C16 is already `PASS`, and every `PENDING` row is discharged by its owning slice.
-- [x] All six slices contain all thirteen mandatory fields and explicit `N/A — reason` values where applicable.
-- [x] Every claim receives its permanent fence in the implementing slice and carries the approved named mutation; no fence-less risk exists.
+- [x] Initial slices assign every design claim C1–C16 exactly once; review-fix Slice 5 maps accepted findings to existing claims without changing the approved design.
+- [x] All five slices contain all thirteen mandatory fields and explicit `N/A — reason` values where applicable.
+- [x] Every claim receives its permanent fence in the implementing slice; review regressions add narrower fences and named mutations.
 - [x] Every new loop records asymptotic cost, production ceiling, explicit maximum, and rationale; every always-on phase has a wall budget.
-- [x] The 9,000-line projection is partitioned into three dependency-ordered, independently mergeable increments.
+- [x] The 9,750-line projection is partitioned into three dependency-ordered, independently mergeable increments.
 - [x] Every deferral is a permanent non-goal with rationale or cites a verified future-work ticket.
 - [x] No slice is declared complete; `checkpointed-build` exclusively judges completion.

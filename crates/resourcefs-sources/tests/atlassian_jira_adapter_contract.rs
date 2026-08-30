@@ -232,6 +232,48 @@ async fn aggregate_index_and_fields_preserve_media_and_tags() {
 }
 
 #[tokio::test]
+async fn ordinary_field_read_ignores_unrelated_malformed_adf_projection() {
+    let malformed = ISSUE.replace(
+        r#"{"version":1,"type":"doc","content":[
+      {"type":"paragraph","content":[{"type":"text","text":"Rich text"}]}
+    ]}"#,
+        r#"{"type":"doc","content":[]}"#,
+    );
+    let (_listener, source) = fixture_source(move |_path| response(&malformed)).await;
+    let operation = OperationGuard::new();
+
+    let summary = source
+        .read(
+            &PathReference::parse("jira://acme/issues/10001/fields/summary")
+                .expect("summary Field"),
+            &operation,
+        )
+        .await
+        .expect("ordinary Field authority is independent");
+    assert_eq!(summary.content(), r#""Hello""#);
+    assert_eq!(summary.content_type(), "application/json; charset=utf-8");
+
+    let index = source
+        .read(
+            &PathReference::parse("jira://acme/issues/10001/fields").expect("Field index"),
+            &operation,
+        )
+        .await
+        .expect("Field index depends on metadata, not unrelated value projections");
+    assert!(index.content().contains("Field ID: summary"));
+    assert!(index.content().contains("Field ID: description"));
+
+    let aggregate = source
+        .read(
+            &PathReference::parse("jira://acme/issues/10001").expect("Aggregate"),
+            &operation,
+        )
+        .await
+        .expect_err("Aggregate projection validates every ADF value atomically");
+    assert_eq!(aggregate.category(), ErrorCategory::SourceUnavailable);
+}
+
+#[tokio::test]
 async fn selector_media_contract_and_zero_egress_refusals() {
     let (listener, source) = fixture_source(|_path| response(ISSUE)).await;
 
@@ -318,6 +360,31 @@ async fn compiled_registry_routes_and_advertises_mounted_jira() {
         .await
         .expect("compiled Jira search");
     assert!(searched.total_records() >= 1);
+
+    let alias_search = discovery
+        .search(
+            SearchRequest::new(
+                SearchTarget::resource(
+                    PathReference::parse("jira://acme/issue-keys/OLD-1").expect("alias reference"),
+                ),
+                "Hello",
+                SearchOptions::default(),
+                0,
+                SearchLimits::default(),
+            )
+            .expect("alias search request"),
+            &operation,
+        )
+        .await
+        .expect("compiled Jira alias search");
+    assert!(alias_search.total_records() >= 1);
+    assert!(
+        alias_search
+            .groups()
+            .iter()
+            .all(|group| group.reference() == "jira://acme/issues/10001"),
+        "mutable aliases must never identify SearchRecords"
+    );
 }
 
 #[tokio::test]
@@ -415,6 +482,36 @@ async fn etag_revalidation_matrix() {
         "304 without authority must report the missing cache invariant"
     );
     assert_eq!(orphan_listener.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn unexpected_redirects_fail_without_url_disclosure() {
+    let (_listener, source) = fixture_source(|path| {
+        if path.starts_with("/rest/api/3/issue/10001?") {
+            FixtureResponse::Redirect("/rest/api/3/issue/redirected".to_owned())
+        } else {
+            response(ISSUE)
+        }
+    })
+    .await;
+    let reference = PathReference::parse("jira://acme/issues/10001").expect("reference");
+    let error = source
+        .read(&reference, &OperationGuard::new())
+        .await
+        .expect_err("documented direct issue endpoint must not redirect");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+
+    let (_listener, source) = fixture_source(|_path| {
+        FixtureResponse::Redirect("https://outside.invalid/CANARY-SECRET".to_owned())
+    })
+    .await;
+    let error = source
+        .read(&reference, &OperationGuard::new())
+        .await
+        .expect_err("out-of-origin redirect");
+    assert_eq!(error.category(), ErrorCategory::PermissionDenied);
+    assert!(!error.message().contains("CANARY-SECRET"));
+    assert!(!error.message().contains("https://"));
 }
 
 #[tokio::test]

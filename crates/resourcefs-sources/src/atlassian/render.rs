@@ -34,24 +34,57 @@ pub(crate) struct RenderedIssue {
     pub(crate) warnings: Vec<ProjectionWarning>,
 }
 
+pub(crate) fn render_field_index(
+    site: &AtlassianSiteId,
+    issue: &JiraIssue,
+) -> Result<String, ResourceError> {
+    let canonical_reference = canonical_issue_reference(site, issue)?;
+    let mut field_index = format!(
+        "# Jira Fields {}\n\nCanonical Issue: {canonical_reference}\n\n",
+        issue.key.as_str()
+    );
+    if issue.fields.is_empty() {
+        field_index.push_str("No visible fields.\n");
+        return Ok(field_index);
+    }
+    for field in issue.fields.values() {
+        let field_reference = canonical_field_reference(site, issue, field)?;
+        writeln!(
+            &mut field_index,
+            "Field ID: {}\nName: {}\nNative Type: {}\nMutable: false\nReference: {field_reference}\n",
+            field.id.as_str(),
+            quoted(&field.name),
+            quoted(&field.native_type)
+        )
+        .expect("writing to a String cannot fail");
+    }
+    Ok(field_index)
+}
+
+pub(crate) fn field_content_type(field: &JiraField) -> Result<&'static str, ResourceError> {
+    if is_adf_candidate(&field.value) {
+        let mut warnings = Vec::new();
+        render_adf(&field.value, "", &mut warnings)?;
+        Ok(ADF_CONTENT_TYPE)
+    } else {
+        Ok(JSON_CONTENT_TYPE)
+    }
+}
+
 pub(crate) fn render_issue(
     site: &AtlassianSiteId,
     issue: &JiraIssue,
 ) -> Result<RenderedIssue, ResourceError> {
     let canonical_reference = canonical_issue_reference(site, issue)?;
+    let field_index = render_field_index(site, issue)?;
     let mut aggregate = format!(
         "# Jira Issue {}\n\nCanonical Reference: {canonical_reference}\nIssue ID: {}\nIssue Key: {}\n\n## Fields\n\n",
         issue.key.as_str(),
         issue.id.as_str(),
         issue.key.as_str()
     );
-    let mut field_index = format!(
-        "# Jira Fields {}\n\nCanonical Issue: {canonical_reference}\n\n",
-        issue.key.as_str()
-    );
     if issue.fields.is_empty() {
         aggregate.push_str("No visible fields.\n");
-        field_index.push_str("No visible fields.\n");
     }
 
     let mut fields = Vec::with_capacity(issue.fields.len());
@@ -60,12 +93,6 @@ pub(crate) fn render_issue(
         let field_reference = canonical_field_reference(site, issue, field)?;
         let name = quoted(&field.name);
         let native_type = quoted(&field.native_type);
-        writeln!(
-            &mut field_index,
-            "Field ID: {}\nName: {name}\nNative Type: {native_type}\nMutable: false\nReference: {field_reference}\n",
-            field.id.as_str()
-        )
-        .expect("writing to a String cannot fail");
 
         writeln!(
             &mut aggregate,
@@ -170,7 +197,7 @@ fn render_adf(
         return Err(malformed_adf("ADF document must be an object"));
     };
     match document.get("version") {
-        Some(StrictJson::Number(version)) if version.as_u64() == Some(1) => {}
+        Some(StrictJson::Number(version)) if version == "1" => {}
         _ => return Err(malformed_adf("ADF document version must be 1")),
     }
     let Some(StrictJson::Array(content)) = document.get("content") else {
@@ -224,15 +251,18 @@ fn render_node(
             output.push_str("\n\n");
         }
         "heading" => {
-            let level = match node.get("attrs") {
-                Some(StrictJson::Object(attrs)) => match attrs.get("level") {
-                    Some(StrictJson::Number(level)) => level.as_u64(),
-                    _ => None,
-                },
-                _ => None,
+            let Some(StrictJson::Object(attrs)) = node.get("attrs") else {
+                return Err(malformed_adf("ADF heading level must be between 1 and 6"));
+            };
+            let Some(StrictJson::Number(level)) = attrs.get("level") else {
+                return Err(malformed_adf("ADF heading level must be between 1 and 6"));
+            };
+            let level = level
+                .parse::<u64>()
+                .map_err(|_| malformed_adf("ADF heading level must be between 1 and 6"))?;
+            if !(1..=6).contains(&level) {
+                return Err(malformed_adf("ADF heading level must be between 1 and 6"));
             }
-            .filter(|level| (1..=6).contains(level))
-            .ok_or_else(|| malformed_adf("ADF heading level must be between 1 and 6"))?;
             for _ in 0..level {
                 output.push('#');
             }

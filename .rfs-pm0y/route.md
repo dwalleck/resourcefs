@@ -37,3 +37,5 @@ prove-it-prototype → falsifiable-design → budgeted-plan → checkpointed-bui
 ## Terminal criterion
 
 Empirical — `prove-it-prototype` records PASS for every empirical premise, every later artifact satisfies its owning stage's completion criterion, and `checkpointed-build` records no FAIL.
+
+Result: 2026-08-29 | `python .rfs-pm0y/probe_openapi.py`; per-slice falsifier/oracle/budget/fence/mutation gates; `cargo test --workspace --all-features` | PASS — empirical premises P1–P5 agree with independent oracles; C1–C16 fences passed; 519 workspace tests passed with 17 ignored; `live_jira_issue_read` registered and skipped cleanly because the real-tenant gate environment was absent; post-fix code/spec reviews report no residual findings; no gate recorded `FAIL`.

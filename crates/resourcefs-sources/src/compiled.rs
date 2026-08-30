@@ -145,7 +145,7 @@ impl MutationAdapter for CompiledSources {
             )),
             ResourceAddress::Jira(_) => Err(ResourceError::new(
                 ErrorCategory::UnsupportedMutation,
-                "jira:// Resources are read-only in Behavior Contract 1.2.0",
+                "jira:// Resources are read-only; Jira mutation is not supported",
             )),
             ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
                 self.github_source()?.resolve(reference, access).await

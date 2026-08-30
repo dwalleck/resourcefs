@@ -130,6 +130,48 @@ fn canonical_json_keeps_native_value_kinds_distinct() {
 }
 
 #[test]
+fn canonical_json_preserves_arbitrary_precision_numbers() {
+    let body = valid_issue(
+        r#"{
+            "decimal":12345678901234567890.12345678901234567890,
+            "equivalent":1.2300e2,
+            "large":1e30,
+            "negative_zero":-0.0,
+            "small":0.00000100
+        }"#,
+        r#"{
+            "decimal":"decimal","equivalent":"equivalent","large":"large",
+            "negative_zero":"negative zero","small":"small"
+        }"#,
+        r#"{
+            "decimal":{"type":"number"},"equivalent":{"type":"number"},
+            "large":{"type":"number"},"negative_zero":{"type":"number"},
+            "small":{"type":"number"}
+        }"#,
+    );
+    let observed = inspect_jira_wire_for_test(
+        body.as_bytes(),
+        ORIGIN,
+        JiraWireLookupForTest::StableId("10001".to_owned()),
+    )
+    .expect("arbitrary-precision number matrix");
+    let value = |id: &str| {
+        observed
+            .fields
+            .iter()
+            .find(|field| field.id == id)
+            .expect("numeric field")
+            .canonical_json
+            .as_str()
+    };
+    assert_eq!(value("decimal"), "12345678901234567890.1234567890123456789");
+    assert_eq!(value("equivalent"), "123");
+    assert_eq!(value("large"), "1e+30");
+    assert_eq!(value("negative_zero"), "0");
+    assert_eq!(value("small"), "0.000001");
+}
+
+#[test]
 fn authority_presence_and_type_matrix_fails_atomically() {
     let valid = valid_issue(
         r#"{"summary":"Hello"}"#,
@@ -179,6 +221,23 @@ fn duplicate_members_are_rejected_at_every_depth() {
         .expect_err("duplicate member");
         assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
     }
+}
+
+#[test]
+fn excessive_json_depth_fails_without_stack_overflow() {
+    let nested = format!("{}0{}", "[".repeat(512), "]".repeat(512));
+    let body = valid_issue(
+        &format!(r#"{{"value":{nested}}}"#),
+        r#"{"value":"Value"}"#,
+        r#"{"value":{"type":"array"}}"#,
+    );
+    let error = inspect_jira_wire_for_test(
+        body.as_bytes(),
+        ORIGIN,
+        JiraWireLookupForTest::StableId("10001".to_owned()),
+    )
+    .expect_err("excessive recursive JSON depth");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
 }
 
 #[test]

@@ -73,33 +73,38 @@ impl AtlassianSource {
             self.fetch_uncached(url, operation).await?
         };
         let issue = wire::decode_issue(&fetched.body, site.origin(), lookup)?;
-        let rendered = render::render_issue(site.id(), &issue)?;
 
         match requested_resource {
-            JiraIssueResource::Aggregate => self.markdown_resource(
-                PathReference::jira(
-                    JiraAddress::Issue {
-                        site: site.id().clone(),
-                        issue_id: issue.id.clone(),
-                        resource: JiraIssueResource::Aggregate,
-                    },
-                    None,
-                )?,
-                rendered.aggregate,
-                projection,
-            ),
-            JiraIssueResource::Fields => self.markdown_resource(
-                PathReference::jira(
-                    JiraAddress::Issue {
-                        site: site.id().clone(),
-                        issue_id: issue.id.clone(),
-                        resource: JiraIssueResource::Fields,
-                    },
-                    None,
-                )?,
-                rendered.field_index,
-                projection,
-            ),
+            JiraIssueResource::Aggregate => {
+                let rendered = render::render_issue(site.id(), &issue)?;
+                self.markdown_resource(
+                    PathReference::jira(
+                        JiraAddress::Issue {
+                            site: site.id().clone(),
+                            issue_id: issue.id.clone(),
+                            resource: JiraIssueResource::Aggregate,
+                        },
+                        None,
+                    )?,
+                    rendered.aggregate,
+                    projection,
+                )
+            }
+            JiraIssueResource::Fields => {
+                let field_index = render::render_field_index(site.id(), &issue)?;
+                self.markdown_resource(
+                    PathReference::jira(
+                        JiraAddress::Issue {
+                            site: site.id().clone(),
+                            issue_id: issue.id.clone(),
+                            resource: JiraIssueResource::Fields,
+                        },
+                        None,
+                    )?,
+                    field_index,
+                    projection,
+                )
+            }
             JiraIssueResource::Field(field_id) => {
                 let field = issue.fields.get(field_id).ok_or_else(|| {
                     ResourceError::new(
@@ -107,11 +112,6 @@ impl AtlassianSource {
                         "Jira Field was not present on the visible issue",
                     )
                 })?;
-                let rendered_field = rendered
-                    .fields
-                    .iter()
-                    .find(|candidate| candidate.id == field_id.as_str())
-                    .ok_or_else(|| malformed_upstream("Jira Field projection is incomplete"))?;
                 let canonical = PathReference::jira(
                     JiraAddress::Issue {
                         site: site.id().clone(),
@@ -123,7 +123,7 @@ impl AtlassianSource {
                 SourceResource::utf8(
                     canonical,
                     field.canonical_json.clone(),
-                    Utf8ContentType::new(rendered_field.content_type)?,
+                    Utf8ContentType::new(render::field_content_type(field)?)?,
                 )
             }
         }
@@ -214,6 +214,7 @@ impl AtlassianSource {
             cached = None;
             metadata = None;
         }
+        let expected_url = url.clone();
         let request = Self::request(
             url,
             metadata.as_ref().map(|metadata| metadata.etag.as_str()),
@@ -222,6 +223,11 @@ impl AtlassianSource {
             .fetch(request)
             .await
             .map_err(Self::sanitize_fetch_error)?;
+        if response.final_url() != &expected_url {
+            return Err(malformed_upstream(
+                "Jira issue endpoint returned an unexpected redirect",
+            ));
+        }
         if response.status() == 304 {
             if self.session.cache_generation(&namespace).await? != generation {
                 return Err(malformed_upstream(
@@ -270,10 +276,16 @@ impl AtlassianSource {
         url: Url,
         operation: BoundedRead<'_>,
     ) -> Result<FetchedResponse, ResourceError> {
+        let expected_url = url.clone();
         let response = operation
             .fetch(Self::request(url, None)?)
             .await
             .map_err(Self::sanitize_fetch_error)?;
+        if response.final_url() != &expected_url {
+            return Err(malformed_upstream(
+                "Jira issue endpoint returned an unexpected redirect",
+            ));
+        }
         Self::classify_status(&response)?;
         if response.truncated() {
             return Err(ResourceError::new(
@@ -347,13 +359,16 @@ impl AtlassianSource {
     }
 
     fn sanitize_fetch_error(error: ResourceError) -> ResourceError {
-        if error.category() == ErrorCategory::SourceUnavailable {
-            ResourceError::new(
+        match error.category() {
+            ErrorCategory::SourceUnavailable => ResourceError::new(
                 ErrorCategory::SourceUnavailable,
                 "Jira upstream request failed",
-            )
-        } else {
-            error
+            ),
+            ErrorCategory::PermissionDenied => ResourceError::new(
+                ErrorCategory::PermissionDenied,
+                "Jira request was refused by egress policy",
+            ),
+            _ => error,
         }
     }
 }
@@ -402,8 +417,9 @@ impl DiscoveryAdapter for AtlassianSource {
         let ResourceAddress::Jira(address) = reference.address() else {
             return Err(unsupported_jira_projection());
         };
-        let searched = PathReference::jira(address.clone(), None)?;
-        let source = self.read(&searched, operation).await?;
+        let requested = PathReference::jira(address.clone(), None)?;
+        let source = self.read(&requested, operation).await?;
+        let searched = PathReference::parse(source.canonical_reference().to_owned())?;
         let content = source.content().to_owned();
         let pattern = pattern.to_owned();
         let case_sensitive = options.case_sensitive();

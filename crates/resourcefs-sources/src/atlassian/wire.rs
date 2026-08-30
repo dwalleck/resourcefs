@@ -1,101 +1,327 @@
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
 
 use resourcefs_core::{
     AllowedOrigin, ErrorCategory, JiraFieldId, JiraIssueId, JiraIssueKey, ResourceError,
 };
-use serde::{
-    Deserialize, Deserializer,
-    de::{self, Error as _, MapAccess, SeqAccess, Visitor},
-};
 use url::Url;
+
+const MAX_JIRA_JSON_DEPTH: usize = 128;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum StrictJson {
     Null,
     Bool(bool),
-    Number(serde_json::Number),
+    Number(String),
     String(String),
     Array(Vec<Self>),
     Object(BTreeMap<String, Self>),
 }
 
-impl<'de> Deserialize<'de> for StrictJson {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_any(StrictJsonVisitor)
-    }
+struct StrictParser<'a> {
+    input: &'a [u8],
+    index: usize,
 }
 
-struct StrictJsonVisitor;
-
-impl<'de> Visitor<'de> for StrictJsonVisitor {
-    type Value = StrictJson;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("one strict JSON value")
+impl<'a> StrictParser<'a> {
+    fn parse(input: &'a [u8]) -> Result<StrictJson, ResourceError> {
+        let mut parser = Self { input, index: 0 };
+        parser.skip_whitespace();
+        let value = parser.parse_value(0)?;
+        parser.skip_whitespace();
+        if parser.index != input.len() {
+            return Err(malformed_upstream(
+                "Jira upstream JSON has trailing content",
+            ));
+        }
+        Ok(value)
     }
 
-    fn visit_unit<E>(self) -> Result<Self::Value, E> {
-        Ok(StrictJson::Null)
+    fn parse_value(&mut self, depth: usize) -> Result<StrictJson, ResourceError> {
+        if depth > MAX_JIRA_JSON_DEPTH {
+            return Err(malformed_upstream(
+                "Jira upstream JSON exceeds the nesting-depth ceiling",
+            ));
+        }
+        match self.input.get(self.index).copied() {
+            Some(b'n') => {
+                self.consume_literal(b"null")?;
+                Ok(StrictJson::Null)
+            }
+            Some(b't') => {
+                self.consume_literal(b"true")?;
+                Ok(StrictJson::Bool(true))
+            }
+            Some(b'f') => {
+                self.consume_literal(b"false")?;
+                Ok(StrictJson::Bool(false))
+            }
+            Some(b'"') => self.parse_string().map(StrictJson::String),
+            Some(b'[') => self.parse_array(depth),
+            Some(b'{') => self.parse_object(depth),
+            Some(b'-' | b'0'..=b'9') => self.parse_number().map(StrictJson::Number),
+            _ => Err(malformed_upstream("Jira upstream JSON is malformed")),
+        }
     }
 
-    fn visit_none<E>(self) -> Result<Self::Value, E> {
-        Ok(StrictJson::Null)
-    }
-
-    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
-        Ok(StrictJson::Bool(value))
-    }
-
-    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
-        Ok(StrictJson::Number(value.into()))
-    }
-
-    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
-        Ok(StrictJson::Number(value.into()))
-    }
-
-    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        serde_json::Number::from_f64(value)
-            .map(StrictJson::Number)
-            .ok_or_else(|| E::custom("non-finite JSON number"))
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
-        Ok(StrictJson::String(value.to_owned()))
-    }
-
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
-        Ok(StrictJson::String(value))
-    }
-
-    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let mut values = Vec::with_capacity(sequence.size_hint().unwrap_or(0));
-        while let Some(value) = sequence.next_element()? {
-            values.push(value);
+    fn parse_array(&mut self, depth: usize) -> Result<StrictJson, ResourceError> {
+        self.index += 1;
+        self.skip_whitespace();
+        let mut values = Vec::new();
+        if self.consume_if(b']') {
+            return Ok(StrictJson::Array(values));
+        }
+        loop {
+            values.push(self.parse_value(depth + 1)?);
+            self.skip_whitespace();
+            if self.consume_if(b']') {
+                break;
+            }
+            self.consume_required(b',')?;
+            self.skip_whitespace();
         }
         Ok(StrictJson::Array(values))
     }
 
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
+    fn parse_object(&mut self, depth: usize) -> Result<StrictJson, ResourceError> {
+        self.index += 1;
+        self.skip_whitespace();
         let mut values = BTreeMap::new();
-        while let Some((key, value)) = map.next_entry::<String, StrictJson>()? {
-            if values.insert(key, value).is_some() {
-                return Err(A::Error::custom("duplicate JSON object member"));
+        if self.consume_if(b'}') {
+            return Ok(StrictJson::Object(values));
+        }
+        loop {
+            if self.input.get(self.index) != Some(&b'"') {
+                return Err(malformed_upstream(
+                    "Jira upstream JSON object key must be a string",
+                ));
             }
+            let key = self.parse_string()?;
+            self.skip_whitespace();
+            self.consume_required(b':')?;
+            self.skip_whitespace();
+            let value = self.parse_value(depth + 1)?;
+            if values.insert(key, value).is_some() {
+                return Err(malformed_upstream(
+                    "Jira upstream JSON contains a duplicate object member",
+                ));
+            }
+            self.skip_whitespace();
+            if self.consume_if(b'}') {
+                break;
+            }
+            self.consume_required(b',')?;
+            self.skip_whitespace();
         }
         Ok(StrictJson::Object(values))
+    }
+
+    fn parse_string(&mut self) -> Result<String, ResourceError> {
+        let start = self.index;
+        self.index += 1;
+        let mut escaped = false;
+        while let Some(byte) = self.input.get(self.index).copied() {
+            self.index += 1;
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'\\' => escaped = true,
+                b'"' => {
+                    return serde_json::from_slice(&self.input[start..self.index])
+                        .map_err(|_| malformed_upstream("Jira upstream JSON string is malformed"));
+                }
+                _ => {}
+            }
+        }
+        Err(malformed_upstream(
+            "Jira upstream JSON string is unterminated",
+        ))
+    }
+
+    fn parse_number(&mut self) -> Result<String, ResourceError> {
+        let start = self.index;
+        self.consume_if(b'-');
+        match self.input.get(self.index).copied() {
+            Some(b'0') => {
+                self.index += 1;
+                if self.input.get(self.index).is_some_and(u8::is_ascii_digit) {
+                    return Err(malformed_upstream(
+                        "Jira upstream JSON number has a leading zero",
+                    ));
+                }
+            }
+            Some(b'1'..=b'9') => {
+                self.index += 1;
+                while self.input.get(self.index).is_some_and(u8::is_ascii_digit) {
+                    self.index += 1;
+                }
+            }
+            _ => return Err(malformed_upstream("Jira upstream JSON number is malformed")),
+        }
+        if self.consume_if(b'.') {
+            let fraction_start = self.index;
+            while self.input.get(self.index).is_some_and(u8::is_ascii_digit) {
+                self.index += 1;
+            }
+            if self.index == fraction_start {
+                return Err(malformed_upstream(
+                    "Jira upstream JSON number fraction is empty",
+                ));
+            }
+        }
+        if self
+            .input
+            .get(self.index)
+            .is_some_and(|byte| matches!(byte, b'e' | b'E'))
+        {
+            self.index += 1;
+            if self
+                .input
+                .get(self.index)
+                .is_some_and(|byte| matches!(byte, b'+' | b'-'))
+            {
+                self.index += 1;
+            }
+            let exponent_start = self.index;
+            while self.input.get(self.index).is_some_and(u8::is_ascii_digit) {
+                self.index += 1;
+            }
+            if self.index == exponent_start {
+                return Err(malformed_upstream(
+                    "Jira upstream JSON number exponent is empty",
+                ));
+            }
+        }
+        let raw = std::str::from_utf8(&self.input[start..self.index])
+            .map_err(|_| malformed_upstream("Jira upstream JSON number is not UTF-8"))?;
+        canonicalize_number(raw)
+    }
+
+    fn consume_literal(&mut self, literal: &[u8]) -> Result<(), ResourceError> {
+        if self.input.get(self.index..self.index + literal.len()) == Some(literal) {
+            self.index += literal.len();
+            Ok(())
+        } else {
+            Err(malformed_upstream("Jira upstream JSON is malformed"))
+        }
+    }
+
+    fn consume_required(&mut self, expected: u8) -> Result<(), ResourceError> {
+        if self.consume_if(expected) {
+            Ok(())
+        } else {
+            Err(malformed_upstream("Jira upstream JSON is malformed"))
+        }
+    }
+
+    fn consume_if(&mut self, expected: u8) -> bool {
+        if self.input.get(self.index) == Some(&expected) {
+            self.index += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while self
+            .input
+            .get(self.index)
+            .is_some_and(|byte| matches!(byte, b' ' | b'\n' | b'\r' | b'\t'))
+        {
+            self.index += 1;
+        }
+    }
+}
+
+fn canonicalize_number(raw: &str) -> Result<String, ResourceError> {
+    let bytes = raw.as_bytes();
+    let negative = bytes.first() == Some(&b'-');
+    let unsigned = if negative { &raw[1..] } else { raw };
+    let (mantissa, exponent) = match unsigned.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, parse_exponent(exponent)?),
+        None => (unsigned, 0),
+    };
+    let (integer, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let mut digits = String::with_capacity(integer.len() + fraction.len());
+    digits.push_str(integer);
+    digits.push_str(fraction);
+    let leading = digits.bytes().take_while(|byte| *byte == b'0').count();
+    if leading == digits.len() {
+        return Ok("0".to_owned());
+    }
+    let coefficient = digits[leading..].trim_end_matches('0');
+    let integer_len = i64::try_from(integer.len())
+        .map_err(|_| malformed_upstream("Jira upstream JSON number is too large"))?;
+    let leading = i64::try_from(leading)
+        .map_err(|_| malformed_upstream("Jira upstream JSON number is too large"))?;
+    let decimal_position = integer_len
+        .checked_add(exponent)
+        .and_then(|position| position.checked_sub(leading))
+        .ok_or_else(|| malformed_upstream("Jira upstream JSON number exponent is too large"))?;
+    let scientific_exponent = decimal_position
+        .checked_sub(1)
+        .ok_or_else(|| malformed_upstream("Jira upstream JSON number exponent is too small"))?;
+
+    let mut output = String::with_capacity(raw.len() + 4);
+    if negative {
+        output.push('-');
+    }
+    if (-6..21).contains(&scientific_exponent) {
+        if decimal_position <= 0 {
+            output.push_str("0.");
+            for _ in 0..decimal_position.unsigned_abs() {
+                output.push('0');
+            }
+            output.push_str(coefficient);
+        } else {
+            let decimal_position = usize::try_from(decimal_position)
+                .map_err(|_| malformed_upstream("Jira upstream JSON number is too large"))?;
+            if decimal_position >= coefficient.len() {
+                output.push_str(coefficient);
+                for _ in coefficient.len()..decimal_position {
+                    output.push('0');
+                }
+            } else {
+                output.push_str(&coefficient[..decimal_position]);
+                output.push('.');
+                output.push_str(&coefficient[decimal_position..]);
+            }
+        }
+    } else {
+        output.push(char::from(coefficient.as_bytes()[0]));
+        if coefficient.len() > 1 {
+            output.push('.');
+            output.push_str(&coefficient[1..]);
+        }
+        output.push('e');
+        if scientific_exponent >= 0 {
+            output.push('+');
+        }
+        output.push_str(&scientific_exponent.to_string());
+    }
+    Ok(output)
+}
+
+fn parse_exponent(raw: &str) -> Result<i64, ResourceError> {
+    let (negative, digits) = raw.strip_prefix('-').map_or_else(
+        || (false, raw.strip_prefix('+').unwrap_or(raw)),
+        |digits| (true, digits),
+    );
+    let mut exponent = 0_i64;
+    for digit in digits.bytes() {
+        exponent = exponent
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(i64::from(digit - b'0')))
+            .ok_or_else(|| malformed_upstream("Jira upstream JSON number exponent is too large"))?;
+    }
+    if negative {
+        exponent
+            .checked_neg()
+            .ok_or_else(|| malformed_upstream("Jira upstream JSON number exponent is too small"))
+    } else {
+        Ok(exponent)
     }
 }
 
@@ -173,12 +399,7 @@ pub(crate) fn decode_issue(
     origin: &AllowedOrigin,
     lookup: JiraLookup<'_>,
 ) -> Result<JiraIssue, ResourceError> {
-    let mut deserializer = serde_json::Deserializer::from_slice(body);
-    let root = StrictJson::deserialize(&mut deserializer)
-        .map_err(|_| malformed_upstream("Jira upstream JSON is malformed"))?;
-    deserializer
-        .end()
-        .map_err(|_| malformed_upstream("Jira upstream JSON has trailing content"))?;
+    let root = StrictParser::parse(body)?;
     let StrictJson::Object(mut root) = root else {
         return Err(malformed_upstream(
             "Jira issue authority must be one JSON object",
