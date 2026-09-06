@@ -1,13 +1,14 @@
 #![cfg(unix)]
 
+use serde_json::{Value, json};
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-
-use serde_json::{Value, json};
+use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
 
 const SITE: &str = "https://example.test";
@@ -16,6 +17,42 @@ const PROVISIONER_TOKEN: &str = "provisioner-token-canary";
 const READER_EMAIL: &str = "reader-canary@example.test";
 const READER_TOKEN: &str = "reader-token-canary";
 const FIXTURE: &[u8] = include_bytes!("fixtures/atlassian_fixture_operator/fake_curl.py");
+const HELPER_AUDIT: &[u8] = br#"#!/usr/bin/env python3
+import json
+import os
+import pathlib
+import sys
+
+name = pathlib.Path(sys.argv[0]).name
+argv_text = "\x00".join(sys.argv[1:])
+credential_names = (
+    "ATLASSIAN_PROVISIONER_EMAIL",
+    "ATLASSIAN_PROVISIONER_API_TOKEN",
+    "ATLASSIAN_READER_EMAIL",
+    "ATLASSIAN_READER_API_TOKEN",
+)
+row = {
+    "kind": "helper",
+    "helper": name,
+    "argv_canary": "canary" in argv_text.lower(),
+    "credential_env_present": any(
+        os.environ.get(key) for key in credential_names
+    ),
+}
+audit = os.environ.get("FAKE_CURL_AUDIT")
+if audit:
+    with open(audit, "a", encoding="utf-8") as stream:
+        stream.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+real_path = None
+for directory in os.environ.get("FAKE_CURL_REAL_PATH", "").split(os.pathsep):
+    candidate = pathlib.Path(directory) / name
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        real_path = str(candidate)
+        break
+if real_path is None:
+    raise SystemExit("real helper not found")
+os.execv(real_path, [name, *sys.argv[1:]])
+"#;
 
 fn repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -48,13 +85,14 @@ fn write_executable(path: &Path, bytes: &[u8]) {
     permissions.set_mode(0o700);
     fs::set_permissions(path, permissions).expect("make fake curl executable");
 }
-
 struct Harness {
     temp: TempDir,
     fake_bin: PathBuf,
     store: PathBuf,
     log: PathBuf,
+    audit: PathBuf,
     state: PathBuf,
+    audit_enabled: Cell<bool>,
 }
 
 impl Harness {
@@ -66,10 +104,22 @@ impl Harness {
         Self {
             store: temp.path().join("store.json"),
             log: temp.path().join("requests.ndjson"),
+            audit: temp.path().join("helper-audit.ndjson"),
             state: temp.path().join("state.json"),
             temp,
             fake_bin,
+            audit_enabled: Cell::new(false),
         }
+    }
+
+    fn enable_audit(&self) {
+        for helper in [
+            "chmod", "dirname", "env", "jq", "mkdir", "mktemp", "mv", "rm", "rmdir", "sleep",
+            "stat", "wc",
+        ] {
+            write_executable(&self.fake_bin.join(helper), HELPER_AUDIT);
+        }
+        self.audit_enabled.set(true);
     }
 
     fn command(&self, mode: &str) -> Output {
@@ -86,12 +136,14 @@ impl Harness {
     ) -> Output {
         let original_path =
             std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/bin:/bin"));
+        let real_path = original_path.clone();
         let mut path = OsString::from(self.fake_bin.as_os_str());
         path.push(":");
         path.push(original_path);
         let manifest = manifest.map_or_else(checked_in_manifest, Path::to_path_buf);
         let state = state.map_or_else(|| self.state.clone(), Path::to_path_buf);
-        Command::new(script_path())
+        let mut command = Command::new(script_path());
+        command
             .current_dir(repository_root())
             .args([mode, "--site", site, "--manifest"])
             .arg(manifest)
@@ -104,9 +156,67 @@ impl Harness {
             .env("ATLASSIAN_PROVISIONER_EMAIL", PROVISIONER_EMAIL)
             .env("ATLASSIAN_PROVISIONER_API_TOKEN", PROVISIONER_TOKEN)
             .env("ATLASSIAN_READER_EMAIL", READER_EMAIL)
+            .env("ATLASSIAN_READER_API_TOKEN", READER_TOKEN);
+        if self.audit_enabled.get() {
+            command
+                .env("FAKE_CURL_AUDIT", &self.audit)
+                .env("FAKE_CURL_TEMP_ROOT", self.temp.path())
+                .env("FAKE_CURL_REAL_PATH", real_path);
+        }
+        command.output().expect("invoke fixture operator")
+    }
+
+    fn direct_fake_request(&self, url: &str) -> Output {
+        let user = serde_json::to_string(&format!("{PROVISIONER_EMAIL}:{PROVISIONER_TOKEN}"))
+            .expect("encode fake user");
+        let encoded_url = serde_json::to_string(url).expect("encode fake URL");
+        let response = self.temp.path().join("direct-response");
+        let encoded_response =
+            serde_json::to_string(&response.to_string_lossy()).expect("encode response path");
+        let mut child = Command::new("python3")
+            .arg(self.fake_bin.join("curl"))
+            .args(["--config", "-"])
+            .env("FAKE_CURL_STORE", &self.store)
+            .env("FAKE_CURL_LOG", &self.log)
+            .env("FAKE_CURL_SCENARIO", "normal")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn direct fake curl");
+        let config = format!(
+            "request = \"GET\"\nurl = {encoded_url}\nuser = {user}\noutput = {encoded_response}\nwrite-out = \"%{{http_code}}\"\n"
+        );
+        child
+            .stdin
+            .take()
+            .expect("fake stdin")
+            .write_all(config.as_bytes())
+            .expect("write fake config");
+        child.wait_with_output().expect("wait for direct fake curl")
+    }
+
+    fn command_with_empty_state(&self, mode: &str) -> Output {
+        let original_path =
+            std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/bin:/bin"));
+        let mut path = OsString::from(self.fake_bin.as_os_str());
+        path.push(":");
+        path.push(original_path);
+        Command::new(script_path())
+            .current_dir(self.temp.path())
+            .args([mode, "--site", SITE, "--manifest"])
+            .arg(checked_in_manifest())
+            .args(["--state", ""])
+            .env("PATH", path)
+            .env("FAKE_CURL_STORE", &self.store)
+            .env("FAKE_CURL_LOG", &self.log)
+            .env("FAKE_CURL_SCENARIO", "normal")
+            .env("ATLASSIAN_PROVISIONER_EMAIL", PROVISIONER_EMAIL)
+            .env("ATLASSIAN_PROVISIONER_API_TOKEN", PROVISIONER_TOKEN)
+            .env("ATLASSIAN_READER_EMAIL", READER_EMAIL)
             .env("ATLASSIAN_READER_API_TOKEN", READER_TOKEN)
             .output()
-            .expect("invoke fixture operator")
+            .expect("invoke empty-state operator")
     }
 
     fn read_log(&self) -> Vec<Value> {
@@ -117,6 +227,16 @@ impl Harness {
             .expect("request log is UTF-8")
             .lines()
             .map(|line| serde_json::from_str(line).expect("request log row is JSON"))
+            .collect()
+    }
+    fn read_audit(&self) -> Vec<Value> {
+        let Ok(bytes) = fs::read(&self.audit) else {
+            return Vec::new();
+        };
+        String::from_utf8(bytes)
+            .expect("helper audit is UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("helper audit row is JSON"))
             .collect()
     }
 
@@ -299,6 +419,30 @@ fn assert_state_shape(state: &Value) {
 }
 
 #[test]
+fn f7_fake_rejects_non_https_example_origins_at_its_boundary() {
+    for origin in [
+        "http://example.test",
+        "https://evil.example.test",
+        "https://user:pass@example.test",
+        "https://example.test:443",
+        "https://example.test:8443",
+    ] {
+        let harness = Harness::new();
+        let output = harness.direct_fake_request(&format!("{origin}/rest/api/3/myself"));
+        assert!(
+            !output.status.success(),
+            "fake accepted invalid origin {origin}: stdout={:?} stderr={:?}",
+            output.stdout,
+            output.stderr
+        );
+        assert!(
+            harness.read_log().is_empty(),
+            "invalid origin {origin} reached fake request handler"
+        );
+    }
+}
+
+#[test]
 fn operator_interface_is_strict_and_independent() {
     let harness = Harness::new();
     let strict_path = format!("{}:/usr/bin:/bin", harness.fake_bin.display());
@@ -369,6 +513,7 @@ fn invalid_manifest_never_reaches_egress() {
 #[test]
 fn credentials_never_escape_execution_boundary() {
     let harness = Harness::new();
+    harness.enable_audit();
     let bootstrap = harness.command("bootstrap");
     assert_success(&bootstrap);
     let verify = harness.command("verify");
@@ -383,6 +528,32 @@ fn credentials_never_escape_execution_boundary() {
     assert_no_secrets(&cleanup.stderr);
     assert_no_secrets(&fs::read(&harness.log).expect("request log"));
     assert_no_secrets(&fs::read(&harness.store).expect("fake store"));
+    assert_no_secrets(&fs::read(&harness.audit).expect("helper audit"));
+    let audit = harness.read_audit();
+    assert!(!audit.is_empty(), "helper audit observed no subprocesses");
+    let mut helpers = BTreeSet::new();
+    for row in &audit {
+        assert_eq!(row["argv_canary"], false, "secret reached helper argv");
+        assert_eq!(
+            row["credential_env_present"], false,
+            "secret reached helper environment"
+        );
+        if row["kind"] == "helper" {
+            helpers.insert(row["helper"].as_str().expect("helper name"));
+        } else {
+            assert_eq!(row["kind"], "curl");
+            assert_eq!(row["config_user_present"], true);
+            assert_eq!(row["config_canary"], true);
+            assert_eq!(row["credential_pair_valid"], true);
+            assert_eq!(row["temp_canary"], false, "secret reached a temp file");
+        }
+    }
+    for helper in [
+        "chmod", "dirname", "env", "jq", "mkdir", "mktemp", "mv", "rm", "rmdir", "sleep", "stat",
+        "wc",
+    ] {
+        assert!(helpers.contains(helper), "helper audit omitted {helper}");
+    }
     for row in harness.read_log() {
         assert_eq!(row["config_user_present"], true);
         assert_eq!(row["argv_safe"], true);
@@ -395,6 +566,24 @@ fn credentials_never_escape_execution_boundary() {
         assert!(
             row.get("argv").is_none(),
             "credential-bearing argv was logged"
+        );
+    }
+}
+
+#[test]
+fn empty_state_argument_fails_before_any_request_in_every_mode() {
+    for mode in ["bootstrap", "verify", "cleanup"] {
+        let harness = Harness::new();
+        let output = harness.command_with_empty_state(mode);
+        assert!(
+            !output.status.success(),
+            "{mode} unexpectedly accepted empty --state: stdout={:?} stderr={:?}",
+            output.stdout,
+            output.stderr
+        );
+        assert!(
+            harness.read_log().is_empty(),
+            "{mode} reached egress with empty --state"
         );
     }
 }
@@ -736,25 +925,29 @@ fn verify_forces_each_pagination_family() {
 
 #[test]
 fn failures_are_bounded_and_redacted() {
-    let harness = Harness::new();
-    let output = harness.command_with("bootstrap", SITE, None, None, "raw400");
-    assert_failure(&output, "upstream_failure");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("status=400"));
-    assert!(stderr.contains("operation=project_create"));
-    assert!(stderr.len() < 512, "diagnostic is not bounded");
-    assert!(!stderr.contains("RAW_PROSE_CANARY_DO_NOT_PRINT"));
-    assert_no_secrets(&output.stderr);
+    for scenario in ["raw400", "partial_once"] {
+        let harness = Harness::new();
+        let output = harness.command_with("bootstrap", SITE, None, None, scenario);
+        assert_failure(&output, "upstream_failure");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.len() + stderr.len() < 512,
+            "diagnostic is not bounded for {scenario}"
+        );
+        for canary in ["RAW400_FAILURE_CANARY", "FAILURE_RESPONSE_CANARY"] {
+            assert!(!stdout.contains(canary), "stdout leaked {canary}");
+            assert!(!stderr.contains(canary), "stderr leaked {canary}");
+        }
+        assert_no_secrets(&output.stdout);
+        assert_no_secrets(&output.stderr);
+    }
 
+    let harness = Harness::new();
     let invalid_site =
         harness.command_with("bootstrap", "http://example.test", None, None, "normal");
     assert_failure(&invalid_site, "invalid_site");
-    assert!(
-        harness
-            .read_log()
-            .iter()
-            .all(|row| row["scenario"] == "raw400")
-    );
+    assert!(harness.read_log().is_empty());
 }
 
 #[test]

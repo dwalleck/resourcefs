@@ -84,3 +84,44 @@
 - [x] The 2,680-line sum, 670-line/25% churn margin, 3,350-line total, and one mergeable increment satisfy the review-size rule.
 - [x] Deferral taxonomy applied: no intended future work is introduced; permanent non-goals remain in the approved design.
 - [x] No slice is declared complete; checkpointed-build exclusively judges completion.
+
+## Review-fix increment B
+
+The review baseline is `518b99e`; the original increment remains historical. Review fixes are a separate increment against that baseline: Slice 3 estimates 300 changed lines, Slice 4 estimates 650, plus 25% churn (238), total 1,188. Main owns integration, regression execution, evidence, and tracker updates. Isolated writers own transport, lifecycle, and the shared deterministic harness respectively; they do not run concurrent validation.
+
+## Slice 3: Close execution and test-observation boundaries — F1, F2, F6, F7, F8
+
+**Claim IDs:** C2, C4, C10, C11
+**Expected behavior:** Credentials reach curl only over an in-memory stream, never subprocess arguments or configuration files; empty state paths fail before egress; the fake rejects an incorrect origin; failure bounds/redaction cover both output streams.
+**Oracle:** Instrument every spawned jq/curl boundary with canary detection and inspect temporary files while the command is running; independently validate fake request origins and captured output bytes.
+**Stress fixture:** Canary credentials containing quote/backslash characters; empty state for every mode; valid-looking wrong origins; oversized raw error payloads. Expected: no credential escape, no empty-path request, incorrect origins rejected, bounded secret-free output.
+**Regression fence:** Existing `atlassian_fixture_operator_contract.rs` credential, strict-interface and failure tests, plus a fake-origin rejection contract.
+**Named mutation:** Restore the original secret `jq --arg` and disk-config transport separately; remove empty-state validation; remove fake origin rejection; echo raw failure prose to stdout. Each corresponding fence must fail.
+**Complexity/production scale:** N/A — no new production loop; existing request and response bounds remain unchanged.
+**Wall budget/phase:** N/A — one-off operator command; request deadlines unchanged.
+**Files:** `scripts/atlassian-fixture-bootstrap.sh`, `crates/resourcefs-sources/tests/atlassian_fixture_operator_contract.rs`, `crates/resourcefs-sources/tests/fixtures/atlassian_fixture_operator/fake_curl.py`, this plan and `.rfs-bcym/evidence.md`.
+**Estimate:** N/A — implementation measured by observable gates, not duration.
+**Diff estimate:** 300 changed lines.
+**PR increment:** B — review fixes against `518b99e`, independently testable without Slice 4.
+**Commands and expected results:**
+- `cargo test -p resourcefs-sources --test atlassian_fixture_operator_contract` → execution-boundary checks pass and existing lifecycle remains green.
+- Apply the named mutations in an isolated checkpoint copy → each targeted fence fails; restore → each passes.
+
+## Slice 4: Restore recoverable, identity-based fixture lifecycle — F3, F4, F5, F9
+
+**Claim IDs:** C1, C5, C6, C7, C8, C9, C11, C12
+**Expected behavior:** Confluence creation cannot strand an unowned object between creation and ownership publication; cleanup verifies saved stable identities rather than discarding moved objects; footer replies are rediscovered through their real children endpoint; evidence distinguishes observed live write absence from successful convergence.
+**Oracle:** Published Confluence creation/comment contracts plus independent fake object-store, request-log and state comparisons. Live second-bootstrap request capture and independent stable-ID/version observations, if execution credentials are available.
+**Stress fixture:** Ownership-publication failure; moved Jira issue and Confluence page; foreign marker replacement; two-level footer replies with paginated siblings. Expected: safe rerun/cleanup, preserved foreign objects, no moved residue or duplicate reply, explicit bounded failure for uncertain authority.
+**Regression fence:** Lifecycle/cleanup contracts and new interruption, moved-identity and reply regression cases in `atlassian_fixture_operator_contract.rs`; fake endpoints follow published root-versus-child semantics.
+**Named mutation:** Restore separate unjournaled creation/property publication; restore cleanup's unconditional state-ID replacement; restore root-only reply discovery. Each corresponding new regression must fail.
+**Complexity/production scale:** Saved-ID checks are O(n) for at most 256 fixture objects; reply discovery is bounded by ten pages per collection and the existing 512-request global ceiling. No tenant-wide unbounded search is added.
+**Wall budget/phase:** N/A — one-off operator command; existing 30-second request and bounded-poll deadlines remain.
+**Files:** `scripts/atlassian-fixture-bootstrap.sh`, `crates/resourcefs-sources/tests/atlassian_fixture_operator_contract.rs`, `crates/resourcefs-sources/tests/fixtures/atlassian_fixture_operator/fake_curl.py`, `.rfs-bcym/evidence.md`, `.rfs-bcym/design.md`, `.rfs-bcym/plan.md`, `.rivets/issues.jsonl` through Rivets; `.gitignore` only if a durable identity receipt is required.
+**Estimate:** N/A — implementation measured by observable gates, not duration.
+**Diff estimate:** 650 changed lines.
+**PR increment:** B — review fixes; depends on Slice 3.
+**Commands and expected results:**
+- `cargo test -p resourcefs-sources --test atlassian_fixture_operator_contract` → interrupted operations recover without foreign adoption, moved objects cannot survive successful cleanup, and repeated reply bootstrap performs no writes.
+- Apply each named mutation in an isolated checkpoint copy → its targeted fence fails; restore → it passes.
+- Execute the approved disposable-tenant lifecycle with credential-safe request capture if credentials are available → second bootstrap has zero create/update/delete requests and independent identities/versions are unchanged; otherwise record the exact unavailable live prerequisite without claiming PASS.

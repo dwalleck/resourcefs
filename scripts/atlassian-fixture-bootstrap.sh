@@ -3,6 +3,13 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
+# Credentials arrive exported from the invoking shell, but all child processes
+# must receive a credential-free environment. Keep the shell values available.
+export -n \
+  ATLASSIAN_PROVISIONER_EMAIL \
+  ATLASSIAN_PROVISIONER_API_TOKEN \
+  ATLASSIAN_READER_EMAIL \
+  ATLASSIAN_READER_API_TOKEN
 
 readonly MAX_MANIFEST_BYTES=1048576
 readonly MAX_RESPONSE_BYTES=4194304
@@ -103,6 +110,7 @@ parse_args() {
       --state)
         (( $# >= 2 )) || die "invalid_arguments"
         (( STATE_SET == 0 )) || die "invalid_arguments"
+        [[ -n "$2" ]] || die "invalid_state_path"
         STATE_PATH=$2
         STATE_SET=1
         shift 2
@@ -292,6 +300,9 @@ reject_symlink_ancestors() {
 
 prepare_state_and_lock() {
   local parent logical_parent physical_parent
+  case "$STATE_PATH" in
+    ''|.|..|*/|*/.|*/..) die "invalid_state_path" ;;
+  esac
   parent=$(dirname -- "$STATE_PATH")
   [[ -n "$parent" && "$parent" != . ]] || parent='.'
   reject_symlink_ancestors "$parent"
@@ -314,13 +325,14 @@ prepare_state_and_lock() {
   chmod 700 "$RUN_DIR" || die "temp_unavailable"
 }
 
-# Build a curl config on stdin. Credentials never occur in process arguments.
+# Build a curl config on stdin. Credentials never occur in process arguments or files.
 api_request() {
   local actor=$1 method=$2 path=$3 body=$4 expected=$5 operation=$6
   (( REQUESTS < MAX_REQUESTS )) ||
     die "request_limit actor=$actor operation=$operation"
   ((REQUESTS += 1))
-  local email token cfg response err status user_json url_json body_json
+  local email token response err status
+  local user_json url_json method_json response_json body_json
   case "$actor" in
     provisioner)
       email=$ATLASSIAN_PROVISIONER_EMAIL
@@ -333,29 +345,40 @@ api_request() {
     *) die "invalid_actor operation=$operation" ;;
   esac
   response="$RUN_DIR/response-${REQUESTS}"
-  cfg="$RUN_DIR/config-${REQUESTS}"
   err="$RUN_DIR/error-${REQUESTS}"
-  user_json=$(jq -nr --arg v "$email:$token" '$v|tojson') ||
+  if ! user_json=$(printf '%s' "$email:$token" | jq -Rsr '@json' 2>/dev/null); then
     die "transport_config actor=$actor operation=$operation"
-  url_json=$(jq -nr --arg v "$SITE$path" '$v|tojson') ||
+  fi
+  if ! url_json=$(printf '%s' "$SITE$path" | jq -Rsr '@json' 2>/dev/null); then
     die "transport_config actor=$actor operation=$operation"
-  {
-    printf 'silent\nshow-error\nconnect-timeout = 10\nmax-time = 30\nmax-filesize = 4194304\nrequest = %s\nurl = %s\nuser = %s\nheader = %s\nheader = %s\noutput = %s\nwrite-out = "%%{http_code}"\n' \
-      "$(jq -nr --arg v "$method" '$v|tojson')" "$url_json" "$user_json" \
-      '"Accept: application/json"' '"Content-Type: application/json"' \
-      "$(jq -nr --arg v "$response" '$v|tojson')"
-    if [[ -n "$body" ]]; then
-      body_json=$(jq -nr --arg v "$body" '$v|tojson') ||
-        die "transport_config actor=$actor operation=$operation"
-      printf 'data-binary = %s\n' "$body_json"
+  fi
+  if ! method_json=$(printf '%s' "$method" | jq -Rsr '@json' 2>/dev/null); then
+    die "transport_config actor=$actor operation=$operation"
+  fi
+  if ! response_json=$(printf '%s' "$response" | jq -Rsr '@json' 2>/dev/null); then
+    die "transport_config actor=$actor operation=$operation"
+  fi
+  if [[ -n "$body" ]]; then
+    if ! body_json=$(printf '%s' "$body" | jq -Rsr '@json' 2>/dev/null); then
+      die "transport_config actor=$actor operation=$operation"
     fi
-  } > "$cfg" || die "transport_config actor=$actor operation=$operation"
-  if ! status=$(env \
-    -u ATLASSIAN_PROVISIONER_EMAIL \
-    -u ATLASSIAN_PROVISIONER_API_TOKEN \
-    -u ATLASSIAN_READER_EMAIL \
-    -u ATLASSIAN_READER_API_TOKEN \
-    curl --config - < "$cfg" 2>"$err"); then
+  fi
+  if ! status=$(
+    {
+      printf 'silent\nshow-error\nconnect-timeout = 10\nmax-time = 30\nmax-filesize = 4194304\nrequest = %s\nurl = %s\nuser = %s\nheader = %s\nheader = %s\noutput = %s\nwrite-out = "%%{http_code}"\n' \
+        "$method_json" "$url_json" "$user_json" \
+        '"Accept: application/json"' '"Content-Type: application/json"' \
+        "$response_json"
+      if [[ -n "$body" ]]; then
+        printf 'data-binary = %s\n' "$body_json"
+      fi
+    } | env \
+      -u ATLASSIAN_PROVISIONER_EMAIL \
+      -u ATLASSIAN_PROVISIONER_API_TOKEN \
+      -u ATLASSIAN_READER_EMAIL \
+      -u ATLASSIAN_READER_API_TOKEN \
+      curl --config - 2>"$err"
+  ); then
     die "transport_failure actor=$actor operation=$operation"
   fi
   [[ "$status" =~ ^[0-9]{3}$ ]] ||
@@ -1533,8 +1556,8 @@ cleanup_all() {
 
 parse_args "$@"
 validate_site
-check_tools
 validate_credentials
+check_tools
 validate_manifest
 prepare_state_and_lock
 case "$MODE" in

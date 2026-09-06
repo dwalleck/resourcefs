@@ -17,9 +17,21 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 STORE_PATH = Path(os.environ.get("FAKE_CURL_STORE", "fake-store.json"))
 LOG_PATH = Path(os.environ.get("FAKE_CURL_LOG", "fake-curl.log"))
+AUDIT_PATH_VALUE = os.environ.get("FAKE_CURL_AUDIT")
+AUDIT_PATH = Path(AUDIT_PATH_VALUE) if AUDIT_PATH_VALUE else None
 SCENARIO = os.environ.get("FAKE_CURL_SCENARIO", "normal")
 PROVISIONER_USER = "provisioner-canary@example.test:provisioner-token-canary"
 READER_USER = "reader-canary@example.test:reader-token-canary"
+SECRET_ENV_NAMES = (
+    "ATLASSIAN_PROVISIONER_EMAIL",
+    "ATLASSIAN_PROVISIONER_API_TOKEN",
+    "ATLASSIAN_READER_EMAIL",
+    "ATLASSIAN_READER_API_TOKEN",
+)
+
+
+RAW_400_CANARY = "RAW400_FAILURE_CANARY"
+FAILURE_CANARY = "FAILURE_RESPONSE_CANARY"
 
 
 
@@ -83,6 +95,30 @@ def append_log(row):
         stream.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
 
 
+def append_audit(row):
+    if AUDIT_PATH is None:
+        return
+    AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with AUDIT_PATH.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+
+def temp_contains_canary():
+    root = os.environ.get("FAKE_CURL_TEMP_ROOT")
+    if not root:
+        return False
+    root_path = Path(root)
+    if not root_path.exists():
+        return False
+    ignored = root_path / "bin"
+    forbidden = tuple(value.encode("utf-8") for pair in (PROVISIONER_USER, READER_USER) for value in pair.split(":", 1))
+    for candidate in root_path.rglob("*"):
+        if not candidate.is_file() or ignored in candidate.parents:
+            continue
+        contents = candidate.read_bytes()
+        if any(value in contents for value in forbidden):
+            return True
+    return False
+
 def cfg_value(raw):
     raw = raw.strip()
     if raw.startswith('"'):
@@ -95,7 +131,8 @@ def cfg_value(raw):
 
 def parse_config():
     config = {}
-    for line in sys.stdin:
+    raw_config = sys.stdin.read()
+    for line in raw_config.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -104,7 +141,9 @@ def parse_config():
             config[key.strip()] = cfg_value(value)
         else:
             config[line] = True
-    return config
+    return config, raw_config
+
+
 
 
 def text_of(value):
@@ -302,10 +341,10 @@ def handle(config, store, actor, method, path, query, body):
     # Scenario failures are injected at the transport's response boundary.
     if SCENARIO in ("raw400", "raw_prose") and method == "POST" and path.endswith("/project") and not store["faults"].get("raw400"):
         store["faults"]["raw400"] = True
-        return 400, "RAW_PROSE_CANARY_DO_NOT_PRINT_" * 100, "project_create"
+        return 400, f"{RAW_400_CANARY}_" * 100, "project_create"
     if SCENARIO == "partial_once" and method == "POST" and path == "/rest/api/3/issue" and not store["faults"].get("partial"):
         store["faults"]["partial"] = True
-        return 503, {"errorMessages": ["partial failure prose"]}, "issue_create"
+        return 503, {"errorMessages": [f"{FAILURE_CANARY}_partial"]}, "issue_create"
     if SCENARIO == "transport_failure":
         return None, "", "transport"
 
@@ -602,10 +641,27 @@ def handle(config, store, actor, method, path, query, body):
     return 404, {"message": "unimplemented fake endpoint"}, "unknown"
 
 
+def valid_origin(parsed):
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "example.test"
+        and parsed.username is None
+        and parsed.password is None
+        and port is None
+    )
+
+
 def main():
-    config = parse_config()
+    config, raw_config = parse_config()
     url = str(config.get("url", ""))
     parsed = urlsplit(url)
+    if not valid_origin(parsed):
+        sys.stderr.write("invalid_origin\n")
+        return 2
     path = parsed.path
     query = parse_qs(parsed.query, keep_blank_values=True)
     body = body_json(config)
@@ -615,12 +671,16 @@ def main():
     response_path = str(config.get("output", ""))
     user_value = str(config.get("user", ""))
     argv_safe = sys.argv[1:] == ["--config", "-"]
-    credential_env_absent = all(name not in os.environ for name in (
-        "ATLASSIAN_PROVISIONER_EMAIL",
-        "ATLASSIAN_PROVISIONER_API_TOKEN",
-        "ATLASSIAN_READER_EMAIL",
-        "ATLASSIAN_READER_API_TOKEN",
-    ))
+    credential_env_absent = all(name not in os.environ for name in SECRET_ENV_NAMES)
+    append_audit({
+        "kind": "curl",
+        "argv_canary": "canary" in "\x00".join(sys.argv[1:]).lower(),
+        "config_canary": "canary" in raw_config.lower(),
+        "credential_env_present": not credential_env_absent,
+        "config_user_present": bool(user_value),
+        "credential_pair_valid": actor != "invalid",
+        "temp_canary": temp_contains_canary(),
+    })
     status, payload, operation = handle(config, store, actor, method, path, query, body)
     row = {
         "actor": actor,
