@@ -10,9 +10,17 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+      - name: Select modern Bash
+        if: runner.os == 'macOS'
+        run: |
+          brew install bash
+          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Capture TLS and process failure causes
-        run: cargo test -p resourcefs-sources --all-features --test http_tls_contract --test process_contract --no-fail-fast -- --nocapture
+      - name: Capture native causes and verify platform repairs
+        run: cargo test --workspace --all-features --no-fail-fast -- --nocapture
+      - name: Measure production filesystem mutation budget
+        if: always()
+        run: cargo test --release -p resourcefs-sources --all-features --test filesystem_mutation_contract exact_limit_write_budget_and_one_over_rejection -- --exact --nocapture

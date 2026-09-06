@@ -15,8 +15,23 @@ use resourcefs_sources::{
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-fn directory_snapshot(root: &Path) -> Vec<(PathBuf, [u8; 32])> {
-    fn visit(root: &Path, current: &Path, output: &mut Vec<(PathBuf, [u8; 32])>) {
+#[derive(Debug, PartialEq, Eq)]
+enum SnapshotEntry {
+    Content([u8; 32]),
+    LiveLease {
+        len: u64,
+        modified: SystemTime,
+        readonly: bool,
+    },
+}
+
+fn directory_snapshot(root: &Path, live_lease: Option<&Path>) -> Vec<(PathBuf, SnapshotEntry)> {
+    fn visit(
+        root: &Path,
+        current: &Path,
+        live_lease: Option<&Path>,
+        output: &mut Vec<(PathBuf, SnapshotEntry)>,
+    ) {
         let mut entries: Vec<_> = fs::read_dir(current)
             .expect("snapshot directory")
             .map(|entry| entry.expect("snapshot entry"))
@@ -30,21 +45,35 @@ fn directory_snapshot(root: &Path) -> Vec<(PathBuf, [u8; 32])> {
                     path.strip_prefix(root)
                         .expect("relative symlink")
                         .to_owned(),
-                    Sha256::digest(b"symlink").into(),
+                    SnapshotEntry::Content(Sha256::digest(b"symlink").into()),
                 ));
             } else if metadata.is_dir() {
-                visit(root, &path, output);
+                visit(root, &path, live_lease, output);
+            } else if live_lease == Some(path.as_path()) {
+                // Windows exclusively locks the live lease's bytes. Snapshot
+                // its presence and metadata without reading that exact file.
+                assert!(metadata.is_file(), "live lease must remain a regular file");
+                output.push((
+                    path.strip_prefix(root).expect("relative lease").to_owned(),
+                    SnapshotEntry::LiveLease {
+                        len: metadata.len(),
+                        modified: metadata.modified().expect("lease modification time"),
+                        readonly: metadata.permissions().readonly(),
+                    },
+                ));
             } else {
                 output.push((
                     path.strip_prefix(root).expect("relative file").to_owned(),
-                    Sha256::digest(fs::read(&path).expect("snapshot file")).into(),
+                    SnapshotEntry::Content(
+                        Sha256::digest(fs::read(&path).expect("snapshot file")).into(),
+                    ),
                 ));
             }
         }
     }
 
     let mut snapshot = Vec::new();
-    visit(root, root, &mut snapshot);
+    visit(root, root, live_lease, &mut snapshot);
     snapshot
 }
 
@@ -132,13 +161,15 @@ async fn cleanup_never_traverses_the_operator_cache_base() {
     fs::write(sibling.join("session.lock"), "operator-owned\n").expect("sibling lease");
     let marker = sibling.join("disconnected");
     fs::write(&marker, "operator-owned\n").expect("sibling marker");
-    fs::File::open(&marker)
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&marker)
         .expect("open sibling marker")
         .set_times(
             fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
         )
         .expect("age sibling marker");
-    let before = directory_snapshot(&sibling);
+    let before = directory_snapshot(&sibling, None);
 
     let store = SessionStore::open_with(config(
         temporary.path(),
@@ -147,7 +178,7 @@ async fn cleanup_never_traverses_the_operator_cache_base() {
     .await
     .expect("contained session store");
 
-    assert_eq!(directory_snapshot(&sibling), before);
+    assert_eq!(directory_snapshot(&sibling, None), before);
     assert_eq!(
         store.sessions_root_for_test(),
         temporary
@@ -164,7 +195,7 @@ async fn zero_ttl_deletes_at_disconnect_after_releasing_the_lease() {
     let sibling = temporary.path().join("operator-sibling");
     fs::create_dir(&sibling).expect("operator sibling");
     fs::write(sibling.join("sentinel"), "untouched\n").expect("operator sentinel");
-    let before = directory_snapshot(&sibling);
+    let before = directory_snapshot(&sibling, None);
     let store = SessionStore::open_with(config(temporary.path(), 0))
         .await
         .expect("zero-TTL store");
@@ -181,7 +212,7 @@ async fn zero_ttl_deletes_at_disconnect_after_releasing_the_lease() {
         .expect("zero-TTL disconnect");
 
     assert!(!session_directory.exists());
-    assert_eq!(directory_snapshot(&sibling), before);
+    assert_eq!(directory_snapshot(&sibling, None), before);
 }
 
 #[cfg(unix)]
@@ -226,7 +257,9 @@ async fn artifact_storage_failure_is_atomic() {
             .await
             .expect("stored session");
         let stable = retain(&session, "stable").await;
-        let before = directory_snapshot(session.storage_for_test().session_dir_for_test());
+        let session_root = session.storage_for_test().session_dir_for_test();
+        let live_lease = session_root.join("session.lock");
+        let before = directory_snapshot(session_root, Some(&live_lease));
         let used_before = session.path_session().used_bytes().await;
         session.storage_for_test().fail_next(point).await;
 
@@ -243,7 +276,7 @@ async fn artifact_storage_failure_is_atomic() {
         assert_eq!(session.path_session().used_bytes().await, used_before);
         assert_eq!(session.path_session().artifact_count().await, 1);
         assert_eq!(
-            directory_snapshot(session.storage_for_test().session_dir_for_test()),
+            directory_snapshot(session_root, Some(&live_lease)),
             before,
             "{point:?}"
         );
@@ -266,7 +299,9 @@ async fn remove_failure_keeps_the_published_object_unchanged() {
         .await
         .expect("stored session");
     let address = retain(&session, "kept").await;
-    let before = directory_snapshot(session.storage_for_test().session_dir_for_test());
+    let session_root = session.storage_for_test().session_dir_for_test();
+    let live_lease = session_root.join("session.lock");
+    let before = directory_snapshot(session_root, Some(&live_lease));
     session
         .storage_for_test()
         .fail_next(StorageFailurePoint::Remove)
@@ -278,10 +313,7 @@ async fn remove_failure_keeps_the_published_object_unchanged() {
         .await
         .expect_err("injected remove failure");
     assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
-    assert_eq!(
-        directory_snapshot(session.storage_for_test().session_dir_for_test()),
-        before
-    );
+    assert_eq!(directory_snapshot(session_root, Some(&live_lease)), before);
     assert_eq!(
         session
             .path_session()

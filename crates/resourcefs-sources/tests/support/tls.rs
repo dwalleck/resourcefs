@@ -416,7 +416,7 @@ impl TlsListener {
         let config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(
-                vec![CertificateDer::from(cert), CertificateDer::from(FIXTURE_CA)],
+                vec![CertificateDer::from(cert)],
                 PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
             )
             .expect("fixture certificate and key form a valid server config");

@@ -16,6 +16,11 @@ impl ChildTree {
             .map_err(|_| io::Error::other("child process identity is invalid"))?;
         let raw = Pid::from_raw(raw)
             .ok_or_else(|| io::Error::other("child process identity is invalid"))?;
+        eprintln!(
+            "[DEBUG-rfs-ci-process] attach child={raw:?} actual_group={:?} parent={:?}",
+            rustix::process::getpgid(Some(raw)),
+            rustix::process::getpid()
+        );
         Ok(Self { group: raw })
     }
 
@@ -43,6 +48,10 @@ impl Drop for ChildTree {
 }
 
 fn signal_group(group: Pid, signal: Signal) -> io::Result<()> {
+    eprintln!(
+        "[DEBUG-rfs-ci-process] signal group={group:?} signal={signal:?} leader_group={:?}",
+        rustix::process::getpgid(Some(group))
+    );
     match kill_process_group(group, signal) {
         Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
         Err(error) => Err(error.into()),

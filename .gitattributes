@@ -1,0 +1,3 @@
+# Source architecture checks and generated JSON fixtures use canonical LF bytes.
+*.rs text eol=lf
+*.json text eol=lf

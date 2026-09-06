@@ -12,6 +12,13 @@ use resourcefs_sources::{
 };
 use tempfile::TempDir;
 
+// Unix can represent a literal colon; Windows would interpret it as an ADS.
+const ADVERSARIAL_FILENAME: &str = if cfg!(unix) {
+    "artifact:impostor.txt"
+} else {
+    "artifact-impostor.txt"
+};
+
 struct Fixture {
     compiled: CompiledSources,
     filesystem: FilesystemSource,
@@ -25,7 +32,7 @@ async fn fixture() -> Fixture {
     let workspace = TempDir::new().expect("workspace");
     fs::write(workspace.path().join("plain.txt"), "workspace bytes\n").expect("workspace file");
     fs::write(
-        workspace.path().join("artifact:impostor.txt"),
+        workspace.path().join(ADVERSARIAL_FILENAME),
         "impostor sentinel artifact://-looking text\n",
     )
     .expect("adversarial workspace file");
@@ -311,15 +318,19 @@ async fn routes_every_discovery_request_by_typed_family_only() {
         resourcefs_core::ServerLimits::default(),
     );
     let operation = OperationGuard::new();
-    let adversarial = "rfs://workspace/workspace/artifact%3Aimpostor.txt";
+    let adversarial = if cfg!(unix) {
+        "rfs://workspace/workspace/artifact%3Aimpostor.txt"
+    } else {
+        "rfs://workspace/workspace/artifact-impostor.txt"
+    };
 
-    // The requested spelling begins with artifact-URI text, but the typed
-    // address is Workspace-relative: the Workspace adapter must serve it.
+    // The artifact-named file is Workspace-relative even though its contents
+    // look like an Artifact URI. Unix also exercises a literal colon in its name.
     let exact = discovery
         .search(
             SearchRequest::new(
                 SearchTarget::resource(
-                    PathReference::parse("artifact:impostor.txt").expect("C11 relative reference"),
+                    PathReference::parse(ADVERSARIAL_FILENAME).expect("C11 relative reference"),
                 ),
                 "impostor sentinel",
                 SearchOptions::default(),
@@ -410,12 +421,17 @@ async fn routes_every_discovery_request_by_typed_family_only() {
         "C11 relative glob includes the adversarial Workspace file"
     );
 
-    // Artifact-URI-looking text typed Workspace by GlobTarget must still route
-    // to the filesystem adapter, matching the encoded canonical spelling.
+    // The artifact-named glob must route to the filesystem adapter, including
+    // the encoded colon spelling on Unix.
     let adversarial_glob = discovery
         .glob(
             GlobRequest::new(
-                GlobTarget::new("artifact%3A*").expect("C11 adversarial Workspace glob"),
+                GlobTarget::new(if cfg!(unix) {
+                    "artifact%3A*"
+                } else {
+                    "artifact-*"
+                })
+                .expect("C11 adversarial Workspace glob"),
                 GlobOptions::default(),
                 0,
                 GlobLimits::default(),

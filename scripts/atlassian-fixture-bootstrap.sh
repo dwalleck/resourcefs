@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # Manifest-driven, disposable Jira and Confluence Cloud fixture operator.
+# Requires Bash 4.4+ for associative maps, mapfile, and empty arrays under nounset.
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+  printf 'error: Bash 4.4 or newer is required; install modern Bash (macOS: brew install bash) and put its bin directory first in PATH, then rerun this script.\n' >&2
+  exit 1
+fi
+
 set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
@@ -55,6 +61,8 @@ die() {
 usage() {
   cat <<'EOF'
 Usage: scripts/atlassian-fixture-bootstrap.sh <bootstrap|verify|cleanup> --site <https-origin> [--manifest <path>] [--state <path>]
+
+Requires Bash 4.4 or newer (macOS: brew install bash and put its bin directory first in PATH).
 
 Environment:
   ATLASSIAN_PROVISIONER_EMAIL / ATLASSIAN_PROVISIONER_API_TOKEN

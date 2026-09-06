@@ -33,21 +33,24 @@ fn create_root() -> (TempDir, std::path::PathBuf) {
 async fn reads_utf8_empty_and_unicode_resources() {
     let (_temporary, root) = create_root();
     fs::create_dir(root.join("notes")).expect("notes directory");
-    fs::write(root.join("notes/ résumé final.txt "), "héllo\n").expect("unicode fixture");
+    // Unix retains the trailing-space edge; Windows normalizes that spelling.
+    let unicode_path = if cfg!(unix) {
+        "notes/ résumé final.txt "
+    } else {
+        "notes/ résumé final .txt"
+    };
+    fs::write(root.join(unicode_path), "héllo\n").expect("unicode fixture");
     fs::write(root.join("empty.txt"), "").expect("empty fixture");
     let source = single_source(&root).await.expect("filesystem source");
 
     let unicode = source
-        .read(
-            &reference("notes/ résumé final.txt "),
-            &OperationGuard::new(),
-        )
+        .read(&reference(unicode_path), &OperationGuard::new())
         .await
         .expect("unicode read");
     assert_eq!(unicode.content(), "héllo\n");
     assert_eq!(
         unicode.canonical_reference(),
-        "rfs://workspace/workspace/notes/ résumé final.txt "
+        format!("rfs://workspace/workspace/{unicode_path}")
     );
 
     let empty = source
@@ -1755,6 +1758,7 @@ async fn glob_language_kinds_and_order() {
         fs::write(root.join(path), path).expect("C7 Rust fixture");
     }
     fs::write(root.join("README.md"), "readme").expect("C7 Markdown fixture");
+    #[cfg(unix)]
     fs::write(root.join("literal*.txt"), "literal star").expect("C7 escaped-star fixture");
     let source = single_source(&root).await.expect("C7 filesystem source");
     let (_cache, _session, engine) = discovery_fixture(source).await;
@@ -1859,24 +1863,28 @@ async fn glob_language_kinds_and_order() {
         "C7 directory text has trailing slash"
     );
 
-    let escaped = engine
-        .glob(
-            GlobRequest::new(
-                GlobTarget::new(r"literal\*.txt").expect("C7 escaped target"),
-                GlobOptions::default(),
-                0,
-                GlobLimits::default(),
-            ),
-            &OperationGuard::new(),
-        )
-        .await
-        .expect("C7 escaped glob");
-    assert_eq!(escaped.entries().len(), 1, "C7 escaped match count");
-    assert_eq!(
-        escaped.entries()[0].reference(),
-        "rfs://workspace/workspace/literal*.txt",
-        "C7 backslash is an escape"
-    );
+    // A literal '*' is a native filename only on Unix.
+    #[cfg(unix)]
+    {
+        let escaped = engine
+            .glob(
+                GlobRequest::new(
+                    GlobTarget::new(r"literal\*.txt").expect("C7 escaped target"),
+                    GlobOptions::default(),
+                    0,
+                    GlobLimits::default(),
+                ),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("C7 escaped glob");
+        assert_eq!(escaped.entries().len(), 1, "C7 escaped match count");
+        assert_eq!(
+            escaped.entries()[0].reference(),
+            "rfs://workspace/workspace/literal*.txt",
+            "C7 backslash is an escape"
+        );
+    }
 
     let invalid = engine
         .glob(

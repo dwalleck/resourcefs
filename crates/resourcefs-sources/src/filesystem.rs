@@ -2424,7 +2424,25 @@ fn read_address(
             ),
         ));
     }
-    let mut file = open_capability_file(&resolved.root, &resolved.path, identity)?;
+    let mut file = match open_capability_file(&resolved.root, &resolved.path, identity) {
+        Ok(file) => file,
+        #[cfg(windows)]
+        Err(error) if error.category() == ErrorCategory::PermissionDenied => {
+            // Windows rejects a file-style directory open. Reclassify only
+            // after the existing directory open proves access and containment.
+            match open_workspace_entry(&resolved.root, resolved.path.as_path()) {
+                Ok(OpenedWorkspaceEntry::Directory { .. }) => {
+                    return Err(ResourceError::new(
+                        ErrorCategory::UnsupportedProjection,
+                        format!("Resource '{identity}' is not a text file"),
+                    ));
+                }
+                // A failed classification cannot override the access denial.
+                Ok(OpenedWorkspaceEntry::File { .. }) | Err(_) => return Err(error),
+            }
+        }
+        Err(error) => return Err(error),
+    };
     let metadata = file
         .metadata()
         .map_err(|error| resource_io_error(identity, "inspect", error))?;
@@ -2888,8 +2906,12 @@ mod tests {
             };
             (
                 *generation,
-                find(&fs::canonicalize(&removed).expect("removed root path")),
-                find(&fs::canonicalize(&retained).expect("retained root path")),
+                find(&normalize_platform_path(
+                    fs::canonicalize(&removed).expect("removed root path"),
+                )),
+                find(&normalize_platform_path(
+                    fs::canonicalize(&retained).expect("retained root path"),
+                )),
             )
         };
 
