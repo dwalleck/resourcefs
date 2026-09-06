@@ -709,8 +709,10 @@ mod tests {
                 .is_none()
         );
 
+        let backing_uri = url::Url::from_file_path(std::env::temp_dir().join("visible.txt"))
+            .expect("absolute local file path");
         let visible_resource = resource()
-            .with_backing_file_uri("file:///workspace/visible.txt")
+            .with_backing_file_uri(backing_uri.as_str())
             .expect("local backing URI");
         let visible = success("visible.txt", visible_resource).expect("visible result");
         let structured = visible
@@ -721,10 +723,7 @@ mod tests {
             structured["canonicalReference"],
             "rfs://workspace/workspace/visible.txt"
         );
-        assert_eq!(
-            structured["backingFileUri"],
-            "file:///workspace/visible.txt"
-        );
+        assert_eq!(structured["backingFileUri"], backing_uri.as_str());
     }
 
     #[test]

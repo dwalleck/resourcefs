@@ -99,7 +99,11 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
-        let temp = tempfile::tempdir().expect("create harness directory");
+        // Normal state parents must not inherit a symlink from the host's TMPDIR.
+        let parent = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonical harness parent");
+        let temp = tempfile::tempdir_in(parent).expect("create harness directory");
         let fake_bin = temp.path().join("bin");
         fs::create_dir(&fake_bin).expect("create fake bin directory");
         write_executable(&fake_bin.join("curl"), FIXTURE);

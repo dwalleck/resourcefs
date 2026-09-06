@@ -43,7 +43,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features --no-fail-fast
 
       - name: Production-scale release budgets
         run: cargo test --release -p resourcefs-core --test read_engine_contract --test mutation_engine_contract --test local_quota_contract budget

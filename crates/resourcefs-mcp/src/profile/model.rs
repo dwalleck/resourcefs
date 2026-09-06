@@ -1710,6 +1710,11 @@ mod tests {
             .path()
             .canonicalize()
             .expect("canonical profile directory");
+        // A file-URL round trip normalizes Windows verbatim prefixes independently of profile code.
+        let expected_root = url::Url::from_directory_path(expected_root)
+            .expect("canonical directory URI")
+            .to_file_path()
+            .expect("native directory path");
         let default = ProfileDocument::from_slice_in(br#"{"schemaVersion":1}"#, fixture.path())
             .expect("default logging profile");
         assert_eq!(default.logging_config().level(), LogLevel::Info);

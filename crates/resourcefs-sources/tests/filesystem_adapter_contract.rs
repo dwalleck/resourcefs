@@ -363,6 +363,50 @@ async fn permits_contained_symlink() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn absolute_symlink_target_aliases_preserve_containment() {
+    use std::os::unix::fs::symlink;
+
+    let temporary = TempDir::new().expect("temporary directory");
+    let parent = temporary.path().canonicalize().expect("canonical parent");
+    let root = parent.join("workspace");
+    let outside = parent.join("outside");
+    fs::create_dir(&root).expect("workspace root");
+    fs::create_dir(&outside).expect("outside directory");
+    fs::write(root.join("target.txt"), "inside").expect("inside fixture");
+    fs::write(outside.join("target.txt"), "outside secret").expect("outside fixture");
+    let alias = parent.join("root-alias");
+    symlink(&root, &alias).expect("root alias");
+    symlink(alias.join("target.txt"), root.join("link.txt")).expect("absolute aliased target");
+    let source = FilesystemSource::new(
+        LaunchRootSource::Profile(vec![LaunchRoot::new(
+            WorkspaceRootId::new("workspace").expect("root ID"),
+            root,
+            MutationGrants::new(false, true, false),
+        )]),
+        Some("workspace".to_owned()),
+        BackingPathVisibility::Hidden,
+    )
+    .await
+    .expect("granted filesystem source");
+
+    let resource = source
+        .read(&reference("link.txt"), &OperationGuard::new())
+        .await
+        .expect("contained aliased target");
+    assert_eq!(resource.content(), "inside");
+    assert!(!resource.is_mutable());
+
+    fs::remove_file(&alias).expect("remove root alias");
+    symlink(&outside, &alias).expect("retarget alias outside workspace");
+    let error = source
+        .read(&reference("link.txt"), &OperationGuard::new())
+        .await
+        .expect_err("retargeted alias must not escape");
+    assert_eq!(error.category(), ErrorCategory::PermissionDenied);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn rejects_symlink_escape() {
     use std::os::unix::fs::symlink;
 

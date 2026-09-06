@@ -105,13 +105,12 @@ fn backing_file_uri_is_absent_unless_explicitly_attached() {
         ReadResource::text(reference("visible.txt"), "content".to_owned()).expect("read resource");
     assert_eq!(hidden.backing_file_uri(), None);
 
+    let backing_uri = url::Url::from_file_path(std::env::temp_dir().join("visible.txt"))
+        .expect("absolute local file path");
     let visible = hidden
-        .with_backing_file_uri("file:///workspace/visible.txt")
+        .with_backing_file_uri(backing_uri.as_str())
         .expect("local backing URI");
-    assert_eq!(
-        visible.backing_file_uri(),
-        Some("file:///workspace/visible.txt")
-    );
+    assert_eq!(visible.backing_file_uri(), Some(backing_uri.as_str()));
 
     let invalid = visible
         .with_backing_file_uri("https://example.com/visible.txt")

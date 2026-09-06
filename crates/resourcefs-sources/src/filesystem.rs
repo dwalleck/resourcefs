@@ -2532,7 +2532,7 @@ fn rewrite_absolute_symlink(
         if !target.is_absolute() {
             continue;
         }
-        let target = normalize_platform_path(target);
+        let target = resolve_absolute_target(&target)?;
         let Some(relative_target) = strip_beneath(&target, &root.canonical_path) else {
             return Err(ResourceError::new(
                 ErrorCategory::PermissionDenied,
@@ -2614,7 +2614,7 @@ fn filesystem_root(
     })
 }
 
-fn resolve_absolute(view: &WorkspaceView, input: &Path) -> Result<ResolvedAddress, ResourceError> {
+fn resolve_absolute_target(input: &Path) -> Result<PathBuf, ResourceError> {
     if !input.is_absolute() {
         return Err(ResourceError::new(
             ErrorCategory::InvalidReference,
@@ -2632,6 +2632,11 @@ fn resolve_absolute(view: &WorkspaceView, input: &Path) -> Result<ResolvedAddres
             ));
         }
     };
+    Ok(target)
+}
+
+fn resolve_absolute(view: &WorkspaceView, input: &Path) -> Result<ResolvedAddress, ResourceError> {
+    let target = resolve_absolute_target(input)?;
     let matches = matching_roots(view, &target)?;
     let match_count = matches.resources.len() + usize::from(matches.root_directory);
     if match_count > 1 {
