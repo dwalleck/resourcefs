@@ -221,17 +221,16 @@ fn write(path: &Path, contents: &str) {
 }
 
 /// Runs one cargo-deny check in `dir` against the *committed* `deny.toml`, so
-/// these fixtures exercise the real policy rather than a copy that could drift
-/// from it.
-/// `--config` belongs to the `check` subcommand, not to `cargo deny` itself:
-/// placing it first is a usage error that exits non-zero, which would let a
-/// "did it fail?" assertion pass without the gate ever running.
+/// these fixtures exercise the real policy rather than a separately maintained
+/// copy that could drift from it.
+/// Stage the config under its default name: cargo-deny 0.20 moved `--config`
+/// from `check` to the root command, but both CLI versions discover `deny.toml`
+/// in the fixture directory.
 fn deny_check_in(dir: &Path, which: &str) -> std::process::Output {
+    write(&dir.join("deny.toml"), &deny_config(&workspace_root()));
     Command::new("cargo")
         .arg("deny")
         .arg("check")
-        .arg("--config")
-        .arg(workspace_root().join("deny.toml"))
         .arg(which)
         .current_dir(dir)
         .output()

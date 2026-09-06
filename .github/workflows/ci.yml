@@ -46,7 +46,7 @@ jobs:
         run: cargo test --workspace --all-features
 
       - name: Production-scale release budgets
-        run: cargo test --release -p resourcefs-core --test read_engine_contract --test mutation_engine_contract budget
+        run: cargo test --release -p resourcefs-core --test read_engine_contract --test mutation_engine_contract --test local_quota_contract budget
 
       - name: Dependency vetting
         run: cargo deny check
