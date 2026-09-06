@@ -70,14 +70,32 @@ fn golden_workspace_references() {
                 let reference = parsed.unwrap_or_else(|error| {
                     panic!("expected {:?} to parse, got {error}", row.input)
                 });
-                let (kind, value, root) =
-                    address_observation(reference.workspace_address().expect("workspace address"));
+                let address = reference.workspace_address().expect("workspace address");
+                let (kind, value, root) = address_observation(address);
                 assert_eq!(Some(kind), row.expected.address_kind.as_deref(), "{row:?}");
-                assert_eq!(
-                    Some(value.as_str()),
-                    row.expected.value.as_deref(),
-                    "{row:?}"
-                );
+                match address {
+                    WorkspaceAddress::Relative(path) | WorkspaceAddress::Canonical { path, .. } => {
+                        assert_eq!(
+                            Some(path.as_path()),
+                            row.expected.value.as_deref().map(Path::new),
+                            "{row:?}"
+                        );
+                    }
+                    WorkspaceAddress::Absolute(path) => {
+                        assert_eq!(
+                            Some(path.as_path()),
+                            row.expected.value.as_deref().map(Path::new),
+                            "{row:?}"
+                        );
+                    }
+                    WorkspaceAddress::FileUri(_) => {
+                        assert_eq!(
+                            Some(value.as_str()),
+                            row.expected.value.as_deref(),
+                            "{row:?}"
+                        );
+                    }
+                }
                 assert_eq!(root, row.expected.root.as_deref(), "{row:?}");
                 assert_eq!(
                     reference
@@ -418,7 +436,9 @@ fn https_grammar() {
             GrammarExpectation::OtherFamily("workspace"),
         ),
         (
-            "file:///tmp/plan.md".to_owned(),
+            url::Url::from_file_path(std::env::temp_dir().join("plan.md"))
+                .expect("absolute local file path")
+                .to_string(),
             GrammarExpectation::OtherFamily("workspace"),
         ),
         // The narrowed guard still owns the filesystem families: an encoded
@@ -538,7 +558,9 @@ fn local_name_grammar() {
             GrammarExpectation::OtherFamily("workspace"),
         ),
         (
-            "file:///tmp/plan.md".to_owned(),
+            url::Url::from_file_path(std::env::temp_dir().join("plan.md"))
+                .expect("absolute local file path")
+                .to_string(),
             GrammarExpectation::OtherFamily("workspace"),
         ),
     ];

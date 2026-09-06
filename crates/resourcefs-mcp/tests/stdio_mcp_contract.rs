@@ -735,7 +735,11 @@ fn accepts_type(schema: &Value, expected: &str) -> bool {
 
 impl Drop for McpProcess {
     fn drop(&mut self) {
-        let should_terminate = match self.child.try_wait() {
+        let observed_status = self.child.try_wait();
+        if thread::panicking() {
+            eprintln!("resourcefs child status before cleanup: {observed_status:?}");
+        }
+        let should_terminate = match observed_status {
             Ok(Some(_status)) => false,
             Ok(None) => true,
             Err(error) => {
@@ -746,6 +750,15 @@ impl Drop for McpProcess {
         if should_terminate {
             let _kill_result = self.child.kill();
             let _wait_result = self.child.wait();
+        }
+        if thread::panicking()
+            && let Some(mut stderr) = self.child.stderr.take()
+        {
+            let mut diagnostics = String::new();
+            match stderr.read_to_string(&mut diagnostics) {
+                Ok(_) => eprintln!("resourcefs child stderr after failure:\n{diagnostics}"),
+                Err(error) => eprintln!("failed to read resourcefs child stderr: {error}"),
+            }
         }
     }
 }

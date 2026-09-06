@@ -230,6 +230,7 @@ fn deny_check_in(dir: &Path, which: &str) -> std::process::Output {
     write(&dir.join("deny.toml"), &deny_config(&workspace_root()));
     Command::new("cargo")
         .arg("deny")
+        .args(["--format", "json"])
         .arg("check")
         .arg(which)
         .current_dir(dir)
@@ -242,20 +243,28 @@ fn deny_check_in(dir: &Path, which: &str) -> std::process::Output {
 /// Checking only the exit status is not enough: a malformed invocation, an
 /// unresolvable manifest, or a missing config all exit non-zero too, so a
 /// bare `!success` assertion can pass while the gate never ran. Requiring the
-/// specific `<check> FAILED` diagnostic pins the failure to the real cause.
-fn assert_rejected_by(output: &std::process::Output, which: &str, why: &str) {
+/// stable error code identifies the rejected policy, independent of human wording or color.
+fn assert_rejected_by(output: &std::process::Output, code: &str, why: &str) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{stdout}{stderr}");
     assert!(
         !output.status.success(),
         "{why}\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+    let rejected = stderr
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).expect("cargo-deny JSON output")
+        })
+        .any(|entry| {
+            entry["type"] == "diagnostic"
+                && entry["fields"]["severity"] == "error"
+                && entry["fields"]["code"] == code
+        });
     assert!(
-        combined.contains(&format!("{which} FAILED")),
-        "expected cargo-deny to report `{which} FAILED`; a non-zero exit without it means the \
-         fixture failed for some other reason (usage error, unresolvable manifest) and the gate \
-         was never exercised.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        rejected,
+        "expected cargo-deny policy diagnostic `{code}`; an unrelated nonzero exit is not proof \
+         that the gate ran.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
 
@@ -292,7 +301,7 @@ fn license_gate_rejects_copyleft() {
     let output = deny_check_in(root, "licenses");
     assert_rejected_by(
         &output,
-        "licenses",
+        "rejected",
         "a GPL-3.0 package must fail the license gate, otherwise the allow-list is decorative",
     );
 }
@@ -356,7 +365,7 @@ fn source_gate_rejects_git() {
     let output = deny_check_in(root, "sources");
     assert_rejected_by(
         &output,
-        "sources",
+        "source-not-allowed",
         "a git-sourced dependency must fail the source gate, otherwise the crates.io pin is \
          decorative",
     );
