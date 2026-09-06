@@ -759,7 +759,9 @@ fn join_reader(
     joined: Result<io::Result<BoundedRead>, tokio::task::JoinError>,
 ) -> Result<BoundedRead, CommandError> {
     joined
+        .inspect_err(|error| eprintln!("[DEBUG-rfs-ci-process] reader task: {error:?}"))
         .map_err(|_| CommandError::new(CommandErrorKind::Io, "command pipe reader stopped"))?
+        .inspect_err(|error| eprintln!("[DEBUG-rfs-ci-process] pipe read: {error:?}"))
         .map_err(|_| CommandError::new(CommandErrorKind::Io, "command pipe read failed"))
 }
 
@@ -786,28 +788,51 @@ async fn cleanup_tree(
     tree: &mut platform::ChildTree,
 ) -> Result<(), CommandError> {
     let mut cleanup_failed = false;
-    drop(tree.request_termination());
+    drop(
+        tree.request_termination()
+            .inspect_err(|error| eprintln!("[DEBUG-rfs-ci-process] terminate: {error:?}")),
+    );
     let deadline = Instant::now() + TERMINATION_GRACE;
     let force_needed = loop {
-        if child.try_wait().is_err() {
+        if child
+            .try_wait()
+            .inspect_err(|error| eprintln!("[DEBUG-rfs-ci-process] try_wait: {error:?}"))
+            .is_err()
+        {
             cleanup_failed = true;
         }
-        match tree.has_live_processes() {
+        match tree
+            .has_live_processes()
+            .inspect_err(|error| eprintln!("[DEBUG-rfs-ci-process] liveness: {error:?}"))
+        {
             Ok(false) => break false,
             Ok(true) if Instant::now() < deadline => sleep(TERMINATION_POLL).await,
             Ok(true) | Err(_) => break true,
         }
     };
-    if force_needed && tree.force_termination().is_err() {
+    if force_needed
+        && tree
+            .force_termination()
+            .inspect_err(|error| eprintln!("[DEBUG-rfs-ci-process] force: {error:?}"))
+            .is_err()
+    {
         cleanup_failed = true;
-        if child.start_kill().is_err() {
+        if child
+            .start_kill()
+            .inspect_err(|error| eprintln!("[DEBUG-rfs-ci-process] start_kill: {error:?}"))
+            .is_err()
+        {
             cleanup_failed = true;
         }
     }
     match timeout(PIPE_JOIN_GRACE, child.wait()).await {
         Ok(Ok(_)) => {}
-        Ok(Err(_)) => cleanup_failed = true,
+        Ok(Err(error)) => {
+            eprintln!("[DEBUG-rfs-ci-process] wait: {error:?}");
+            cleanup_failed = true;
+        }
         Err(_) => {
+            eprintln!("[DEBUG-rfs-ci-process] wait timeout");
             cleanup_failed = true;
             drop(child.start_kill());
             if !matches!(timeout(PIPE_JOIN_GRACE, child.wait()).await, Ok(Ok(_))) {

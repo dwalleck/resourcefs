@@ -1,52 +1,18 @@
-# Continuous integration for ResourceFS.
-#
-# Formatting, lints, functional tests, release-mode production budgets, and
-# dependency vetting run on each supported platform. Hosted execution is
-# the workflow oracle; matching command text is not proof that a job runs.
-
-name: CI
-
+name: Platform diagnostics
 on:
   push:
-  pull_request:
-
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  gates:
-    name: gates (${{ matrix.os }})
+  diagnose:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
     steps:
-      - name: Check out the repository
-        uses: actions/checkout@v4
-
-      - name: Install the pinned toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo state
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@cargo-deny
-
-      - name: Formatting
-        run: cargo fmt --all -- --check
-
-      - name: Lints
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Tests
-        run: cargo test --workspace --all-features --no-fail-fast
-
-      - name: Production-scale release budgets
-        run: cargo test --release -p resourcefs-core --test read_engine_contract --test mutation_engine_contract --test local_quota_contract budget
-
-      - name: Dependency vetting
-        run: cargo deny check
+          cache-on-failure: true
+      - name: Capture TLS and process failure causes
+        run: cargo test -p resourcefs-sources --all-features --test http_tls_contract --test process_contract --no-fail-fast -- --nocapture

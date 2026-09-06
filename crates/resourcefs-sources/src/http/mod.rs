@@ -1476,6 +1476,7 @@ fn cancelled_mid_request() -> ResourceError {
 }
 
 fn classify_reqwest_failure(error: reqwest::Error) -> HttpFetchFailure {
+    eprintln!("[DEBUG-rfs-ci-tls] {error:?}");
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
     while let Some(current) = source {
         if let Some(found) = current.downcast_ref::<ResourceError>() {
