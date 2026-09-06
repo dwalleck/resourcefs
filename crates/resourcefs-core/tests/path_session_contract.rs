@@ -351,7 +351,7 @@ async fn concurrent_admission_is_linearizable_at_exact_session_quota() {
     let session = session(2, Arc::clone(&storage));
     let barrier = Arc::new(Barrier::new(5));
     let mut tasks = Vec::new();
-    for marker in [b'a', b'b', b'c', b'd'] {
+    for marker in *b"abcd" {
         let mut bytes = vec![marker; MAX_ARTIFACT_BYTES];
         bytes[MAX_ARTIFACT_BYTES - 1] = b'\n';
         let content: Arc<str> = String::from_utf8(bytes)
