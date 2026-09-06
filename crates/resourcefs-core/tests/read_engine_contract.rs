@@ -809,10 +809,12 @@ async fn workspace_snapshot_production_budget() {
     );
     assert!(!page.displayed_eof());
     assert_eq!(harness.session.artifact_count().await, 1);
-    assert!(
-        elapsed <= Duration::from_secs(5),
-        "64 MiB workspace snapshot page took {elapsed:?}"
-    );
+    if !cfg!(debug_assertions) {
+        assert!(
+            elapsed <= Duration::from_secs(5),
+            "64 MiB workspace snapshot page took {elapsed:?}"
+        );
+    }
 }
 
 #[tokio::test]

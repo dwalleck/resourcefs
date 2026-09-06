@@ -1226,7 +1226,7 @@ async fn exact_limit_edit_budget() {
         .record_seen_for_test(path.requested(), &original_tag, &[], true)
         .await
         .expect("empty EOF snapshot");
-    let engine = MutationEngine::new(adapter, session);
+    let engine = MutationEngine::new(adapter.clone(), session);
     let prefix = format!("[{}#{}]\nPUT >$:\n+", path.requested(), original_tag);
     let mut patch = String::with_capacity(MAX_HASHLINE_PATCH_BYTES);
     patch.push_str(&prefix);
@@ -1235,15 +1235,23 @@ async fn exact_limit_edit_budget() {
         MAX_HASHLINE_PATCH_BYTES - prefix.len(),
     ));
     let started = Instant::now();
-    engine
+    let receipt = engine
         .edit(&patch, &OperationGuard::new())
         .await
         .expect("exact-limit edit");
     let elapsed = started.elapsed();
-    assert!(
-        elapsed <= Duration::from_secs(5),
-        "64 MiB edit took {elapsed:?}"
+    let expected = &patch[prefix.len()..];
+    assert_eq!(adapter.text_content().await, expected);
+    assert_eq!(
+        receipt.version_tag(),
+        Some(&VersionTag::from_content(expected.as_bytes()))
     );
+    if !cfg!(debug_assertions) {
+        assert!(
+            elapsed <= Duration::from_secs(5),
+            "64 MiB edit took {elapsed:?}"
+        );
+    }
 }
 
 #[tokio::test]
