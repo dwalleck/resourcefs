@@ -151,7 +151,7 @@
         "marker": "<!--rfs-owner:rfs-bcym:confluence-page:public-root-->",
         "body": {
           "representation": "storage",
-          "value": "<!--rfs-owner:rfs-bcym:confluence-page:public-root--><p>ResourceFS fixture public root — Unicode π and an embedded space.</p><table><tbody><tr><th>edge</th><td>&amp; &lt;encoded&gt;</td></tr></tbody></table>"
+          "value": "<p>ResourceFS fixture public root &mdash; Unicode &pi; and an embedded space.</p><table><tbody><tr><th>edge</th><td>&amp; &lt;encoded&gt;</td></tr></tbody></table>"
         }
       },
       {
@@ -162,7 +162,7 @@
         "marker": "<!--rfs-owner:rfs-bcym:confluence-page:public-child-->",
         "body": {
           "representation": "storage",
-          "value": "<!--rfs-owner:rfs-bcym:confluence-page:public-child--><p>Child page.</p><ac:structured-macro ac:name=\"info\"><ac:rich-text-body><p>macro edge</p></ac:rich-text-body></ac:structured-macro>"
+          "value": "<p>Child page.</p><ac:structured-macro ac:name=\"info\"><ac:rich-text-body><p>macro edge</p></ac:rich-text-body></ac:structured-macro>"
         }
       },
       {
@@ -172,7 +172,7 @@
         "marker": "<!--rfs-owner:rfs-bcym:confluence-page:private-root-->",
         "body": {
           "representation": "storage",
-          "value": "<!--rfs-owner:rfs-bcym:confluence-page:private-root--><p>Provisioner-only page.</p>"
+          "value": "<p>Provisioner-only page.</p>"
         }
       }
     ],
@@ -183,7 +183,7 @@
         "marker": "<!--rfs-owner:rfs-bcym:confluence-comment:public-alpha-->",
         "body": {
           "representation": "storage",
-          "value": "<!--rfs-owner:rfs-bcym:confluence-comment:public-alpha--><p>Footer comment.</p>"
+          "value": "<p>Footer comment.</p>"
         }
       },
       {
@@ -192,7 +192,7 @@
         "marker": "<!--rfs-owner:rfs-bcym:confluence-comment:public-beta-->",
         "body": {
           "representation": "storage",
-          "value": "<!--rfs-owner:rfs-bcym:confluence-comment:public-beta--><p>Second footer comment.</p>"
+          "value": "<p>Second footer comment.</p>"
         }
       }
     ]

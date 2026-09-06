@@ -10,6 +10,11 @@ readonly MAX_PAGES=10
 readonly MAX_REQUESTS=512
 readonly MAX_POLLS=30
 readonly POLL_SECONDS=2
+# Confluence strips leading HTML comments from stored bodies and injects
+# ac:schema-version/ac:macro-id into macros, so ownership markers ride in a
+# v1 content property and body comparisons normalize those two attributes.
+readonly PROPERTY_KEY='rfs-owner'
+readonly STORAGE_NORMALIZE='gsub(" ac:schema-version=\"[^\"]*\"";"") | gsub(" ac:macro-id=\"[^\"]*\"";"")'
 
 REPOSITORY_ROOT=$(
   cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P
@@ -32,7 +37,7 @@ REQUESTS=0
 # Associative maps are populated only from validated upstream responses.
 declare -A JIRA_PROJECT_IDS=() JIRA_PROJECT_KEYS=() JIRA_ISSUE_IDS=() JIRA_ISSUE_KEYS=()
 declare -A JIRA_TASK_TYPE_IDS=() JIRA_SUBTASK_TYPE_IDS=() JIRA_COMMENT_IDS=()
-declare -A CONF_SPACE_IDS=() CONF_PAGE_IDS=() CONF_COMMENT_IDS=()
+declare -A CONF_SPACE_IDS=() CONF_SPACE_HOMEPAGE=() CONF_PAGE_IDS=() CONF_COMMENT_IDS=()
 
 RESPONSE_STATUS=""
 die() {
@@ -397,6 +402,27 @@ decode_json_field() {
     die "invalid_manifest"
 }
 
+# Read the rfs-owner content property; sets OWNER_PROPERTY_VALUE ('' when absent).
+read_owner_property() {
+  local actor=$1 content_id=$2
+  OWNER_PROPERTY_VALUE=''
+  api_request "$actor" GET "/wiki/rest/api/content/${content_id}/property/${PROPERTY_KEY}" '' '200,404' owner_property_get
+  [[ "$RESPONSE_STATUS" == 200 ]] || return 0
+  OWNER_PROPERTY_VALUE=$(jq -er --arg key "$PROPERTY_KEY" '
+    if (.key|type)=="string" and .key == $key and (.value|type)=="string" then .value else error end
+  ' "$RESPONSE_FILE" 2>/dev/null) || die "invalid_response operation=owner_property_get"
+}
+
+write_owner_property() {
+  local actor=$1 content_id=$2 marker=$3 body
+  body=$(jq -cn --arg key "$PROPERTY_KEY" --arg value "$marker" '{key:$key,value:$value}')
+  api_request "$actor" POST "/wiki/rest/api/content/${content_id}/property" "$body" '200,201' owner_property_create
+  jq -e --arg key "$PROPERTY_KEY" --arg value "$marker" '
+    (.key|type)=="string" and .key == $key and (.value|type)=="string" and .value == $value
+  ' "$RESPONSE_FILE" >/dev/null 2>&1 ||
+    die "identity_mismatch operation=owner_property_create"
+}
+
 
 
 # Append JSON rows to a temporary newline-delimited state collection.
@@ -411,7 +437,9 @@ find_jira_project() {
   FOUND_ID=''
   while :; do
     (( pages < MAX_PAGES )) || die "pagination_limit product=jira operation=project_search"
-    api_request provisioner GET "/rest/api/3/project/search?startAt=${start}&maxResults=1" '' 200 project_search
+    # Live project search omits `description` unless expanded, and the
+    # description carries the ownership marker used for adoption.
+    api_request provisioner GET "/rest/api/3/project/search?startAt=${start}&maxResults=1&expand=description" '' 200 project_search
     values=$(jq -ec '.values | if type == "array" then . else error end' "$RESPONSE_FILE" 2>/dev/null) ||
       die "invalid_response operation=project_search"
     while IFS= read -r row; do
@@ -557,7 +585,7 @@ find_confluence_space() {
 }
 
 find_confluence_page() {
-  local space_id=$1 title=$2 marker=$3 pages=0 row row_title row_marker pid next
+  local space_id=$1 title=$2 marker=$3 pages=0 row row_title pid next list_response
   local path="/wiki/api/v2/spaces/${space_id}/pages?limit=1&body-format=storage"
   FOUND_ID=''
   while :; do
@@ -565,23 +593,23 @@ find_confluence_page() {
     api_request provisioner GET "$path" '' 200 page_list
     jq -e '.results | type == "array"' "$RESPONSE_FILE" >/dev/null 2>&1 ||
       die "invalid_response operation=page_list"
+    # Property reads inside the row loop rotate RESPONSE_FILE, so the list
+    # response path must be captured for the row scan and pagination check.
+    list_response=$RESPONSE_FILE
     while IFS= read -r row; do
       row_title=$(jq -r '.title // empty | strings' <<<"$row")
-      row_marker=$(jq -r '
-        (.body.storage.value? // .body.value? // "") |
-        try capture("^(?<owner><!--rfs-owner:[A-Za-z0-9:_-]+-->)").owner catch ""
-      ' <<<"$row")
-      if [[ "$row_title" == "$title" || "$row_marker" == "$marker" ]]; then
-        [[ "$row_title" == "$title" && "$row_marker" == "$marker" ]] ||
-          die "foreign_collision logical=page"
+      if [[ "$row_title" == "$title" ]]; then
         pid=$(jq -r '.id // empty | strings' <<<"$row")
         [[ "$pid" =~ ^[0-9]+$ ]] || die "invalid_response operation=page_list"
+        read_owner_property provisioner "$pid"
+        [[ "$OWNER_PROPERTY_VALUE" == "$marker" ]] ||
+          die "foreign_collision logical=page"
         [[ -z "$FOUND_ID" || "$FOUND_ID" == "$pid" ]] ||
           die "ambiguous_object logical=page"
         FOUND_ID=$pid
       fi
-    done < <(jq -c '.results[]' "$RESPONSE_FILE")
-    next=$(jq -r 'if ._links.next == null then "" elif (._links.next|type) == "string" then ._links.next else error end' "$RESPONSE_FILE" 2>/dev/null) ||
+    done < <(jq -c '.results[]' "$list_response")
+    next=$(jq -r 'if ._links.next == null then "" elif (._links.next|type) == "string" then ._links.next else error end' "$list_response" 2>/dev/null) ||
       die "invalid_pagination product=confluence operation=page_list"
     [[ -n "$next" ]] || return 0
     [[ "$next" == "/wiki/api/v2/spaces/${space_id}/pages?"* && "$next" != "$path" ]] ||
@@ -592,7 +620,7 @@ find_confluence_page() {
 }
 
 find_confluence_comment() {
-  local page_id=$1 marker=$2 pages=0 row row_body cid next
+  local page_id=$1 marker=$2 pages=0 row cid next list_response
   local path="/wiki/api/v2/pages/${page_id}/footer-comments?limit=1&body-format=storage"
   FOUND_ID=''
   while :; do
@@ -600,20 +628,18 @@ find_confluence_comment() {
     api_request provisioner GET "$path" '' 200 comment_list
     jq -e '.results | type == "array"' "$RESPONSE_FILE" >/dev/null 2>&1 ||
       die "invalid_response operation=comment_list"
+    list_response=$RESPONSE_FILE
     while IFS= read -r row; do
-      row_body=$(jq -r '
-        (.body.storage.value? // .body.value? // "") |
-        try capture("^(?<owner><!--rfs-owner:[A-Za-z0-9:_-]+-->)").owner catch ""
-      ' <<<"$row")
-      if [[ "$row_body" == "$marker" ]]; then
-        cid=$(jq -r '.id // empty | strings' <<<"$row")
-        [[ "$cid" =~ ^[0-9]+$ ]] || die "invalid_response operation=comment_list"
+      cid=$(jq -r '.id // empty | strings' <<<"$row")
+      [[ "$cid" =~ ^[0-9]+$ ]] || die "invalid_response operation=comment_list"
+      read_owner_property provisioner "$cid"
+      if [[ "$OWNER_PROPERTY_VALUE" == "$marker" ]]; then
         [[ -z "$FOUND_ID" || "$FOUND_ID" == "$cid" ]] ||
           die "ambiguous_object logical=comment"
         FOUND_ID=$cid
       fi
-    done < <(jq -c '.results[]' "$RESPONSE_FILE")
-    next=$(jq -r 'if ._links.next == null then "" elif (._links.next|type) == "string" then ._links.next else error end' "$RESPONSE_FILE" 2>/dev/null) ||
+    done < <(jq -c '.results[]' "$list_response")
+    next=$(jq -r 'if ._links.next == null then "" elif (._links.next|type) == "string" then ._links.next else error end' "$list_response" 2>/dev/null) ||
       die "invalid_pagination product=confluence operation=comment_list"
     [[ -n "$next" ]] || return 0
     [[ "$next" == "/wiki/api/v2/pages/${page_id}/footer-comments?"* && "$next" != "$path" ]] ||
@@ -781,7 +807,11 @@ bootstrap_jira_issues() {
 }
 
 bootstrap_confluence_spaces() {
-  local id key name marker private body path space_id
+  local id key name marker private body path space_id homepage
+  homepage_validate='
+    if (.homepageId|type) == "number" and .homepageId > 0 then (.homepageId|tostring)
+    elif (.homepageId|type) == "string" and (.homepageId|test("^[0-9]+$")) then .homepageId
+    else error end'
   while IFS=$'\t' read -r id key name marker private; do
     find_confluence_space "$key" "$marker"
     space_id=$FOUND_ID
@@ -797,6 +827,9 @@ bootstrap_confluence_spaces() {
       ' "$RESPONSE_FILE" >/dev/null 2>&1; then
         delete_if_owned provisioner DELETE "/wiki/rest/api/space/${key}" space_delete
         space_id=''
+      else
+        homepage=$(response_string "$homepage_validate" space_get)
+        CONF_SPACE_HOMEPAGE[$id]=$homepage
       fi
     fi
     if [[ -z "$space_id" ]]; then
@@ -819,6 +852,8 @@ bootstrap_confluence_spaces() {
           else empty end) == $marker)
       ' "$RESPONSE_FILE" >/dev/null 2>&1 ||
         die "identity_mismatch logical=space"
+      homepage=$(response_string "$homepage_validate" space_get)
+      CONF_SPACE_HOMEPAGE[$id]=$homepage
     fi
     [[ "$space_id" =~ ^[0-9]+$ ]] || die "invalid_response operation=space_create"
     CONF_SPACE_IDS[$id]=$space_id
@@ -826,11 +861,13 @@ bootstrap_confluence_spaces() {
 }
 
 bootstrap_confluence_pages() {
-  local id space title marker parent body response_body page_id parent_id
+  local id space title marker parent body response_body page_id parent_id homepage
   while IFS=$'\t' read -r id space title marker parent response_body; do
     response_body=$(decode_json_field "$response_body")
     local space_id=${CONF_SPACE_IDS[$space]-}
     [[ -n "$space_id" ]] || die "manifest_parent_missing logical=page"
+    homepage=${CONF_SPACE_HOMEPAGE[$space]-}
+    [[ -n "$homepage" ]] || die "manifest_parent_missing logical=space"
     parent_id=''
     if [[ "$parent" != null && -n "$parent" ]]; then
       parent_id=${CONF_PAGE_IDS[$parent]-}
@@ -841,11 +878,11 @@ bootstrap_confluence_pages() {
     if [[ -n "$page_id" ]]; then
       api_request provisioner GET "/wiki/api/v2/pages/${page_id}?body-format=storage" '' 200 page_get
       if ! jq -e --arg id "$page_id" --arg sid "$space_id" --arg title "$title" \
-        --arg parent "$parent_id" --argjson body "$response_body" '
-          .id == $id and .spaceId == $sid and .title == $title and
-          (.body.storage? // .body?) == $body and
-          (($parent == "" and (.parentId? == null)) or
-           ($parent != "" and .parentId == $parent))
+        --arg parent "$parent_id" --arg homepage "$homepage" --argjson body "$response_body" '
+          (.id|tostring) == $id and (.spaceId|tostring) == $sid and .title == $title and
+          ((.body.storage? // .body?).value | '"$STORAGE_NORMALIZE"') == ($body.value | '"$STORAGE_NORMALIZE"') and
+          (($parent == "" and ((.parentId? == null) or (.parentId|tostring) == $homepage)) or
+           ($parent != "" and (.parentId|tostring) == $parent))
         ' "$RESPONSE_FILE" >/dev/null 2>&1; then
         delete_if_owned provisioner DELETE "/wiki/api/v2/pages/${page_id}" confluence_page_delete
         page_id=''
@@ -861,13 +898,14 @@ bootstrap_confluence_pages() {
       fi
       api_request provisioner POST '/wiki/api/v2/pages' "$body" 200,201 page_create
       page_id=$(response_id '.id' page_create)
+      write_owner_property provisioner "$page_id" "$marker"
       api_request provisioner GET "/wiki/api/v2/pages/${page_id}?body-format=storage" '' 200 page_get
       jq -e --arg id "$page_id" --arg sid "$space_id" --arg title "$title" \
-        --arg parent "$parent_id" --argjson body "$response_body" '
-          .id == $id and .spaceId == $sid and .title == $title and
-          (.body.storage? // .body?) == $body and
-          (($parent == "" and (.parentId? == null)) or
-           ($parent != "" and .parentId == $parent))
+        --arg parent "$parent_id" --arg homepage "$homepage" --argjson body "$response_body" '
+          (.id|tostring) == $id and (.spaceId|tostring) == $sid and .title == $title and
+          ((.body.storage? // .body?).value | '"$STORAGE_NORMALIZE"') == ($body.value | '"$STORAGE_NORMALIZE"') and
+          (($parent == "" and ((.parentId? == null) or (.parentId|tostring) == $homepage)) or
+           ($parent != "" and (.parentId|tostring) == $parent))
         ' "$RESPONSE_FILE" >/dev/null 2>&1 ||
         die "identity_mismatch logical=page"
     fi
@@ -893,10 +931,10 @@ bootstrap_confluence_comments() {
       api_request provisioner GET "/wiki/api/v2/footer-comments/${comment_id}?body-format=storage" '' 200 comment_get
       if ! jq -e --arg id "$comment_id" --arg page "$page_id" --arg parent "$parent_id" \
         --argjson body "$expected_body" '
-          .id == $id and .pageId == $page and
-          (.body.storage? // .body?) == $body and
+          (.id|tostring) == $id and (.pageId|tostring) == $page and
+          ((.body.storage? // .body?).value | '"$STORAGE_NORMALIZE"') == ($body.value | '"$STORAGE_NORMALIZE"') and
           (($parent == "" and (.parentCommentId? == null)) or
-           ($parent != "" and .parentCommentId == $parent))
+           ($parent != "" and (.parentCommentId|tostring) == $parent))
         ' "$RESPONSE_FILE" >/dev/null 2>&1; then
         delete_if_owned provisioner DELETE "/wiki/api/v2/footer-comments/${comment_id}" confluence_comment_delete
         comment_id=''
@@ -911,13 +949,14 @@ bootstrap_confluence_comments() {
       fi
       api_request provisioner POST '/wiki/api/v2/footer-comments' "$request_body" 200,201 comment_create
       comment_id=$(response_id '.id' comment_create)
+      write_owner_property provisioner "$comment_id" "$marker"
       api_request provisioner GET "/wiki/api/v2/footer-comments/${comment_id}?body-format=storage" '' 200 comment_get
       jq -e --arg id "$comment_id" --arg page "$page_id" --arg parent "$parent_id" \
         --argjson body "$expected_body" '
-          .id == $id and .pageId == $page and
-          (.body.storage? // .body?) == $body and
+          (.id|tostring) == $id and (.pageId|tostring) == $page and
+          ((.body.storage? // .body?).value | '"$STORAGE_NORMALIZE"') == ($body.value | '"$STORAGE_NORMALIZE"') and
           (($parent == "" and (.parentCommentId? == null)) or
-           ($parent != "" and .parentCommentId == $parent))
+           ($parent != "" and (.parentCommentId|tostring) == $parent))
         ' "$RESPONSE_FILE" >/dev/null 2>&1 ||
         die "identity_mismatch logical=confluence_comment"
     fi
@@ -1112,18 +1151,24 @@ verify_jira_pagination() {
 }
 
 verify_confluence() {
-  local id key name marker sid page_id title space parent expected parent_id comment_id page marker_body
+  local id key name marker sid page_id title space parent expected parent_id comment_id page marker_body homepage
+  homepage_validate='
+    if (.homepageId|type) == "number" and .homepageId > 0 then (.homepageId|tostring)
+    elif (.homepageId|type) == "string" and (.homepageId|test("^[0-9]+$")) then .homepageId
+    else error end'
   while IFS=$'\t' read -r id key name marker; do
     sid=${CONF_SPACE_IDS[$id]-}
     api_request provisioner GET "/wiki/api/v2/spaces/${sid}?description-format=plain" '' 200 space_get
     jq -e --arg expected_id "$sid" --arg expected_key "$key" --arg expected_name "$name" --arg expected_marker "$marker" '
-      .id == $expected_id and .key == $expected_key and .name == $expected_name and
+      (.id|tostring) == $expected_id and .key == $expected_key and .name == $expected_name and
       ((if (.description|type) == "string" then .description
         elif (.description|type) == "object" and (.description.value?|type) == "string" then .description.value
         elif (.description|type) == "object" and (.description.plain?|type) == "object"
           and (.description.plain.value?|type) == "string" then .description.plain.value
         else empty end) == $expected_marker)
     ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "authority_mismatch logical=space"
+    homepage=$(response_string "$homepage_validate" space_get)
+    CONF_SPACE_HOMEPAGE[$id]=$homepage
   done < <(jq -r '.confluence.spaces[] | [.id,.key,.name,.marker] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r id title space parent expected; do
@@ -1133,14 +1178,20 @@ verify_confluence() {
     if [[ "$parent" != null && -n "$parent" ]]; then
       parent_id=${CONF_PAGE_IDS[$parent]-}
     fi
+    homepage=${CONF_SPACE_HOMEPAGE[$space]-}
+    [[ -n "$homepage" ]] || die "state_missing_object logical=space"
     api_request provisioner GET "/wiki/api/v2/pages/${page_id}?body-format=storage" '' 200 page_get
     jq -e --arg expected_id "$page_id" --arg expected_space "${CONF_SPACE_IDS[$space]-}" \
-      --arg expected_title "$title" --arg expected_parent "$parent_id" --argjson expected_body "$expected" '
-        .id == $expected_id and .spaceId == $expected_space and .title == $expected_title and
-        (.body.storage? // .body?) == $expected_body and
-        (($expected_parent == "" and (.parentId? == null)) or
-         ($expected_parent != "" and .parentId == $expected_parent))
+      --arg expected_title "$title" --arg expected_parent "$parent_id" --arg homepage "$homepage" \
+      --argjson expected_body "$expected" '
+        (.id|tostring) == $expected_id and (.spaceId|tostring) == $expected_space and .title == $expected_title and
+        ((.body.storage? // .body?).value | '"$STORAGE_NORMALIZE"') == ($expected_body.value | '"$STORAGE_NORMALIZE"') and
+        (($expected_parent == "" and ((.parentId? == null) or (.parentId|tostring) == $homepage)) or
+         ($expected_parent != "" and (.parentId|tostring) == $expected_parent))
       ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "authority_mismatch logical=page"
+    read_owner_property provisioner "$page_id"
+    [[ "$OWNER_PROPERTY_VALUE" == "$(jq -r --arg id "$id" '.confluence.pages[] | select(.id==$id) | .marker' "$MANIFEST_PATH")" ]] ||
+      die "authority_mismatch logical=page"
   done < <(jq -r '.confluence.pages[] | [.id,.title,.space,(.parent // "null"),(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r id page parent expected; do
@@ -1153,11 +1204,14 @@ verify_confluence() {
     api_request provisioner GET "/wiki/api/v2/footer-comments/${comment_id}?body-format=storage" '' 200 comment_get
     jq -e --arg expected_id "$comment_id" --arg expected_page "${CONF_PAGE_IDS[$page]-}" \
       --arg expected_parent "$parent_id" --argjson expected_body "$expected" '
-        .id == $expected_id and .pageId == $expected_page and
-        (.body.storage? // .body?) == $expected_body and
+        (.id|tostring) == $expected_id and (.pageId|tostring) == $expected_page and
+        ((.body.storage? // .body?).value | '"$STORAGE_NORMALIZE"') == ($expected_body.value | '"$STORAGE_NORMALIZE"') and
         (($expected_parent == "" and (.parentCommentId? == null)) or
-         ($expected_parent != "" and .parentCommentId == $expected_parent))
+         ($expected_parent != "" and (.parentCommentId|tostring) == $expected_parent))
       ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "authority_mismatch logical=comment"
+    read_owner_property provisioner "$comment_id"
+    [[ "$OWNER_PROPERTY_VALUE" == "$(jq -r --arg id "$id" '.confluence.comments[] | select(.id==$id) | .marker' "$MANIFEST_PATH")" ]] ||
+      die "authority_mismatch logical=comment"
   done < <(jq -r '.confluence.comments[] | [.id,.page,(.parent // "null"),(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
 }
 
@@ -1182,7 +1236,7 @@ verify_confluence_pagination() {
 
 verify_reader_visibility() {
   local id key name marker private path next pages=0 row row_key page_id space page
-  local comment_id issue_id issue body title parent expected parent_id summary description project
+  local comment_id issue_id issue body title parent expected parent_id summary description project homepage
   declare -A seen_public_spaces=()
   path='/wiki/api/v2/spaces?limit=1&description-format=plain'
   while :; do
@@ -1224,6 +1278,11 @@ verify_reader_visibility() {
               and (.description.plain.value?|type) == "string" then .description.plain.value
             else empty end) == $expected_marker)
         ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "reader_missing logical=space"
+      homepage=$(jq -er '
+        if (.homepageId|type) == "number" and .homepageId > 0 then (.homepageId|tostring)
+        elif (.homepageId|type) == "string" and (.homepageId|test("^[0-9]+$")) then .homepageId
+        else error end' "$RESPONSE_FILE" 2>/dev/null) || die "invalid_response operation=reader_space_get"
+      CONF_SPACE_HOMEPAGE[$id]=$homepage
     fi
   done < <(jq -r '.confluence.spaces[] | [.id,.key,.name,.marker,.private] | @tsv' "$MANIFEST_PATH")
 
@@ -1238,12 +1297,16 @@ verify_reader_visibility() {
     if [[ "$private" == true ]]; then
       api_request reader GET "/wiki/api/v2/pages/${page_id}?body-format=storage" '' 403,404 reader_private_page_get
     else
+      homepage=${CONF_SPACE_HOMEPAGE[$space]-}
+      [[ -n "$homepage" ]] || die "reader_missing logical=space"
       api_request reader GET "/wiki/api/v2/pages/${page_id}?body-format=storage" '' 200 reader_page_get
       jq -e --arg expected_id "$page_id" --arg expected_space "${CONF_SPACE_IDS[$space]-}" \
-        --arg expected_title "$title" --arg expected_parent "$parent_id" --argjson expected_body "$expected" '
+        --arg expected_title "$title" --arg expected_parent "$parent_id" --arg homepage "$homepage" \
+        --argjson expected_body "$expected" '
           (.id|tostring) == $expected_id and (.spaceId|tostring) == $expected_space and
-          .title == $expected_title and (.body.storage? // .body?) == $expected_body and
-          (($expected_parent == "" and (.parentId? == null)) or
+          .title == $expected_title and
+          ((.body.storage? // .body?).value | '"$STORAGE_NORMALIZE"') == ($expected_body.value | '"$STORAGE_NORMALIZE"') and
+          (($expected_parent == "" and ((.parentId? == null) or (.parentId|tostring) == $homepage)) or
            ($expected_parent != "" and (.parentId|tostring) == $expected_parent))
         ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "reader_missing logical=page"
     fi
@@ -1259,7 +1322,8 @@ verify_reader_visibility() {
     else
       api_request reader GET "/wiki/api/v2/footer-comments/${comment_id}?body-format=storage" '' 200 reader_comment_get
       jq -e --arg expected_id "$comment_id" --argjson expected_body "$body" '
-        .id == $expected_id and (.body.storage? // .body?) == $expected_body
+        (.id|tostring) == $expected_id and
+        ((.body.storage? // .body?).value | '"$STORAGE_NORMALIZE"') == ($expected_body.value | '"$STORAGE_NORMALIZE"')
       ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "reader_missing logical=comment"
     fi
   done < <(jq -r '.confluence.comments[] | [.id,.page,(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
@@ -1315,8 +1379,9 @@ poll_space_delete() {
     status=$(jq -er '(.status // .state) | strings' "$RESPONSE_FILE" 2>/dev/null) ||
       die "invalid_response operation=space_delete_poll"
     case "$status" in
-      COMPLETE|completed|SUCCESS|success) return ;;
-      FAILED|failed|ERROR|error)
+      # Live tenants report terminal success as FINISH_SUCCESS.
+      COMPLETE|completed|SUCCESS|success|FINISH_SUCCESS|finish_success) return ;;
+      FAILED|failed|ERROR|error|FINISH_ERROR|finish_error|FINISH_FAILED|finish_failed|FINISH_CANCELLED|finish_cancelled)
         die "delete_failure product=confluence operation=space_delete_poll"
         ;;
       RUNNING|running|PENDING|pending|IN_PROGRESS|in_progress) ;;
@@ -1329,7 +1394,7 @@ poll_space_delete() {
 }
 
 delete_if_owned() {
-  local actor=$1 method=$2 path=$3 operation=$4
+  local actor=$1 method=$2 path=$3 operation=$4 expected=${5:-'204,404'}
   if [[ "$operation" == space_delete ]]; then
     api_request "$actor" "$method" "$path" '' '202,404' "$operation"
     if [[ "$RESPONSE_STATUS" == 202 ]]; then
@@ -1341,7 +1406,7 @@ delete_if_owned() {
       poll_space_delete "$task"
     fi
   else
-    api_request "$actor" "$method" "$path" '' '204,404' "$operation"
+    api_request "$actor" "$method" "$path" '' "$expected" "$operation"
   fi
 }
 
@@ -1410,16 +1475,19 @@ cleanup_all() {
   fi
   discover_cleanup_objects
   local id sid issue_logical
+  # Some project templates deny DELETE_ISSUES to the project lead; a 403 there
+  # is delegated to the project-delete cascade and the final re-discovery below
+  # still fails cleanup if any owned object survives.
   while IFS= read -r id; do
     sid=${JIRA_COMMENT_IDS[$id]-}
     issue_logical=$(jq -r --arg c "$id" '.jira.issues[] | select(any(.comments[]?; .id==$c)) | .id' "$MANIFEST_PATH")
     if [[ -n "$sid" && -n "$issue_logical" && -n "${JIRA_ISSUE_IDS[$issue_logical]-}" ]]; then
-      delete_if_owned provisioner DELETE "/rest/api/3/issue/${JIRA_ISSUE_IDS[$issue_logical]}/comment/${sid}" jira_comment_delete
+      delete_if_owned provisioner DELETE "/rest/api/3/issue/${JIRA_ISSUE_IDS[$issue_logical]}/comment/${sid}" jira_comment_delete '204,403,404'
     fi
   done < <(jq -r '.jira.issues[].comments[]?.id' "$MANIFEST_PATH")
   while IFS= read -r id; do
     sid=${JIRA_ISSUE_IDS[$id]-}
-    [[ -z "$sid" ]] || delete_if_owned provisioner DELETE "/rest/api/3/issue/${sid}" jira_issue_delete
+    [[ -z "$sid" ]] || delete_if_owned provisioner DELETE "/rest/api/3/issue/${sid}" jira_issue_delete '204,403,404'
   done < <(jq -r '.jira.issues[].id' "$MANIFEST_PATH")
   while IFS= read -r id; do
     sid=${JIRA_PROJECT_IDS[$id]-}

@@ -32,6 +32,7 @@ def initial_store():
         "spaces": [],
         "pages": [],
         "confluence_comments": [],
+        "properties": {},
         "tasks": {},
         "faults": {},
     }
@@ -69,6 +70,8 @@ def load_store():
             base[key] = []
     if not isinstance(base.get("tasks"), dict):
         base["tasks"] = {}
+    if not isinstance(base.get("properties"), dict):
+        base["properties"] = {}
     if not isinstance(base.get("faults"), dict):
         base["faults"] = {}
     return base
@@ -151,9 +154,33 @@ def ensure_seed(store):
         if SCENARIO == "foreign_collision" and not any(p.get("key") == "RFSFIX" for p in store["projects"]):
             store["projects"].append({"id": "9000000001", "key": "RFSFIX", "name": "Foreign", "description": "tenant-owned foreign object"})
         if SCENARIO == "foreign_space_collision" and not any(s.get("key") == "RFSFIXTURE" for s in store["spaces"]):
-            store["spaces"].append({"id": "9000000002", "key": "RFSFIXTURE", "name": "Foreign", "description": "tenant-owned foreign object", "private": False})
+            store["spaces"].append({"id": "9000000002", "key": "RFSFIXTURE", "name": "Foreign", "description": "tenant-owned foreign object", "private": False, "homepageId": int(numeric_id("confluence-home", "RFSFIXTURE"))})
     if SCENARIO == "duplicate_marker" and not any(p.get("id") == "9000000003" for p in store["projects"]):
         store["projects"].append({"id": "9000000003", "key": "OTHERKEY", "name": "Foreign", "description": "ResourceFS disposable fixture / rfs-bcym / jira primary"})
+    if (
+        SCENARIO in ("foreign_page_property", "page_missing_property")
+        and not any(s.get("key") == "RFSFIXTURE" for s in store["spaces"])
+    ):
+        space_id = numeric_id("confluence-space", "RFSFIXTURE")
+        homepage_id = int(numeric_id("confluence-home", "RFSFIXTURE"))
+        store["spaces"].append({
+            "id": space_id,
+            "key": "RFSFIXTURE",
+            "name": "ResourceFS Fixture Public",
+            "description": "ResourceFS disposable fixture / rfs-bcym / confluence public",
+            "private": False,
+            "homepageId": homepage_id,
+        })
+        store["pages"].append({
+            "id": "9000000005",
+            "space": space_id,
+            "spaceId": space_id,
+            "title": "ResourceFS Fixture Root / Unicode \u03c0",
+            "body": {"representation": "storage", "value": "<p>drifted content</p>"},
+            "parentId": str(homepage_id),
+        })
+        if SCENARIO == "foreign_page_property":
+            store["properties"].setdefault("9000000005", {})["rfs-owner"] = "someone-else"
     if (
         SCENARIO == "embedded_marker_foreign_issue"
         and not any(item.get("id") == "9000000004" for item in store["issues"])
@@ -231,6 +258,44 @@ def find_one(rows, object_id):
     return next((row for row in rows if str(row.get("id")) == object_id), None)
 
 
+FAKE_MACRO_ID = "6f9619ff-8b86-d011-b42d-00cf4fc964ff"
+
+
+def confluence_ingest(value):
+    """Apply the production storage mutations observed on a live tenant:
+    leading HTML comments are stripped, raw em dashes and pi become named
+    entities, and macros gain provider-owned schema-version/macro-id attrs."""
+    value = re.sub(r"\A<!--.*?-->", "", value)
+    value = value.replace("\u2014", "&mdash;").replace("\u03c0", "&pi;")
+    value = re.sub(
+        r'<ac:structured-macro ac:name="([^"]*)">',
+        r'<ac:structured-macro ac:name="\1" ac:schema-version="1" ac:macro-id="%s">' % FAKE_MACRO_ID,
+        value,
+    )
+    return value
+
+
+def confluence_content_exists(store, content_id):
+    return (
+        find_one(store["pages"], content_id) is not None
+        or find_one(store["confluence_comments"], content_id) is not None
+    )
+
+
+def purge_content_properties(store, content_ids):
+    for content_id in content_ids:
+        store["properties"].pop(str(content_id), None)
+
+
+def property_row(store, content_id, key, value):
+    return {
+        "id": numeric_id("content-property", f"{content_id}:{key}"),
+        "key": key,
+        "value": value,
+        "version": {"number": 1, "minorEdit": False},
+    }
+
+
 def handle(config, store, actor, method, path, query, body):
     if actor == "invalid":
         return 401, {}, "authentication"
@@ -247,6 +312,12 @@ def handle(config, store, actor, method, path, query, body):
     # Jira project search/create/get/delete.
     if method == "GET" and path == "/rest/api/3/project/search":
         rows = sorted(store["projects"], key=lambda row: row.get("key", ""))
+        # Live search omits `description` unless it is explicitly expanded.
+        if "description" not in query.get("expand", []):
+            rows = [
+                {key: value for key, value in row.items() if key != "description"}
+                for row in rows
+            ]
         if SCENARIO == "malformed_paging" and not store["faults"].get("malformed_project"):
             store["faults"]["malformed_project"] = True
             return 200, {"values": rows[:1], "isLast": False, "nextPage": 0, "maxResults": 1}, "project_search"
@@ -333,6 +404,10 @@ def handle(config, store, actor, method, path, query, body):
         return (200, row, "issue_get") if row else (404, {}, "issue_get")
     if match and method == "DELETE":
         row = find_one(store["issues"], match.group(1))
+        if SCENARIO == "jira_delete_denied":
+            if not row:
+                return 404, {}, "jira_issue_delete"
+            return 403, {"errorMessages": ["delete issues permission denied"]}, "jira_issue_delete"
         if not row:
             return 404, {}, "jira_issue_delete"
         store["issues"].remove(row)
@@ -383,6 +458,7 @@ def handle(config, store, actor, method, path, query, body):
             "name": body.get("name", ""),
             "description": description.get("value", "") if isinstance(description, dict) else str(description),
             "private": path.endswith("/_private"),
+            "homepageId": int(numeric_id("confluence-home", key)),
         }
         store["spaces"].append(row)
         return 201, {"id": row["id"], "key": key}, "space_create"
@@ -415,8 +491,13 @@ def handle(config, store, actor, method, path, query, body):
             store["spaces"].remove(space)
             page_ids = {page["id"] for page in store["pages"] if page.get("space") == space["id"]}
             store["pages"][:] = [page for page in store["pages"] if page.get("space") != space["id"]]
+            removed_ids = set(page_ids)
+            removed_ids.update(
+                comment["id"] for comment in store["confluence_comments"] if comment.get("page") in page_ids
+            )
             store["confluence_comments"][:] = [comment for comment in store["confluence_comments"] if comment.get("page") not in page_ids]
-        return 200, {"id": match.group(1), "status": "COMPLETE"}, "space_delete_poll"
+            purge_content_properties(store, removed_ids)
+        return 200, {"id": match.group(1), "status": "FINISH_SUCCESS", "finished": True}, "space_delete_poll"
 
     # Confluence pages and footer comments.
     match = re.fullmatch(r"/wiki/api/v2/spaces/([^/]+)/pages", path)
@@ -429,9 +510,23 @@ def handle(config, store, actor, method, path, query, body):
         return 200, list_page(sorted(rows, key=lambda item: item.get("title", "")), query, "results", "cursor", next_prefix=prefix), "page_list"
     if method == "POST" and path == "/wiki/api/v2/pages":
         sid = body.get("spaceId", "")
-        row = {"id": numeric_id("confluence-page", str(body.get("title", ""))), "space": sid, "spaceId": sid, "title": body.get("title", ""), "body": body.get("body", {})}
+        space = next((item for item in store["spaces"] if str(item.get("id")) == str(sid)), None)
+        if space is None:
+            return 400, {"message": "space not found"}, "page_create"
+        page_body = body.get("body", {})
+        if isinstance(page_body, dict) and isinstance(page_body.get("value"), str):
+            page_body = dict(page_body, value=confluence_ingest(page_body["value"]))
+        row = {
+            "id": numeric_id("confluence-page", str(body.get("title", ""))),
+            "space": sid,
+            "spaceId": sid,
+            "title": body.get("title", ""),
+            "body": page_body,
+        }
         if body.get("parentId"):
             row["parentId"] = body["parentId"]
+        else:
+            row["parentId"] = space.get("homepageId")
         store["pages"].append(row)
         return 201, {"id": row["id"], "title": row["title"]}, "page_create"
     match = re.fullmatch(r"/wiki/api/v2/pages/([^/]+)", path)
@@ -446,7 +541,11 @@ def handle(config, store, actor, method, path, query, body):
         if not row:
             return 404, {}, "confluence_page_delete"
         store["pages"].remove(row)
-        store["confluence_comments"][:] = [item for item in store["confluence_comments"] if item.get("page") != row.get("id")]
+        removed_comments = [item for item in store["confluence_comments"] if item.get("page") == row.get("id")]
+        store["confluence_comments"][:] = [
+            item for item in store["confluence_comments"] if item.get("page") != row.get("id")
+        ]
+        purge_content_properties(store, [row["id"]] + [item["id"] for item in removed_comments])
         return 204, "", "confluence_page_delete"
     match = re.fullmatch(r"/wiki/api/v2/pages/([^/]+)/footer-comments", path)
     if match and method == "GET":
@@ -455,7 +554,12 @@ def handle(config, store, actor, method, path, query, body):
         return 200, list_page(sorted(rows, key=lambda item: item.get("id", "")), query, "results", "cursor", next_prefix=prefix), "comment_list"
     if method == "POST" and path == "/wiki/api/v2/footer-comments":
         pid = body.get("pageId", "")
-        row = {"id": numeric_id("confluence-comment", text_of(body.get("body", {}))), "page": pid, "pageId": pid, "body": body.get("body", {})}
+        if find_one(store["pages"], str(pid)) is None:
+            return 400, {"message": "page not found"}, "comment_create"
+        comment_body = body.get("body", {})
+        if isinstance(comment_body, dict) and isinstance(comment_body.get("value"), str):
+            comment_body = dict(comment_body, value=confluence_ingest(comment_body["value"]))
+        row = {"id": numeric_id("confluence-comment", text_of(body.get("body", {}))), "page": pid, "pageId": pid, "body": comment_body}
         if body.get("parentCommentId"):
             row["parent"] = body["parentCommentId"]
             row["parentCommentId"] = body["parentCommentId"]
@@ -474,7 +578,26 @@ def handle(config, store, actor, method, path, query, body):
         if not row:
             return 404, {}, "confluence_comment_delete"
         store["confluence_comments"].remove(row)
+        purge_content_properties(store, [row["id"]])
         return 204, "", "confluence_comment_delete"
+
+    # Confluence v1 content properties (pages and footer comments).
+    match = re.fullmatch(r"/wiki/rest/api/content/([^/]+)/property", path)
+    if match and method == "POST":
+        key = body.get("key")
+        value = body.get("value")
+        if not isinstance(key, str) or not key or not isinstance(value, str) or not value:
+            return 400, {"message": "invalid content property"}, "owner_property_create"
+        if not confluence_content_exists(store, match.group(1)):
+            return 404, {"message": "content not found"}, "owner_property_create"
+        store["properties"].setdefault(str(match.group(1)), {})[key] = value
+        return 200, property_row(store, match.group(1), key, value), "owner_property_create"
+    match = re.fullmatch(r"/wiki/rest/api/content/([^/]+)/property/([^/]+)", path)
+    if match and method == "GET":
+        value = store["properties"].get(str(match.group(1)), {}).get(match.group(2))
+        if value is None:
+            return 404, {"message": "content property not found"}, "owner_property_get"
+        return 200, {"key": match.group(2), "value": value}, "owner_property_get"
 
     return 404, {"message": "unimplemented fake endpoint"}, "unknown"
 

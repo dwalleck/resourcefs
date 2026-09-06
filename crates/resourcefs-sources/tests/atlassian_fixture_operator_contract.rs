@@ -482,6 +482,28 @@ fn bootstrap_is_idempotent_and_collision_safe() {
         "non-leading HTML ownership token caused deletion"
     );
 
+    let foreign_page = Harness::new();
+    assert_failure(
+        &foreign_page.command_with("bootstrap", SITE, None, None, "foreign_page_property"),
+        "foreign_collision",
+    );
+    assert!(operation_rows(&foreign_page.read_log(), "page_create").is_empty());
+    assert!(
+        foreign_page.read_store()["pages"]
+            .as_array()
+            .expect("pages")
+            .iter()
+            .any(|page| page["id"] == "9000000005"),
+        "foreign page with mismatched owner property was deleted"
+    );
+
+    let unowned_page = Harness::new();
+    assert_failure(
+        &unowned_page.command_with("bootstrap", SITE, None, None, "page_missing_property"),
+        "foreign_collision",
+    );
+    assert!(operation_rows(&unowned_page.read_log(), "page_create").is_empty());
+
     let mismatched_identity = Harness::new();
     assert_failure(
         &mismatched_identity.command_with(
@@ -654,6 +676,26 @@ fn cleanup_waits_for_owned_space_deletion() {
     assert!(!harness.state.exists());
     assert_success(&harness.command("cleanup"));
     assert_no_new_mutations(&after_first, &harness.read_log());
+
+    // Some project templates deny DELETE_ISSUES to the project lead; cleanup
+    // must delegate those deletes to the project cascade and still converge.
+    let denied = Harness::new();
+    assert_success(&denied.command("bootstrap"));
+    assert_success(&denied.command_with("cleanup", SITE, None, None, "jira_delete_denied"));
+    let denied_store = denied.read_store();
+    assert!(
+        denied_store["issues"]
+            .as_array()
+            .expect("issues")
+            .is_empty(),
+        "denied issue deletes left residue after project cascade"
+    );
+    assert!(
+        denied_store["projects"]
+            .as_array()
+            .expect("projects")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -797,6 +839,23 @@ fn operator_contract_covers_lifecycle_matrix() {
         first
             .iter()
             .any(|row| row["path"] == "/wiki/rest/api/space/_private")
+    );
+    let property_rows = operation_rows(&first, "owner_property_create");
+    assert_eq!(
+        property_rows.len(),
+        5,
+        "ownership properties not written for every page and comment"
+    );
+    assert!(
+        property_rows.iter().all(|row| {
+            row["path"].as_str().is_some_and(|path| {
+                path.starts_with("/wiki/rest/api/content/") && path.ends_with("/property")
+            }) && row["body"]["key"] == "rfs-owner"
+                && row["body"]["value"]
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("<!--rfs-owner:"))
+        }),
+        "ownership properties must ride in the rfs-owner content property"
     );
     for operation in [
         "jira_comment_delete",
