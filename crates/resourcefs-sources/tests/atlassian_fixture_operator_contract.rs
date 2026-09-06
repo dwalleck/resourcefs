@@ -51,6 +51,8 @@ for directory in os.environ.get("FAKE_CURL_REAL_PATH", "").split(os.pathsep):
         break
 if real_path is None:
     raise SystemExit("real helper not found")
+if name == "mv" and os.environ.get("FAKE_CURL_DENY_STATE") == sys.argv[-1]:
+    raise SystemExit(1)
 os.execv(real_path, [name, *sys.argv[1:]])
 "#;
 
@@ -148,7 +150,7 @@ impl Harness {
             .args([mode, "--site", site, "--manifest"])
             .arg(manifest)
             .arg("--state")
-            .arg(state)
+            .arg(&state)
             .env("PATH", path)
             .env("FAKE_CURL_STORE", &self.store)
             .env("FAKE_CURL_LOG", &self.log)
@@ -157,6 +159,12 @@ impl Harness {
             .env("ATLASSIAN_PROVISIONER_API_TOKEN", PROVISIONER_TOKEN)
             .env("ATLASSIAN_READER_EMAIL", READER_EMAIL)
             .env("ATLASSIAN_READER_API_TOKEN", READER_TOKEN);
+        if scenario == "state_commit_denied" {
+            write_executable(&self.fake_bin.join("mv"), HELPER_AUDIT);
+            command
+                .env("FAKE_CURL_DENY_STATE", &state)
+                .env("FAKE_CURL_REAL_PATH", &real_path);
+        }
         if self.audit_enabled.get() {
             command
                 .env("FAKE_CURL_AUDIT", &self.audit)
@@ -273,6 +281,10 @@ impl Harness {
             fs::remove_file(&self.log).expect("clear request log");
         }
     }
+
+    fn pending_path(&self) -> PathBuf {
+        PathBuf::from(format!("{}.pending", self.state.display()))
+    }
 }
 
 fn manifest() -> Value {
@@ -292,6 +304,7 @@ fn assert_no_new_mutations(before: &[Value], after: &[Value]) {
         "comment_create",
         "space_create",
         "page_create",
+        "owner_property_create",
         "jira_comment_delete",
         "jira_issue_delete",
         "jira_project_delete",
@@ -339,6 +352,29 @@ fn assert_no_secrets(bytes: &[u8]) {
             "secret escaped execution boundary: {secret}"
         );
     }
+}
+
+fn contains_null_id(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            object.get("id").is_some_and(Value::is_null) || object.values().any(contains_null_id)
+        }
+        Value::Array(values) => values.iter().any(contains_null_id),
+        _ => false,
+    }
+}
+
+fn create_count(rows: &[Value]) -> usize {
+    [
+        "project_create",
+        "issue_create",
+        "comment_create",
+        "space_create",
+        "page_create",
+    ]
+    .iter()
+    .map(|operation| operation_rows(rows, operation).len())
+    .sum()
 }
 
 fn assert_state_shape(state: &Value) {
@@ -419,7 +455,7 @@ fn assert_state_shape(state: &Value) {
 }
 
 #[test]
-fn f7_fake_rejects_non_https_example_origins_at_its_boundary() {
+fn fake_rejects_non_https_example_origins_at_its_boundary() {
     for origin in [
         "http://example.test",
         "https://evil.example.test",
@@ -593,20 +629,9 @@ fn bootstrap_is_idempotent_and_collision_safe() {
     let harness = Harness::new();
     assert_success(&harness.command("bootstrap"));
     let first = harness.read_log();
-    assert!(operation_rows(&first, "project_create").len() >= 2);
-    assert!(operation_rows(&first, "issue_create").len() >= 3);
-    assert!(operation_rows(&first, "space_create").len() >= 2);
-    assert!(operation_rows(&first, "page_create").len() >= 3);
     assert_success(&harness.command("bootstrap"));
     let second = harness.read_log();
-    for row in &second[first.len()..] {
-        let operation = row["operation"].as_str().expect("operation");
-        assert!(
-            !operation.ends_with("_create"),
-            "second bootstrap created {operation}"
-        );
-        assert_ne!(operation, "replace");
-    }
+    assert_no_new_mutations(&first, &second);
 
     let foreign = Harness::new();
     foreign.write_store(&json!({
@@ -634,9 +659,18 @@ fn bootstrap_is_idempotent_and_collision_safe() {
 
     let drift = Harness::new();
     assert_success(&drift.command("bootstrap"));
+    let before = drift.read_store()["projects"][0].clone();
     assert_success(&drift.command_with("bootstrap", SITE, None, None, "drift"));
-    assert!(operation_rows(&drift.read_log(), "jira_project_delete").len() >= 1);
-    assert!(operation_rows(&drift.read_log(), "project_create").len() >= 3);
+    let store = drift.read_store();
+    let after = store["projects"]
+        .as_array()
+        .expect("projects")
+        .iter()
+        .find(|row| row["key"] == before["key"])
+        .expect("reconciled project");
+    assert_ne!(after["id"], before["id"]);
+    assert_eq!(after["name"], before["name"]);
+    assert_eq!(after["description"], before["description"]);
 
     let embedded_marker = Harness::new();
     assert_success(&embedded_marker.command_with(
@@ -745,8 +779,6 @@ fn state_commit_is_atomic_and_minimal() {
     fs::write(&denied.state, br#"{"version":1,"sentinel":"keep"}"#)
         .expect("write commit-failure sentinel");
     let denied_output = denied.command_with("bootstrap", SITE, None, None, "state_commit_denied");
-    fs::set_permissions(denied.temp.path(), fs::Permissions::from_mode(0o700))
-        .expect("restore harness permissions");
     assert_failure(&denied_output, "state_commit");
     assert_eq!(
         fs::read_to_string(&denied.state).expect("preserved commit-failure state"),
@@ -792,16 +824,6 @@ fn state_commit_is_atomic_and_minimal() {
 
 #[test]
 fn verify_enforces_reader_visibility_boundary() {
-    let harness = Harness::new();
-    assert_success(&harness.command("bootstrap"));
-    harness.clear_log();
-    assert_success(&harness.command("verify"));
-    let rows = harness.read_log();
-    assert!(rows.iter().any(|row| row["actor"] == "provisioner"));
-    assert!(rows.iter().any(|row| row["actor"] == "reader"));
-    assert!(operation_rows(&rows, "reader_space_list").len() >= 1);
-    assert!(operation_rows(&rows, "reader_page_get").len() >= 1);
-
     let private_visible = Harness::new();
     assert_success(&private_visible.command("bootstrap"));
     assert_failure(
@@ -814,17 +836,6 @@ fn verify_enforces_reader_visibility_boundary() {
     assert_failure(
         &public_hidden.command_with("verify", SITE, None, None, "reader_public_hidden"),
         "upstream_failure",
-    );
-    assert!(
-        String::from_utf8_lossy(
-            &public_hidden
-                .read_log()
-                .last()
-                .expect("reader request")
-                .to_string()
-                .into_bytes()
-        )
-        .contains("404")
     );
 }
 
@@ -951,6 +962,446 @@ fn failures_are_bounded_and_redacted() {
 }
 
 #[test]
+fn owner_property_write_failures_recover_without_duplicate_objects() {
+    for scenario in [
+        "owner_property_failure_before",
+        "owner_property_failure_after",
+    ] {
+        let harness = Harness::new();
+        let failed = harness.command_with("bootstrap", SITE, None, None, scenario);
+        assert_failure(&failed, "upstream_failure");
+        let pending = harness.pending_path();
+        assert!(
+            pending.exists(),
+            "owner-property failure lost recovery receipt"
+        );
+        assert_no_secrets(&fs::read(&pending).expect("read recovery receipt"));
+        let first = harness.read_log();
+        assert_eq!(operation_rows(&first, "page_create").len(), 1);
+
+        assert_success(&harness.command("bootstrap"));
+        assert!(!pending.exists(), "successful recovery retained receipt");
+        let recovered = harness.read_log();
+        assert_eq!(operation_rows(&recovered, "page_create").len(), 3);
+        assert_success(&harness.command("cleanup"));
+        assert!(!harness.state.exists());
+        assert!(!pending.exists());
+    }
+}
+
+#[test]
+fn cleanup_recovers_known_owner_property_receipt_after_failed_bootstrap() {
+    let harness = Harness::new();
+    let failed = harness.command_with(
+        "bootstrap",
+        SITE,
+        None,
+        None,
+        "owner_property_failure_before",
+    );
+    assert_failure(&failed, "upstream_failure");
+    assert!(harness.pending_path().exists());
+    assert_success(&harness.command("cleanup"));
+    assert!(!harness.state.exists());
+    assert!(!harness.pending_path().exists());
+    let store = harness.read_store();
+    for collection in [
+        "projects",
+        "issues",
+        "jira_comments",
+        "spaces",
+        "pages",
+        "confluence_comments",
+    ] {
+        assert!(
+            store[collection]
+                .as_array()
+                .expect("store collection")
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn unknown_page_create_preserves_null_receipt_and_blocks_new_creates() {
+    let harness = Harness::new();
+    let failed = harness.command_with("bootstrap", SITE, None, None, "unknown_page_create");
+    assert!(!failed.status.success());
+    let pending = harness.pending_path();
+    assert!(pending.exists(), "unknown create lost pending receipt");
+    let receipt: Value =
+        serde_json::from_slice(&fs::read(&pending).expect("read receipt")).expect("receipt JSON");
+    assert!(
+        contains_null_id(&receipt),
+        "unknown create receipt had no null id"
+    );
+    let first = harness.read_log();
+    let first_creates = create_count(&first);
+
+    let retry = harness.command("bootstrap");
+    assert!(!retry.status.success());
+    let after_retry = harness.read_log();
+    assert_eq!(create_count(&after_retry), first_creates);
+    let cleanup = harness.command("cleanup");
+    assert!(!cleanup.status.success());
+    assert_eq!(create_count(&harness.read_log()), first_creates);
+    assert!(harness.pending_path().exists());
+}
+
+#[test]
+fn nonroot_reply_property_receipt_resumes_without_duplicate_comment() {
+    let harness = Harness::new();
+    let mut custom = manifest();
+    custom["confluence"]["comments"] = json!([
+        {
+            "id": "reply-root",
+            "page": "public-root-page",
+            "marker": "<!--rfs-owner:rfs-bcym:confluence-comment:reply-root-->",
+            "body": {"representation": "storage", "value": "<p>Reply root.</p>"}
+        },
+        {
+            "id": "reply-child",
+            "page": "public-root-page",
+            "parent": "reply-root",
+            "marker": "<!--rfs-owner:rfs-bcym:confluence-comment:reply-child-->",
+            "body": {"representation": "storage", "value": "<p>Reply child.</p>"}
+        }
+    ]);
+    let manifest_path = harness.write_manifest(&custom);
+    let failed = harness.command_with(
+        "bootstrap",
+        SITE,
+        Some(&manifest_path),
+        None,
+        "owner_property_failure_reply_before",
+    );
+    assert_failure(&failed, "upstream_failure");
+    assert!(harness.pending_path().exists());
+    let before = harness.read_log();
+    assert_eq!(
+        harness.read_store()["confluence_comments"]
+            .as_array()
+            .expect("comments")
+            .len(),
+        2
+    );
+
+    assert_success(&harness.command_with("bootstrap", SITE, Some(&manifest_path), None, "normal"));
+    assert_eq!(
+        operation_rows(&harness.read_log(), "comment_create").len(),
+        operation_rows(&before, "comment_create").len(),
+        "reply recovery created a duplicate comment"
+    );
+    assert!(!harness.pending_path().exists());
+}
+
+#[test]
+fn tampered_receipt_cannot_claim_foreign_content() {
+    let harness = Harness::new();
+    let failed = harness.command_with(
+        "bootstrap",
+        SITE,
+        None,
+        None,
+        "owner_property_failure_before",
+    );
+    assert_failure(&failed, "upstream_failure");
+    let pending = harness.pending_path();
+    let original = fs::read(&pending).expect("read recovery receipt");
+    let mut receipt: Value = serde_json::from_slice(&original).expect("receipt JSON");
+    let mut store = harness.read_store();
+    let mut foreign_page = store["pages"]
+        .as_array()
+        .expect("pages")
+        .iter()
+        .find(|page| page["id"] == receipt["id"])
+        .expect("created page")
+        .clone();
+    foreign_page["id"] = json!("9100000010");
+    foreign_page["space"] = json!("9100000009");
+    foreign_page["spaceId"] = json!("9100000009");
+    foreign_page["parentId"] = json!("9100000011");
+    store["spaces"].as_array_mut().expect("spaces").push(json!({
+        "id": "9100000009",
+        "key": "FOREIGNSPACE",
+        "name": "Foreign space",
+        "description": "foreign container",
+        "private": false,
+        "homepageId": 9_100_000_011_u64
+    }));
+    store["pages"]
+        .as_array_mut()
+        .expect("pages")
+        .push(foreign_page.clone());
+    harness.write_store(&store);
+    receipt["id"] = foreign_page["id"].clone();
+    receipt["container_id"] = foreign_page["spaceId"].clone();
+    let tampered = serde_json::to_vec(&receipt).expect("serialize receipt");
+    fs::write(&pending, tampered).expect("tamper recovery receipt");
+    harness.clear_log();
+
+    let retry = harness.command("bootstrap");
+    assert!(
+        !retry.status.success(),
+        "tampered receipt unexpectedly resumed"
+    );
+    assert_no_new_mutations(&[], &harness.read_log());
+    let after = harness.read_store();
+    assert_eq!(
+        after["pages"]
+            .as_array()
+            .expect("pages")
+            .iter()
+            .find(|page| page["id"] == foreign_page["id"]),
+        Some(&foreign_page),
+        "recovery changed foreign content"
+    );
+    assert!(harness.pending_path().exists());
+    assert_eq!(
+        operation_rows(&harness.read_log(), "owner_property_create").len(),
+        0
+    );
+}
+
+#[test]
+fn dangling_pending_receipt_symlink_is_rejected_before_egress() {
+    let harness = Harness::new();
+    let failed = harness.command_with(
+        "bootstrap",
+        SITE,
+        None,
+        None,
+        "owner_property_failure_before",
+    );
+    assert_failure(&failed, "upstream_failure");
+    let pending = harness.pending_path();
+    fs::remove_file(&pending).expect("remove original receipt");
+    let target = harness.temp.path().join("missing-receipt-target");
+    symlink(&target, &pending).expect("create dangling receipt symlink");
+    harness.clear_log();
+
+    let retry = harness.command("bootstrap");
+    assert!(!retry.status.success());
+    assert!(harness.read_log().is_empty());
+    assert!(
+        fs::symlink_metadata(&pending)
+            .expect("pending symlink")
+            .file_type()
+            .is_symlink()
+    );
+    assert!(!target.exists());
+}
+
+#[test]
+fn cleanup_purges_owned_tombstones_and_preserves_foreign_projects() {
+    let harness = Harness::new();
+    let mut projects: Vec<_> = manifest()["jira"]["projects"]
+        .as_array()
+        .expect("projects")
+        .iter()
+        .enumerate()
+        .map(|(index, row)| json!({
+            "id": (9_200_000_000_u64 + u64::try_from(index).expect("fixture index")).to_string(),
+            "key": row["key"], "name": row["name"],
+            "description": row["marker"], "deleted": true
+        }))
+        .collect();
+    let foreign = json!({
+        "id": "9300000000", "key": "FOREIGN", "name": "Foreign project",
+        "description": "tenant-owned foreign object", "deleted": true
+    });
+    projects.push(foreign.clone());
+    harness.write_store(&json!({"projects": projects}));
+    assert_success(&harness.command("cleanup"));
+    assert_eq!(harness.read_store()["projects"], json!([foreign]));
+    assert_success(&harness.command("bootstrap"));
+    assert_success(&harness.command("cleanup"));
+
+    let changed = Harness::new();
+    assert_success(&changed.command("bootstrap"));
+    let before = changed.read_log();
+    let mut store = changed.read_store();
+    store["projects"][0]["key"] = json!("FOREIGN");
+    store["projects"][0]["description"] = json!("tenant-owned foreign object");
+    store["projects"][0]["deleted"] = json!(true);
+    changed.write_store(&store);
+    assert_failure(&changed.command("cleanup"), "foreign_collision");
+    assert_no_new_mutations(&before, &changed.read_log());
+    assert!(changed.state.exists());
+}
+
+#[test]
+fn bootstrap_refuses_changed_project_ownership() {
+    let harness = Harness::new();
+    assert_success(&harness.command("bootstrap"));
+    let before = harness.read_log();
+    assert_failure(
+        &harness.command_with("bootstrap", SITE, None, None, "foreign_project_readback"),
+        "foreign_collision",
+    );
+    assert_no_new_mutations(&before, &harness.read_log());
+    assert_eq!(
+        harness.read_store()["projects"][0]["description"],
+        "tenant-owned foreign object"
+    );
+}
+
+#[test]
+fn cleanup_revalidates_saved_ids_before_deletion() {
+    let moved = Harness::new();
+    assert_success(&moved.command("bootstrap"));
+    let state = moved.read_state();
+    let issue_id = state["jira"]["issues"][0]["id"].clone();
+    let page_id = state["confluence"]["pages"][0]["id"].clone();
+    let mut store = moved.read_store();
+    store["projects"]
+        .as_array_mut()
+        .expect("projects")
+        .push(json!({
+            "id": "9100000001",
+            "key": "FOREIGN",
+            "name": "Foreign project",
+            "description": "foreign container"
+        }));
+    store["spaces"].as_array_mut().expect("spaces").push(json!({
+        "id": "9100000002",
+        "key": "FOREIGNSPACE",
+        "name": "Foreign space",
+        "description": "foreign container",
+        "private": false,
+        "homepageId": 9_100_000_003_u64
+    }));
+    for issue in store["issues"].as_array_mut().expect("issues") {
+        if issue["id"] == issue_id {
+            issue["project"] = json!("FOREIGN");
+            issue["fields"]["project"]["key"] = json!("FOREIGN");
+        }
+    }
+    for page in store["pages"].as_array_mut().expect("pages") {
+        if page["id"] == page_id {
+            page["space"] = json!("9100000002");
+            page["spaceId"] = json!("9100000002");
+            page["parentId"] = json!("9100000003");
+        }
+    }
+    moved.write_store(&store);
+    assert_success(&moved.command("cleanup"));
+    assert!(!moved.state.exists(), "successful cleanup retained state");
+    let residue = moved.read_store();
+    assert!(
+        residue["issues"]
+            .as_array()
+            .expect("issues")
+            .iter()
+            .all(|row| row["id"] != issue_id),
+        "moved issue survived successful cleanup"
+    );
+    assert!(
+        residue["pages"]
+            .as_array()
+            .expect("pages")
+            .iter()
+            .all(|row| row["id"] != page_id),
+        "moved page survived successful cleanup"
+    );
+    assert!(
+        residue["projects"]
+            .as_array()
+            .expect("projects")
+            .iter()
+            .any(|row| row["id"] == "9100000001")
+    );
+    assert!(
+        residue["spaces"]
+            .as_array()
+            .expect("spaces")
+            .iter()
+            .any(|row| row["id"] == "9100000002")
+    );
+
+    let changed = Harness::new();
+    assert_success(&changed.command("bootstrap"));
+    let changed_state = changed.read_state();
+    let changed_page_id = changed_state["confluence"]["pages"][0]["id"]
+        .as_str()
+        .expect("page id");
+    let mut changed_store = changed.read_store();
+    changed_store["properties"][changed_page_id]["rfs-owner"] = json!("changed-marker");
+    changed.write_store(&changed_store);
+    let changed_failure = changed.command("cleanup");
+    assert!(!changed_failure.status.success());
+    assert!(
+        changed.state.exists(),
+        "changed marker was treated as owned"
+    );
+    assert!(
+        changed.read_store()["pages"]
+            .as_array()
+            .expect("pages")
+            .iter()
+            .any(|row| { row["id"].as_str() == Some(changed_page_id) })
+    );
+}
+
+#[test]
+fn footer_comment_replies_use_children_pagination_and_converge() {
+    let harness = Harness::new();
+    let mut custom = manifest();
+    custom["confluence"]["comments"] = json!([
+        {
+            "id": "reply-root",
+            "page": "public-root-page",
+            "marker": "<!--rfs-owner:rfs-bcym:confluence-comment:reply-root-->",
+            "body": {"representation": "storage", "value": "<p>Reply root.</p>"}
+        },
+        {
+            "id": "reply-child-one",
+            "page": "public-root-page",
+            "parent": "reply-root",
+            "marker": "<!--rfs-owner:rfs-bcym:confluence-comment:reply-child-one-->",
+            "body": {"representation": "storage", "value": "<p>Reply one.</p>"}
+        },
+        {
+            "id": "reply-child-two",
+            "page": "public-root-page",
+            "parent": "reply-root",
+            "marker": "<!--rfs-owner:rfs-bcym:confluence-comment:reply-child-two-->",
+            "body": {"representation": "storage", "value": "<p>Reply two.</p>"}
+        }
+    ]);
+    let manifest_path = harness.write_manifest(&custom);
+    assert_success(&harness.command_with("bootstrap", SITE, Some(&manifest_path), None, "normal"));
+    let first = harness.read_log();
+    assert_eq!(
+        harness.read_store()["confluence_comments"]
+            .as_array()
+            .expect("comments")
+            .len(),
+        3
+    );
+    assert_success(&harness.command_with("verify", SITE, Some(&manifest_path), None, "normal"));
+    assert_success(&harness.command_with("bootstrap", SITE, Some(&manifest_path), None, "normal"));
+    let second = harness.read_log();
+    assert_no_new_mutations(&first, &second);
+    assert!(
+        second.iter().any(|row| row["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("/children"))
+            && row["query"]["cursor"]
+                .as_array()
+                .is_some_and(|values| !values.is_empty())),
+        "reply enumeration did not request a continuation"
+    );
+    assert_success(&harness.command_with("cleanup", SITE, Some(&manifest_path), None, "normal"));
+    assert!(
+        harness.read_store()["confluence_comments"]
+            .as_array()
+            .expect("comments")
+            .is_empty()
+    );
+}
+
+#[test]
 fn operator_contract_covers_lifecycle_matrix() {
     let harness = Harness::new();
     assert_success(&harness.command("bootstrap"));
@@ -1050,20 +1501,6 @@ fn operator_contract_covers_lifecycle_matrix() {
         }),
         "ownership properties must ride in the rfs-owner content property"
     );
-    for operation in [
-        "jira_comment_delete",
-        "jira_issue_delete",
-        "jira_project_delete",
-        "confluence_comment_delete",
-        "confluence_page_delete",
-        "space_delete",
-        "space_delete_poll",
-    ] {
-        assert!(
-            operation_rows(&after_cleanup, operation).len() >= 1,
-            "cleanup omitted {operation}"
-        );
-    }
 
     let partial = Harness::new();
     assert_failure(

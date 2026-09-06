@@ -94,6 +94,8 @@ The review baseline is `518b99e`. The historical C12 run above proved successful
 | F7 | Fake discards request origin, masking wrong-tenant routing. | HarnessReview | Verified | Baseline fake dispatches parsed.path without checking scheme/netloc. | Accept | Slice 3: validate exact fixture origin at the fake boundary. | Test contract defect, not a demonstrated production routing bug. |
 | F8 | Raw failure assertions inspect stderr but not stdout. | HarnessReview | Verified | Baseline raw400 contract bounds/scans only output.stderr. | Accept | Slice 3: bound and redact both captured streams. | Test contract defect, not a demonstrated production stdout leak. |
 | F9 | Recorded C12 second-run success lacks live no-write observation. | EvidenceReview, Main | Verified | Historical C12 row explicitly relies on deterministic tests for second-run write absence. | Accept | Slice 4: capture live request methods independently and compare stable IDs/versions before and after the second run. | Execution credentials are available locally; values are never recorded. |
+| F10 | Jira cleanup leaves owned project keys reserved in trash. | Main, live gate | Verified | Fresh live bootstrap failed `project_create status=400`; independent `status=deleted` search found both exact owned projects from the previous cleanup. A marker/key/ID-checked `DELETE ...?enableUndo=false` returned 204 and removed the first tombstone. | Accept | Slice 4: explicit permanent deletion, trash-aware discovery, stable-ID ownership preflight, and trash-inclusive absence proof. | Direct tombstone purge is observed on the disposable tenant; never infer ownership from a direct GET returning 404. |
+| F11 | Project readback can lose ownership between discovery and replacement. | Main | Verified | Fake readback changed the marker after the owned search result; baseline bootstrap deleted the project before failing recreation. The new regression is red before the guard. | Accept | Slice 4: separate exact ID/key/marker authority from replaceable name drift; reject lost authority before any delete. | Genuine name drift remains replaceable only while ownership still matches. |
 
 Rejected review hypotheses: the embedded-marker fake page becomes visible when bootstrap creates its matching stable space ID, so the claimed invisible fixture was refuted; exact state-shape checks already cover credential-state injection; recording OpenAPI hashes is provenance and need not reject every later vendor schema revision.
 
@@ -105,3 +107,51 @@ Rejected review hypotheses: the embedded-marker fake page becomes visible when b
 - Named mutations: **PASS**. Restoring secret jq argv failed `secret reached helper argv`; restoring disk config failed `secret reached a temp file`; removing empty-path guards failed the zero-egress assertion; removing fake origin rejection accepted HTTP and failed its fence; echoing upstream prose to stdout failed the diagnostic bound. All mutations were restored before the 12-test green run.
 - Caller/reuse audit: `api_request` keeps its signature and response globals for every lifecycle caller; parsing and credential setup remain entrypoint-only. JSON escaping reuses jq stdin rather than adding a new encoder/dependency. The direct fake helper has one test caller and executes Python explicitly to avoid transient executable-file-busy races when parallel tests create scripts.
 - Verification-tool correction: sharing one Cargo target directory between worktrees reused a test executable with the isolated checkout's `CARGO_MANIFEST_DIR`. A direct binary-path check identified it; forcing the root test rebuild restored correct checkout coverage. The final green result above exercised the repaired root script.
+
+### Live-gate corrections discovered during review repair
+
+- Jira [project deletion](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/) exposes `enableUndo`; [JRACLOUD-94802](https://jira.atlassian.com/browse/JRACLOUD-94802) records that omitted `enableUndo` defaults to `true`. Therefore the historical live-only project search did not prove permanent absence or reusable keys.
+- Read-only searches over live, archived, and deleted projects found no live/archived fixture projects but two deleted projects with exact manifest keys and owner markers. One was permanently removed with a fresh ownership check and explicit `enableUndo=false`; a second independent deleted-project search confirmed its absence. No foreign project was targeted.
+- F10/F11 regressions were run before production repair: owned tombstones survived successful cleanup; changed ownership reached destructive replacement and then a 400 key collision. Both are behavior failures, not source-text assertions.
+
+### Corrected live gate (C12) — 2026-09-06
+
+The real operator ran against the same disposable tenant. A temporary curl observer forwarded the in-memory configuration unchanged and recorded only method, path, status, and exit code. Write-request counts exclude the read-only Jira `POST /search/jql` endpoint. Independent, separately authenticated HTTP reads—not state comparisons alone—snapshotted remote identities, hierarchy, bodies, versions, and owner properties.
+
+| Live step | Result | Requests | Write requests | Independent observation |
+|---|---|---:|---:|---|
+| Cleanup old owned Jira trash | PASS | 13 | 1 | Remaining owned tombstone removed; no foreign target. |
+| Bootstrap with one injected property-publication 503 | Expected failure | 40 | 11 | Created page GET returned 200, owner property GET returned 404, and its known ID survived in a mode-0600 pending receipt. The write count includes the rejected publication attempt. |
+| Bootstrap retry | PASS | 73 | 9 | Original page ID retained; ownership published; pending receipt removed. |
+| Second default bootstrap | PASS | 59 | **0** | All 14 independently observed resources and owner-property/content versions were unchanged; state bytes also matched. |
+| Default verify | PASS | 78 | **0** | Independent reader space probes: public 200, private 404. |
+| Bootstrap a temporary manifest adding two replies | PASS | 78 | 4 | Two actual footer replies and their properties created under the existing root comment. |
+| Second reply-manifest bootstrap | PASS | 69 | **0** | All 16 independent resource snapshots unchanged; four children-collection GETs observed. This proves live reply discovery and convergence, not independent cursor advancement. |
+| Reply-manifest verify | PASS | 92 | **0** | Both principals passed; four children-collection GETs observed. |
+| Reply-manifest cleanup | PASS | 134 | 16 | Independent direct probes for all 16 stable IDs returned 404; Jira live/archived/deleted searches contained zero fixture keys. |
+| Repeated cleanup | PASS | 8 | **0** | State and pending receipt absent. |
+| Fresh default bootstrap after cleanup | PASS | 70 | 19 | Jira and Confluence fixture keys were reusable; this detects the former trash-key reservation defect. |
+| Final default cleanup | PASS | 114 | 14 | Final independent Jira live/archived/deleted and provisioner/reader Confluence lists all contained zero fixture containers. State and pending receipt absent. |
+
+The observer omitted query strings, so the captured paths cannot establish whether a children request carried a cursor or whether the tenant honored `limit=1`. A cursor search against those stripped paths returned false; that is an instrumentation limitation, not evidence that the server ignored the limit. Live children pagination was not independently established by this capture. The deterministic `footer_comment_replies_use_children_pagination_and_converge` fence explicitly observes continuation queries and proves paginated discovery.
+
+The temporary reply manifest was an additive superset of the checked-in manifest and was used through cleanup; the final fresh lifecycle used the checked-in manifest again. One malformed temporary manifest was rejected locally with zero requests before its schema was corrected. None of the temporary proof tools or manifests is part of the operator.
+
+Credential checks covered every captured live stdout/stderr stream plus 23 proof/evidence files: no provisioner or reader credential value was present. The deterministic helper audit additionally covers subprocess argv/environment and in-flight temporary files; a throwaway quoted/backslash-token run completed bootstrap, verify, and cleanup without credential output.
+
+### Slice 4 falsifier and review record
+
+- Restoring unjournaled property publication made `owner_property_write_failures_recover_without_duplicate_objects` fail because the recovery receipt was lost.
+- Restoring scoped legacy cleanup made `cleanup_revalidates_saved_ids_before_deletion` fail: a moved issue survived successful cleanup.
+- Restoring root-only comment discovery made `footer_comment_replies_use_children_pagination_and_converge` fail with `pagination_authority`.
+- The live-shaped Jira tombstone and changed-ownership regressions failed before F10/F11 repair and passed afterward. Final lifecycle code preserves both exact ownership checks and permanent absence.
+- Final targeted receipt/cleanup review found no remaining concrete defect. A proposed renamed-tombstone deletion finding was independently falsified: cleanup returned `foreign_collision`, made zero DELETE requests, retained state, and preserved the tombstone; the reviewer withdrew it. A proposed independent Jira comment move had no supported API transition and was also withdrawn after tracing the parent-issue absence fence.
+
+### Final integration checkpoint
+
+- Affected contracts and restored fences: **PASS**, `cargo test -p resourcefs-sources --test atlassian_fixture_operator_contract` — **22 passed**, 49.69 seconds.
+- Static gate: **PASS**, `cargo fmt --all -- --check`, targeted `cargo clippy ... -- -D warnings`, `bash -n`, and the actual `--help` command. Clippy exposed old nonempty request-log assertions; redundant wiring checks were removed, and name-drift reconciliation now checks the resulting project identity/name/marker rather than request-count thresholds.
+- Pending falsifiers: **none**. Stress/oracle agreement: **PASS** across the deterministic fault cases and corrected live C12 table. Lost create responses intentionally remain an explicit, durable, fail-closed manual-repair state, not guessed ownership.
+- Production-loop bound: **PASS**, the largest exercised live command made 134 requests versus the unchanged 512-request ceiling; existing page/poll bounds remain. Always-on wall budget: **N/A — one-off operator**.
+- Caller/reuse audit: all parent-aware comment callers migrated; saved/discovered identity targets share preflight and absence checks; Jira trash normalization is reused for ownership and absence; execution transport retains its existing API. No ResourceFS production Rust API, adapter, dependency, or Behavior Contract changed.
+- Final scoped reviewers reported no remaining concrete defect after the two hypotheses above were checked and withdrawn. The historical C12 claim is superseded by the independently observed no-write, recovery, reply, and permanent-absence evidence here.

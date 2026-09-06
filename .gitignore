@@ -6,6 +6,7 @@
 /fuzz/target/
 /fuzz/Cargo.lock
 /.resourcefs/atlassian-fixture-state.json
+/.resourcefs/atlassian-fixture-state.json.pending
 /.resourcefs/atlassian-fixture-state.json.lock/
 /.env.atlassian.local
 /.resourcefs/atlassian-fixture-state.json.tmp.*/

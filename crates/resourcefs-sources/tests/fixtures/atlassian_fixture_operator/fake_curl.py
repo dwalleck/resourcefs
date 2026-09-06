@@ -44,9 +44,9 @@ def initial_store():
         "spaces": [],
         "pages": [],
         "confluence_comments": [],
-        "properties": {},
         "tasks": {},
         "faults": {},
+        "sequences": {},
     }
 
 
@@ -86,6 +86,8 @@ def load_store():
         base["properties"] = {}
     if not isinstance(base.get("faults"), dict):
         base["faults"] = {}
+    if not isinstance(base.get("sequences"), dict):
+        base["sequences"] = {}
     return base
 
 
@@ -110,7 +112,11 @@ def temp_contains_canary():
     if not root_path.exists():
         return False
     ignored = root_path / "bin"
-    forbidden = tuple(value.encode("utf-8") for pair in (PROVISIONER_USER, READER_USER) for value in pair.split(":", 1))
+    forbidden = tuple(
+        value.encode("utf-8")
+        for pair in (PROVISIONER_USER, READER_USER)
+        for value in pair.split(":", 1)
+    )
     for candidate in root_path.rglob("*"):
         if not candidate.is_file() or ignored in candidate.parents:
             continue
@@ -164,6 +170,28 @@ def slug(prefix, value):
 def numeric_id(prefix, value):
     digest = hashlib.sha256(f"{prefix}:{value}".encode("utf-8")).digest()
     return str(int.from_bytes(digest[:7], "big") % 9_000_000_000 + 1_000_000_000)
+
+def fresh_id(store, prefix, seed):
+    sequences = store.setdefault("sequences", {})
+    counter = int(sequences.get(prefix, 0))
+    occupied = {
+        str(item.get("id"))
+        for collection in (
+            "projects",
+            "issues",
+            "jira_comments",
+            "spaces",
+            "pages",
+            "confluence_comments",
+        )
+        for item in store.get(collection, [])
+    }
+    while True:
+        candidate = numeric_id(prefix, f"{seed}:{counter}")
+        counter += 1
+        if candidate not in occupied:
+            sequences[prefix] = counter
+            return candidate
 
 
 def body_json(config):
@@ -339,6 +367,31 @@ def handle(config, store, actor, method, path, query, body):
     if actor == "invalid":
         return 401, {}, "authentication"
     # Scenario failures are injected at the transport's response boundary.
+    if (
+        SCENARIO in (
+            "owner_property_failure_before",
+            "owner_property_failure_after",
+            "owner_property_failure_reply_before",
+        )
+        and method == "POST"
+        and re.fullmatch(r"/wiki/rest/api/content/[^/]+/property", path)
+        and not store["faults"].get("owner_property_failure")
+    ):
+        content_id = path.split("/")[-2]
+        is_reply = any(
+            str(comment.get("id")) == str(content_id)
+            and bool(comment.get("parentCommentId"))
+            for comment in store["confluence_comments"]
+        )
+        applies = SCENARIO != "owner_property_failure_reply_before" or is_reply
+        if applies:
+            key = body.get("key")
+            value = body.get("value")
+            if SCENARIO.endswith("_after") and isinstance(key, str) and isinstance(value, str):
+                if confluence_content_exists(store, content_id):
+                    store["properties"].setdefault(content_id, {})[key] = value
+            store["faults"]["owner_property_failure"] = True
+            return 503, {"message": f"{FAILURE_CANARY}_owner_property"}, "owner_property_create"
     if SCENARIO in ("raw400", "raw_prose") and method == "POST" and path.endswith("/project") and not store["faults"].get("raw400"):
         store["faults"]["raw400"] = True
         return 400, f"{RAW_400_CANARY}_" * 100, "project_create"
@@ -351,6 +404,10 @@ def handle(config, store, actor, method, path, query, body):
     # Jira project search/create/get/delete.
     if method == "GET" and path == "/rest/api/3/project/search":
         rows = sorted(store["projects"], key=lambda row: row.get("key", ""))
+        statuses = query.get("status", ["live"])
+        rows = [row for row in rows if ("deleted" if row.get("deleted") else "live") in statuses]
+        if "id" in query:
+            rows = [row for row in rows if str(row.get("id")) in query["id"]]
         # Live search omits `description` unless it is explicitly expanded.
         if "description" not in query.get("expand", []):
             rows = [
@@ -361,9 +418,12 @@ def handle(config, store, actor, method, path, query, body):
             store["faults"]["malformed_project"] = True
             return 200, {"values": rows[:1], "isLast": False, "nextPage": 0, "maxResults": 1}, "project_search"
         return 200, list_page(rows, query, "values", "nextPage", "startAt"), "project_search"
-    if SCENARIO == "drift" and method == "GET" and path.startswith("/rest/api/3/project/") and not store["faults"].get("drift"):
+    if SCENARIO in ("drift", "foreign_project_readback") and method == "GET" and path.startswith("/rest/api/3/project/") and not store["faults"].get("drift"):
         if store["projects"]:
-            store["projects"][0]["description"] = "drifted-owner-field"
+            if SCENARIO == "drift":
+                store["projects"][0]["name"] = "drifted-project-name"
+            else:
+                store["projects"][0]["description"] = "tenant-owned foreign object"
             store["faults"]["drift"] = True
     if method == "GET" and path == "/rest/api/3/myself":
         return 200, {"accountId": "fixture-provisioner-account"}, "account_get"
@@ -377,18 +437,28 @@ def handle(config, store, actor, method, path, query, body):
         if any(row.get("key") == key for row in store["projects"]):
             return 400, {"errorMessages": ["project key already exists"]}, "project_create"
         marker = str(body.get("description", ""))
-        row = {"id": numeric_id("jira-project", key), "key": key, "name": body.get("name", ""), "description": marker}
+        row = {"id": fresh_id(store, "jira-project", key), "key": key, "name": body.get("name", ""), "description": marker}
         store["projects"].append(row)
         return 201, {"id": row["id"], "key": key, "description": marker}, "project_create"
     match = re.fullmatch(r"/rest/api/3/project/([^/]+)", path)
     if match and method == "GET":
-        row = next((item for item in store["projects"] if item.get("key") == match.group(1)), None)
-        return (200, row, "project_get") if row else (404, {}, "project_get")
+        row = next(
+            (
+                item
+                for item in store["projects"]
+                if item.get("key") == match.group(1) or str(item.get("id")) == match.group(1)
+            ),
+            None,
+        )
+        return (200, row, "project_get") if row and not row.get("deleted") else (404, {}, "project_get")
     if match and method == "DELETE":
         row = find_one(store["projects"], match.group(1))
         if not row:
             return 404, {}, "jira_project_delete"
-        store["projects"].remove(row)
+        if query.get("enableUndo") == ["false"]:
+            store["projects"].remove(row)
+        else:
+            row["deleted"] = True
         project_key = row.get("key")
         issue_ids = {item["id"] for item in store["issues"] if item.get("project") == project_key}
         store["issues"][:] = [item for item in store["issues"] if item.get("project") != project_key]
@@ -421,7 +491,7 @@ def handle(config, store, actor, method, path, query, body):
         description = fields.get("description", {})
         marker = text_of(description)
         row = {
-            "id": numeric_id("jira-issue", marker),
+            "id": fresh_id(store, "jira-issue", marker),
             "key": f"{project}-{len([item for item in store['issues'] if item.get('project') == project]) + 1}",
             "project": project,
             "fields": {
@@ -460,7 +530,7 @@ def handle(config, store, actor, method, path, query, body):
         result["total"] = len(rows)
         return 200, result, "comment_list"
     if match and method == "POST":
-        row = {"id": numeric_id("jira-comment", text_of(body.get("body", {}))), "issue": match.group(1), "body": body.get("body", {})}
+        row = {"id": fresh_id(store, "jira-comment", text_of(body.get("body", {}))), "issue": match.group(1), "body": body.get("body", {})}
         store["jira_comments"].append(row)
         return 201, {"id": row["id"], "body": row["body"]}, "comment_create"
     match = re.fullmatch(r"/rest/api/3/issue/([^/]+)/comment/([^/]+)", path)
@@ -492,7 +562,7 @@ def handle(config, store, actor, method, path, query, body):
         if isinstance(description, dict) and isinstance(description.get("plain"), dict):
             description = description["plain"]
         row = {
-            "id": numeric_id("confluence-space", key),
+            "id": fresh_id(store, "confluence-space", key),
             "key": key,
             "name": body.get("name", ""),
             "description": description.get("value", "") if isinstance(description, dict) else str(description),
@@ -556,17 +626,17 @@ def handle(config, store, actor, method, path, query, body):
         if isinstance(page_body, dict) and isinstance(page_body.get("value"), str):
             page_body = dict(page_body, value=confluence_ingest(page_body["value"]))
         row = {
-            "id": numeric_id("confluence-page", str(body.get("title", ""))),
+            "id": fresh_id(store, "confluence-page", str(body.get("title", ""))),
             "space": sid,
             "spaceId": sid,
             "title": body.get("title", ""),
             "body": page_body,
         }
-        if body.get("parentId"):
-            row["parentId"] = body["parentId"]
-        else:
-            row["parentId"] = space.get("homepageId")
+        row["parentId"] = str(body.get("parentId", space["homepageId"]))
         store["pages"].append(row)
+        if SCENARIO == "unknown_page_create" and not store["faults"].get("unknown_page_create"):
+            store["faults"]["unknown_page_create"] = True
+            return None, "", "page_create"
         return 201, {"id": row["id"], "title": row["title"]}, "page_create"
     match = re.fullmatch(r"/wiki/api/v2/pages/([^/]+)", path)
     if match and method == "GET":
@@ -588,20 +658,68 @@ def handle(config, store, actor, method, path, query, body):
         return 204, "", "confluence_page_delete"
     match = re.fullmatch(r"/wiki/api/v2/pages/([^/]+)/footer-comments", path)
     if match and method == "GET":
-        rows = [item for item in store["confluence_comments"] if item.get("page") == match.group(1)]
+        rows = [
+            item
+            for item in store["confluence_comments"]
+            if item.get("page") == match.group(1) and not item.get("parentCommentId")
+        ]
         prefix = f"/wiki/api/v2/pages/{match.group(1)}/footer-comments?limit=1&body-format=storage&cursor="
-        return 200, list_page(sorted(rows, key=lambda item: item.get("id", "")), query, "results", "cursor", next_prefix=prefix), "comment_list"
+        return 200, list_page(
+            sorted(rows, key=lambda item: item.get("id", "")),
+            query,
+            "results",
+            "cursor",
+            next_prefix=prefix,
+        ), "comment_list"
+    match = re.fullmatch(r"/wiki/api/v2/footer-comments/([^/]+)/children", path)
+    if match and method == "GET":
+        parent = find_one(store["confluence_comments"], match.group(1))
+        if parent is None:
+            return 404, {}, "comment_list"
+        page = find_one(store["pages"], parent.get("page", ""))
+        space = find_one(store["spaces"], page.get("space", "")) if page else None
+        if actor == "reader" and space and space.get("private"):
+            return 404, {}, "comment_list"
+        rows = [
+            item
+            for item in store["confluence_comments"]
+            if item.get("parentCommentId") == match.group(1)
+        ]
+        prefix = f"/wiki/api/v2/footer-comments/{match.group(1)}/children?limit=1&body-format=storage&cursor="
+        return 200, list_page(
+            sorted(rows, key=lambda item: item.get("id", "")),
+            query,
+            "results",
+            "cursor",
+            next_prefix=prefix,
+        ), "comment_list"
     if method == "POST" and path == "/wiki/api/v2/footer-comments":
-        pid = body.get("pageId", "")
-        if find_one(store["pages"], str(pid)) is None:
+        parent_id = body.get("parentCommentId")
+        if parent_id:
+            if set(body) != {"parentCommentId", "body"}:
+                return 400, {"message": "reply container fields are exclusive"}, "comment_create"
+            parent = find_one(store["confluence_comments"], str(parent_id))
+            if parent is None:
+                return 400, {"message": "parent comment not found"}, "comment_create"
+            page_id = str(parent.get("page", ""))
+        else:
+            if set(body) != {"pageId", "body"}:
+                return 400, {"message": "root container fields are exclusive"}, "comment_create"
+            page_id = str(body.get("pageId", ""))
+        if find_one(store["pages"], page_id) is None:
             return 400, {"message": "page not found"}, "comment_create"
         comment_body = body.get("body", {})
         if isinstance(comment_body, dict) and isinstance(comment_body.get("value"), str):
             comment_body = dict(comment_body, value=confluence_ingest(comment_body["value"]))
-        row = {"id": numeric_id("confluence-comment", text_of(body.get("body", {}))), "page": pid, "pageId": pid, "body": comment_body}
-        if body.get("parentCommentId"):
-            row["parent"] = body["parentCommentId"]
-            row["parentCommentId"] = body["parentCommentId"]
+        row = {
+            "id": fresh_id(store, "confluence-comment", text_of(body.get("body", {}))),
+            "page": page_id,
+            "pageId": page_id,
+            "body": comment_body,
+        }
+        if parent_id:
+            row["parent"] = str(parent_id)
+            row["parentCommentId"] = str(parent_id)
         store["confluence_comments"].append(row)
         return 201, {"id": row["id"], "body": row["body"]}, "comment_create"
     match = re.fullmatch(r"/wiki/api/v2/footer-comments/([^/]+)", path)
@@ -616,8 +734,18 @@ def handle(config, store, actor, method, path, query, body):
         row = find_one(store["confluence_comments"], match.group(1))
         if not row:
             return 404, {}, "confluence_comment_delete"
-        store["confluence_comments"].remove(row)
-        purge_content_properties(store, [row["id"]])
+        removed_ids = {row["id"]}
+        changed = True
+        while changed:
+            changed = False
+            for candidate in store["confluence_comments"]:
+                if candidate.get("parentCommentId") in removed_ids and candidate["id"] not in removed_ids:
+                    removed_ids.add(candidate["id"])
+                    changed = True
+        store["confluence_comments"][:] = [
+            candidate for candidate in store["confluence_comments"] if candidate["id"] not in removed_ids
+        ]
+        purge_content_properties(store, removed_ids)
         return 204, "", "confluence_comment_delete"
 
     # Confluence v1 content properties (pages and footer comments).
@@ -701,13 +829,6 @@ def main():
     if status is None:
         return 7
     respond(response_path, status, payload)
-    if (
-        SCENARIO == "state_commit_denied"
-        and operation == "comment_get"
-        and path.startswith("/wiki/api/v2/footer-comments/")
-        and len(store["confluence_comments"]) >= 2
-    ):
-        STORE_PATH.parent.chmod(0o500)
     return 0
 
 

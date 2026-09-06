@@ -49,6 +49,8 @@ Core move: purely additive. It adds an independent operator module, manifest, st
 - **New seam:** one versioned JSON document containing only schema version, Site Mount ID/origin, manifest logical IDs, stable Jira/Confluence IDs/keys, and canonical `jira://`/`confluence://` profile references. A sourceable shell file was rejected because quoting becomes part of the interface and live tests can read JSON through existing `jq` tooling.
 - **Forbidden:** no account email, token, Authorization value, request/response body, mutable title/summary/timestamp, raw continuation, or temporary file survives a completed command.
 
+Review repair F3 keeps a separate ignored `.resourcefs/atlassian-fixture-state.json.pending` receipt under the same lock. It contains only the validated tenant identity, logical fixture kind/ID, stable container/parent IDs, and a nullable created ID. Before POST, a null ID records an unresolved creation attempt; after an authoritative receipt, the stable ID is atomically recorded before ownership publication. A known-ID recovery validates the content against its manifest and current parent/container authority before publishing a missing ownership property. A conflicting property is never overwritten. An unknown outcome is a bounded explicit error with repair guidance, not permission to repeat POST or adopt an unmarked title collision. Verify never repairs or mutates a pending creation.
+
 ### Verification
 
 - **Owner:** `crates/resourcefs-sources/tests/atlassian_fixture_operator_contract.rs` owns the permanent Unix integration fence and invokes the shipped script through its public interface with a PATH-injected fake `curl`; private test fixtures own production-shaped responses and request logs.
@@ -107,6 +109,20 @@ Intended future work: none introduced by this design.
 - 2026-09-05 — C12 live gate, first pass — **FAIL (contract repairs required)**. The disposable tenant exposed four production behaviors the fake did not imitate: Confluence strips leading HTML comments from stored page/comment bodies and injects `ac:schema-version`/`ac:macro-id` into macros; root pages report the space homepage as `parentId`; `GET /rest/api/3/project/search` omits `description` unless `expand=description`; and long-task terminal status is `FINISH_SUCCESS`. Ownership markers moved from body comments to v1 content properties (`rfs-owner`), the manifest pre-encodes entities, body comparison normalizes provider-injected macro attributes, cleanup delegates permission-denied issue deletes to the project cascade, and the fake plus deterministic suite were updated to fence every finding.
 - 2026-09-05 — C12 live gate, second pass — **PASS**. Bootstrap twice (second converged with no error), verify (provisioner + reader authority, pagination families, reader-concealed boundary), cleanup twice (first surfaced the `FINISH_SUCCESS` poll vocabulary gap, fixed; second idempotent), and independent provisioner/reader absence checks returned zero fixture projects/spaces and HTTP 404 on the reader project probe. Deterministic suite 10/10 after the repairs.
 - C12 is **PASS** as of 2026-09-05; the live-contract findings and repairs are recorded in `.rfs-bcym/evidence.md`.
+
+### Review-fix falsifiers — 2026-09-06
+
+F1/F2 strengthen C4's observation to every subprocess argv/environment and temporary file while execution is in progress, not merely curl's arguments and final outputs. F6 extends C2/C10 to an explicitly empty state path before all side effects. F7/F8 strengthen C11's independent oracle by rejecting a wrong request origin and checking both output streams.
+
+F3 extends the C5/C6/C8 partial-run fixture with failed ownership publication before and after upstream commit, known-ID recovery, an unknown create outcome, and mismatched receipt authority. F4 directly checks saved stable IDs after project/space/title drift and requires conclusive absence before state removal. F5 uses the documented root and children collections separately, with two paginated replies, and asserts second-run write absence. The original implementations are the named mutations for these new regression fences; Slice 3/4 checkpoints own their red/green results.
+
+Published current Confluence create schemas do not expose atomic content-property creation: [page create](https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/#api-pages-post), [footer-comment create](https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-comment/#api-footer-comments-post), and [post-ID content properties](https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-content-properties/). Recovery therefore uses a stable-ID receipt rather than an undocumented legacy create payload.
+
+The 2026-09-05 C12 record is historical convergence/visibility/absence evidence only. Review-fix C12 must additionally capture actual live write requests and compare independent before/after object identities and versions; the corrected-run result belongs in `evidence.md`.
+
+The corrected Jira lifecycle distinguishes live absence from permanent absence. Normal DELETE defaults to recyclable deletion ([JRACLOUD-94802](https://jira.atlassian.com/browse/JRACLOUD-94802)); owned replacement and cleanup explicitly request `enableUndo=false`. Cleanup searches deleted projects as well as live projects, revalidates hidden trash by stable ID and exact marker, and verifies absence from both visibility states. A direct GET 404 is not deletion authority for a hidden tombstone. The disposable-tenant probe confirmed direct permanent deletion of an exact owned tombstone; no undocumented restore fallback is introduced.
+
+Jira readback identity/ownership is checked separately from replaceable name drift. Losing the owner marker, key, or ID is a foreign-collision failure, not permission to delete and recreate the object.
 
 ## Approval
 

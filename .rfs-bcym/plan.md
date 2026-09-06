@@ -87,7 +87,7 @@
 
 ## Review-fix increment B
 
-The review baseline is `518b99e`; the original increment remains historical. Review fixes are a separate increment against that baseline: Slice 3 estimates 300 changed lines, Slice 4 estimates 650, plus 25% churn (238), total 1,188. Main owns integration, regression execution, evidence, and tracker updates. Isolated writers own transport, lifecycle, and the shared deterministic harness respectively; they do not run concurrent validation.
+The review baseline is `518b99e`; the original increment remains historical. The initial 950-line forecast was exceeded by strict receipt/hierarchy validation, stable-ID target unions, and the live-discovered Jira trash/ownership defects. A measured 1,906-line review diff before final evidence gives a revised forecast of 450 lines for Slice 3 and 1,650 for Slice 4: 2,100 plus 25% churn (525), total 2,625, below the 4,000-line ceiling. Main owns integration, regression execution, evidence, and tracker updates. Isolated writers owned transport, lifecycle, and the deterministic harness; final targeted reviewers were read-only and validation ran centrally.
 
 ## Slice 3: Close execution and test-observation boundaries — F1, F2, F6, F7, F8
 
@@ -101,25 +101,25 @@ The review baseline is `518b99e`; the original increment remains historical. Rev
 **Wall budget/phase:** N/A — one-off operator command; request deadlines unchanged.
 **Files:** `scripts/atlassian-fixture-bootstrap.sh`, `crates/resourcefs-sources/tests/atlassian_fixture_operator_contract.rs`, `crates/resourcefs-sources/tests/fixtures/atlassian_fixture_operator/fake_curl.py`, this plan and `.rfs-bcym/evidence.md`.
 **Estimate:** N/A — implementation measured by observable gates, not duration.
-**Diff estimate:** 300 changed lines.
+**Diff estimate:** 450 changed lines; revised against observed integration.
 **PR increment:** B — review fixes against `518b99e`, independently testable without Slice 4.
 **Commands and expected results:**
 - `cargo test -p resourcefs-sources --test atlassian_fixture_operator_contract` → execution-boundary checks pass and existing lifecycle remains green.
 - Apply the named mutations in an isolated checkpoint copy → each targeted fence fails; restore → each passes.
 
-## Slice 4: Restore recoverable, identity-based fixture lifecycle — F3, F4, F5, F9
+## Slice 4: Restore recoverable, identity-based fixture lifecycle — F3, F4, F5, F9, F10, F11
 
 **Claim IDs:** C1, C5, C6, C7, C8, C9, C11, C12
-**Expected behavior:** Confluence creation cannot strand an unowned object between creation and ownership publication; cleanup verifies saved stable identities rather than discarding moved objects; footer replies are rediscovered through their real children endpoint; evidence distinguishes observed live write absence from successful convergence.
-**Oracle:** Published Confluence creation/comment contracts plus independent fake object-store, request-log and state comparisons. Live second-bootstrap request capture and independent stable-ID/version observations, if execution credentials are available.
-**Stress fixture:** Ownership-publication failure; moved Jira issue and Confluence page; foreign marker replacement; two-level footer replies with paginated siblings. Expected: safe rerun/cleanup, preserved foreign objects, no moved residue or duplicate reply, explicit bounded failure for uncertain authority.
-**Regression fence:** Lifecycle/cleanup contracts and new interruption, moved-identity and reply regression cases in `atlassian_fixture_operator_contract.rs`; fake endpoints follow published root-versus-child semantics.
-**Named mutation:** Restore separate unjournaled creation/property publication; restore cleanup's unconditional state-ID replacement; restore root-only reply discovery. Each corresponding new regression must fail.
+**Expected behavior:** Known-ID interrupted Confluence creation recovers through a durable receipt; an unknown creation outcome blocks mutation for explicit repair. Cleanup verifies saved stable identities rather than discarding moved objects and permanently removes owned Jira trash. Footer replies use their real children endpoint. Changed ownership blocks replacement; live evidence distinguishes zero writes from successful convergence.
+**Oracle:** Published Confluence/Jira lifecycle contracts plus independent fake object-store, request-log and state comparisons. Actual live request capture and independent stable-ID/version/visibility/absence observations.
+**Stress fixture:** Ownership-publication failure; moved Jira issue and Confluence page; changed ownership; two-level footer replies with paginated siblings; hidden Jira tombstones. Expected: safe recovery/cleanup, preserved foreign objects, no moved residue or duplicate reply, no reserved trash keys, and explicit bounded failure for uncertain authority.
+**Regression fence:** Lifecycle/cleanup contracts and interruption, moved-identity, reply, tombstone, and changed-ownership regressions in `atlassian_fixture_operator_contract.rs`; the fake follows live root-versus-child and recyclable-versus-permanent deletion semantics.
+**Named mutation:** Restore unjournaled ownership publication, scoped cleanup, root-only reply discovery, default recyclable Jira deletion, or replacement after ownership loss. Each corresponding regression must fail; restore and rerun the full focused suite.
 **Complexity/production scale:** Saved-ID checks are O(n) for at most 256 fixture objects; reply discovery is bounded by ten pages per collection and the existing 512-request global ceiling. No tenant-wide unbounded search is added.
 **Wall budget/phase:** N/A — one-off operator command; existing 30-second request and bounded-poll deadlines remain.
 **Files:** `scripts/atlassian-fixture-bootstrap.sh`, `crates/resourcefs-sources/tests/atlassian_fixture_operator_contract.rs`, `crates/resourcefs-sources/tests/fixtures/atlassian_fixture_operator/fake_curl.py`, `.rfs-bcym/evidence.md`, `.rfs-bcym/design.md`, `.rfs-bcym/plan.md`, `.rivets/issues.jsonl` through Rivets; `.gitignore` only if a durable identity receipt is required.
 **Estimate:** N/A — implementation measured by observable gates, not duration.
-**Diff estimate:** 650 changed lines.
+**Diff estimate:** 1,650 changed lines; revised for strict authority recovery and live Jira lifecycle findings.
 **PR increment:** B — review fixes; depends on Slice 3.
 **Commands and expected results:**
 - `cargo test -p resourcefs-sources --test atlassian_fixture_operator_contract` → interrupted operations recover without foreign adoption, moved objects cannot survive successful cleanup, and repeated reply bootstrap performs no writes.
