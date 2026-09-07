@@ -587,7 +587,8 @@ async fn operation_journal_budget() {
     let (count_budget, yield_budget, compare_budget) = if cfg!(debug_assertions) {
         (100, 100, 1_500)
     } else {
-        (25, 25, 50)
+        // Native-runner headroom approved by requester; investigate in rfs-o4am.
+        (25, 25, 500)
     };
     let target = PathReference::parse("issue://owner/repo/new").expect("[C4] target");
     let count_session = session(16);

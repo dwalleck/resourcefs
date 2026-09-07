@@ -57,4 +57,19 @@ F10 additionally fails closed when Cargo reports debug assertions enabled for a 
 
 ### Spec
 
-One static concern remains pending native evidence: a Darwin process group that continues returning `EPERM` throughout the existing grace still fails cleanup. The reviewer performed no native reproduction and corrected its initial reproduction claim. The loop reaps the direct child before each liveness query; the candidate waits for the transient zombie window but deliberately does not reinterpret persistent permission denial as success. Native evidence must determine whether this resolves the observed admission failure. Do not widen the error mapping without establishing that no live members remain.
+Native aarch64 macOS evidence resolves the static concern: `process_admission`, `stream_boundaries` and `unix_tree_cleanup` pass in both functional and release suites in runs 34070623469 and 34070750919. The reviewer withdrew the finding. Persistent permission denial intentionally remains fail-closed; the observed transient zombie window no longer fails cleanup.
+
+## Requester-approved performance follow-ups — 2026-09-07
+
+The first native matrices exposed only previously unenforced production timing limits; all platform functional/release suites, formatting, lint and dependency checks passed. Ubuntu's push matrix passed completely. Failed measurements:
+
+| Boundary | Native measurement | Previous limit | Revised enforced limit | Investigation |
+|---|---|---|---|---|
+| 64 MiB journal fingerprint and exact comparison | macOS 196.034167 / 206.22575 ms; Ubuntu PR 50.374804 ms | 50 ms | 500 ms | rfs-o4am |
+| Fresh TLS 64 MiB mutation request, including fixture capture | Windows 119.3156 / 191.5212 ms | 100 ms | 500 ms | rfs-q5l8 |
+
+Requester direction: when there is no immediate solution, increase the budget and file performance investigations. No backend change or fixture-copy optimization has yet been proven portable and sufficient. Keep those investigations separate rather than extending this prerequisite. The journal's count/yield limits and debug comparison limit are unchanged; all exact identity, full-body and timing assertions remain active.
+
+Evidence: [push matrix](https://github.com/dwalleck/resourcefs/actions/runs/34070623469), [PR matrix](https://github.com/dwalleck/resourcefs/actions/runs/34070750919). The two revised ignored tests pass locally with release debug assertions explicitly disabled. In [the revised PR matrix](https://github.com/dwalleck/resourcefs/actions/runs/34073108972), Windows passes the complete gate and Ubuntu passes every production budget. macOS is still running at this checkpoint.
+
+Ubuntu's sole remaining failure is an incidental wording assertion in `timeout_returns_source_unavailable`: the expected `source_unavailable` category and explicit configured-deadline diagnostic are correct, but the assertion requires the substring `timeout`. Remove that wording assertion rather than pinning another spelling. The successful full-transfer control and failing-transfer category assertions remain. The targeted debug test and formatting check pass after this removal; production timeout behavior is unchanged.
