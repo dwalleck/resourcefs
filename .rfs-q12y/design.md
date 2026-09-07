@@ -1,5 +1,9 @@
 # Design: dependency vetting with cargo-deny and a CI gate
 
+## C5 supersession — 2026-09-06
+
+PR #1 review replaced C5's source-text mirror with the shared executable `scripts/ci-gates.py`, used by CI and maintainers. The current behavioral oracles are actual gate execution, failure propagation while subsequent gates continue, and compiled-harness ignored-row inventory that rejects missing or unclassified production checks. Hosted runs establish workflow execution. The C5 byte-comparison oracle, mutation and fence below are historical and no longer current; no replacement source-text test is claimed. License/source/advisory policy and the original approval remain unchanged.
+
 ## Route and inputs
 
 - **Route:** Structural, from `.rfs-q12y/route.md` — no unverified empirical premise (the tree was measured and `cargo-deny` 0.19.0 is installed), no public API or scale risk, but the license policy was a requester decision and the CI half's criteria needed restating.

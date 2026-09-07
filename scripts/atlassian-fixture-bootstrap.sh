@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # Manifest-driven, disposable Jira and Confluence Cloud fixture operator.
+# Requires Bash 4.4+ for associative maps, mapfile, and empty arrays under nounset.
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+  printf 'error: Bash 4.4 or newer is required; install modern Bash (macOS: brew install bash) and put its bin directory first in PATH, then rerun this script.\n' >&2
+  exit 1
+fi
+
 set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
@@ -52,9 +58,16 @@ die() {
   exit 1
 }
 
+file_permissions() {
+  # GNU stat and BSD/macOS stat expose permission bits with different flags.
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
+}
+
 usage() {
   cat <<'EOF'
 Usage: scripts/atlassian-fixture-bootstrap.sh <bootstrap|verify|cleanup> --site <https-origin> [--manifest <path>] [--state <path>]
+
+Requires Bash 4.4 or newer (macOS: brew install bash and put its bin directory first in PATH).
 
 Environment:
   ATLASSIAN_PROVISIONER_EMAIL / ATLASSIAN_PROVISIONER_API_TOKEN
@@ -435,7 +448,7 @@ pending_validate_file() {
   [[ -f "$pending" ]] || die "pending_corrupt"
   size=$(wc -c < "$pending") || die "pending_unreadable"
   (( size <= 4096 )) || die "pending_too_large"
-  mode=$(stat -c '%a' "$pending" 2>/dev/null) || die "pending_unreadable"
+  mode=$(file_permissions "$pending") || die "pending_unreadable"
   [[ "$mode" == 600 ]] || die "pending_permissions"
   jq -e --arg site "$SITE" '
     ([keys[]]|sort) == ["container_id","id","kind","logical_id","parent_id","site","version"] and
@@ -1310,7 +1323,7 @@ load_state() {
   size=$(wc -c < "$STATE_PATH") || die "state_unreadable"
   (( size <= MAX_RESPONSE_BYTES )) || die "state_too_large"
   local mode
-  mode=$(stat -c '%a' "$STATE_PATH" 2>/dev/null) || die "state_unreadable"
+  mode=$(file_permissions "$STATE_PATH") || die "state_unreadable"
   [[ "$mode" == 600 ]] || die "state_permissions"
   jq -e --arg site "$SITE" --slurpfile source "$MANIFEST_PATH" '
     def logical: type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$");

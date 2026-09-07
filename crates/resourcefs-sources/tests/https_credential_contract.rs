@@ -41,7 +41,7 @@ use resourcefs_sources::{
 };
 use tempfile::TempDir;
 use tls::{
-    FIXTURE_HOST, FixtureResponse, MATCH_CERT, TlsListener, fixture_allowlist, settle,
+    FIXTURE_HOST, FixtureResponse, TlsListener, fixture_allowlist, match_cert, settle,
     tls_substrate_with_credentials,
 };
 
@@ -98,7 +98,7 @@ fn reference(port: u16, path: &str) -> PathReference {
 /// grow between the rows rules that explanation out.
 #[tokio::test]
 async fn credential_reaches_the_wire_only_when_configured() {
-    let listener = TlsListener::serve(LOOPBACK, 0, MATCH_CERT, PAGE).await;
+    let listener = TlsListener::serve(LOOPBACK, 0, match_cert(), PAGE).await;
     let port = listener.address.port();
 
     source(port, vec![credential(port)])
@@ -166,11 +166,11 @@ async fn credential_reaches_the_wire_only_when_configured() {
 /// fence exists to rule out.
 #[tokio::test]
 async fn credential_never_reaches_an_observable_channel() {
-    let elsewhere = TlsListener::serve(LOOPBACK, 0, MATCH_CERT, PAGE).await;
+    let elsewhere = TlsListener::serve(LOOPBACK, 0, match_cert(), PAGE).await;
     let elsewhere_port = elsewhere.address.port();
     let redirect = format!("https://{FIXTURE_HOST}:{elsewhere_port}/landing");
 
-    let listener = TlsListener::serve_router(LOOPBACK, 0, MATCH_CERT, {
+    let listener = TlsListener::serve_router(LOOPBACK, 0, match_cert(), {
         let redirect = redirect.clone();
         move |path: &str| {
             if path.starts_with("/hop") {
@@ -252,7 +252,7 @@ async fn credential_never_reaches_an_observable_channel() {
 #[tokio::test]
 async fn cancelled_read_abandons_the_request() {
     // POSITIVE CONTROL — the same body, uncancelled, transferred whole.
-    let control_listener = TlsListener::serve_router(LOOPBACK, 0, MATCH_CERT, |_path| {
+    let control_listener = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
         FixtureResponse::trickle(TRICKLE_LEN, TRICKLE_CHUNK, TRICKLE_DELAY)
     })
     .await;
@@ -276,7 +276,7 @@ async fn cancelled_read_abandons_the_request() {
     );
 
     // The cancelled row — same fixture, cancelled while the body is arriving.
-    let listener = TlsListener::serve_router(LOOPBACK, 0, MATCH_CERT, |_path| {
+    let listener = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
         FixtureResponse::trickle(TRICKLE_LEN, TRICKLE_CHUNK, TRICKLE_DELAY)
     })
     .await;
@@ -326,7 +326,7 @@ async fn cancelled_read_abandons_the_request() {
 /// ties the claim to the tool the claim is about.
 #[tokio::test]
 async fn cancellation_survives_source_dispatch() {
-    let listener = TlsListener::serve_router(LOOPBACK, 0, MATCH_CERT, |_path| {
+    let listener = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
         FixtureResponse::trickle(TRICKLE_LEN, TRICKLE_CHUNK, TRICKLE_DELAY)
     })
     .await;

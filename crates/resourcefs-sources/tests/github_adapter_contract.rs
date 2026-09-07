@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tempfile::TempDir;
-use tls::{FIXTURE_HOST, FixtureResponse, MATCH_CERT, TlsListener, fixture_allowlist, settle};
+use tls::{FIXTURE_HOST, FixtureResponse, TlsListener, fixture_allowlist, match_cert, settle};
 
 const ISSUE: &str = r#"{
   "id":9001,"number":42,"state":"open","title":"Parser bug","body":null,
@@ -159,7 +159,7 @@ where
     R: Fn(&str) -> FixtureResponse + Send + Sync + 'static,
 {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_router(loopback, 0, MATCH_CERT, router).await;
+    let listener = TlsListener::serve_router(loopback, 0, match_cert(), router).await;
     let port = listener.address.port();
     let config = GithubConfig::new(
         "github",
@@ -175,7 +175,7 @@ where
         fixture_allowlist(port, true),
         ceilings,
         move |_host| async move { Ok::<_, std::io::Error>(vec![loopback]) },
-        &[tls::FIXTURE_CA],
+        &[tls::fixture_ca()],
         Vec::new(),
     )
     .expect("substrate");

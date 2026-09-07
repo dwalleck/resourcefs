@@ -46,6 +46,7 @@ windows-sys.workspace = true
 # dev-dependency scopes the feature to tests without changing what the shipped
 # library enables by default.
 resourcefs-sources = { path = ".", features = ["test-support"] }
+rcgen.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tokio-rustls.workspace = true

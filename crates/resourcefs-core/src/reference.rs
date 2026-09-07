@@ -2069,8 +2069,10 @@ mod tests {
     #[test]
     fn duplicate_root_id_is_rejected() {
         let id = WorkspaceRootId::new("same").expect("id");
-        let first = WorkspaceRoot::new(id.clone(), "file:///one", None).expect("root");
-        let second = WorkspaceRoot::new(id, "file:///two", None).expect("root");
+        let first_uri = crate::test_support::directory_uri("one").to_string();
+        let second_uri = crate::test_support::directory_uri("two").to_string();
+        let first = WorkspaceRoot::new(id.clone(), first_uri, None).expect("root");
+        let second = WorkspaceRoot::new(id, second_uri, None).expect("root");
         let error = WorkspaceRootSet::new(vec![first, second], None).expect_err("duplicate id");
         assert_eq!(error.category(), ErrorCategory::InvalidReference);
     }

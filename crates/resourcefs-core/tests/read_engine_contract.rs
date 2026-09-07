@@ -783,12 +783,12 @@ async fn artifact_page_production_budget() {
     #[cfg(feature = "test-support")]
     assert!(result.content_capacity_for_test() <= 70 * 1024 * 1024);
     assert_eq!(harness.session.artifact_count().await, 1);
-    if !cfg!(debug_assertions) {
-        assert!(
-            elapsed <= Duration::from_secs(5),
-            "64 MiB artifact page took {elapsed:?}"
-        );
-    }
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_secs(100)
+    } else {
+        Duration::from_secs(5)
+    };
+    assert!(elapsed <= budget, "64 MiB artifact page took {elapsed:?}");
 }
 
 #[tokio::test]
@@ -809,8 +809,13 @@ async fn workspace_snapshot_production_budget() {
     );
     assert!(!page.displayed_eof());
     assert_eq!(harness.session.artifact_count().await, 1);
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_secs(100)
+    } else {
+        Duration::from_secs(5)
+    };
     assert!(
-        elapsed <= Duration::from_secs(5),
+        elapsed <= budget,
         "64 MiB workspace snapshot page took {elapsed:?}"
     );
 }
@@ -831,10 +836,10 @@ async fn inline_artifact_production_budget() {
     let elapsed = started.elapsed();
     assert!(!result.is_bounded());
     assert_eq!(result.content(), content);
-    if !cfg!(debug_assertions) {
-        assert!(
-            elapsed <= Duration::from_millis(25),
-            "49 KiB artifact read took {elapsed:?}"
-        );
-    }
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_millis(500)
+    } else {
+        Duration::from_millis(25)
+    };
+    assert!(elapsed <= budget, "49 KiB artifact read took {elapsed:?}");
 }

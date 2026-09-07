@@ -21,7 +21,7 @@ use resourcefs_core::{
 };
 use resourcefs_sources::HttpsSource;
 use tls::{
-    FIXTURE_HOST, FixtureResponse, MATCH_CERT, TlsListener, fixture_allowlist, settle,
+    FIXTURE_HOST, FixtureResponse, TlsListener, fixture_allowlist, match_cert, settle,
     tls_substrate, tls_substrate_with_ceilings,
 };
 
@@ -30,7 +30,7 @@ const ERROR_PAGE: &[u8] =
 
 async fn source_serving(status: &'static str) -> (u16, HttpsSource) {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_router(loopback, 0, MATCH_CERT, move |_path| {
+    let listener = TlsListener::serve_router(loopback, 0, match_cert(), move |_path| {
         FixtureResponse::Response {
             status,
             headers: vec![(
@@ -138,7 +138,7 @@ async fn unusable_retry_guidance_is_terminal_without_wait() {
         Some("60"),
     ] {
         let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let listener = TlsListener::serve_router(loopback, 0, MATCH_CERT, move |_path| {
+        let listener = TlsListener::serve_router(loopback, 0, match_cert(), move |_path| {
             FixtureResponse::Response {
                 status: "429 Too Many Requests",
                 headers: guidance

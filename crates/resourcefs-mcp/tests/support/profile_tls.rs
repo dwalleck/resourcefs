@@ -4,7 +4,7 @@ use std::{
     io,
     net::{Ipv4Addr, SocketAddr},
     sync::{
-        Arc, Mutex,
+        Arc, LazyLock, Mutex,
         atomic::{AtomicUsize, Ordering},
         mpsc,
     },
@@ -25,8 +25,16 @@ use tokio_rustls::{
     },
 };
 
-const CERTIFICATE: &[u8] = include_bytes!("../fixtures/profile_https/server.crt.der");
-const PRIVATE_KEY: &[u8] = include_bytes!("../fixtures/profile_https/server.key.der");
+#[path = "../../../resourcefs-sources/tests/support/certificates.rs"]
+mod certificates;
+
+static CERTIFICATES: LazyLock<(Vec<u8>, [certificates::TestIdentity; 1])> =
+    LazyLock::new(|| certificates::issue_test_certificates([&["localhost", "127.0.0.1", "::1"]]));
+
+pub fn root_certificate() -> &'static [u8] {
+    &CERTIFICATES.0
+}
+
 const MAX_REQUEST_HEAD: usize = 16 * 1024;
 
 pub struct ProfileTlsServer {
@@ -137,11 +145,12 @@ impl Drop for ProfileTlsServer {
 }
 
 fn server_config() -> ServerConfig {
+    let identity = &CERTIFICATES.1[0];
     ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(
-            vec![CertificateDer::from(CERTIFICATE.to_vec())],
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(PRIVATE_KEY.to_vec())),
+            vec![CertificateDer::from(identity.certificate.clone())],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.private_key.clone())),
         )
         .expect("profile TLS certificate and key")
 }
