@@ -1,9 +1,11 @@
 use std::fmt::Write as _;
 
-use resourcefs_core::{AtlassianSiteId, JiraAddress, PathReference, ResourceError};
+use resourcefs_core::{
+    AtlassianSiteId, JiraAddress, JiraIssueResource, PathReference, ResourceError,
+};
 
 use super::{escape_markdown, quoted};
-use crate::atlassian::wire::collections::{JiraProject, Presence};
+use crate::atlassian::wire::collections::{JiraIssueSummary, JiraProject, Presence};
 
 pub(crate) fn render_projects(
     site: &AtlassianSiteId,
@@ -41,6 +43,15 @@ pub(crate) fn render_project(
         escape_markdown(&quoted(project.key.as_str()))
     );
     render_metadata(&mut output, project);
+    let issues = PathReference::jira(
+        JiraAddress::ProjectIssues {
+            site: site.clone(),
+            project: project.id.clone(),
+        },
+        None,
+    )?;
+    writeln!(output, "\n[Issues]({})", issues.requested())
+        .expect("writing to a String cannot fail");
     Ok(output)
 }
 
@@ -99,4 +110,64 @@ fn render_presence<T>(
         }
     }
     output.push('\n');
+}
+
+pub(crate) fn render_issues(
+    address: &JiraAddress,
+    rows: &[JiraIssueSummary],
+) -> Result<String, ResourceError> {
+    let reference = PathReference::jira(address.clone(), None)?;
+    let site = address.site();
+    let mut output = format!(
+        "# Jira Issues\n\nCanonical Reference: {}\n\n",
+        reference.requested()
+    );
+    if rows.is_empty() {
+        output.push_str("No visible issues in this page.\n");
+    }
+    for issue in rows {
+        let reference = PathReference::jira(
+            JiraAddress::Issue {
+                site: site.clone(),
+                issue_id: issue.id.clone(),
+                resource: JiraIssueResource::Aggregate,
+            },
+            None,
+        )?;
+        let project = PathReference::jira(
+            JiraAddress::Project {
+                site: site.clone(),
+                project_id: issue.project_id.clone(),
+            },
+            None,
+        )?;
+        writeln!(
+            output,
+            "## [{}]({})\n\nIssue ID: {}\nIssue Key: {}\nSummary: {}\nSelf: {}\nProject: [{}]({})",
+            escape_markdown(&quoted(issue.key.as_str())),
+            reference.requested(),
+            issue.id.as_str(),
+            quoted(issue.key.as_str()),
+            quoted(&issue.summary),
+            quoted(&issue.self_url),
+            issue.project_id.as_str(),
+            project.requested()
+        )
+        .expect("writing to a String cannot fail");
+        render_presence(&mut output, "Status", &issue.status, |output, status| {
+            output.push('{');
+            match &status.name {
+                Presence::Absent => {}
+                Presence::Null => output.push_str("name: null"),
+                Presence::Value(name) => {
+                    output.push_str("name: ");
+                    output.push_str(&quoted(name));
+                }
+            }
+            output.push('}');
+        });
+        writeln!(output, "Reference: {}\n", reference.requested())
+            .expect("writing to a String cannot fail");
+    }
+    Ok(output)
 }

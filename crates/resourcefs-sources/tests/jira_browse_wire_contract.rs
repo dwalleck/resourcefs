@@ -1,5 +1,5 @@
 use resourcefs_core::ErrorCategory;
-use resourcefs_sources::inspect_project_wire_for_test;
+use resourcefs_sources::{inspect_issue_wire_for_test, inspect_project_wire_for_test};
 use serde_json::{Value, json};
 
 const ORIGIN: &str = "https://acme.invalid/";
@@ -21,6 +21,7 @@ fn reject_project(body: &[u8]) {
 
 #[test]
 fn compact_authority_and_presence_matrix() {
+    compact_issue_authority_and_presence_matrix();
     let absent = inspect_project_wire_for_test(
         project().to_string().as_bytes(),
         ORIGIN,
@@ -191,4 +192,221 @@ fn reject_page(body: &Value) {
             .category(),
         ErrorCategory::SourceUnavailable
     );
+}
+
+fn issue() -> Value {
+    json!({
+        "id": "20001", "key": "TEAM-1",
+        "self": "https://acme.invalid/rest/api/3/issue/20001",
+        "fields": {
+            "summary": "Compact summary",
+            "project": {"id":"10001","self":"https://acme.invalid/rest/api/3/project/10001"}
+        }
+    })
+}
+
+fn reject_issue_page(body: &[u8]) {
+    assert_eq!(
+        inspect_issue_wire_for_test(body, ORIGIN)
+            .unwrap_err()
+            .category(),
+        ErrorCategory::SourceUnavailable
+    );
+}
+
+fn reject_issue(row: Value) {
+    reject_issue_page(json!({"issues":[row]}).to_string().as_bytes());
+}
+
+fn compact_issue_authority_and_presence_matrix() {
+    let control =
+        inspect_issue_wire_for_test(json!({"issues":[issue()]}).to_string().as_bytes(), ORIGIN)
+            .unwrap();
+    assert_eq!(control.ids, ["20001"]);
+    assert!(control.rendered.contains("](jira://test/issues/20001)"));
+    assert!(control.rendered.contains("](jira://test/projects/10001)"));
+    let mut representations = std::collections::BTreeSet::from([control.rendered.clone()]);
+    for status in [
+        Value::Null,
+        json!({}),
+        json!({"name":null}),
+        json!({"name":""}),
+        json!({"name":"Open"}),
+    ] {
+        let mut row = issue();
+        row["fields"]["status"] = status;
+        let result =
+            inspect_issue_wire_for_test(json!({"issues":[row]}).to_string().as_bytes(), ORIGIN)
+                .unwrap();
+        assert!(
+            representations.insert(result.rendered),
+            "status presence was collapsed"
+        );
+    }
+    for (parent, field) in [
+        ("", "id"),
+        ("", "key"),
+        ("", "self"),
+        ("", "fields"),
+        ("/fields", "summary"),
+        ("/fields", "project"),
+        ("/fields/project", "id"),
+        ("/fields/project", "self"),
+    ] {
+        let mut row = issue();
+        row.pointer_mut(parent)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        reject_issue(row);
+        for invalid in [Value::Null, json!(42), json!([])] {
+            let mut row = issue();
+            row.pointer_mut(parent).unwrap()[field] = invalid;
+            reject_issue(row);
+        }
+    }
+    for invalid in [
+        json!(true),
+        json!("Open"),
+        json!([]),
+        json!({"name":false}),
+        json!({"name":{}}),
+    ] {
+        let mut row = issue();
+        row["fields"]["status"] = invalid;
+        reject_issue(row);
+    }
+    for invalid in ["", ".", "..", "new", "TEAM/1", "TEAM\n1"] {
+        let mut row = issue();
+        row["key"] = json!(invalid);
+        reject_issue(row);
+    }
+    for path in ["/id", "/fields/project/id"] {
+        for invalid in ["", "0", "01", "-1", "abc", &"1".repeat(65)] {
+            let mut row = issue();
+            *row.pointer_mut(path).unwrap() = json!(invalid);
+            reject_issue(row);
+        }
+    }
+    for path in ["/self", "/fields/project/self"] {
+        let original = issue().pointer(path).unwrap().as_str().unwrap().to_owned();
+        for invalid in [
+            original.replace("acme.invalid", "foreign.invalid"),
+            original.replace("acme.invalid", "user:secret@acme.invalid"),
+            original.replace("/rest/api/3/", "/rest/api/2/"),
+            original.replace("20001", "20002").replace("10001", "10002"),
+            original
+                .replace("/issue/", "/project/")
+                .replace("/project/10001", "/issue/10001"),
+            format!("{original}?x=1"),
+            format!("{original}#fragment"),
+        ] {
+            let mut row = issue();
+            *row.pointer_mut(path).unwrap() = json!(invalid);
+            reject_issue(row);
+        }
+    }
+    for id in ["18446744073709551616".to_owned(), "9".repeat(64)] {
+        let mut row = issue();
+        row["id"] = json!(id);
+        row["self"] = json!(format!("https://acme.invalid/rest/api/3/issue/{id}"));
+        row["fields"]["project"]["id"] = json!(id);
+        row["fields"]["project"]["self"] =
+            json!(format!("https://acme.invalid/rest/api/3/project/{id}"));
+        row["fields"]["summary"] = json!("");
+        let result =
+            inspect_issue_wire_for_test(json!({"issues":[row]}).to_string().as_bytes(), ORIGIN)
+                .unwrap();
+        assert_eq!(result.ids.as_slice(), std::slice::from_ref(&id));
+        assert!(
+            result
+                .rendered
+                .contains(&format!("](jira://test/projects/{id})"))
+        );
+    }
+    let body = json!({"issues":[issue()]}).to_string();
+    reject_issue_page(format!("{body} trailing").as_bytes());
+    for (needle, replacement) in [
+        ("\"issues\":", "\"issues\":[],\"issues\":"),
+        ("\"summary\":", "\"summary\":\"other\",\"summary\":"),
+        ("\"project\":", "\"unknown\":{\"a\":1,\"a\":2},\"project\":"),
+    ] {
+        reject_issue_page(body.replacen(needle, replacement, 1).as_bytes());
+    }
+    reject_issue_page(
+        body.replacen(
+            "\"summary\":",
+            "\"status\":{\"name\":\"Open\",\"name\":\"Closed\"},\"summary\":",
+            1,
+        )
+        .as_bytes(),
+    );
+    reject_issue_page(json!({"issues":[issue(), issue()]}).to_string().as_bytes());
+    let mut unknown = issue();
+    unknown["unknown"] = json!({"valid":[1,null,false]});
+    let result =
+        inspect_issue_wire_for_test(json!({"issues":[unknown]}).to_string().as_bytes(), ORIGIN)
+            .unwrap();
+    assert_eq!(result.rendered, control.rendered);
+}
+
+#[test]
+fn issue_pages_require_authoritative_token_state() {
+    for rows in [json!([]), json!([issue()])] {
+        for is_last in [None, Some(true)] {
+            let mut body = json!({"issues":rows});
+            if let Some(is_last) = is_last {
+                body["isLast"] = json!(is_last);
+            }
+            let result = inspect_issue_wire_for_test(body.to_string().as_bytes(), ORIGIN).unwrap();
+            assert_eq!(result.next_token, None);
+        }
+        for token in ["opaque token + / = 雪", " ", "0001"] {
+            for is_last in [None, Some(false)] {
+                let mut body = json!({"issues":rows, "nextPageToken":token});
+                if let Some(is_last) = is_last {
+                    body["isLast"] = json!(is_last);
+                }
+                let result =
+                    inspect_issue_wire_for_test(body.to_string().as_bytes(), ORIGIN).unwrap();
+                assert_eq!(result.next_token.as_deref(), Some(token));
+            }
+        }
+    }
+    for body in [
+        json!({"issues":[],"isLast":false}),
+        json!({"issues":[],"isLast":true,"nextPageToken":"next"}),
+        json!({"issues":[],"nextPageToken":""}),
+        json!({"issues":[],"nextPageToken":null}),
+        json!({"issues":[],"nextPageToken":3}),
+        json!({"issues":[],"isLast":null}),
+        json!({"issues":[],"isLast":"true"}),
+        json!({}),
+        json!({"issues":null}),
+        json!({"issues":{}}),
+        json!({"issues":[null]}),
+    ] {
+        reject_issue_page(body.to_string().as_bytes());
+    }
+    reject_issue_page(br#"{"issues":[],"nextPageToken":"a","nextPageToken":"b"}"#);
+}
+
+#[test]
+fn project_resource_publishes_stable_issue_navigation() {
+    let result = inspect_project_wire_for_test(
+        project().to_string().as_bytes(),
+        ORIGIN,
+        None,
+        Some("10001"),
+    )
+    .unwrap();
+    let target = "jira://test/projects/10001/issues";
+    assert!(
+        result.projects[0]
+            .rendered
+            .contains(&format!("]({target})"))
+    );
+    let reference = resourcefs_core::PathReference::parse(target).unwrap();
+    assert_eq!(reference.requested(), target);
 }

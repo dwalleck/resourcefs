@@ -65,6 +65,9 @@ impl AtlassianSource {
     ) -> Result<SourceResource, ResourceError> {
         match address {
             JiraAddress::Projects { .. } => self.read_projects(reference, site, operation).await,
+            JiraAddress::Issues { .. } | JiraAddress::ProjectIssues { .. } => {
+                self.read_issues(reference, address, site, operation).await
+            }
             JiraAddress::Project { project_id, .. } => {
                 let mut read = JiraRead::direct(self, operation);
                 let fetched = read
@@ -192,6 +195,115 @@ impl AtlassianSource {
             canonical,
             collections::render_projects(site.id(), &rows)?,
             projection,
+        )?;
+        match continuation {
+            Some(next) => Ok(resource.with_continuation(&next)),
+            None => Ok(resource),
+        }
+    }
+
+    async fn read_issues(
+        &self,
+        reference: &PathReference,
+        address: &JiraAddress,
+        site: &AtlassianSite,
+        operation: BoundedRead<'_>,
+    ) -> Result<SourceResource, ResourceError> {
+        let owner = super::cursor::CursorOwner::new(address, site)?;
+        // Decode ownership before even the parent lookup: a rebound mount must receive no egress.
+        let mut token = reference
+            .projection()
+            .and_then(ProjectionSelector::source_cursor)
+            .map(|cursor| owner.decode(cursor))
+            .transpose()?;
+        let parent = match address {
+            JiraAddress::ProjectIssues { project, .. } => Some(project),
+            JiraAddress::Issues { .. } => None,
+            _ => return Err(super::unsupported_jira_projection()),
+        };
+        let limits = self.browse_limits;
+        let mut read = JiraRead::collection(self, operation, limits.attempts)?;
+        if let Some(parent) = parent {
+            let fetched = read
+                .fetch_cached(site, project_endpoint(site, parent.as_str())?)
+                .await?;
+            wire::decode_project(
+                &fetched.body,
+                site.origin(),
+                wire::ProjectLookup::StableId(parent),
+            )?;
+        }
+        let query = match parent {
+            Some(parent) => format!("project = {} ORDER BY key ASC", parent.as_str()),
+            None => "project IS NOT EMPTY ORDER BY key ASC".to_owned(),
+        };
+        let mut rows = Vec::new();
+        let mut identities = HashSet::new();
+        let mut visited_tokens = HashSet::new();
+        let continuation = loop {
+            let requested = limits.native.min(limits.records - rows.len());
+            let mut endpoint = site
+                .origin()
+                .base_url()
+                .join("rest/api/3/search/jql")
+                .map_err(|_| malformed_upstream("Jira issue search endpoint is invalid"))?;
+            {
+                let mut pairs = endpoint.query_pairs_mut();
+                pairs
+                    .append_pair("jql", &query)
+                    .append_pair("fields", "key,summary,status,project")
+                    .append_pair("maxResults", &requested.to_string());
+                if let Some(current) = token.take() {
+                    pairs.append_pair("nextPageToken", current.as_str());
+                    visited_tokens.insert(current.into_string());
+                }
+            }
+            let fetched = read.fetch_cached(site, endpoint).await?;
+            let page = wire::decode_issue_page(&fetched.body, site.origin())?;
+            if page.values.len() > requested {
+                return Err(ResourceError::new(
+                    ErrorCategory::LimitExceeded,
+                    "Jira issue page exceeds the requested record bound",
+                ));
+            }
+            for issue in page.values {
+                if parent.is_some_and(|parent| parent != &issue.project_id) {
+                    return Err(malformed_upstream("Jira issue belongs to another project"));
+                }
+                if !identities.insert(issue.id.clone()) {
+                    return Err(malformed_upstream(
+                        "Jira issue page contains duplicate stable identities",
+                    ));
+                }
+                rows.push(issue);
+            }
+            let Some(next) = page.next_token else {
+                break None;
+            };
+            if visited_tokens.contains(next.as_str()) {
+                return Err(malformed_upstream(
+                    "Jira issue continuation token does not advance",
+                ));
+            }
+            if rows.len() == limits.records || read.remaining_attempts() == Some(0) {
+                break Some(owner.continuation(next)?);
+            }
+            owner.validate_continuation(&next)?;
+            token = Some(next);
+        };
+        rows.sort_unstable_by(|left, right| {
+            left.id
+                .as_str()
+                .len()
+                .cmp(&right.id.as_str().len())
+                .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+        });
+        let resource = self.markdown_resource(
+            PathReference::jira(address.clone(), None)?,
+            collections::render_issues(address, &rows)?,
+            reference
+                .projection()
+                .filter(|selector| selector.source_cursor().is_none()),
         )?;
         match continuation {
             Some(next) => Ok(resource.with_continuation(&next)),

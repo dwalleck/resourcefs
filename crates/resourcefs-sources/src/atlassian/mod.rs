@@ -146,5 +146,6 @@ pub use wire::{
 
 #[cfg(feature = "test-support")]
 pub use wire::collections::{
-    JiraProjectPageObservation, JiraProjectWireObservation, inspect_project_wire_for_test,
+    JiraIssuePageObservation, JiraProjectPageObservation, JiraProjectWireObservation,
+    inspect_issue_wire_for_test, inspect_project_wire_for_test,
 };

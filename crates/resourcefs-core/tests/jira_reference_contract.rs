@@ -8,7 +8,7 @@ use resourcefs_core::{
     JiraIssueResource, JiraProjectId, JiraProjectKey, MAX_ATLASSIAN_SITE_ID_BYTES,
     MAX_JIRA_ISSUE_ID_BYTES, MAX_JIRA_PROJECT_ID_BYTES, MAX_JIRA_SEGMENT_BYTES,
     MAX_PATH_REFERENCE_BYTES, PathReference, ProjectionSelector, ResourceAddress, SearchRecord,
-    SourceOffset, SourceResource, Utf8ContentType, select_utf8,
+    SourceCursor, SourceOffset, SourceResource, Utf8ContentType, select_utf8,
 };
 
 #[test]
@@ -142,7 +142,6 @@ fn invalid_and_dormant_jira_references_are_rejected() {
     for input in [
         "jira://",
         "jira://acme",
-        "jira://acme/issues",
         "jira://acme/issues/0",
         "jira://acme/issues/01",
         "jira://acme/issues/-1",
@@ -244,6 +243,13 @@ fn browse_reference_identity_and_selector_families() {
         "jira://acme/project-keys/caf%C3%A9",
         "jira://acme/project-keys/a%3Ab%3Fc%23d%25",
         "jira://acme/project-keys/TEAM:1-2",
+        "jira://acme/issues",
+        "jira://acme/issues:raw",
+        "jira://acme/issues:2-4",
+        "jira://acme/issues:cursor:e30",
+        "jira://acme/projects/1/issues",
+        "jira://acme/projects/18446744073709551616/issues:raw",
+        "jira://acme/projects/1/issues:cursor:_w",
     ] {
         let reference = PathReference::parse(input).expect(input);
         assert_eq!(reference.requested(), input);
@@ -293,8 +299,6 @@ fn browse_reference_identity_and_selector_families() {
         "jira://acme/projects/+1",
         "jira://acme/projects/1.0",
         "jira://acme/projects/1/fields",
-        "jira://acme/projects/1/issues",
-        "jira://acme/issues",
         "jira://acme/project-keys",
         "jira://acme/project-keys/new",
         "jira://acme/project-keys/.",
@@ -327,6 +331,18 @@ fn browse_reference_identity_and_selector_families() {
         "jira://acme/issues/1/fields:offset:1",
         "jira://acme/issues/1/fields/summary:offset:1",
         "jira://acme/issue-keys/TEAM-1:offset:1",
+        "jira://acme/issues:offset:1",
+        "jira://acme/projects/1/issues:offset:1",
+        "jira://acme/project-keys/TEAM/issues",
+        "jira://acme/projects/01/issues",
+        "jira://acme/issues/",
+        "jira://acme/issues:cursor:e30:raw",
+        "jira://acme/issues:raw:cursor:e30",
+        "jira://acme/issues:cursor:e30:1-2",
+        "jira://acme/issues:1-2:cursor:e30",
+        "jira://acme/issues:cursor:e30:cursor:e30",
+        "jira://acme/issues:cursor:e30:offset:1",
+        "jira://acme/issues:offset:1:cursor:e30",
     ] {
         assert_eq!(
             PathReference::parse(input).expect_err(input).category(),
@@ -460,4 +476,193 @@ fn source_offsets_do_not_change_global_selector_markers() {
             .line_selection()
             .is_some()
     );
+}
+
+#[test]
+fn source_cursors_validate_encoding_without_interpreting_native_payloads() {
+    for value in ["AA", "_w", "AAA", "__8", "AAAA", "-___", "e30"] {
+        let cursor = SourceCursor::new(value.to_owned()).expect("canonical base64url");
+        assert_eq!(cursor.as_str(), value);
+        let selector = ProjectionSelector::from_source_cursor(cursor.clone());
+        assert_eq!(selector.as_str(), format!("cursor:{value}"));
+        assert_eq!(selector.source_cursor(), Some(&cursor));
+        assert_eq!(
+            ProjectionSelector::parse(selector.as_str()),
+            Ok(selector.clone())
+        );
+        assert_eq!(selector.source_offset(), None);
+        assert_eq!(selector.page_offset(), None);
+        assert_eq!(selector.line_selection(), None);
+        assert!(!selector.is_raw());
+        assert_eq!(
+            select_utf8(Cursor::new(b"source page"), Some(&selector))
+                .expect_err("unconsumed cursor")
+                .category(),
+            ErrorCategory::UnsupportedProjection,
+        );
+    }
+    for value in [
+        "",
+        "A",
+        "AAAAA",
+        "AB",
+        "_x",
+        "AAB",
+        "__9",
+        "AA=",
+        "AA==",
+        "+w",
+        "/w",
+        " AA",
+        "AA\n",
+        "é",
+        "%41A",
+        "cursor:AA",
+    ] {
+        assert_eq!(
+            SourceCursor::new(value.to_owned())
+                .expect_err(value)
+                .category(),
+            ErrorCategory::InvalidReference,
+        );
+        for base in ["jira://acme/issues", "jira://acme/projects/1/issues"] {
+            assert_eq!(
+                PathReference::parse(format!("{base}:cursor:{value}"))
+                    .expect_err(value)
+                    .category(),
+                ErrorCategory::InvalidReference,
+            );
+        }
+    }
+    assert!(
+        ProjectionSelector::parse("raw")
+            .expect("raw")
+            .source_cursor()
+            .is_none()
+    );
+}
+
+#[test]
+fn issue_cursor_constructors_cannot_bypass_family_or_reference_bounds() {
+    let selector = ProjectionSelector::from_source_cursor(
+        SourceCursor::new("e30".to_owned()).expect("opaque encoded payload"),
+    );
+    for base in [
+        "jira://acme/projects",
+        "jira://acme/projects/1",
+        "jira://acme/project-keys/TEAM",
+        "jira://acme/issues/1",
+        "jira://acme/issues/1/fields",
+        "jira://acme/issues/1/fields/summary",
+        "jira://acme/issue-keys/TEAM-1",
+    ] {
+        let reference = PathReference::parse(base).expect("base");
+        let ResourceAddress::Jira(address) = reference.address() else {
+            panic!("Jira")
+        };
+        assert_eq!(
+            PathReference::jira(address.clone(), Some(selector.clone()))
+                .expect_err("wrong family constructor")
+                .category(),
+            ErrorCategory::InvalidReference,
+        );
+        assert!(PathReference::parse(format!("{base}:cursor:e30")).is_err());
+    }
+    for address in [
+        JiraAddress::Issues {
+            site: AtlassianSiteId::new("acme").expect("site"),
+        },
+        JiraAddress::ProjectIssues {
+            site: AtlassianSiteId::new("acme").expect("site"),
+            project: JiraProjectId::new("123").expect("project"),
+        },
+    ] {
+        let base = PathReference::jira(address.clone(), None).expect("bare collection");
+        let prefix = format!("{}:cursor:", base.requested());
+        let mut length = MAX_PATH_REFERENCE_BYTES - prefix.len();
+        if length % 4 == 1 {
+            length -= 1;
+        }
+        let cursor = SourceCursor::new("A".repeat(length)).expect("bounded token");
+        let page = PathReference::jira(
+            address.clone(),
+            Some(ProjectionSelector::from_source_cursor(cursor)),
+        )
+        .expect("bounded reference");
+        assert_eq!(page.requested().len(), prefix.len() + length);
+        assert_eq!(PathReference::parse(page.requested()), Ok(page));
+        let oversized = "A".repeat(length + 4);
+        let cursor = SourceCursor::new(oversized.clone()).expect("token itself fits");
+        assert_eq!(
+            PathReference::jira(
+                address,
+                Some(ProjectionSelector::from_source_cursor(cursor))
+            )
+            .expect_err("total reference ceiling")
+            .category(),
+            ErrorCategory::LimitExceeded,
+        );
+        assert_eq!(
+            PathReference::parse(format!("{prefix}{oversized}"))
+                .expect_err("parsed reference ceiling")
+                .category(),
+            ErrorCategory::LimitExceeded,
+        );
+    }
+    assert_eq!(
+        SourceCursor::new("A".repeat(MAX_PATH_REFERENCE_BYTES))
+            .expect_err("token cannot fit")
+            .category(),
+        ErrorCategory::LimitExceeded,
+    );
+}
+
+#[test]
+fn issue_search_cursor_identity_is_not_a_resource_or_text_projection() {
+    for base in ["jira://acme/issues", "jira://acme/projects/1/issues"] {
+        let first = PathReference::parse(base).expect("first page");
+        let page = PathReference::parse(format!("{base}:cursor:e30")).expect("cursor page");
+        let selected = SearchRecord::new(page.clone(), 1, "metadata").expect("page hit");
+        assert_ne!(
+            selected,
+            SearchRecord::new(first.clone(), 1, "metadata").expect("first hit")
+        );
+        assert!(
+            SourceResource::utf8(first, "metadata".to_owned(), Utf8ContentType::MARKDOWN).is_ok()
+        );
+        assert!(
+            SourceResource::utf8(page, "metadata".to_owned(), Utf8ContentType::MARKDOWN).is_err()
+        );
+        for suffix in ["raw", "1-2"] {
+            let reference = PathReference::parse(format!("{base}:{suffix}")).expect("text read");
+            assert!(SearchRecord::new(reference, 1, "metadata").is_err());
+        }
+    }
+}
+
+#[test]
+fn source_cursors_do_not_change_global_literal_paths() {
+    for input in [
+        "notes:cursor:e30",
+        "local://file:cursor:e30",
+        "https://example.com/file:cursor:e30",
+    ] {
+        let reference = PathReference::parse(input).expect("literal cursor-like path");
+        match reference.address() {
+            ResourceAddress::Workspace(resourcefs_core::WorkspaceAddress::Relative(path)) => {
+                assert_eq!(path.as_path(), std::path::Path::new("notes:cursor:e30"));
+            }
+            ResourceAddress::Local(address) => {
+                assert_eq!(
+                    address.name().expect("literal scratch name").as_str(),
+                    "file:cursor:e30"
+                );
+            }
+            ResourceAddress::Https(address) => {
+                assert_eq!(address.as_str(), "https://example.com/file:cursor:e30");
+            }
+            other => panic!("unexpected literal address: {other:?}"),
+        }
+        assert!(reference.projection().is_none());
+    }
 }
