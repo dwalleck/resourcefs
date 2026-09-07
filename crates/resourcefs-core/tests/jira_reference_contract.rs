@@ -4,11 +4,11 @@ use std::{
 };
 
 use resourcefs_core::{
-    AtlassianSiteId, ErrorCategory, JiraAddress, JiraFieldId, JiraIssueId, JiraIssueKey,
-    JiraIssueResource, JiraProjectId, JiraProjectKey, MAX_ATLASSIAN_SITE_ID_BYTES,
-    MAX_JIRA_ISSUE_ID_BYTES, MAX_JIRA_PROJECT_ID_BYTES, MAX_JIRA_SEGMENT_BYTES,
-    MAX_PATH_REFERENCE_BYTES, PathReference, ProjectionSelector, ResourceAddress, SearchRecord,
-    SourceOffset, SourceResource, Utf8ContentType, select_utf8,
+    select_utf8, AtlassianSiteId, ErrorCategory, JiraAddress, JiraFieldId, JiraIssueId,
+    JiraIssueKey, JiraIssueResource, JiraProjectId, JiraProjectKey, PathReference,
+    ProjectionSelector, ResourceAddress, SearchRecord, SourceOffset, SourceResource,
+    Utf8ContentType, MAX_ATLASSIAN_SITE_ID_BYTES, MAX_JIRA_ISSUE_ID_BYTES,
+    MAX_JIRA_PROJECT_ID_BYTES, MAX_JIRA_SEGMENT_BYTES, MAX_PATH_REFERENCE_BYTES,
 };
 
 #[test]
@@ -430,7 +430,7 @@ fn project_search_pages_and_resource_identity_remain_distinct() {
 #[test]
 fn source_offsets_do_not_change_global_selector_markers() {
     // The existing generic final-digit rule still sees line 7, not a native source offset.
-    let workspace = PathReference::parse("file:offset:7").expect("literal workspace path");
+    let workspace = PathReference::parse("notes:offset:7").expect("literal workspace path");
     assert!(workspace.projection().is_none());
     let candidate = workspace
         .selector_candidate()
@@ -443,21 +443,17 @@ fn source_offsets_do_not_change_global_selector_markers() {
         panic!("HTTPS address")
     };
     assert_eq!(address.as_str(), "https://example.com/file:offset");
-    assert!(
-        https
-            .projection()
-            .expect("legacy line selection")
-            .line_selection()
-            .is_some()
-    );
+    assert!(https
+        .projection()
+        .expect("legacy line selection")
+        .line_selection()
+        .is_some());
     let local = PathReference::parse("local://file:offset:7").expect("scratch name");
     assert!(local.projection().is_none());
-    assert!(
-        local
-            .local_selector_candidate()
-            .expect("legacy local candidate")
-            .selector()
-            .line_selection()
-            .is_some()
-    );
+    assert!(local
+        .local_selector_candidate()
+        .expect("legacy local candidate")
+        .selector()
+        .line_selection()
+        .is_some());
 }
