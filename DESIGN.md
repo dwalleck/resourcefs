@@ -167,6 +167,18 @@ Every remote Creation Target requires `operationId`. Within one live Path Sessio
 
 Existing remote replacement fetches and compares the authoritative Version Tag immediately before mutation.
 
+### Jira
+
+An Atlassian Site Mount confines Jira reads to its configured origin and credentialed visibility. Direct issue Aggregates and Fields use `jira://<site>/issues/<issue-id>[/fields[/<field-id>]]`; issue-key aliases resolve to stable issue identity.
+
+`jira://<site>/projects` is a bounded collection. `jira://<site>/projects/<project-id>` reads compact project metadata; `/project-keys/<project-key>` resolves without alias caching and publishes the returned stable project identity. IDs are canonical decimal strings of up to 64 digits, never narrowed to machine integers. Optional metadata preserves missing, null, empty, and false values.
+
+Project collections request at most 100 native rows per fetch and retain at most 1,000 rows per logical page, using at most ten physical attempts and one retry within the original logical deadline. Returned effective maxima and validated advancing next links govern traversal; short or empty pages and changing totals do not imply completion. `:offset:<positive-u64>` selects a subsequent native page. A completed logical page is sorted numerically by stable ID; this does not promise global numeric ordering across pages or scan an entire tenant.
+
+Canonical GETs revalidate the Path Session cache without stale fallback. Malformed authority, duplicate IDs, failed later pages, or unrepresentable continuation fail atomically. Raw/line projection applies to the rendered first page; source-page and text selectors cannot be stacked. Regex/PCRE2 search retains selected-page identities. Artifact recovery and next-source-page navigation remain independent.
+
+These Resources are read-only and reject glob. Site/project issue collections and caller-authored JQL are tracked by rfs-h212 and rfs-nae2; full Atlassian Server Profile/catalog publication is rfs-ue44.
+
 ### SSH
 
 `ssh://` is read-only initially. It invokes system `ssh` directly, relies on normal host-key verification, permits only profile-allowlisted host aliases, and obeys text/output caps. No remote mutation is exposed.

@@ -57,7 +57,7 @@ Intentional structured changes are the native Rivets claims/notes for h212 and n
 
 **Claim IDs:** C3, C6, C11, C16. Implement and fence project applications of C2/C4/C5/C9/C10/C12/C13/C14 here; those full multi-family claims discharge in S3, not through a partial PASS here.
 
-**Expected behavior:** Stable project and key-alias reads, project collection offset pages, compact numeric ordering, regex/PCRE2 search and ADR-0006 recovery work end-to-end. Native effective maxima and terminal links drive pagination. The physical-attempt/one-retry budget is active, GET cache semantics remain no-stale, and corrupt pages never become partial successes.
+**Expected behavior:** Stable project and key-alias reads, project collection offset pages, compact numeric ordering, regex/PCRE2 search and ADR-0006 recovery work end-to-end. Native effective maxima and terminal links drive pagination. The physical-attempt/one-retry budget is active, GET cache semantics remain no-stale, and corrupt pages never become partial successes. Publish project-issues navigation only when S3 activates its grammar and behavior, so the independently mergeable S2 never advertises an unsupported link.
 
 **Oracle:** Native project schema/operation/pagination facts in evidence; hand-authored TLS page/authority/validator fixtures; independent server request ledger and explicit numeric expected order; pre-spill Resource bytes for engine recovery; approved module ledger.
 
@@ -131,4 +131,29 @@ Before each slice, use LSP references/code actions and scoped helper/dependency 
 
 Final integration reruns every applicable implementation/oracle comparison and full fence, including live adapter evidence. Clean marker-owned fixtures and temporary worker workspaces when no longer needed. Native JQL remains rfs-nae2; full profile/stdio publication remains rfs-ue44; other Atlassian destination work remains rfs-0zbv. No new anonymous deferrals or risk waivers.
 
-Self-review: every C1–C16 has one final discharge owner; every slice has the mandatory fields; previously introduced project behavior is verified before its independent merge point; no new grammar precedes working behavior; each loop/phase has explicit bounds; partition arithmetic and mergeable definitions are recorded; all named future work cites verified tracker IDs. No slice is declared complete here.
+Self-review: every C1–C16 has one final discharge owner; every slice has the mandatory fields; previously introduced project behavior is verified before its independent merge point; no new grammar precedes working behavior; each loop/phase has explicit bounds; partition arithmetic and mergeable definitions are recorded; all named future work cites verified tracker IDs. Slice completion is recorded below.
+
+## S2 checkpoint — 2026-09-07
+
+Integrated on the reviewed extraction at `3d9e645`, above native-green platform prerequisite `f3491fe`. The original dirty parent checkout was preserved; all nine new project source/test files were copied explicitly into the isolated integration worktree. Shared fixtures retain the prerequisite's generated TLS certificate helpers. The aggregate now enforces the `projects` placement stage and explicitly excludes the gated project live row.
+
+| Gate | State | Evidence |
+|---|---|---|
+| Affected tests | PASS | Jira core reference target and all five affected source targets, including direct-read validator regressions; added cross-native-page duplicate rejection fence also passes. |
+| Assigned falsifiers | PASS | C3/C6/C11/C16 discharged. Project applications of C2/C4/C5/C9/C10/C12/C13/C14 pass; their complete cross-family claims remain assigned to S3. |
+| Stress fixture | PASS | Shuffled arbitrary-precision identities, absent/null/empty/false metadata, clamped and empty nonterminal native pages, duplicate identities across pages, exact/capped terminal boundaries, later failures, retry limits and recovery. |
+| Implementation versus oracle | PASS | Explicit TLS request/identity/order/error oracles agree; reader-only `live_jira_project_browse` passes against the retained independently provisioned fixtures in 1.58 seconds without skipped gates. |
+| Production-scale budgets | PASS | 1,000 rows with 4-KiB metadata: measured processing 20.145917 ms versus the local five-second bound; exact ten-request/record bounds and shared deadline/retry fences pass. |
+| Permanent fences | PASS | All named project cases plus the cross-page duplicate fence pass; complete repository aggregate passes, including architecture and all release budget rows. |
+| Named mutations | PASS | Thirteen project-applicable mutations fail at their intended assertions: C2/C3/C4/C5/C6/C9/C10/C10-duplicates/C11/C12/C13/C14/C16. Compilation errors or unrelated panics were not accepted as evidence. |
+| Restored fences | PASS | Each mutation restored byte-identical source and reran its named fence green; C16 reported the misplaced decoder in core, then restored the projects oracle green. |
+
+Mutation details: the design's named changes were applied one at a time; the additional duplicate mutation reset the seen-ID set per native page. Rust mutations exited 101 at the expected test assertion, not during compilation. C16 ran only the structural oracle. The throwaway driver is not a permanent suite. Session evidence is retained in artifact 847.
+
+Final command: `RUSTUP_TOOLCHAIN=1.98.0 CARGO_TARGET_DIR=/tmp/rfs-projects-reviewed-target TMPDIR=/tmp/rfs-ci-aliased-temp python scripts/ci-gates.py` — all repository gates passed in 600.72 seconds (artifact 876). Build targets are isolated by worktree; the prior shared-target result is not used as evidence. Two-axis read-only review: Standards found no hard violations or substantiated smells; Spec found no S2 correctness defects.
+
+Caller inventory: Jira parsing/selector changes flow through `reference.rs`, `reference/jira.rs`, `selector.rs`, `resource.rs`, `discovery.rs` and crate exports; browse dispatch/search lives in `atlassian/jira.rs`; the new browse owner calls the shared `JiraRead`/`HttpReadBudget` path and compact wire/render owners. Public test-only observation/limit helpers are consumed by the named browse contracts and live smoke. No issue collection, cursor or caller-authored query grammar is published by S2.
+
+### S2 Windows fixture correction
+
+Native S2 runs `34077882338`/`34077897727` passed Linux/macOS but failed the same core reference row in debug and release on Windows. `file:offset:7` is a reserved file URI, not the intended relative workspace literal; Windows correctly requires its drive/UNC form. The fixture now uses `notes:offset:7`, preserving the no-source-offset and legacy line-candidate assertions without weakening file-URI validation. The exact core row passes locally; the pushed follow-up requires native Windows verification. S1's updated native matrix is green.

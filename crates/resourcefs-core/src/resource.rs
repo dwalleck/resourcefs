@@ -636,7 +636,7 @@ fn validate_canonical_identity(reference: &PathReference) -> Result<(), Resource
         }
         ResourceAddress::Jira(address) => {
             reference.projection().is_none()
-                && reference.requested() == address.canonical_reference()
+                && crate::reference::jira_record_identity(reference, address)
         }
         ResourceAddress::PullRequest(address) => {
             reference.projection().is_none()

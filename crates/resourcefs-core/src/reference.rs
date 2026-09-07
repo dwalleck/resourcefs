@@ -11,13 +11,16 @@ use url::Url;
 use crate::{ErrorCategory, ResourceError};
 
 mod jira;
+mod source_page;
 
 pub(crate) use jira::JIRA_PREFIX;
-use jira::parse_jira_address;
+pub(crate) use jira::canonical_record_identity as jira_record_identity;
+use jira::parse_jira_reference;
 pub use jira::{
-    JiraAddress, JiraFieldId, JiraIssueId, JiraIssueKey, JiraIssueResource,
-    MAX_JIRA_ISSUE_ID_BYTES, MAX_JIRA_SEGMENT_BYTES,
+    JiraAddress, JiraFieldId, JiraIssueId, JiraIssueKey, JiraIssueResource, JiraProjectId,
+    JiraProjectKey, MAX_JIRA_ISSUE_ID_BYTES, MAX_JIRA_PROJECT_ID_BYTES, MAX_JIRA_SEGMENT_BYTES,
 };
+pub use source_page::SourceOffset;
 
 const WORKSPACE_PREFIX: &str = "rfs://workspace/";
 pub(crate) const SOURCE_CATALOG_REFERENCE: &str = "rfs://";
@@ -740,6 +743,7 @@ enum ProjectionKind {
     Raw,
     Lines(LineSelector),
     Page(u64),
+    Offset(SourceOffset),
 }
 
 /// Typed projection plus the caller's accepted spelling.
@@ -767,6 +771,13 @@ impl ProjectionSelector {
                 kind: ProjectionKind::Page(offset),
             });
         }
+        if let Some(offset) = spelling.strip_prefix("offset:") {
+            let offset = SourceOffset::parse(offset)?;
+            return Ok(Self {
+                spelling,
+                kind: ProjectionKind::Offset(offset),
+            });
+        }
         let (raw, ranges) = spelling
             .strip_prefix("raw:")
             .map_or((false, spelling.as_str()), |ranges| (true, ranges));
@@ -791,21 +802,28 @@ impl ProjectionSelector {
         match &self.kind {
             ProjectionKind::Raw => true,
             ProjectionKind::Lines(selection) => selection.is_raw(),
-            ProjectionKind::Page(_) => false,
+            ProjectionKind::Page(_) | ProjectionKind::Offset(_) => false,
         }
     }
 
     pub const fn line_selection(&self) -> Option<&LineSelector> {
         match &self.kind {
             ProjectionKind::Lines(selection) => Some(selection),
-            ProjectionKind::Raw | ProjectionKind::Page(_) => None,
+            ProjectionKind::Raw | ProjectionKind::Page(_) | ProjectionKind::Offset(_) => None,
         }
     }
 
     pub const fn page_offset(&self) -> Option<u64> {
         match &self.kind {
             ProjectionKind::Page(offset) => Some(*offset),
-            ProjectionKind::Raw | ProjectionKind::Lines(_) => None,
+            ProjectionKind::Raw | ProjectionKind::Lines(_) | ProjectionKind::Offset(_) => None,
+        }
+    }
+
+    pub const fn source_offset(&self) -> Option<SourceOffset> {
+        match self.kind {
+            ProjectionKind::Offset(offset) => Some(offset),
+            ProjectionKind::Raw | ProjectionKind::Lines(_) | ProjectionKind::Page(_) => None,
         }
     }
 }
@@ -902,13 +920,7 @@ impl PathReference {
         }
 
         if requested.starts_with(JIRA_PREFIX) {
-            let (base, projection) = projection_candidate_split(&requested).map_or_else(
-                || Ok((requested.as_str(), None)),
-                |(base, selector)| {
-                    ProjectionSelector::parse(selector).map(|selector| (base, Some(selector)))
-                },
-            )?;
-            let address = parse_jira_address(base)?;
+            let (address, projection) = parse_jira_reference(&requested)?;
             let requested = remote_requested(address.canonical_reference(), projection.as_ref());
             return Ok(Self {
                 requested,

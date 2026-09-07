@@ -1264,8 +1264,7 @@ fn canonical_identity(reference: &PathReference) -> Result<String, ResourceError
             github_record_identity(reference, &address.canonical_reference())
         }
         ResourceAddress::Jira(address) => {
-            reference.projection().is_none()
-                && reference.requested() == address.canonical_reference()
+            crate::reference::jira_record_identity(reference, address)
         }
         ResourceAddress::Workspace(_) => false,
     };

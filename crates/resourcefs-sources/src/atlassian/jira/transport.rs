@@ -4,7 +4,10 @@ use resourcefs_core::{ErrorCategory, ResourceError, SessionCacheEntry, SessionCa
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::{HttpRequest, http::BoundedRead};
+use crate::{
+    HttpRequest,
+    http::{BoundedRead, HttpReadBudget},
+};
 
 use super::{AtlassianSite, AtlassianSource, malformed_upstream};
 
@@ -20,7 +23,49 @@ pub(super) struct FetchedResponse {
     pub(super) body: Arc<[u8]>,
 }
 
-impl AtlassianSource {
+/// GET/cache/status state for one Jira read with an optional collection budget.
+pub(super) struct JiraRead<'a> {
+    source: &'a AtlassianSource,
+    operation: BoundedRead<'a>,
+    budget: Option<HttpReadBudget>,
+}
+
+impl<'a> JiraRead<'a> {
+    pub(super) fn direct(source: &'a AtlassianSource, operation: BoundedRead<'a>) -> Self {
+        Self {
+            source,
+            operation,
+            budget: None,
+        }
+    }
+
+    pub(super) fn collection(
+        source: &'a AtlassianSource,
+        operation: BoundedRead<'a>,
+        max_attempts: usize,
+    ) -> Result<Self, ResourceError> {
+        Ok(Self {
+            source,
+            operation,
+            budget: Some(HttpReadBudget::new(max_attempts)?),
+        })
+    }
+
+    pub(super) fn remaining_attempts(&self) -> Option<usize> {
+        self.budget.as_ref().map(HttpReadBudget::remaining_attempts)
+    }
+
+    async fn fetch(
+        &mut self,
+        request: HttpRequest,
+    ) -> Result<crate::BoundedHttpResponse, ResourceError> {
+        match self.budget.as_mut() {
+            Some(budget) => self.operation.fetch_with_budget(request, budget).await,
+            None => self.operation.fetch(request).await,
+        }
+        .map_err(Self::sanitize_fetch_error)
+    }
+
     fn request(url: Url, etag: Option<&str>) -> Result<HttpRequest, ResourceError> {
         let request = HttpRequest::get(url)
             .with_header("Accept", ACCEPT)
@@ -40,15 +85,14 @@ impl AtlassianSource {
     }
 
     pub(super) async fn fetch_cached(
-        &self,
+        &mut self,
         site: &AtlassianSite,
         url: Url,
-        operation: BoundedRead<'_>,
     ) -> Result<FetchedResponse, ResourceError> {
         let namespace = Self::cache_namespace(site);
         let key = Self::cache_key(site, &url)?;
-        let generation = self.session.cache_generation(&namespace).await?;
-        let mut cached = self.session.cache_get(&key).await?;
+        let generation = self.source.session.cache_generation(&namespace).await?;
+        let mut cached = self.source.session.cache_get(&key).await?;
         let mut metadata = cached
             .as_ref()
             .map(|entry| serde_json::from_slice::<CacheMetadata>(entry.metadata()))
@@ -66,7 +110,8 @@ impl AtlassianSource {
             if error.category() != ErrorCategory::LimitExceeded {
                 return Err(error);
             }
-            self.session
+            self.source
+                .session
                 .cache_remove_if_generation(&key, generation)
                 .await?;
             cached = None;
@@ -77,17 +122,14 @@ impl AtlassianSource {
             url,
             metadata.as_ref().map(|metadata| metadata.etag.as_str()),
         )?;
-        let response = operation
-            .fetch(request)
-            .await
-            .map_err(Self::sanitize_fetch_error)?;
+        let response = self.fetch(request).await?;
         if response.final_url() != &expected_url {
             return Err(malformed_upstream(
-                "Jira issue endpoint returned an unexpected redirect",
+                "Jira endpoint returned an unexpected redirect",
             ));
         }
         if response.status() == 304 {
-            if self.session.cache_generation(&namespace).await? != generation {
+            if self.source.session.cache_generation(&namespace).await? != generation {
                 return Err(malformed_upstream(
                     "Jira read was invalidated during cache revalidation",
                 ));
@@ -124,7 +166,8 @@ impl AtlassianSource {
         if etag.is_some() {
             self.cache(key, &entry, generation).await?;
         } else {
-            self.session
+            self.source
+                .session
                 .cache_remove_if_generation(&key, generation)
                 .await?;
         }
@@ -134,18 +177,14 @@ impl AtlassianSource {
     }
 
     pub(super) async fn fetch_uncached(
-        &self,
+        &mut self,
         url: Url,
-        operation: BoundedRead<'_>,
     ) -> Result<FetchedResponse, ResourceError> {
         let expected_url = url.clone();
-        let response = operation
-            .fetch(Self::request(url, None)?)
-            .await
-            .map_err(Self::sanitize_fetch_error)?;
+        let response = self.fetch(Self::request(url, None)?).await?;
         if response.final_url() != &expected_url {
             return Err(malformed_upstream(
-                "Jira issue endpoint returned an unexpected redirect",
+                "Jira endpoint returned an unexpected redirect",
             ));
         }
         Self::classify_status(&response)?;
@@ -169,13 +208,15 @@ impl AtlassianSource {
         generation: u64,
     ) -> Result<(), ResourceError> {
         match self
+            .source
             .session
             .cache_put_if_generation(key.clone(), entry.clone(), generation)
             .await
         {
             Ok(_) => Ok(()),
             Err(error) if error.category() == ErrorCategory::LimitExceeded => {
-                self.session
+                self.source
+                    .session
                     .cache_remove_if_generation(&key, generation)
                     .await?;
                 Ok(())

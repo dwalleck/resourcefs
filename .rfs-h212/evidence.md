@@ -74,3 +74,12 @@ PASS: all empirical premises discharged; standalone probes and independent compa
 - Command: `cargo test -p resourcefs-sources --all-features --test jira_live_smoke live_jira_issue_read -- --ignored --nocapture`, with `RFS_LIVE=1`, reader `ATLASSIAN_*` credentials and fixture IDs, JSON field `summary`, ADF field `description`.
 - Result: PASS — one real ignored row ran (not a skipped gate), 1.96 seconds test execution. Stable/alias identity, Field index navigation, canonical JSON/ADF representation, exact-content Version Tags, repeat-read content and secret redaction passed against Jira.
 - This verifies the moved direct-read implementation only; project/issue browsing is not yet implemented. Owned fixtures remain available for the upcoming adapter live checks and must be cleaned after their final use.
+
+## Implementation live record — S2 projects
+
+- Date: 2026-09-06 UTC, against the assembled project implementation using the retained marker-owned fixtures and reader-only credentials.
+- Command: `cargo +1.98.0 test -p resourcefs-sources --all-features --test jira_live_smoke live_jira_project_browse -- --ignored --nocapture`, with `RFS_LIVE=1`, reader `ATLASSIAN_*` credentials, and project ID/key derived from the ignored fixture receipt.
+- Result: PASS — one real ignored row ran, not a skipped gate; test execution 1.35 seconds. Direct stable and alias project reads agreed on canonical identity and content. Lowered native/logical page limits forced actual offset continuations; the adapter followed them to the independently provisioned visible project and checked content type and exact-content Version Tags. No tenant total was asserted.
+- Fixture ownership and credentials are unchanged from S1. Fixtures remain for the issue-browse live check; cleanup is still required after their final use.
+- Final S2 rerun: the same command passed again in 1.35 seconds after withholding project-issues navigation until its S3 implementation. The emitted S2 references are executable project references; the final browse design is unchanged.
+- Integrated S2 rerun, 2026-09-07: the same reader-only row passed in 1.58 seconds on `/tmp/rfs-h212-projects-reviewed` after platform/extraction integration. Only reader credentials entered the Rust child environment; project/issue identities came from the retained operator receipt. No skip diagnostic was emitted. Stable/alias equivalence, real offset traversal and fixture membership passed. Fixtures remain owned for S3 and must be cleaned after its final live proof.

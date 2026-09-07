@@ -19,9 +19,10 @@ pub use artifact::ArtifactSource;
 pub use atlassian::{AtlassianSite, AtlassianSource, AtlassianSourceMount};
 #[cfg(feature = "test-support")]
 pub use atlassian::{
-    JiraProjectionWarningObservation, JiraRenderFieldObservation, JiraRenderObservation,
-    JiraWireFieldObservation, JiraWireLookupForTest, JiraWireObservation,
-    inspect_jira_render_for_test, inspect_jira_wire_for_test,
+    JiraProjectPageObservation, JiraProjectWireObservation, JiraProjectionWarningObservation,
+    JiraRenderFieldObservation, JiraRenderObservation, JiraWireFieldObservation,
+    JiraWireLookupForTest, JiraWireObservation, inspect_jira_render_for_test,
+    inspect_jira_wire_for_test, inspect_project_wire_for_test,
 };
 pub use compiled::CompiledSources;
 pub use configuration::{

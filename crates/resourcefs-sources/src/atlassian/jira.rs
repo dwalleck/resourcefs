@@ -1,3 +1,4 @@
+pub(super) mod browse;
 mod transport;
 
 use std::io::Cursor;
@@ -17,6 +18,7 @@ use crate::{
 };
 
 use super::{AtlassianSite, AtlassianSource, render, wire};
+use transport::JiraRead;
 
 impl AtlassianSource {
     pub(crate) async fn read_resource(
@@ -31,6 +33,14 @@ impl AtlassianSource {
         let projection = reference.projection();
         if projection.is_some_and(|selector| selector.page_offset().is_some()) {
             return Err(unsupported_jira_projection());
+        }
+        if matches!(
+            address,
+            JiraAddress::Projects { .. }
+                | JiraAddress::Project { .. }
+                | JiraAddress::ProjectKeyAlias { .. }
+        ) {
+            return self.read_browse(reference, address, site, operation).await;
         }
 
         let (identifier, lookup, cacheable, requested_resource) = match address {
@@ -53,12 +63,18 @@ impl AtlassianSource {
                 false,
                 &JiraIssueResource::Aggregate,
             ),
+            JiraAddress::Projects { .. }
+            | JiraAddress::Project { .. }
+            | JiraAddress::ProjectKeyAlias { .. } => {
+                return Err(unsupported_jira_projection());
+            }
         };
         let url = Self::issue_endpoint(site, identifier)?;
+        let mut read = JiraRead::direct(self, operation);
         let fetched = if cacheable {
-            self.fetch_cached(site, url, operation).await?
+            read.fetch_cached(site, url).await?
         } else {
-            self.fetch_uncached(url, operation).await?
+            read.fetch_uncached(url).await?
         };
         let issue = wire::decode_issue(&fetched.body, site.origin(), lookup)?;
 
@@ -176,7 +192,7 @@ impl SourceCatalogMetadata for AtlassianSource {
     fn catalog_entries(&self) -> Result<Vec<SourceCatalogEntry>, ResourceError> {
         Ok(vec![SourceCatalogEntry::new(
             "jira://",
-            "jira://<site>/issues/<issue-id>[/fields[/<field-id>]][:selector] | jira://<site>/issue-keys/<issue-key>[:selector]",
+            "jira://<site>/issues/<issue-id>[/fields[/<field-id>]][:selector] | jira://<site>/issue-keys/<issue-key>[:selector] | jira://<site>/projects[:offset:N] | jira://<site>/projects/<project-id>[:selector] | jira://<site>/project-keys/<project-key>[:selector]",
             "jira://site/issues/10001",
             None,
         )?])
@@ -196,13 +212,25 @@ impl DiscoveryAdapter for AtlassianSource {
         let ResourceAddress::Jira(address) = reference.address() else {
             return Err(unsupported_jira_projection());
         };
-        let requested = PathReference::jira(address.clone(), None)?;
+        let source_selector = reference
+            .projection()
+            .filter(|selector| selector.source_offset().is_some())
+            .cloned();
+        let requested = PathReference::jira(address.clone(), source_selector.clone())?;
         let source = self.read(&requested, operation).await?;
-        let searched = PathReference::parse(source.canonical_reference().to_owned())?;
+        let canonical = PathReference::parse(source.canonical_reference().to_owned())?;
+        let ResourceAddress::Jira(canonical_address) = canonical.address() else {
+            return Err(unsupported_jira_projection());
+        };
+        let searched = PathReference::jira(canonical_address.clone(), source_selector)?;
+        let continuation = source
+            .continuation()
+            .map(PathReference::parse)
+            .transpose()?;
         let content = source.content().to_owned();
         let pattern = pattern.to_owned();
         let case_sensitive = options.case_sensitive();
-        tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             search_document(&content, &searched, &pattern, case_sensitive)
         })
         .await
@@ -211,7 +239,11 @@ impl DiscoveryAdapter for AtlassianSource {
                 ErrorCategory::SourceUnavailable,
                 format!("Jira discovery worker failed: {error}"),
             )
-        })?
+        })??;
+        Ok(match continuation {
+            Some(next) => result.with_source_continuation(next),
+            None => result,
+        })
     }
 
     async fn glob(
@@ -230,7 +262,7 @@ impl DiscoveryAdapter for AtlassianSource {
 fn unsupported_jira_projection() -> ResourceError {
     ResourceError::new(
         ErrorCategory::UnsupportedProjection,
-        "Jira Source Adapter supports direct issue Aggregates, Field indexes, and Fields only",
+        "Jira Source Adapter supports explicit issue and project Resources and project collections",
     )
 }
 
