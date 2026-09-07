@@ -7,17 +7,14 @@
 //! fixture built on one would observe an empty server log and pass while
 //! proving nothing.
 //!
-//! The certificates are static DER committed under `tests/fixtures/tls/`, so
-//! no certificate-generation crate enters the dependency tree. They are
-//! test-only, self-issued, and carry no authority anywhere: the private keys
-//! are deliberately public. They were minted for 100 years, so expiry is not a
-//! maintenance trap; regenerating them is an openssl invocation recorded in
-//! this slice's commit message.
+//! Certificates are generated once per test process, valid for two days around
+//! that run. Short lifetimes satisfy native TLS validity policies without
+//! leaving committed certificates to expire.
 //!
 //! Two leaves chain to the **same** CA and differ only in their subject name:
 //!
-//! - [`MATCH_CERT`] covers [`FIXTURE_HOST`] — the name the client requests.
-//! - [`WRONG_CERT`] covers `mismatch.invalid` — a name the client never asks
+//! - [`match_cert`] covers [`FIXTURE_HOST`] — the name the client requests.
+//! - [`wrong_cert`] covers `mismatch.invalid` — a name the client never asks
 //!   for.
 //!
 //! Sharing one CA is the point. If the mismatched leaf were issued by an
@@ -32,7 +29,7 @@ use std::{
     io,
     net::{IpAddr, SocketAddr},
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -52,14 +49,31 @@ use tokio_rustls::{
     },
 };
 
+#[path = "certificates.rs"]
+mod certificates;
+
+use certificates::{TestIdentity, issue_test_certificates};
+
+fn fixture_certificates() -> &'static (Vec<u8>, [TestIdentity; 2]) {
+    static CERTIFICATES: LazyLock<(Vec<u8>, [TestIdentity; 2])> =
+        LazyLock::new(|| issue_test_certificates([&[FIXTURE_HOST], &["mismatch.invalid"]]));
+    &CERTIFICATES
+}
+
 /// The CA both fixture leaves chain to; the client trusts exactly this.
-pub const FIXTURE_CA: &[u8] = include_bytes!("../fixtures/tls/ca.der");
+pub fn fixture_ca() -> &'static [u8] {
+    &fixture_certificates().0
+}
+
 /// Leaf whose subject name matches [`FIXTURE_HOST`].
-pub const MATCH_CERT: &[u8] = include_bytes!("../fixtures/tls/match.crt.der");
-const MATCH_KEY: &[u8] = include_bytes!("../fixtures/tls/match.key.der");
+pub fn match_cert() -> &'static [u8] {
+    &fixture_certificates().1[0].certificate
+}
+
 /// Leaf for `mismatch.invalid`, trusted but wrong for [`FIXTURE_HOST`].
-pub const WRONG_CERT: &[u8] = include_bytes!("../fixtures/tls/wrong.crt.der");
-const WRONG_KEY: &[u8] = include_bytes!("../fixtures/tls/wrong.key.der");
+pub fn wrong_cert() -> &'static [u8] {
+    &fixture_certificates().1[1].certificate
+}
 
 /// The host every fixture request names. Never resolved by a system resolver:
 /// the substrate is driven through an injected lookup, and `.invalid` is
@@ -408,15 +422,15 @@ impl TlsListener {
     where
         R: Fn(&FixtureRequest) -> FixtureResponse + Send + Sync + 'static,
     {
-        let key: &[u8] = if cert == MATCH_CERT {
-            MATCH_KEY
+        let key: &[u8] = if cert == match_cert() {
+            &fixture_certificates().1[0].private_key
         } else {
-            WRONG_KEY
+            &fixture_certificates().1[1].private_key
         };
         let config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(
-                vec![CertificateDer::from(cert), CertificateDer::from(FIXTURE_CA)],
+                vec![CertificateDer::from(cert)],
                 PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
             )
             .expect("fixture certificate and key form a valid server config");
@@ -622,7 +636,7 @@ fn tls_substrate_full(
             let addresses = addresses.clone();
             async move { Ok::<_, io::Error>(addresses) }
         },
-        &[FIXTURE_CA],
+        &[fixture_ca()],
         credentials,
     )
     .expect("substrate builds")

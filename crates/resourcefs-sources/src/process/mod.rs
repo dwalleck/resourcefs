@@ -795,6 +795,17 @@ async fn cleanup_tree(
         match tree.has_live_processes() {
             Ok(false) => break false,
             Ok(true) if Instant::now() < deadline => sleep(TERMINATION_POLL).await,
+            // Darwin excludes zombies from killpg's permission check and can
+            // report EPERM until try_wait reaps the exiting group leader.
+            // Keep polling within the existing grace; persistent denial still
+            // reaches forced cleanup and remains an error.
+            #[cfg(target_os = "macos")]
+            Err(error)
+                if error.raw_os_error() == Some(rustix::io::Errno::PERM.raw_os_error())
+                    && Instant::now() < deadline =>
+            {
+                sleep(TERMINATION_POLL).await;
+            }
             Ok(true) | Err(_) => break true,
         }
     };

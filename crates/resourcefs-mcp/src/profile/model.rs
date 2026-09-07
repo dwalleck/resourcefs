@@ -1706,6 +1706,15 @@ mod tests {
     #[test]
     fn logging_paths_resolve_from_the_profile_directory() {
         let fixture = tempfile::tempdir().expect("profile directory");
+        let expected_root = fixture
+            .path()
+            .canonicalize()
+            .expect("canonical profile directory");
+        // A file-URL round trip normalizes Windows verbatim prefixes independently of profile code.
+        let expected_root = url::Url::from_directory_path(expected_root)
+            .expect("canonical directory URI")
+            .to_file_path()
+            .expect("native directory path");
         let default = ProfileDocument::from_slice_in(br#"{"schemaVersion":1}"#, fixture.path())
             .expect("default logging profile");
         assert_eq!(default.logging_config().level(), LogLevel::Info);
@@ -1724,12 +1733,12 @@ mod tests {
         assert_eq!(relative_config.destination_kind(), LogDestinationKind::File);
         assert_eq!(
             relative_config.path(),
-            Some(fixture.path().join("logs/resourcefs.log").as_path())
+            Some(expected_root.join("logs/resourcefs.log").as_path())
         );
         assert_eq!(relative_config.rotation_bytes(), Some(0));
         assert_eq!(relative_config.retained_files(), Some(10));
 
-        let absolute_path = fixture.path().join("absolute.log");
+        let absolute_path = expected_root.join("absolute.log");
         let encoded = serde_json::to_vec(&serde_json::json!({
             "schemaVersion":1,
             "logging":{"destination":{"kind":"file","path":absolute_path}}

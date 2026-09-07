@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -99,9 +100,23 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
-        let temp = tempfile::tempdir().expect("create harness directory");
+        // Normal state parents must not inherit a symlink from the host's TMPDIR.
+        let parent = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonical harness parent");
+        let temp = tempfile::tempdir_in(parent).expect("create harness directory");
         let fake_bin = temp.path().join("bin");
         fs::create_dir(&fake_bin).expect("create fake bin directory");
+        // Keep the invoking environment's Bash even when a test isolates PATH.
+        let bash = Command::new("bash")
+            .args(["-c", "printf '%s' \"$BASH\""])
+            .output()
+            .expect("locate selected Bash interpreter");
+        assert_success(&bash);
+        let bash = PathBuf::from(OsString::from_vec(bash.stdout))
+            .canonicalize()
+            .expect("selected Bash interpreter must canonicalize");
+        symlink(bash, fake_bin.join("bash")).expect("retain selected Bash in isolated PATH");
         write_executable(&fake_bin.join("curl"), FIXTURE);
         Self {
             store: temp.path().join("store.json"),

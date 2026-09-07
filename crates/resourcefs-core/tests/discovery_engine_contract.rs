@@ -615,12 +615,15 @@ fn catalog_target_validation_production_budget() {
         GlobTarget::new("rfs://workspace").expect_err("catalog glob redirect");
     }
     let elapsed = started.elapsed();
-    if !cfg!(debug_assertions) {
-        assert!(
-            elapsed <= Duration::from_secs(2),
-            "2,000 catalog target validations exceeded the 1 ms/request budget: {elapsed:?}"
-        );
-    }
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_secs(40)
+    } else {
+        Duration::from_secs(2)
+    };
+    assert!(
+        elapsed <= budget,
+        "2,000 catalog target validations exceeded the 1 ms/request budget: {elapsed:?}"
+    );
 }
 
 #[tokio::test]

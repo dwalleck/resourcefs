@@ -295,7 +295,7 @@ async fn offsite_redirect_never_requested() {
     let listener = tls::TlsListener::serve_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         0,
-        tls::MATCH_CERT,
+        tls::match_cert(),
         |path| {
             if path == "/docs/start" {
                 tls::FixtureResponse::Redirect("/secret".to_owned())
@@ -355,7 +355,7 @@ async fn redirect_depth_boundary() {
     let listener = tls::TlsListener::serve_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         0,
-        tls::MATCH_CERT,
+        tls::match_cert(),
         |path| {
             let step = |prefix: &str, last: usize| -> Option<tls::FixtureResponse> {
                 let index: usize = path.strip_prefix(prefix)?.parse().ok()?;
@@ -445,7 +445,7 @@ async fn redirect_to_denied_address_is_refused() {
     let listener = tls::TlsListener::serve_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         redirect_port,
-        tls::MATCH_CERT,
+        tls::match_cert(),
         move |path: &str| {
             if path == "/start" {
                 tls::FixtureResponse::Redirect(format!(
@@ -474,7 +474,7 @@ async fn redirect_to_denied_address_is_refused() {
         move |_host: String| async move {
             Ok::<_, io::Error>(vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))])
         },
-        &[tls::FIXTURE_CA],
+        &[tls::fixture_ca()],
         Vec::new(),
     )
     .expect("substrate builds");
@@ -512,7 +512,7 @@ async fn redirect_to_denied_address_is_refused() {
 #[tokio::test]
 async fn ip_literal_origin_is_authorized_before_connect() {
     let granted_listener =
-        tls::TlsListener::serve(IpAddr::V4(Ipv4Addr::LOCALHOST), 0, tls::MATCH_CERT, "ok").await;
+        tls::TlsListener::serve(IpAddr::V4(Ipv4Addr::LOCALHOST), 0, tls::match_cert(), "ok").await;
     let granted_port = granted_listener.address.port();
     let granted = literal_substrate(granted_port, true);
     let granted_url = Url::parse(&format!("https://127.0.0.1:{granted_port}/doc"))
@@ -528,7 +528,7 @@ async fn ip_literal_origin_is_authorized_before_connect() {
     );
 
     let denied_listener =
-        tls::TlsListener::serve(IpAddr::V4(Ipv4Addr::LOCALHOST), 0, tls::MATCH_CERT, "ok").await;
+        tls::TlsListener::serve(IpAddr::V4(Ipv4Addr::LOCALHOST), 0, tls::match_cert(), "ok").await;
     let denied_port = denied_listener.address.port();
     let denied = literal_substrate(denied_port, false);
     let denied_url = Url::parse(&format!("https://127.0.0.1:{denied_port}/doc"))
@@ -567,7 +567,7 @@ fn literal_substrate(port: u16, allow_private_network: bool) -> HttpSubstrate {
         move |_host: String| async move {
             Ok::<_, io::Error>(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)])
         },
-        &[tls::FIXTURE_CA],
+        &[tls::fixture_ca()],
         Vec::new(),
     )
     .expect("substrate builds")
@@ -641,7 +641,7 @@ async fn encoded_url_reaches_wire_unchanged() {
     let server = tls::TlsListener::serve(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         port,
-        tls::MATCH_CERT,
+        tls::match_cert(),
         "<html><body><p>ok</p></body></html>",
     )
     .await;
@@ -694,7 +694,7 @@ async fn https_reader_mode_reports_markdown_for_complete_and_selected() {
     let _server = tls::TlsListener::serve(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         port,
-        tls::MATCH_CERT,
+        tls::match_cert(),
         "<html><body><h1>Title</h1><p>Body text.</p></body></html>",
     )
     .await;

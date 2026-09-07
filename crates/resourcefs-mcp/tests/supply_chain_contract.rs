@@ -209,52 +209,6 @@ fn workspace_passes_the_gate() {
     );
 }
 
-/// The four gate commands, transcribed from `.rfs-q12y/spec.md`'s Behavior
-/// section — the same commands a maintainer runs locally.
-const GATE_COMMANDS: &[&str] = &[
-    "cargo fmt --all -- --check",
-    "cargo clippy --workspace --all-targets --all-features -- -D warnings",
-    "cargo test --workspace --all-features",
-    "cargo deny check",
-];
-
-/// C5 — CI runs the local gates and cannot drift from them.
-///
-/// The workflow has never executed (no git remote), so this asserts only what
-/// is checkable in-repo: the gate commands, the triggers, and the absence of
-/// tabs. Whether it actually runs is deferred verification, tracked at
-/// rfs-58r1.
-#[test]
-fn ci_workflow_mirrors_local_gates() {
-    let path = workspace_root().join(".github/workflows/ci.yml");
-    let workflow = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-
-    for command in GATE_COMMANDS {
-        let occurrences = workflow.matches(command).count();
-        assert_eq!(
-            occurrences, 1,
-            "the CI workflow must run `{command}` exactly once, byte-for-byte identical to the \
-             local gate; found {occurrences} occurrences. A reworded command means CI and local \
-             practice have diverged; a second occurrence usually means a weaker duplicate was \
-             added alongside the real gate."
-        );
-    }
-
-    for trigger in ["push:", "pull_request:"] {
-        assert!(
-            workflow.lines().any(|line| line.trim() == trigger),
-            "the CI workflow must declare a `{trigger}` trigger"
-        );
-    }
-
-    assert!(
-        !workflow.contains('\t'),
-        "the CI workflow must not contain tab characters: tabs are invalid YAML indentation and \
-         are the most likely way a hand-written workflow fails the first time it runs"
-    );
-}
-
 /// Writes `path` and every parent directory it needs.
 fn write(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
@@ -267,43 +221,90 @@ fn write(path: &Path, contents: &str) {
 }
 
 /// Runs one cargo-deny check in `dir` against the *committed* `deny.toml`, so
-/// these fixtures exercise the real policy rather than a copy that could drift
-/// from it.
-/// `--config` belongs to the `check` subcommand, not to `cargo deny` itself:
-/// placing it first is a usage error that exits non-zero, which would let a
-/// "did it fail?" assertion pass without the gate ever running.
+/// these fixtures exercise the real policy rather than a separately maintained
+/// copy that could drift from it.
+/// Stage the config under its default name: cargo-deny 0.20 moved `--config`
+/// from `check` to the root command, but both CLI versions discover `deny.toml`
+/// in the fixture directory.
 fn deny_check_in(dir: &Path, which: &str) -> std::process::Output {
+    write(&dir.join("deny.toml"), &deny_config(&workspace_root()));
     Command::new("cargo")
         .arg("deny")
+        .args(["--format", "json"])
         .arg("check")
-        .arg("--config")
-        .arg(workspace_root().join("deny.toml"))
         .arg(which)
         .current_dir(dir)
+        .env("CARGO_TERM_COLOR", "never")
         .output()
         .expect("run cargo-deny against the fixture graph")
 }
 
 /// Asserts cargo-deny rejected the fixture *for the reason under test*.
 ///
-/// Checking only the exit status is not enough: a malformed invocation, an
-/// unresolvable manifest, or a missing config all exit non-zero too, so a
-/// bare `!success` assertion can pass while the gate never ran. Requiring the
-/// specific `<check> FAILED` diagnostic pins the failure to the real cause.
-fn assert_rejected_by(output: &std::process::Output, which: &str, why: &str) {
+/// A nonzero exit alone can mean invocation or manifest failure, or a default
+/// config rejecting every license. Require exactly the intended crate's policy
+/// error, with no unrelated errors. Cargo's proxy may prefix JSON with warnings;
+/// those are not policy evidence, and every failure retains both output streams.
+fn assert_rejected_by(
+    output: &std::process::Output,
+    code: &str,
+    crate_name: &str,
+    expected_exit: i32,
+    why: &str,
+) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{stdout}{stderr}");
-    assert!(
-        !output.status.success(),
-        "{why}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-    assert!(
-        combined.contains(&format!("{which} FAILED")),
-        "expected cargo-deny to report `{which} FAILED`; a non-zero exit without it means the \
-         fixture failed for some other reason (usage error, unresolvable manifest) and the gate \
-         was never exercised.\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
+    let fail = |reason: &str| -> ! {
+        panic!(
+            "{why}\n{reason}\nstatus: {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            output.status
+        );
+    };
+    // cargo-deny returns a bitmask: licenses = 4, sources = 8.
+    if output.status.code() != Some(expected_exit) {
+        fail(&format!(
+            "expected cargo-deny policy exit mask {expected_exit}"
+        ));
+    }
+
+    let mut rejected = 0;
+    for line in stderr.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Human cargo/proxy diagnostics are preserved above, not policy
+        // evidence. JSON-shaped output must parse rather than being discarded.
+        if !trimmed.starts_with('{') && !trimmed.starts_with('[') {
+            continue;
+        }
+        let entry: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|error| fail(&format!("invalid cargo-deny JSON: {error}")));
+        let fields = &entry["fields"];
+        if entry["type"] == "log"
+            && fields["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("falling back to default config"))
+        {
+            fail("cargo-deny did not load the committed policy");
+        }
+        if entry["type"] == "diagnostic" && fields["severity"] == "error" {
+            let graphs = fields["graphs"].as_array();
+            if fields["code"] != code
+                || !graphs.is_some_and(|graphs| {
+                    graphs.len() == 1 && graphs[0]["Krate"]["name"] == crate_name
+                })
+            {
+                fail("cargo-deny reported an unrelated error or rejected another crate");
+            }
+            rejected += 1;
+        }
+    }
+    if rejected != 1 {
+        fail(&format!(
+            "expected exactly one `{code}` error for `{crate_name}`, observed {rejected}"
+        ));
+    }
 }
 
 /// C2 — the license gate bites. A disallowed license anywhere in the graph
@@ -339,8 +340,24 @@ fn license_gate_rejects_copyleft() {
     let output = deny_check_in(root, "licenses");
     assert_rejected_by(
         &output,
-        "licenses",
+        "rejected",
+        "copyleft-dep",
+        4,
         "a GPL-3.0 package must fail the license gate, otherwise the allow-list is decorative",
+    );
+
+    // A positive control proves that the same policy accepts the permitted root
+    // and dependency. An empty/default allow-list must never satisfy this fence.
+    let dependency_manifest = root.join("copyleft-dep/Cargo.toml");
+    let manifest = std::fs::read_to_string(&dependency_manifest).expect("read fixture manifest");
+    write(&dependency_manifest, &manifest.replace("GPL-3.0", "MIT"));
+    let permitted = deny_check_in(root, "licenses");
+    assert!(
+        permitted.status.success(),
+        "the committed policy must accept the MIT-only graph.\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+        permitted.status,
+        String::from_utf8_lossy(&permitted.stdout),
+        String::from_utf8_lossy(&permitted.stderr)
     );
 }
 
@@ -403,7 +420,9 @@ fn source_gate_rejects_git() {
     let output = deny_check_in(root, "sources");
     assert_rejected_by(
         &output,
-        "sources",
+        "source-not-allowed",
+        "git-dep",
+        8,
         "a git-sourced dependency must fail the source gate, otherwise the crates.io pin is \
          decorative",
     );

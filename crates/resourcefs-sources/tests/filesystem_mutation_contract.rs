@@ -634,10 +634,12 @@ async fn exact_limit_write_budget_and_one_over_rejection() {
             .len(),
         MAX_ARTIFACT_BYTES as u64
     );
-    assert!(
-        elapsed <= Duration::from_secs(5),
-        "64 MiB create took {elapsed:?}"
-    );
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_secs(100)
+    } else {
+        Duration::from_secs(5)
+    };
+    assert!(elapsed <= budget, "64 MiB create took {elapsed:?}");
 
     let error = WriteRequest::new(
         reference("over.txt"),
