@@ -1,9 +1,14 @@
-use std::time::{Duration, Instant};
+use std::{
+    io::Cursor,
+    time::{Duration, Instant},
+};
 
 use resourcefs_core::{
     AtlassianSiteId, ErrorCategory, JiraAddress, JiraFieldId, JiraIssueId, JiraIssueKey,
-    JiraIssueResource, MAX_ATLASSIAN_SITE_ID_BYTES, MAX_JIRA_ISSUE_ID_BYTES,
-    MAX_JIRA_SEGMENT_BYTES, MAX_PATH_REFERENCE_BYTES, PathReference, ResourceAddress,
+    JiraIssueResource, JiraProjectId, JiraProjectKey, MAX_ATLASSIAN_SITE_ID_BYTES,
+    MAX_JIRA_ISSUE_ID_BYTES, MAX_JIRA_PROJECT_ID_BYTES, MAX_JIRA_SEGMENT_BYTES,
+    MAX_PATH_REFERENCE_BYTES, PathReference, ProjectionSelector, ResourceAddress, SearchRecord,
+    SourceOffset, SourceResource, Utf8ContentType, select_utf8,
 };
 
 #[test]
@@ -219,5 +224,240 @@ fn maximum_jira_reference_parse_stays_within_budget() {
     assert!(
         started.elapsed() < Duration::from_secs(2),
         "1,000 maximum Jira references must average below the 2 ms budget"
+    );
+}
+
+#[test]
+fn browse_reference_identity_and_selector_families() {
+    for input in [
+        "jira://acme/projects",
+        "jira://acme/projects:offset:1",
+        "jira://acme/projects:offset:18446744073709551615",
+        "jira://acme/projects:raw",
+        "jira://acme/projects:2-4",
+        "jira://acme/projects:raw:2-4",
+        "jira://acme/projects/1",
+        "jira://acme/projects/18446744073709551616",
+        "jira://acme/projects/1:raw",
+        "jira://acme/project-keys/TEAM",
+        "jira://acme/project-keys/TEAM%207",
+        "jira://acme/project-keys/caf%C3%A9",
+        "jira://acme/project-keys/a%3Ab%3Fc%23d%25",
+        "jira://acme/project-keys/TEAM:1-2",
+    ] {
+        let reference = PathReference::parse(input).expect(input);
+        assert_eq!(reference.requested(), input);
+        let ResourceAddress::Jira(address) = reference.address() else {
+            panic!("typed Jira reference");
+        };
+        assert_eq!(address.site().as_str(), "acme");
+        let reconstructed = PathReference::jira(address.clone(), reference.projection().cloned())
+            .expect("typed round trip");
+        assert_eq!(reconstructed, reference);
+    }
+    let collection = PathReference::parse("jira://acme/projects:offset:7").expect("offset");
+    assert!(matches!(
+        collection.address(),
+        ResourceAddress::Jira(JiraAddress::Projects { .. })
+    ));
+    let selector = collection.projection().expect("source selection");
+    assert_eq!(selector.source_offset().expect("typed offset").get(), 7);
+    assert_eq!(selector.page_offset(), None);
+    assert_eq!(selector.line_selection(), None);
+    assert!(!selector.is_raw());
+    assert_eq!(
+        select_utf8(
+            Cursor::new(b"must not become the whole page"),
+            Some(selector)
+        )
+        .expect_err("adapter must consume source selector")
+        .category(),
+        ErrorCategory::UnsupportedProjection,
+    );
+    let project = PathReference::parse("jira://acme/projects/10").expect("project");
+    let ResourceAddress::Jira(JiraAddress::Project { project_id, .. }) = project.address() else {
+        panic!("typed project");
+    };
+    assert_eq!(project_id.as_str(), "10");
+    let alias = PathReference::parse("jira://acme/project-keys/TEAM%207").expect("alias");
+    let ResourceAddress::Jira(JiraAddress::ProjectKeyAlias { project_key, .. }) = alias.address()
+    else {
+        panic!("typed project-key alias");
+    };
+    assert_eq!(project_key.as_str(), "TEAM 7");
+    for input in [
+        "jira://acme/projects/",
+        "jira://acme/projects/0",
+        "jira://acme/projects/01",
+        "jira://acme/projects/-1",
+        "jira://acme/projects/+1",
+        "jira://acme/projects/1.0",
+        "jira://acme/projects/1/fields",
+        "jira://acme/projects/1/issues",
+        "jira://acme/issues",
+        "jira://acme/project-keys",
+        "jira://acme/project-keys/new",
+        "jira://acme/project-keys/.",
+        "jira://acme/project-keys/..",
+        "jira://acme/project-keys/a/b",
+        "jira://acme/project-keys/a%2Fb",
+        "jira://acme/project-keys/a%5Cb",
+        "jira://acme/project-keys/a%00b",
+        "jira://acme/project-keys/a%0Ab",
+        "jira://acme/project-keys/%FF",
+        "jira://acme/project-keys/%41",
+        "jira://acme/project-keys/caf%c3%a9",
+        "jira://acme/project-keys/café",
+        "jira://acme/project-keys/TEAM 7",
+        "jira://acme/projects:offset:",
+        "jira://acme/projects:offset:0",
+        "jira://acme/projects:offset:01",
+        "jira://acme/projects:offset:+1",
+        "jira://acme/projects:offset:-1",
+        "jira://acme/projects:offset:١",
+        "jira://acme/projects:offset:18446744073709551616",
+        "jira://acme/projects:offset:1:raw",
+        "jira://acme/projects:raw:offset:1",
+        "jira://acme/projects:offset:1:2-3",
+        "jira://acme/projects:offset:1:offset:2",
+        "jira://acme/projects:cursor:abc",
+        "jira://acme/projects/1:offset:1",
+        "jira://acme/project-keys/TEAM:offset:1",
+        "jira://acme/issues/1:offset:1",
+        "jira://acme/issues/1/fields:offset:1",
+        "jira://acme/issues/1/fields/summary:offset:1",
+        "jira://acme/issue-keys/TEAM-1:offset:1",
+    ] {
+        assert_eq!(
+            PathReference::parse(input).expect_err(input).category(),
+            ErrorCategory::InvalidReference
+        );
+    }
+    for input in [
+        "jira://acme/projects/1",
+        "jira://acme/project-keys/TEAM",
+        "jira://acme/issues/1",
+    ] {
+        let reference = PathReference::parse(input).expect("direct resource");
+        let ResourceAddress::Jira(address) = reference.address() else {
+            panic!("Jira")
+        };
+        assert!(PathReference::jira(address.clone(), Some(selector.clone())).is_err());
+    }
+}
+
+#[test]
+fn project_identifiers_and_offsets_keep_their_distinct_bounds() {
+    for id in ["1".to_owned(), "9".repeat(MAX_JIRA_PROJECT_ID_BYTES)] {
+        assert_eq!(
+            JiraProjectId::new(id.clone()).expect("project ID").as_str(),
+            id
+        );
+        PathReference::parse(format!("jira://acme/projects/{id}")).expect("bounded project ID");
+    }
+    for invalid in ["", "0", "01", "-1", "+1", " 1", "١"] {
+        assert!(JiraProjectId::new(invalid).is_err());
+    }
+    let oversized = "9".repeat(MAX_JIRA_PROJECT_ID_BYTES + 1);
+    assert!(JiraProjectId::new(oversized.clone()).is_err());
+    assert!(PathReference::parse(format!("jira://acme/projects/{oversized}")).is_err());
+    for key in ["café".to_owned(), "x".repeat(MAX_JIRA_SEGMENT_BYTES)] {
+        assert_eq!(
+            JiraProjectKey::new(key.clone())
+                .expect("project key")
+                .as_str(),
+            key
+        );
+    }
+    for invalid in ["", ".", "..", "new", "a/b", "a\\b", "a\0b", "a\nb"] {
+        assert!(JiraProjectKey::new(invalid).is_err());
+    }
+    assert!(JiraProjectKey::new("x".repeat(MAX_JIRA_SEGMENT_BYTES + 1)).is_err());
+    assert!(SourceOffset::new(0).is_err());
+    assert_eq!(SourceOffset::new(1).expect("first continuation").get(), 1);
+    assert_eq!(
+        SourceOffset::new(u64::MAX).expect("largest offset").get(),
+        u64::MAX
+    );
+    assert_eq!(
+        ProjectionSelector::parse("page:1")
+            .expect("legacy")
+            .source_offset(),
+        None
+    );
+}
+
+#[test]
+fn project_search_pages_and_resource_identity_remain_distinct() {
+    let page = PathReference::parse("jira://acme/projects:offset:7").expect("page");
+    let selected =
+        SearchRecord::new(page.clone(), 1, "selected-page metadata").expect("page record");
+    let first = SearchRecord::new(
+        PathReference::parse("jira://acme/projects").expect("first page"),
+        1,
+        "selected-page metadata",
+    )
+    .expect("first-page record");
+    assert_ne!(
+        selected, first,
+        "the selected native page must remain part of hit identity"
+    );
+    assert!(SourceResource::utf8(page, "metadata".to_owned(), Utf8ContentType::MARKDOWN).is_err());
+    for input in ["jira://acme/projects", "jira://acme/projects/1"] {
+        let reference = PathReference::parse(input).expect("canonical resource");
+        assert!(SearchRecord::new(reference.clone(), 1, "metadata").is_ok());
+        assert_eq!(
+            SourceResource::utf8(reference, "metadata".to_owned(), Utf8ContentType::MARKDOWN)
+                .expect("unselected resource")
+                .canonical_reference(),
+            input,
+        );
+    }
+    for input in [
+        "jira://acme/project-keys/TEAM",
+        "jira://acme/projects:raw",
+        "jira://acme/projects:1-2",
+    ] {
+        let reference = PathReference::parse(input).expect("readable but not canonical identity");
+        assert!(SearchRecord::new(reference.clone(), 1, "metadata").is_err());
+        assert!(
+            SourceResource::utf8(reference, "metadata".to_owned(), Utf8ContentType::MARKDOWN)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn source_offsets_do_not_change_global_selector_markers() {
+    // The existing generic final-digit rule still sees line 7, not a native source offset.
+    let workspace = PathReference::parse("file:offset:7").expect("literal workspace path");
+    assert!(workspace.projection().is_none());
+    let candidate = workspace
+        .selector_candidate()
+        .expect("legacy line candidate")
+        .selector();
+    assert!(candidate.line_selection().is_some());
+    assert!(candidate.source_offset().is_none());
+    let https = PathReference::parse("https://example.com/file:offset:7").expect("HTTPS");
+    let ResourceAddress::Https(address) = https.address() else {
+        panic!("HTTPS address")
+    };
+    assert_eq!(address.as_str(), "https://example.com/file:offset");
+    assert!(
+        https
+            .projection()
+            .expect("legacy line selection")
+            .line_selection()
+            .is_some()
+    );
+    let local = PathReference::parse("local://file:offset:7").expect("scratch name");
+    assert!(local.projection().is_none());
+    assert!(
+        local
+            .local_selector_candidate()
+            .expect("legacy local candidate")
+            .selector()
+            .line_selection()
+            .is_some()
     );
 }

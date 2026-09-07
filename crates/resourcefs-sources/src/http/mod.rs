@@ -41,7 +41,7 @@
 mod extract;
 mod read;
 
-pub(crate) use read::BoundedRead;
+pub(crate) use read::{BoundedRead, HttpReadBudget};
 
 use std::{
     collections::HashMap,
@@ -301,7 +301,7 @@ impl HttpMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RedirectBehavior {
     FollowReads,
-    RefuseMutation,
+    Refuse,
 }
 
 /// One source-neutral request for the substrate to perform.
@@ -351,7 +351,7 @@ impl HttpRequest {
         Ok(Self {
             url,
             method,
-            redirect: RedirectBehavior::RefuseMutation,
+            redirect: RedirectBehavior::Refuse,
             body: Some(body),
             headers: Vec::new(),
             header_bytes: 0,
@@ -1051,7 +1051,7 @@ impl HttpSubstrate {
         } = request;
         let client = match redirect {
             RedirectBehavior::FollowReads => &self.client,
-            RedirectBehavior::RefuseMutation => &self.mutation_client,
+            RedirectBehavior::Refuse => &self.mutation_client,
         };
         let mut builder = client.request(method.reqwest(), url.clone());
         if let Some(body) = body {

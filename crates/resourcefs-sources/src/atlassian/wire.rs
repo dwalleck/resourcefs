@@ -5,6 +5,8 @@ use resourcefs_core::{
 };
 use url::Url;
 
+pub(crate) mod collections;
+
 const MAX_JIRA_JSON_DEPTH: usize = 128;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -488,9 +490,20 @@ fn validate_issue_self(
     value: &str,
     issue_id: &JiraIssueId,
 ) -> Result<(), ResourceError> {
+    validate_object_self(
+        origin,
+        value,
+        &format!("/rest/api/3/issue/{}", issue_id.as_str()),
+    )
+}
+
+fn validate_object_self(
+    origin: &AllowedOrigin,
+    value: &str,
+    expected_path: &str,
+) -> Result<(), ResourceError> {
     let url =
         Url::parse(value).map_err(|_| malformed_upstream("Jira issue self URL is malformed"))?;
-    let expected_path = format!("/rest/api/3/issue/{}", issue_id.as_str());
     if !url.username().is_empty()
         || url.password().is_some()
         || url.query().is_some()

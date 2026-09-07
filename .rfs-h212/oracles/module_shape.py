@@ -121,7 +121,7 @@ def check(root, stage):
 
     for path in (root / "crates/resourcefs-mcp/src").rglob("*.rs"):
         source = path.read_text(encoding="utf-8")
-        if re.search(r"\b(?:with_fixture_browse_limits|FixtureBrowseLimits)\b", source):
+        if re.search(r"\b(?:with_fixture_browse_limits|FixtureBrowseLimits|with_jira_browse_limits_for_test|BrowseLimits)\b", source):
             fail(path.relative_to(root).as_posix(), "test-only browse limits reached production protocol code")
     return failures, observations
 

@@ -7,6 +7,8 @@ use resourcefs_core::{
 
 use super::wire::{JiraField, JiraIssue, StrictJson};
 
+pub(crate) mod collections;
+
 pub(crate) const JSON_CONTENT_TYPE: &str = "application/json; charset=utf-8";
 pub(crate) const ADF_CONTENT_TYPE: &str = "application/vnd.atlassian.adf+json; charset=utf-8";
 

@@ -95,6 +95,7 @@ impl AtlassianSourceMount {
             sites: self.sites,
             substrate: self.substrate,
             session,
+            browse_limits: jira::browse::BrowseLimits::default(),
         }
     }
 }
@@ -104,6 +105,7 @@ pub struct AtlassianSource {
     pub(crate) sites: Arc<HashMap<AtlassianSiteId, AtlassianSite>>,
     pub(crate) substrate: Arc<HttpSubstrate>,
     pub(crate) session: PathSession,
+    browse_limits: jira::browse::BrowseLimits,
 }
 
 impl std::fmt::Debug for AtlassianSource {
@@ -140,4 +142,9 @@ pub use render::{
 pub use wire::{
     JiraWireFieldObservation, JiraWireLookupForTest, JiraWireObservation,
     inspect_jira_wire_for_test,
+};
+
+#[cfg(feature = "test-support")]
+pub use wire::collections::{
+    JiraProjectPageObservation, JiraProjectWireObservation, inspect_project_wire_for_test,
 };
