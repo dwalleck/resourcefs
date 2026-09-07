@@ -1,0 +1,82 @@
+{
+  "probe_post_pages.py": {
+    "exit": 0,
+    "result": {
+      "P2": "PASS",
+      "traversals": [
+        {
+          "direction": "ASC",
+          "ordered_ids": [
+            "10084",
+            "10085"
+          ],
+          "order_matches": true,
+          "direct_rows_match": true,
+          "pages": [
+            {
+              "rows": 1,
+              "isLast": false,
+              "has_token": true,
+              "has_maxResults": false
+            },
+            {
+              "rows": 1,
+              "isLast": true,
+              "has_token": false,
+              "has_maxResults": false
+            }
+          ]
+        },
+        {
+          "direction": "DESC",
+          "ordered_ids": [
+            "10085",
+            "10084"
+          ],
+          "order_matches": true,
+          "direct_rows_match": true,
+          "pages": [
+            {
+              "rows": 1,
+              "isLast": false,
+              "has_token": true,
+              "has_maxResults": false
+            },
+            {
+              "rows": 1,
+              "isLast": true,
+              "has_token": false,
+              "has_maxResults": false
+            }
+          ]
+        }
+      ],
+      "requested_100": {
+        "rows": 2,
+        "isLast": true,
+        "returned_maxResults": null,
+        "clamp_inferred": false
+      },
+      "empty_terminal": {
+        "rows": 0,
+        "isLast": true,
+        "has_token": false
+      },
+      "requests": 8
+    }
+  },
+  "probe_post_error.py": {
+    "exit": 0,
+    "result": {
+      "P3": "PASS",
+      "http_status": 400,
+      "content_type": "application/json",
+      "body_bytes": 125,
+      "global_diagnostics": 1,
+      "field_diagnostics": 0,
+      "has_structured_status": false,
+      "matches_error_collection": true,
+      "raw_prose_emitted": false
+    }
+  }
+}
