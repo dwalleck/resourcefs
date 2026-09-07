@@ -36,7 +36,9 @@ impl<'a> CursorOwner<'a> {
     ) -> Result<Self, ResourceError> {
         if !matches!(
             address,
-            JiraAddress::Issues { .. } | JiraAddress::ProjectIssues { .. }
+            JiraAddress::Issues { .. }
+                | JiraAddress::ProjectIssues { .. }
+                | JiraAddress::Query { .. }
         ) || address.site() != site.id()
         {
             return Err(invalid_cursor());
@@ -63,7 +65,11 @@ impl<'a> CursorOwner<'a> {
         {
             return Err(invalid_cursor());
         }
-        NativeIssueToken::new(envelope.token.into_owned()).map_err(|_| invalid_cursor())
+        let token =
+            NativeIssueToken::new(envelope.token.into_owned()).map_err(|_| invalid_cursor())?;
+        self.validate_continuation(&token)
+            .map_err(|_| invalid_cursor())?;
+        Ok(token)
     }
 
     pub(super) fn continuation(

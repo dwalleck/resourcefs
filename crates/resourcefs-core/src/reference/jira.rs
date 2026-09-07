@@ -15,6 +15,32 @@ pub const MAX_JIRA_PROJECT_ID_BYTES: usize = 64;
 /// Maximum decoded UTF-8 length of one opaque Jira path segment.
 pub const MAX_JIRA_SEGMENT_BYTES: usize = 255;
 
+/// Exact nonempty native JQL. ResourceFS validates encoding, never query meaning.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct JiraQuery(String);
+
+impl JiraQuery {
+    pub fn new(value: impl Into<String>) -> Result<Self, ResourceError> {
+        let value = value.into();
+        if value.is_empty() || value.len() > super::MAX_PATH_REFERENCE_BYTES {
+            return Err(invalid_reference(
+                "Jira query must be nonempty and fit the reference ceiling",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for JiraQuery {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("JiraQuery([redacted])")
+    }
+}
+
 /// Stable Jira issue ID retained as its canonical decimal string without machine narrowing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct JiraIssueId(String);
@@ -108,6 +134,10 @@ pub enum JiraIssueResource {
 /// Parsed Jira read identity independent of its optional selector.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum JiraAddress {
+    Query {
+        site: AtlassianSiteId,
+        query: JiraQuery,
+    },
     Projects {
         site: AtlassianSiteId,
     },
@@ -141,6 +171,7 @@ impl JiraAddress {
     pub const fn site(&self) -> &AtlassianSiteId {
         match self {
             Self::Issue { site, .. }
+            | Self::Query { site, .. }
             | Self::IssueKeyAlias { site, .. }
             | Self::Projects { site }
             | Self::Issues { site }
@@ -154,6 +185,7 @@ impl JiraAddress {
         match self {
             Self::Issue { issue_id, .. } => Some(issue_id),
             Self::IssueKeyAlias { .. }
+            | Self::Query { .. }
             | Self::Projects { .. }
             | Self::Issues { .. }
             | Self::ProjectIssues { .. }
@@ -166,6 +198,7 @@ impl JiraAddress {
         match self {
             Self::IssueKeyAlias { issue_key, .. } => Some(issue_key),
             Self::Issue { .. }
+            | Self::Query { .. }
             | Self::Projects { .. }
             | Self::Issues { .. }
             | Self::ProjectIssues { .. }
@@ -178,6 +211,7 @@ impl JiraAddress {
         match self {
             Self::Issue { resource, .. } => Some(resource),
             Self::IssueKeyAlias { .. }
+            | Self::Query { .. }
             | Self::Projects { .. }
             | Self::Issues { .. }
             | Self::ProjectIssues { .. }
@@ -188,6 +222,11 @@ impl JiraAddress {
 
     pub(crate) fn canonical_reference(&self) -> String {
         match self {
+            Self::Query { site, query } => {
+                let mut reference = format!("{JIRA_PREFIX}{}/search/", site.as_str());
+                encode_jira_segment(query.as_str(), &mut reference);
+                reference
+            }
             Self::Projects { site } => format!("{JIRA_PREFIX}{}/projects", site.as_str()),
             Self::Issues { site } => format!("{JIRA_PREFIX}{}/issues", site.as_str()),
             Self::ProjectIssues { site, project } => {
@@ -244,6 +283,10 @@ pub(super) fn parse_jira_address(input: &str) -> Result<JiraAddress, ResourceErr
         .ok_or_else(|| invalid_reference("malformed Jira reference"))?;
     let segments = body.split('/').collect::<Vec<_>>();
     match segments.as_slice() {
+        [site, "search", query] => Ok(JiraAddress::Query {
+            site: AtlassianSiteId::new((*site).to_owned())?,
+            query: parse_jira_query(query)?,
+        }),
         [site, "projects"] => Ok(JiraAddress::Projects {
             site: AtlassianSiteId::new((*site).to_owned())?,
         }),
@@ -292,6 +335,37 @@ pub(super) fn parse_jira_address(input: &str) -> Result<JiraAddress, ResourceErr
         }),
         _ => Err(invalid_reference("unsupported Jira Resource path")),
     }
+}
+
+fn parse_jira_query(input: &str) -> Result<JiraQuery, ResourceError> {
+    // Unlike filesystem and key segments, native JQL admits separators and controls.
+    // Decode exactly once; re-encoding below enforces the same canonical segment codec.
+    let mut decoded = Vec::with_capacity(input.len());
+    let mut bytes = input.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let high = bytes.next().and_then(super::decode_hex);
+            let low = bytes.next().and_then(super::decode_hex);
+            let (Some(high), Some(low)) = (high, low) else {
+                return Err(invalid_reference(
+                    "Jira query contains a malformed percent escape",
+                ));
+            };
+            decoded.push(high << 4 | low);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    let decoded = String::from_utf8(decoded)
+        .map_err(|_| invalid_reference("Jira query must decode to UTF-8"))?;
+    let mut canonical = String::with_capacity(input.len());
+    encode_jira_segment(&decoded, &mut canonical);
+    if canonical != input {
+        return Err(invalid_reference(
+            "Jira query must use canonical percent encoding",
+        ));
+    }
+    JiraQuery::new(decoded)
 }
 
 fn parse_canonical_jira_segment(input: &str, label: &str) -> Result<String, ResourceError> {
@@ -346,11 +420,13 @@ pub(super) fn parse_jira_reference(
         .is_some_and(|selector| selector.source_cursor().is_some())
         && !matches!(
             address,
-            JiraAddress::Issues { .. } | JiraAddress::ProjectIssues { .. }
+            JiraAddress::Issues { .. }
+                | JiraAddress::ProjectIssues { .. }
+                | JiraAddress::Query { .. }
         )
     {
         return Err(invalid_reference(
-            "source cursor requires a Jira issues collection",
+            "source cursor requires a Jira issues collection or query",
         ));
     }
     Ok((address, projection))
@@ -368,7 +444,9 @@ pub(crate) fn canonical_record_identity(reference: &PathReference, address: &Jir
                 && selector.source_offset().is_some())
                 || (matches!(
                     address,
-                    JiraAddress::Issues { .. } | JiraAddress::ProjectIssues { .. }
+                    JiraAddress::Issues { .. }
+                        | JiraAddress::ProjectIssues { .. }
+                        | JiraAddress::Query { .. }
                 ) && selector.source_cursor().is_some()))
                 && reference.requested() == format!("{canonical}:{}", selector.as_str())
         }

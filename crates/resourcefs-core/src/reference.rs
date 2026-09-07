@@ -18,7 +18,8 @@ pub(crate) use jira::canonical_record_identity as jira_record_identity;
 use jira::parse_jira_reference;
 pub use jira::{
     JiraAddress, JiraFieldId, JiraIssueId, JiraIssueKey, JiraIssueResource, JiraProjectId,
-    JiraProjectKey, MAX_JIRA_ISSUE_ID_BYTES, MAX_JIRA_PROJECT_ID_BYTES, MAX_JIRA_SEGMENT_BYTES,
+    JiraProjectKey, JiraQuery, MAX_JIRA_ISSUE_ID_BYTES, MAX_JIRA_PROJECT_ID_BYTES,
+    MAX_JIRA_SEGMENT_BYTES,
 };
 pub use source_page::{SourceCursor, SourceOffset};
 

@@ -6,6 +6,7 @@ use resourcefs_core::{
 use url::Url;
 
 pub(crate) mod collections;
+pub(crate) mod query;
 
 const MAX_JIRA_JSON_DEPTH: usize = 128;
 

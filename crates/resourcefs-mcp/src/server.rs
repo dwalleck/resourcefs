@@ -48,6 +48,9 @@ use crate::{
     render::{self, GlobToolOutput, MutationToolOutput, ReadToolOutput, SearchToolOutput},
 };
 
+#[cfg(test)]
+mod jira_query_tests;
+
 const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] =
     &[ProtocolVersion::V_2026_07_28, ProtocolVersion::V_2025_11_25];
 const SESSION_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);

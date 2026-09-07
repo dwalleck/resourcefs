@@ -123,6 +123,8 @@ The added HTTP always-on construction/replay stress has a ≤1s release / ≤5s 
 
 Source inspection found Atlassian is not yet mountable through the shipped Server Profile: profile integration belongs to verified ticket rfs-ue44. Existing ResourceFsServer::new is private. C10/C11 therefore use a cfg(test) server child and real stdio reexecution, following the existing HTTPS test-host/banner-handling pattern. Production constructor visibility, profiles and tool interfaces do not change. This proves the real MCP tool protocol/service, not a production `rfs --profile` Atlassian launch. The independent content/navigation oracle and approved feature scope are unchanged. Production profile integration remains with rfs-ue44.
 
+The cfg-only stdio child and existing integration test now reuse `tests/support/stdio.rs` for framing, libtest-banner handling, process limits and EOF/finish lifecycle. This is a test-only extraction of the existing convention, not a second process adapter or a production interface change. The private HTTP helper was renamed from `fetch_idempotent` to `fetch_bounded_attempts` because it now bounds ordinary mutation attempts too; both ownership inventories were migrated without changing their responsibility boundary.
+
 ## Plan critique and self-review
 
 - Two independent increments; public Query grammar and implementation are atomic in S2. No fence waits for a later feature slice.
@@ -168,3 +170,31 @@ Repair: `.github/workflows/ci.yml` sets checkout `fetch-depth: 0`; no oracle pre
 Proof: clone the exact S1 branch with depth 1 from the local Git repository, run the real staged oracle and observe the same missing-baseline failure; fetch full history, rerun it and observe C1/C12 PASS including inherited h212 checks. The disposable checkout was removed. Detailed receipt: local://rfs-nae2-ci-history-proof.txt.
 
 Bounded-repair gates: affected Rust tests N/A (no executable Rust changed; prior S1 proof retained); falsifier PASS; stress N/A (checkout configuration only); implementation/oracle PASS; module shape PASS; runtime budget N/A (one-off CI checkout); existing fence PASS; shallow-input mutation red PASS; full-history restoration green PASS. Fresh exact-head hosted CI remains required before merging.
+
+## S1 hosted CI completion
+
+Exact repaired head `ac94373fa1658a798a681c148838f6055671ee63` passed push run 34131242083 and pull-request run 34131246137. All six Linux/macOS/Windows jobs and their Repository gates steps succeeded. PR #6 remains the independent S1 increment; no superseded-head result is used as final proof.
+
+## S2 checkpoint
+
+Integration owner: Main. All six issue acceptance clauses are implemented and exercised. Public `JiraQuery` construction is atomic with real query dispatch; no parser-only stub, unused read-only POST constructor or shipped-profile claim remains.
+
+Reuse/caller analysis: existing percent encoder, shared compact issue decoder/renderer, owner-bound cursor, session transport controls, retry machinery and real TLS/stdin lifecycle helpers remain the owners. LSP references/rename returned no locations in the isolated worktree; grounded text fallback migrated the private helper and all four live-source constructor callers. Query serialization uses one bounded writer pass. Optional native maximum validation applies only to Query Resources, preserving fixed-browse behavior.
+
+| Gate | Result | Evidence |
+|---|---|---|
+| 1 Affected tests | PASS | Core 5, HTTP 17, adapter 13, real query stdio 2 and existing stdio 39 passed; full workspace 612 passed in each debug/release run |
+| 2 Assigned falsifiers | PASS | C1–C12 compiled responsibility/semantic mutants each produce the intended localized failure; exact commands and results in `s2-mutation-results.json` |
+| 3 Stress | PASS | 1,000 rows × 4 KiB summaries, long query/Unicode cursor, ten-attempt/retry bounds, exact reference boundaries and independent clipped/terminal cells |
+| 4 Implementation/oracle | PASS | Independent canonical/request/row/next-page ledgers agree; actual reader-only adapter and MCP stdio agree with fresh receipt/direct reads (`evidence.md` L1/L2/L5) |
+| 5 Module shape | PASS | Query-stage C1/C12 guard passes; independent reviewer reconstructed ownership before reading ledger and found no actionable production defect |
+| 6 Runtime budget | PASS | Release 1,000-row assembly 20.831346ms including loopback TLS, against 2s bound; debug 284.825767ms against 10s. Shared 384 KiB/10,000-copy replay bound and all 12 existing production budgets pass |
+| 7 Existing fences | PASS | Formatter, all-target/all-feature warnings-denied clippy, complete debug/release workspace, ignored-budget inventory and dependency vetting all pass |
+| 8 Compiling red | PASS | All twelve mutations compile; no compiler failure or earlier unrelated protocol rejection is counted as a kill |
+| 9 Restored fences | PASS | Every per-claim restored check and final focused suite/shape check passes; restored production hashes match final production bytes |
+
+Corrections during proof were fixture/API alignment, not oracle weakening: canonical base64url cursor rather than `opaque`; selector-free SourceResource identity with separate continuation; truly invalid opaque key separator rather than spaces; truly oversized UTF-8 cursor rather than a representable one; required summary/project retained, optional status absence/null preserved. Next-request native-clamp coverage was added after review. Live setup passes only actual source-construction inputs rather than empty unused fixture fields, and diagnostics do not echo query/cursor references.
+
+Cleanup: the first postimplementation operator attempt and resumptions failed in existing Confluence cleanup handling (rfs-br1u), then separate marker-revalidated reconciliation proved all 14 resource endpoints absent and both project trash searches empty. A later fresh complete live run passed bootstrap, verify, both smoke rows and the unchanged standard cleanup command. Both receipts/pending files are absent. The earlier operator failure remains explicitly recorded, not relabelled successful.
+
+Review-size check before checkpoint records: S2 3,317 changed lines versus 2,900 projected / 3,625 with margin; final staged count is recorded at commit. No repartition or acceptance narrowing required. Exact-head native CI for the S2 increment remains required before delivery.

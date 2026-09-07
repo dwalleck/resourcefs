@@ -1,8 +1,8 @@
 use resourcefs_core::{ErrorCategory, OperationGuard, ResourceError};
 
 use super::{
-    BoundedHttpResponse, HttpFetchFailure, HttpRequest, HttpSubstrate, LogicalDeadline,
-    RedirectBehavior, retry_wait_fits,
+    BoundedHttpResponse, HttpRequest, HttpSubstrate, LogicalDeadline, RedirectBehavior,
+    retry_wait_fits,
 };
 
 const MAX_HTTP_READ_ATTEMPTS: usize = 10;
@@ -82,16 +82,6 @@ impl BoundedRead<'_> {
         request: HttpRequest,
         budget: Option<&mut HttpReadBudget>,
     ) -> Result<BoundedHttpResponse, ResourceError> {
-        if request.method != super::HttpMethod::Get {
-            if let Some(budget) = budget {
-                budget.charge_attempt()?;
-            }
-            return self
-                .substrate
-                .fetch_attempt(request, self.operation)
-                .await
-                .map_err(HttpFetchFailure::into_error);
-        }
         let retry = if budget
             .as_ref()
             .is_none_or(|budget| budget.retry_available && budget.remaining_attempts > 1)
@@ -102,7 +92,7 @@ impl BoundedRead<'_> {
         };
         tokio::time::timeout_at(
             self.deadline.0,
-            self.fetch_idempotent(request, retry, budget),
+            self.fetch_bounded_attempts(request, retry, budget),
         )
         .await
         .map_err(|_| {
@@ -113,13 +103,21 @@ impl BoundedRead<'_> {
         })?
     }
 
-    async fn fetch_idempotent(
+    async fn fetch_bounded_attempts(
         self,
         mut request: HttpRequest,
         mut retry: Option<HttpRequest>,
         mut budget: Option<&mut HttpReadBudget>,
     ) -> Result<BoundedHttpResponse, ResourceError> {
         loop {
+            // timeout_at polls its future first: do not initiate egress after
+            // the immutable logical deadline has already expired.
+            if self.deadline.remaining().is_zero() {
+                return Err(ResourceError::new(
+                    ErrorCategory::SourceUnavailable,
+                    "HTTP logical read exceeded the configured deadline",
+                ));
+            }
             if let Some(budget) = budget.as_deref_mut() {
                 budget.charge_attempt()?;
                 if !budget.can_retry() {
