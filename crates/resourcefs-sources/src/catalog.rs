@@ -243,11 +243,9 @@ mod tests {
     }
 
     fn root(id: &str, selector: Option<&str>) -> WorkspaceRoot {
-        let path = std::env::temp_dir().join("resourcefs-catalog").join(id);
         WorkspaceRoot::new(
             WorkspaceRootId::new(id).expect("root ID"),
-            url::Url::from_directory_path(path)
-                .expect("root file URI")
+            resourcefs_core::test_support::directory_uri(&format!("resourcefs-catalog/{id}"))
                 .to_string(),
             selector.map(str::to_owned),
         )
@@ -552,15 +550,14 @@ mod tests {
             resourcefs_core::MAX_WORKSPACE_ROOTS
         );
 
-        if !cfg!(debug_assertions) {
-            assert!(
-                source_elapsed <= Duration::from_millis(250),
-                "maximum source catalog took {source_elapsed:?}"
-            );
-            assert!(
-                workspace_elapsed <= Duration::from_millis(25),
-                "maximum workspace catalog took {workspace_elapsed:?}"
-            );
-        }
+        let scale = if cfg!(debug_assertions) { 20 } else { 1 };
+        assert!(
+            source_elapsed <= Duration::from_millis(250) * scale,
+            "maximum source catalog took {source_elapsed:?}"
+        );
+        assert!(
+            workspace_elapsed <= Duration::from_millis(25) * scale,
+            "maximum workspace catalog took {workspace_elapsed:?}"
+        );
     }
 }

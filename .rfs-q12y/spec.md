@@ -1,5 +1,9 @@
 # Spec: Vet dependencies with cargo-deny and a CI gate
 
+## Current gate entry point — 2026-09-06 supersession
+
+The C5 workflow-mirroring mechanism below is a historical specification, superseded during PR #1 review (F6/F8/F9/F10). CI and maintainers now invoke `python scripts/ci-gates.py`: one owner runs formatting, all-target/all-feature lint, complete functional and release suites, explicitly inventoried ignored production budgets, and dependency vetting. Independent gate failures do not suppress subsequent checks, and any failure makes the entry point fail. Live rows remain excluded. Actual hosted runs establish trigger/matrix behavior; source-text comparisons are not execution evidence. The original decisions and observations below remain historical, not claims that the deleted mirror test still exists.
+
 ## Request (verbatim)
 > yes, start rfs-q12y
 

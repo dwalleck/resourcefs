@@ -205,12 +205,12 @@ fn stress_selection_budget() {
         b'\n'
     );
     assert!(selected.content().len() <= 70 * 1024 * 1024);
-    if !cfg!(debug_assertions) {
-        assert!(
-            elapsed <= Duration::from_secs(10),
-            "selection took {elapsed:?}"
-        );
-    }
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_secs(200)
+    } else {
+        Duration::from_secs(10)
+    };
+    assert!(elapsed <= budget, "selection took {elapsed:?}");
 }
 
 #[derive(Debug)]

@@ -21,7 +21,7 @@ use resourcefs_sources::{
     ArtifactSource, AtlassianSite, AtlassianSource, AtlassianSourceMount, CompiledSources,
     HttpSubstrate, MAX_CONFIGURATION_ENTRIES, OriginCredential,
 };
-use tls::{FIXTURE_HOST, FixtureResponse, MATCH_CERT, TlsListener, settle};
+use tls::{FIXTURE_HOST, FixtureResponse, TlsListener, match_cert, settle};
 
 const ISSUE: &str = r#"{
   "id":"10001","key":"NEW-2",
@@ -79,7 +79,7 @@ where
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let dynamic_port = Arc::new(AtomicU16::new(0));
     let observed_port = Arc::clone(&dynamic_port);
-    let listener = TlsListener::serve_router(loopback, 0, MATCH_CERT, move |path| {
+    let listener = TlsListener::serve_router(loopback, 0, match_cert(), move |path| {
         let mut response = router(path);
         if let FixtureResponse::Response { body, .. } = &mut response {
             let rewritten = String::from_utf8_lossy(body).replace(
@@ -105,7 +105,7 @@ where
         OriginAllowlist::new(vec![origin.clone()]),
         ceilings,
         move |_host| async move { Ok::<_, std::io::Error>(vec![loopback]) },
-        &[tls::FIXTURE_CA],
+        &[tls::fixture_ca()],
         vec![credential],
     )
     .expect("substrate");

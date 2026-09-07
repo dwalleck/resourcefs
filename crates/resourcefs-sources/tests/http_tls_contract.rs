@@ -25,8 +25,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use resourcefs_core::{ErrorCategory, OperationGuard};
 use resourcefs_sources::HttpRequest;
 use tls::{
-    FIXTURE_HOST, Handshake, MATCH_CERT, TlsListener, WRONG_CERT, fixture_allowlist, settle,
-    tls_substrate,
+    FIXTURE_HOST, Handshake, TlsListener, fixture_allowlist, match_cert, settle, tls_substrate,
+    wrong_cert,
 };
 use url::Url;
 
@@ -55,7 +55,8 @@ const LOOPBACK_ALT: IpAddr = IpAddr::V6(Ipv6Addr::LOCALHOST);
 async fn tls_address_policy_matches_plain() {
     // Row 1 — authorized: the request reaches the listener and TLS completes,
     // proving the fixture is genuinely serving and the trust anchor is real.
-    let granted = TlsListener::serve(LOOPBACK, 0, MATCH_CERT, "<html><body>ok</body></html>").await;
+    let granted =
+        TlsListener::serve(LOOPBACK, 0, match_cert(), "<html><body>ok</body></html>").await;
     let port = granted.address.port();
     let substrate = tls_substrate(fixture_allowlist(port, true), vec![LOOPBACK]);
     let response = substrate
@@ -77,7 +78,7 @@ async fn tls_address_policy_matches_plain() {
     // `permission_denied`, and a category-only assertion could not tell a
     // policy denial from a misconfigured allowlist.
     let denied_listener =
-        TlsListener::serve(LOOPBACK, 0, MATCH_CERT, "<html><body>ok</body></html>").await;
+        TlsListener::serve(LOOPBACK, 0, match_cert(), "<html><body>ok</body></html>").await;
     let denied_port = denied_listener.address.port();
     let denied = tls_substrate(fixture_allowlist(denied_port, false), vec![LOOPBACK]);
     let failure = denied
@@ -102,12 +103,12 @@ async fn tls_address_policy_matches_plain() {
 
     // Row 3 — rebinding: two listeners differing only by address. Each request
     // must land on the address its own resolution returned.
-    let first = TlsListener::serve(LOOPBACK, 0, MATCH_CERT, "<html><body>a</body></html>").await;
+    let first = TlsListener::serve(LOOPBACK, 0, match_cert(), "<html><body>a</body></html>").await;
     let shared_port = first.address.port();
     let second = TlsListener::serve(
         LOOPBACK_ALT,
         shared_port,
-        MATCH_CERT,
+        match_cert(),
         "<html><body>b</body></html>",
     )
     .await;
@@ -123,7 +124,7 @@ async fn tls_address_policy_matches_plain() {
                 Ok::<_, std::io::Error>(vec![address])
             }
         },
-        &[tls::FIXTURE_CA],
+        &[tls::fixture_ca()],
         Vec::new(),
     )
     .expect("substrate builds");
@@ -160,7 +161,7 @@ async fn tls_certificate_binds_hostname() {
     // The matching certificate establishes the baseline: this host, this
     // address, and this trust anchor do produce a completed session.
     let matching =
-        TlsListener::serve(LOOPBACK, 0, MATCH_CERT, "<html><body>ok</body></html>").await;
+        TlsListener::serve(LOOPBACK, 0, match_cert(), "<html><body>ok</body></html>").await;
     let matching_port = matching.address.port();
     let trusted = tls_substrate(fixture_allowlist(matching_port, true), vec![LOOPBACK]);
     let response = trusted
@@ -177,8 +178,13 @@ async fn tls_certificate_binds_hostname() {
     // The mismatched certificate is trusted and served from an address the
     // policy authorized — every other control says yes. Only the name is
     // wrong, and that alone must stop it.
-    let mismatched =
-        TlsListener::serve(LOOPBACK, 0, WRONG_CERT, "<html><body>secret</body></html>").await;
+    let mismatched = TlsListener::serve(
+        LOOPBACK,
+        0,
+        wrong_cert(),
+        "<html><body>secret</body></html>",
+    )
+    .await;
     let mismatched_port = mismatched.address.port();
     let substrate = tls_substrate(fixture_allowlist(mismatched_port, true), vec![LOOPBACK]);
     let failure = substrate
@@ -220,7 +226,7 @@ fn system_lookup_substrate_accepts_valid_additional_root() {
     use resourcefs_core::HttpCeilings;
     use resourcefs_sources::{HttpSubstrate, TestRootCertificate};
 
-    let root = TestRootCertificate::from_der(tls::FIXTURE_CA).expect("fixture CA is valid DER");
+    let root = TestRootCertificate::from_der(tls::fixture_ca()).expect("fixture CA is valid DER");
     HttpSubstrate::with_system_lookup_and_root(
         fixture_allowlist(443, true),
         HttpCeilings::default(),

@@ -53,6 +53,8 @@ tokio = { version = "=1.47.1", features = ["fs", "io-std", "io-util", "macros", 
 # already in the tree through `reqwest`, so these are dependency edges rather
 # than new packages, and the versions track what `reqwest` already resolved.
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws-lc-rs"] }
+# Test-only issuance avoids both expired fixtures and native TLS lifetime limits.
+rcgen = { version = "=0.14.10", default-features = false, features = ["aws_lc_rs"] }
 trybuild = "1.0.111"
 url = "2.5.7"
 rustix = { version = "1.1.4", features = ["fs", "process"] }

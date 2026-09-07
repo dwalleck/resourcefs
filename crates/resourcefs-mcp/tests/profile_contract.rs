@@ -363,6 +363,15 @@ fn nested_limits_map_to_the_core_aggregate_without_clamping() {
 #[test]
 fn session_configuration_resolves_paths_and_validates_the_signed_ttl_interval() {
     let fixture = local_fixture();
+    let expected_root = fixture
+        .path()
+        .canonicalize()
+        .expect("canonical profile directory");
+    // A file-URL round trip normalizes Windows verbatim prefixes independently of profile code.
+    let expected_root = url::Url::from_directory_path(expected_root)
+        .expect("canonical directory URI")
+        .to_file_path()
+        .expect("native directory path");
     let relative = parse_in(
         &json!({
             "schemaVersion":1,
@@ -373,7 +382,7 @@ fn session_configuration_resolves_paths_and_validates_the_signed_ttl_interval() 
     .expect("relative session configuration");
     assert_eq!(
         relative.session_storage_config().cache_root(),
-        fixture.path().join("cache")
+        expected_root.join("cache")
     );
     assert_eq!(
         relative.session_storage_config().retention_ttl(),

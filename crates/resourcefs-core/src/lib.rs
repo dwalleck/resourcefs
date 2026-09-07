@@ -16,6 +16,9 @@ mod source;
 mod version;
 
 #[cfg(feature = "test-support")]
+pub mod test_support;
+
+#[cfg(feature = "test-support")]
 pub use discovery::DiscoveryRetainGate;
 pub use discovery::{
     DiscoveryAdapter, DiscoveryDiagnostic, DiscoveryEngine, GlobEntry, GlobKind, GlobLimits,

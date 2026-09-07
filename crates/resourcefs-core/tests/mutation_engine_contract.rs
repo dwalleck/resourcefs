@@ -587,7 +587,8 @@ async fn operation_journal_budget() {
     let (count_budget, yield_budget, compare_budget) = if cfg!(debug_assertions) {
         (100, 100, 1_500)
     } else {
-        (25, 25, 50)
+        // Native-runner headroom approved by requester; investigate in rfs-o4am.
+        (25, 25, 500)
     };
     let target = PathReference::parse("issue://owner/repo/new").expect("[C4] target");
     let count_session = session(16);
@@ -1226,7 +1227,7 @@ async fn exact_limit_edit_budget() {
         .record_seen_for_test(path.requested(), &original_tag, &[], true)
         .await
         .expect("empty EOF snapshot");
-    let engine = MutationEngine::new(adapter, session);
+    let engine = MutationEngine::new(adapter.clone(), session);
     let prefix = format!("[{}#{}]\nPUT >$:\n+", path.requested(), original_tag);
     let mut patch = String::with_capacity(MAX_HASHLINE_PATCH_BYTES);
     patch.push_str(&prefix);
@@ -1235,15 +1236,37 @@ async fn exact_limit_edit_budget() {
         MAX_HASHLINE_PATCH_BYTES - prefix.len(),
     ));
     let started = Instant::now();
-    engine
+    let receipt = engine
         .edit(&patch, &OperationGuard::new())
         .await
         .expect("exact-limit edit");
     let elapsed = started.elapsed();
-    assert!(
-        elapsed <= Duration::from_secs(5),
-        "64 MiB edit took {elapsed:?}"
+    let expected = &patch[prefix.len()..];
+    {
+        let state = adapter.state.lock().await;
+        let MutationState::Text { content, .. } = &*state else {
+            panic!("exact-limit edit did not commit text");
+        };
+        assert_eq!(content.len(), expected.len(), "committed content length");
+        assert!(
+            content == expected,
+            "committed content differs at byte {:?}",
+            content
+                .bytes()
+                .zip(expected.bytes())
+                .position(|(actual, expected)| actual != expected)
+        );
+    }
+    assert_eq!(
+        receipt.version_tag(),
+        Some(&VersionTag::from_content(expected.as_bytes()))
     );
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_secs(100)
+    } else {
+        Duration::from_secs(5)
+    };
+    assert!(elapsed <= budget, "64 MiB edit took {elapsed:?}");
 }
 
 #[tokio::test]

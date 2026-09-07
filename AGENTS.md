@@ -12,6 +12,10 @@ Triage uses the five default canonical label strings. See `docs/agents/triage-la
 
 This is a single-context repository with `CONTEXT.md` at the root and ADRs under `docs/adr/`. See `docs/agents/domain.md`.
 
+## Repository verification
+
+Run `python scripts/ci-gates.py` for the complete local/CI gate; Python 3.9+ and `cargo-deny` are required. The runner owns the command list and ignored-test classification. A plain `cargo test` is a focused functional check, not the full gate. Keep production budgets in the runner's verified inventory and live smoke tests in their separate, credential-gated path below.
+
 ## Live smoke tests
 
 Every network-backed Source Adapter, and every primary tool path that crosses one, ships with a live smoke: an `#[ignore]` test named `live_*`, gated on an environment variable (`RFS_LIVE=1`; additionally `GITHUB_TOKEN` for GitHub rows) that skips cleanly when the gate is absent and drives the real adapter — or the real `rfs` binary over stdio — against a real public upstream, read-only. `scripts/live-smoke.sh` runs them all and sources the GitHub token from `gh auth token`; `cargo live` does the same once the environment is set. The deterministic fake-upstream contracts remain the permanent suite, and CI never runs the live rows.

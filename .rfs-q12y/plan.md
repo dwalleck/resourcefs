@@ -69,6 +69,8 @@ Slices 1–3. Mergeable definition against the repository default branch (`main`
 
 ## Slice 3: Add the CI workflow and fence it against gate drift
 
+**Superseded 2026-09-06 (PR #1 F9):** the implementation below is historical. The current local/CI entry point is `python scripts/ci-gates.py`; its behavioral checks exercise real gates, continued execution after a gate fails, final nonzero failure, and missing/unknown compiled ignored-row rejection. Hosted matrix execution replaces workflow-text inference. The deleted `ci_workflow_mirrors_local_gates` is not a current fence. Original authoring evidence and approvals are retained below without being relabeled as new verification.
+
 **Claim IDs:** C5
 
 **Expected behavior:** `.github/workflows/ci.yml` exists, declares both `push` and `pull_request` triggers, runs a Linux/macOS/Windows matrix, and invokes exactly the four documented local gate commands — `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-features`, and `cargo deny check`. A fence extracts the workflow's gate commands and trigger keys and compares them to a literal expectation, so CI cannot silently diverge from local practice. **The workflow's execution is not claimed** — no remote exists.
