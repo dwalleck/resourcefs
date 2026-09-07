@@ -277,8 +277,15 @@ fn parses_production_shaped_reference_within_budget() {
         address_observation(reference.workspace_address().expect("workspace address")),
         ("relative", file_name, None)
     );
+    // The production bound applies to optimized builds; the debug ceiling only
+    // catches pathological regressions (a loaded macOS runner reached 8.8ms).
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_millis(500)
+    } else {
+        Duration::from_millis(5)
+    };
     assert!(
-        elapsed <= Duration::from_millis(5),
+        elapsed <= budget,
         "4 KiB reference parsing took {elapsed:?}"
     );
 }
