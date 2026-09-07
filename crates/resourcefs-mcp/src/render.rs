@@ -709,8 +709,7 @@ mod tests {
                 .is_none()
         );
 
-        let backing_uri = url::Url::from_file_path(std::env::temp_dir().join("visible.txt"))
-            .expect("absolute local file path");
+        let backing_uri = resourcefs_core::test_support::file_uri("visible.txt");
         let visible_resource = resource()
             .with_backing_file_uri(backing_uri.as_str())
             .expect("local backing URI");
@@ -747,12 +746,12 @@ mod tests {
                 .map(str::len),
             Some(MAX_TEXT_BYTES)
         );
-        if !cfg!(debug_assertions) {
-            assert!(
-                elapsed <= Duration::from_millis(25),
-                "maximum-page render took {elapsed:?}"
-            );
-        }
+        let budget = if cfg!(debug_assertions) {
+            Duration::from_millis(500)
+        } else {
+            Duration::from_millis(25)
+        };
+        assert!(elapsed <= budget, "maximum-page render took {elapsed:?}");
     }
 
     struct Fixture {
@@ -1295,12 +1294,12 @@ mod tests {
             structured["groups"][0]["lines"].as_array().map(Vec::len),
             Some(1_000)
         );
-        if !cfg!(debug_assertions) {
-            assert!(
-                elapsed <= Duration::from_millis(25),
-                "maximum-page render took {elapsed:?}"
-            );
-        }
+        let budget = if cfg!(debug_assertions) {
+            Duration::from_millis(500)
+        } else {
+            Duration::from_millis(25)
+        };
+        assert!(elapsed <= budget, "maximum-page render took {elapsed:?}");
     }
 
     #[tokio::test]
@@ -1334,12 +1333,12 @@ mod tests {
             .as_ref()
             .expect("structured maximum glob");
         assert_eq!(structured["entries"].as_array().map(Vec::len), Some(1_000));
-        if !cfg!(debug_assertions) {
-            assert!(
-                elapsed <= Duration::from_millis(25),
-                "maximum-page render took {elapsed:?}"
-            );
-        }
+        let budget = if cfg!(debug_assertions) {
+            Duration::from_millis(500)
+        } else {
+            Duration::from_millis(25)
+        };
+        assert!(elapsed <= budget, "maximum-page render took {elapsed:?}");
     }
 
     /// A source whose projection names a further upstream page.

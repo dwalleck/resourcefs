@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Condvar, LazyLock, Mutex},
@@ -168,6 +168,8 @@ impl McpProcess {
 
     #[cfg(feature = "test-support")]
     fn start_profile_with_https_root(profile: &Path, current_directory: &Path) -> Self {
+        let root_path = current_directory.join("profile-https-ca.der");
+        fs::write(&root_path, profile_tls::root_certificate()).expect("write profile fixture CA");
         let executable = std::env::current_exe().expect("stdio contract test executable");
         let mut command = Command::new(executable);
         command
@@ -180,6 +182,7 @@ impl McpProcess {
             ])
             .env(PROFILE_HTTPS_HELPER, "1")
             .env(PROFILE_HTTPS_CONFIG, profile)
+            .env(PROFILE_HTTPS_ROOT, root_path)
             .current_dir(current_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -735,30 +738,39 @@ fn accepts_type(schema: &Value, expected: &str) -> bool {
 
 impl Drop for McpProcess {
     fn drop(&mut self) {
+        let panicking = thread::panicking();
         let observed_status = self.child.try_wait();
-        if thread::panicking() {
-            eprintln!("resourcefs child status before cleanup: {observed_status:?}");
-        }
-        let should_terminate = match observed_status {
-            Ok(Some(_status)) => false,
-            Ok(None) => true,
-            Err(error) => {
-                eprintln!("failed to poll resourcefs test process during cleanup: {error}");
-                true
-            }
-        };
+        let should_terminate = !matches!(&observed_status, Ok(Some(_)));
         if should_terminate {
             let _kill_result = self.child.kill();
             let _wait_result = self.child.wait();
         }
-        if thread::panicking()
-            && let Some(mut stderr) = self.child.stderr.take()
-        {
-            let mut diagnostics = String::new();
-            match stderr.read_to_string(&mut diagnostics) {
-                Ok(_) => eprintln!("resourcefs child stderr after failure:\n{diagnostics}"),
-                Err(error) => eprintln!("failed to read resourcefs child stderr: {error}"),
+        // Reporting a failed diagnostic write would use the same broken stderr.
+        // Ignore only these write failures: panicking again during unwinding
+        // would abort the test binary and lose the original failure.
+        if panicking {
+            let _ = writeln!(
+                io::stderr(),
+                "resourcefs child status before cleanup: {observed_status:?}"
+            );
+            if let Some(mut stderr) = self.child.stderr.take() {
+                let mut diagnostics = String::new();
+                if let Err(error) = stderr.read_to_string(&mut diagnostics) {
+                    let _ = writeln!(
+                        io::stderr(),
+                        "failed to read resourcefs child stderr: {error}"
+                    );
+                }
+                let _ = writeln!(
+                    io::stderr(),
+                    "resourcefs child stderr after failure:\n{diagnostics}"
+                );
             }
+        } else if let Err(error) = &observed_status {
+            let _ = writeln!(
+                io::stderr(),
+                "failed to poll resourcefs test process during cleanup: {error}"
+            );
         }
     }
 }
@@ -772,6 +784,13 @@ fn assert_tool_error(result: &Value, category: &str) {
         .expect("error TextContent");
     assert!(!text.is_empty());
     assert!(text.contains(category));
+}
+
+#[cfg(feature = "test-support")]
+fn assert_tool_success(result: &Value) -> &Value {
+    let structured = &result["structuredContent"];
+    assert_eq!(structured["ok"], true, "expected tool success: {result:#}");
+    structured
 }
 
 #[test]
@@ -3445,6 +3464,7 @@ fn optional_https_degrades_while_other_sources_serve() {
     let mut healthy = McpProcess::start_profile_with_https_root(&reachable, &fixture.root);
     healthy.initialize_with_roots(VERSION_2026, Vec::new());
     let served = healthy.call_read(&format!("{live_base}doc"));
+    assert_tool_success(&served);
     assert_eq!(
         served["structuredContent"]["content"], "healthy origin served\n",
         "a reachable optional origin must serve a real document"
@@ -3543,6 +3563,8 @@ fn probing_happens_once_at_startup_not_per_read() {
 const PROFILE_HTTPS_HELPER: &str = "RESOURCEFS_PROFILE_HTTPS_HELPER";
 #[cfg(feature = "test-support")]
 const PROFILE_HTTPS_CONFIG: &str = "RESOURCEFS_PROFILE_HTTPS_CONFIG";
+#[cfg(feature = "test-support")]
+const PROFILE_HTTPS_ROOT: &str = "RESOURCEFS_PROFILE_HTTPS_ROOT";
 
 #[cfg(feature = "test-support")]
 fn write_https_profile(
@@ -3589,10 +3611,11 @@ fn profile_https_test_server() {
     }
     let profile =
         PathBuf::from(std::env::var_os(PROFILE_HTTPS_CONFIG).expect("profile helper config path"));
-    let root = resourcefs_mcp::test_support::TestRootCertificate::from_der(include_bytes!(
-        "fixtures/profile_https/ca.der"
-    ))
-    .expect("profile fixture CA");
+    let root_path =
+        PathBuf::from(std::env::var_os(PROFILE_HTTPS_ROOT).expect("profile helper CA path"));
+    let root_der = fs::read(root_path).expect("read profile fixture CA");
+    let root = resourcefs_mcp::test_support::TestRootCertificate::from_der(&root_der)
+        .expect("profile fixture CA");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -3622,7 +3645,7 @@ fn https_uses_common_read_shape() {
     let mut process = McpProcess::start_profile_with_https_root(&profile, &fixture.root);
     process.initialize_with_roots(VERSION_2026, Vec::new());
     let result = process.call_read(&reference);
-    let structured = result["structuredContent"]
+    let structured = assert_tool_success(&result)
         .as_object()
         .expect("structured HTTPS result");
     let mut keys = structured.keys().map(String::as_str).collect::<Vec<_>>();
@@ -3703,7 +3726,7 @@ fn https_profile_read_recovers_bounded_markdown() {
     process.initialize_with_roots(VERSION_2026, Vec::new());
 
     let first = process.call_read(&reference);
-    let first_structured = &first["structuredContent"];
+    let first_structured = assert_tool_success(&first);
     assert_eq!(first_structured["bounded"], true);
     assert_eq!(first_structured["displayedEof"], false);
     let recovery = first_structured["recoveryReference"]
@@ -3727,7 +3750,7 @@ fn https_profile_read_recovers_bounded_markdown() {
             break;
         };
         let page = process.call_read(&next);
-        let structured = &page["structuredContent"];
+        let structured = assert_tool_success(&page);
         assert_eq!(structured["recoveryReference"], recovery);
         reconstructed.push_str(
             structured["content"]

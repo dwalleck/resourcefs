@@ -234,38 +234,77 @@ fn deny_check_in(dir: &Path, which: &str) -> std::process::Output {
         .arg("check")
         .arg(which)
         .current_dir(dir)
+        .env("CARGO_TERM_COLOR", "never")
         .output()
         .expect("run cargo-deny against the fixture graph")
 }
 
 /// Asserts cargo-deny rejected the fixture *for the reason under test*.
 ///
-/// Checking only the exit status is not enough: a malformed invocation, an
-/// unresolvable manifest, or a missing config all exit non-zero too, so a
-/// bare `!success` assertion can pass while the gate never ran. Requiring the
-/// stable error code identifies the rejected policy, independent of human wording or color.
-fn assert_rejected_by(output: &std::process::Output, code: &str, why: &str) {
+/// A nonzero exit alone can mean invocation or manifest failure, or a default
+/// config rejecting every license. Require exactly the intended crate's policy
+/// error, with no unrelated errors. Cargo's proxy may prefix JSON with warnings;
+/// those are not policy evidence, and every failure retains both output streams.
+fn assert_rejected_by(
+    output: &std::process::Output,
+    code: &str,
+    crate_name: &str,
+    expected_exit: i32,
+    why: &str,
+) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !output.status.success(),
-        "{why}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-    let rejected = stderr
-        .lines()
-        .map(|line| {
-            serde_json::from_str::<serde_json::Value>(line).expect("cargo-deny JSON output")
-        })
-        .any(|entry| {
-            entry["type"] == "diagnostic"
-                && entry["fields"]["severity"] == "error"
-                && entry["fields"]["code"] == code
-        });
-    assert!(
-        rejected,
-        "expected cargo-deny policy diagnostic `{code}`; an unrelated nonzero exit is not proof \
-         that the gate ran.\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
+    let fail = |reason: &str| -> ! {
+        panic!(
+            "{why}\n{reason}\nstatus: {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            output.status
+        );
+    };
+    // cargo-deny returns a bitmask: licenses = 4, sources = 8.
+    if output.status.code() != Some(expected_exit) {
+        fail(&format!(
+            "expected cargo-deny policy exit mask {expected_exit}"
+        ));
+    }
+
+    let mut rejected = 0;
+    for line in stderr.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Human cargo/proxy diagnostics are preserved above, not policy
+        // evidence. JSON-shaped output must parse rather than being discarded.
+        if !trimmed.starts_with('{') && !trimmed.starts_with('[') {
+            continue;
+        }
+        let entry: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|error| fail(&format!("invalid cargo-deny JSON: {error}")));
+        let fields = &entry["fields"];
+        if entry["type"] == "log"
+            && fields["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("falling back to default config"))
+        {
+            fail("cargo-deny did not load the committed policy");
+        }
+        if entry["type"] == "diagnostic" && fields["severity"] == "error" {
+            let graphs = fields["graphs"].as_array();
+            if fields["code"] != code
+                || !graphs.is_some_and(|graphs| {
+                    graphs.len() == 1 && graphs[0]["Krate"]["name"] == crate_name
+                })
+            {
+                fail("cargo-deny reported an unrelated error or rejected another crate");
+            }
+            rejected += 1;
+        }
+    }
+    if rejected != 1 {
+        fail(&format!(
+            "expected exactly one `{code}` error for `{crate_name}`, observed {rejected}"
+        ));
+    }
 }
 
 /// C2 — the license gate bites. A disallowed license anywhere in the graph
@@ -302,7 +341,23 @@ fn license_gate_rejects_copyleft() {
     assert_rejected_by(
         &output,
         "rejected",
+        "copyleft-dep",
+        4,
         "a GPL-3.0 package must fail the license gate, otherwise the allow-list is decorative",
+    );
+
+    // A positive control proves that the same policy accepts the permitted root
+    // and dependency. An empty/default allow-list must never satisfy this fence.
+    let dependency_manifest = root.join("copyleft-dep/Cargo.toml");
+    let manifest = std::fs::read_to_string(&dependency_manifest).expect("read fixture manifest");
+    write(&dependency_manifest, &manifest.replace("GPL-3.0", "MIT"));
+    let permitted = deny_check_in(root, "licenses");
+    assert!(
+        permitted.status.success(),
+        "the committed policy must accept the MIT-only graph.\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+        permitted.status,
+        String::from_utf8_lossy(&permitted.stdout),
+        String::from_utf8_lossy(&permitted.stderr)
     );
 }
 
@@ -366,6 +421,8 @@ fn source_gate_rejects_git() {
     assert_rejected_by(
         &output,
         "source-not-allowed",
+        "git-dep",
+        8,
         "a git-sourced dependency must fail the source gate, otherwise the crates.io pin is \
          decorative",
     );

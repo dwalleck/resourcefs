@@ -267,10 +267,13 @@ async fn scratch_name_enumeration_fits_its_budget() {
         "enumeration must be sorted"
     );
     eprintln!("scratch_names at {MAX_SESSION_ARTIFACTS} names: {elapsed:?}");
-    if !cfg!(debug_assertions) {
-        assert!(
-            elapsed < std::time::Duration::from_millis(1),
-            "scratch name enumeration exceeded its 1 ms budget at the production ceiling: {elapsed:?}"
-        );
-    }
+    let budget = if cfg!(debug_assertions) {
+        std::time::Duration::from_millis(20)
+    } else {
+        std::time::Duration::from_millis(1)
+    };
+    assert!(
+        elapsed < budget,
+        "scratch name enumeration exceeded its 1 ms budget at the production ceiling: {elapsed:?}"
+    );
 }

@@ -50,6 +50,7 @@ Intentional structured changes are the native Rivets claims/notes for h212 and n
 - `cargo test -p resourcefs-sources --features test-support --test github_adapter_contract pagination_retries_share_the_original_logical_deadline -- --exact` → moved transport retains the same original-deadline behavior.
 - `cargo test -p resourcefs-mcp --test architecture_contract` → dependency/egress ownership unchanged.
 - `python .rfs-h212/oracles/module_shape.py --stage extraction` → extracted owners and applicable parent-shrink predicates hold; not a claim that browse/cursor modules exist.
+- `python scripts/ci-gates.py` → the shared local/CI aggregate, including the Linux extraction-stage placement oracle, remains green. The runner owns the complete command and ignored-row inventory.
 - Existing ignored `live_jira_issue_read`, using reader-only fixture environment → moved implementation still agrees with direct native issue/Field identity and representation oracle; record the actual run, then clean owned fixtures when no longer needed.
 
 ## S2: Deliver fully functional bounded project browsing
@@ -85,6 +86,7 @@ Intentional structured changes are the native Rivets claims/notes for h212 and n
 - `cargo test --release -p resourcefs-sources --features test-support --test jira_project_browse_contract production_scale_project_page -- --exact --nocapture` → 1,000 records ordered without narrowing, request cap intact; report measured execution against the five-second local processing budget.
 - `python .rfs-h212/oracles/module_shape.py --stage projects` and `cargo test -p resourcefs-mcp --test architecture_contract` → owners, fixture ingress restrictions and all applicable growth/dependency predicates hold; C16 mutation reports C16 and the offending path.
 - `cargo test -p resourcefs-sources --all-features --test jira_live_smoke live_jira_project_browse -- --ignored --nocapture` with reader fixture environment → real adapter follows small native offset pages, resolves stable/alias identity, and agrees with known fixture membership without asserting global counts.
+- Advance the aggregate's placement stage to `projects` and classify the new ignored live row, then run `python scripts/ci-gates.py`; live rows remain excluded from CI.
 
 ## S3: Complete site/project issue browsing and discharge all cross-family claims
 
@@ -119,7 +121,7 @@ Intentional structured changes are the native Rivets claims/notes for h212 and n
 - `cargo test --release -p resourcefs-sources --features test-support --test jira_issue_browse_contract production_scale_issue_page -- --exact --nocapture` → 1,000 canonical ordered issue records within request/record bounds and the five-second local processing budget.
 - `python .rfs-h212/oracles/module_shape.py --stage issues` plus architecture contracts → final approved owners/growth/egress constraints hold.
 - `cargo test -p resourcefs-sources --all-features --test jira_live_smoke live_jira_browse -- --ignored --nocapture` with reader-only fixture environment → real offset and token continuations reach fixture members and match direct native identity/summary checks; absent gate skips cleanly.
-- Final `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features` → assembled behavior and existing contracts remain green. Run these centrally, not in concurrent writers.
+- Advance the aggregate's placement stage to `issues` and update its live-row inventory, then run `python scripts/ci-gates.py` → assembled behavior, full release budgets and existing contracts remain green. Run this centrally, not in concurrent writers.
 
 ## Execution and self-review
 

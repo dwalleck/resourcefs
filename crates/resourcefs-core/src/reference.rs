@@ -1874,12 +1874,8 @@ mod tests {
     #[test]
     fn duplicate_root_id_is_rejected() {
         let id = WorkspaceRootId::new("same").expect("id");
-        let first_uri = Url::from_directory_path(std::env::temp_dir().join("one"))
-            .expect("directory file URI")
-            .to_string();
-        let second_uri = Url::from_directory_path(std::env::temp_dir().join("two"))
-            .expect("directory file URI")
-            .to_string();
+        let first_uri = crate::test_support::directory_uri("one").to_string();
+        let second_uri = crate::test_support::directory_uri("two").to_string();
         let first = WorkspaceRoot::new(id.clone(), first_uri, None).expect("root");
         let second = WorkspaceRoot::new(id, second_uri, None).expect("root");
         let error = WorkspaceRootSet::new(vec![first, second], None).expect_err("duplicate id");

@@ -1241,17 +1241,31 @@ async fn exact_limit_edit_budget() {
         .expect("exact-limit edit");
     let elapsed = started.elapsed();
     let expected = &patch[prefix.len()..];
-    assert_eq!(adapter.text_content().await, expected);
+    {
+        let state = adapter.state.lock().await;
+        let MutationState::Text { content, .. } = &*state else {
+            panic!("exact-limit edit did not commit text");
+        };
+        assert_eq!(content.len(), expected.len(), "committed content length");
+        assert!(
+            content == expected,
+            "committed content differs at byte {:?}",
+            content
+                .bytes()
+                .zip(expected.bytes())
+                .position(|(actual, expected)| actual != expected)
+        );
+    }
     assert_eq!(
         receipt.version_tag(),
         Some(&VersionTag::from_content(expected.as_bytes()))
     );
-    if !cfg!(debug_assertions) {
-        assert!(
-            elapsed <= Duration::from_secs(5),
-            "64 MiB edit took {elapsed:?}"
-        );
-    }
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_secs(100)
+    } else {
+        Duration::from_secs(5)
+    };
+    assert!(elapsed <= budget, "64 MiB edit took {elapsed:?}");
 }
 
 #[tokio::test]

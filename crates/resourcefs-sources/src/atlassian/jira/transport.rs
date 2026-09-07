@@ -108,7 +108,11 @@ impl AtlassianSource {
                 "Jira response exceeds the bounded HTTP body ceiling",
             ));
         }
-        let etag = response.etag().map(str::to_owned);
+        // A zero-byte header cannot revalidate; the quoted opaque tag `""` can.
+        let etag = response
+            .etag()
+            .filter(|etag| !etag.is_empty())
+            .map(str::to_owned);
         let body = response.into_body();
         let entry = SessionCacheEntry::new(
             etag.as_ref().map_or_else(Vec::new, |etag| {
@@ -156,6 +160,8 @@ impl AtlassianSource {
         })
     }
 
+    // A ceiling refusal returns the new body uncached and evicts any old entry,
+    // so a later 304 cannot revive the content that this response replaced.
     async fn cache(
         &self,
         key: SessionCacheKey,

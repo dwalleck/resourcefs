@@ -81,14 +81,7 @@ fn golden_workspace_references() {
                             "{row:?}"
                         );
                     }
-                    WorkspaceAddress::Absolute(path) => {
-                        assert_eq!(
-                            Some(path.as_path()),
-                            row.expected.value.as_deref().map(Path::new),
-                            "{row:?}"
-                        );
-                    }
-                    WorkspaceAddress::FileUri(_) => {
+                    WorkspaceAddress::Absolute(_) | WorkspaceAddress::FileUri(_) => {
                         assert_eq!(
                             Some(value.as_str()),
                             row.expected.value.as_deref(),
@@ -236,17 +229,13 @@ fn empty_root_sets_represent_scratch_only_authority() {
 fn root_sets_are_order_independent_and_primary_selection_is_exact() {
     let alpha = WorkspaceRoot::new(
         WorkspaceRootId::new("alpha").expect("id"),
-        url::Url::from_directory_path(std::env::temp_dir().join("alpha"))
-            .expect("directory file URI")
-            .to_string(),
+        resourcefs_core::test_support::directory_uri("alpha").to_string(),
         Some("chosen".to_owned()),
     )
     .expect("root");
     let beta = WorkspaceRoot::new(
         WorkspaceRootId::new("beta").expect("id"),
-        url::Url::from_directory_path(std::env::temp_dir().join("beta"))
-            .expect("directory file URI")
-            .to_string(),
+        resourcefs_core::test_support::directory_uri("beta").to_string(),
         Some("other".to_owned()),
     )
     .expect("root");
@@ -263,9 +252,7 @@ fn root_sets_are_order_independent_and_primary_selection_is_exact() {
 fn workspace_root_rejects_invalid_selector_name() {
     let error = WorkspaceRoot::new(
         WorkspaceRootId::new("client-root").expect("root id"),
-        url::Url::from_directory_path(std::env::temp_dir().join("client"))
-            .expect("directory file URI")
-            .to_string(),
+        resourcefs_core::test_support::directory_uri("client").to_string(),
         Some("bad/name".to_owned()),
     )
     .expect_err("selector name must use Workspace Root ID grammar");
@@ -436,9 +423,7 @@ fn https_grammar() {
             GrammarExpectation::OtherFamily("workspace"),
         ),
         (
-            url::Url::from_file_path(std::env::temp_dir().join("plan.md"))
-                .expect("absolute local file path")
-                .to_string(),
+            resourcefs_core::test_support::file_uri("plan.md").to_string(),
             GrammarExpectation::OtherFamily("workspace"),
         ),
         // The narrowed guard still owns the filesystem families: an encoded
@@ -558,9 +543,7 @@ fn local_name_grammar() {
             GrammarExpectation::OtherFamily("workspace"),
         ),
         (
-            url::Url::from_file_path(std::env::temp_dir().join("plan.md"))
-                .expect("absolute local file path")
-                .to_string(),
+            resourcefs_core::test_support::file_uri("plan.md").to_string(),
             GrammarExpectation::OtherFamily("workspace"),
         ),
     ];

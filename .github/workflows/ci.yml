@@ -25,6 +25,12 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v4
 
+      - name: Install modern Bash for fixture operators
+        if: runner.os == 'macOS'
+        run: |
+          brew install bash
+          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"
+
       - name: Install the pinned toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -36,17 +42,11 @@ jobs:
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
 
-      - name: Formatting
-        run: cargo fmt --all -- --check
+      - name: Install Python for repository gates
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
 
-      - name: Lints
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Tests
-        run: cargo test --workspace --all-features --no-fail-fast
-
-      - name: Production-scale release budgets
-        run: cargo test --release -p resourcefs-core --test read_engine_contract --test mutation_engine_contract --test local_quota_contract budget
-
-      - name: Dependency vetting
-        run: cargo deny check
+      - name: Repository gates
+        if: ${{ !cancelled() }}
+        run: python scripts/ci-gates.py

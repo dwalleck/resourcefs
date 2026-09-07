@@ -21,7 +21,7 @@ use resourcefs_sources::{
     ArtifactSource, AtlassianSite, AtlassianSource, AtlassianSourceMount, CompiledSources,
     HttpSubstrate, MAX_CONFIGURATION_ENTRIES, OriginCredential,
 };
-use tls::{FIXTURE_HOST, FixtureResponse, MATCH_CERT, TlsListener, settle};
+use tls::{FIXTURE_HOST, FixtureResponse, TlsListener, match_cert, settle};
 
 const ISSUE: &str = r#"{
   "id":"10001","key":"NEW-2",
@@ -79,7 +79,7 @@ where
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let dynamic_port = Arc::new(AtomicU16::new(0));
     let observed_port = Arc::clone(&dynamic_port);
-    let listener = TlsListener::serve_router(loopback, 0, MATCH_CERT, move |path| {
+    let listener = TlsListener::serve_router(loopback, 0, match_cert(), move |path| {
         let mut response = router(path);
         if let FixtureResponse::Response { body, .. } = &mut response {
             let rewritten = String::from_utf8_lossy(body).replace(
@@ -105,7 +105,7 @@ where
         OriginAllowlist::new(vec![origin.clone()]),
         ceilings,
         move |_host| async move { Ok::<_, std::io::Error>(vec![loopback]) },
-        &[tls::FIXTURE_CA],
+        &[tls::fixture_ca()],
         vec![credential],
     )
     .expect("substrate");
@@ -482,6 +482,71 @@ async fn etag_revalidation_matrix() {
         "304 without authority must report the missing cache invariant"
     );
     assert_eq!(orphan_listener.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn empty_etag_reads_refetch_without_poisoning_the_session() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let router_count = Arc::clone(&count);
+    let (listener, source) = fixture_source(move |_path| {
+        let attempt = router_count.fetch_add(1, Ordering::SeqCst);
+        let body = ISSUE.replace("Hello", &format!("Revision {attempt}"));
+        protocol_response(
+            "200 OK",
+            [
+                ("ETag", String::new()),
+                ("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT".to_owned()),
+            ],
+            body,
+        )
+    })
+    .await;
+    let reference = PathReference::parse("jira://acme/issues/10001").expect("reference");
+    for attempt in 0..3 {
+        let resource = source
+            .read(&reference, &OperationGuard::new())
+            .await
+            .expect("an empty upstream ETag must not poison later reads");
+        assert!(resource.content().contains(&format!("Revision {attempt}")));
+    }
+    let heads = listener.heads();
+    assert_eq!(heads.len(), 3);
+    assert!(heads.iter().all(|head| {
+        let head = head.to_ascii_lowercase();
+        !head.contains("if-none-match") && !head.contains("if-modified-since")
+    }));
+}
+
+#[tokio::test]
+async fn quoted_empty_etag_remains_a_usable_validator() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let router_count = Arc::clone(&count);
+    let (listener, source) = fixture_source(move |_path| {
+        if router_count.fetch_add(1, Ordering::SeqCst) == 0 {
+            protocol_response("200 OK", [("ETag", "\"\"".to_owned())], ISSUE)
+        } else {
+            protocol_response("304 Not Modified", [], Vec::new())
+        }
+    })
+    .await;
+    let reference = PathReference::parse("jira://acme/issues/10001").expect("reference");
+    let first = source
+        .read(&reference, &OperationGuard::new())
+        .await
+        .expect("first read");
+    let second = source
+        .read(&reference, &OperationGuard::new())
+        .await
+        .expect("quoted empty ETag revalidation");
+    assert_eq!(first, second);
+    let heads = listener.heads();
+    assert_eq!(heads.len(), 2);
+    assert!(!heads[0].to_ascii_lowercase().contains("if-none-match"));
+    assert!(
+        heads[1]
+            .to_ascii_lowercase()
+            .contains("if-none-match: \"\"")
+    );
 }
 
 #[tokio::test]

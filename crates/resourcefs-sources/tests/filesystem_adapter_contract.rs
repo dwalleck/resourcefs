@@ -33,21 +33,24 @@ fn create_root() -> (TempDir, std::path::PathBuf) {
 async fn reads_utf8_empty_and_unicode_resources() {
     let (_temporary, root) = create_root();
     fs::create_dir(root.join("notes")).expect("notes directory");
-    fs::write(root.join("notes/ résumé final.txt "), "héllo\n").expect("unicode fixture");
+    // Unix retains the trailing-space edge; Windows normalizes that spelling.
+    let unicode_path = if cfg!(unix) {
+        "notes/ résumé final.txt "
+    } else {
+        "notes/ résumé final .txt"
+    };
+    fs::write(root.join(unicode_path), "héllo\n").expect("unicode fixture");
     fs::write(root.join("empty.txt"), "").expect("empty fixture");
     let source = single_source(&root).await.expect("filesystem source");
 
     let unicode = source
-        .read(
-            &reference("notes/ résumé final.txt "),
-            &OperationGuard::new(),
-        )
+        .read(&reference(unicode_path), &OperationGuard::new())
         .await
         .expect("unicode read");
     assert_eq!(unicode.content(), "héllo\n");
     assert_eq!(
         unicode.canonical_reference(),
-        "rfs://workspace/workspace/notes/ résumé final.txt "
+        format!("rfs://workspace/workspace/{unicode_path}")
     );
 
     let empty = source
@@ -407,6 +410,172 @@ async fn absolute_symlink_target_aliases_preserve_containment() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn dangling_absolute_symlinks_preserve_kernel_resolution_errors() {
+    use std::os::unix::fs::symlink;
+
+    let (temporary, root) = create_root();
+    let root = root.canonicalize().expect("canonical root");
+    let alias = temporary.path().join("root-alias");
+    symlink(&root, &alias).expect("root alias");
+    fs::write(root.join("secret.txt"), "must not be redirected here").expect("sibling");
+    let source = single_source(&root).await.expect("filesystem source");
+
+    for (name, target) in [
+        ("missing-parent", root.join("missing-dir/../secret.txt")),
+        ("canonical-missing", root.join("absent.txt")),
+        ("aliased-missing", alias.join("absent.txt")),
+    ] {
+        symlink(target, root.join(name)).expect("dangling link");
+        assert_eq!(
+            fs::read(root.join(name))
+                .expect_err("kernel rejects dangling link")
+                .kind(),
+            std::io::ErrorKind::NotFound,
+        );
+        let error = source
+            .read(&reference(name), &OperationGuard::new())
+            .await
+            .expect_err("dangling Resource must not read sibling content");
+        assert_eq!(error.category(), ErrorCategory::NotFound);
+        assert!(
+            error.message().contains(name),
+            "missing Resource identity: {error}"
+        );
+    }
+
+    let (_cache, _session, engine) = discovery_fixture(source).await;
+    let result = engine
+        .glob(
+            GlobRequest::new(
+                GlobTarget::new("*").expect("root glob"),
+                GlobOptions::default(),
+                0,
+                GlobLimits::default(),
+            ),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect("glob reports dangling entries");
+    assert_eq!(result.diagnostics().len(), 3);
+    assert!(
+        result
+            .diagnostics()
+            .iter()
+            .all(|diagnostic| { diagnostic.category() == ErrorCategory::NotFound })
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn absolute_symlink_non_directory_errors_retain_resource_identity() {
+    use std::os::unix::fs::symlink;
+
+    let (_temporary, root) = create_root();
+    fs::write(root.join("notes.txt"), "regular file").expect("file fixture");
+    symlink(root.join("notes.txt/child"), root.join("broken-link")).expect("invalid target");
+    assert_eq!(
+        fs::read(root.join("broken-link"))
+            .expect_err("kernel rejects non-directory")
+            .kind(),
+        std::io::ErrorKind::NotADirectory,
+    );
+    let source = single_source(&root).await.expect("filesystem source");
+    let error = source
+        .read(&reference("broken-link"), &OperationGuard::new())
+        .await
+        .expect_err("non-directory path must fail");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    assert!(
+        error.message().contains("broken-link"),
+        "missing Resource identity: {error}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn absolute_symlinks_to_workspace_root_support_directory_discovery() {
+    use std::os::unix::fs::symlink;
+
+    let (temporary, root) = create_root();
+    let root = root.canonicalize().expect("canonical root");
+    let alias = temporary.path().join("root-alias");
+    symlink(&root, &alias).expect("external lexical alias to root");
+    symlink(&root, root.join("direct")).expect("canonical root link");
+    symlink(&alias, root.join("aliased")).expect("aliased root link");
+    fs::write(root.join("a.txt"), "root content").expect("file fixture");
+    let source = single_source(&root).await.expect("filesystem source");
+    for name in ["direct", "aliased"] {
+        let error = source
+            .read(&reference(name), &OperationGuard::new())
+            .await
+            .expect_err("root alias is a directory, not text");
+        assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
+        let resource = source
+            .read(&reference(&format!("{name}/a.txt")), &OperationGuard::new())
+            .await
+            .expect("read through root alias");
+        assert_eq!(resource.content(), "root content");
+        assert_eq!(
+            resource.canonical_reference(),
+            "rfs://workspace/workspace/a.txt"
+        );
+    }
+
+    let (_cache, _session, engine) = discovery_fixture(source).await;
+    for name in ["direct", "aliased"] {
+        let result = engine
+            .search(
+                SearchRequest::new(
+                    SearchTarget::resource(reference(name)),
+                    "root content",
+                    SearchOptions::default(),
+                    0,
+                    SearchLimits::default(),
+                )
+                .expect("root alias search"),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("search directory through root alias");
+        assert!(
+            result.diagnostics().is_empty(),
+            "{:?}",
+            result.diagnostics()
+        );
+        assert_eq!(result.total_records(), 1);
+        assert_eq!(
+            result.groups()[0].reference(),
+            "rfs://workspace/workspace/a.txt"
+        );
+    }
+    for pattern in ["*.txt", "**/*.txt"] {
+        let result = engine
+            .glob(
+                GlobRequest::new(
+                    GlobTarget::new(pattern).expect("root alias glob"),
+                    GlobOptions::default(),
+                    0,
+                    GlobLimits::default(),
+                ),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("root alias listing and cyclic walk");
+        assert!(
+            result.diagnostics().is_empty(),
+            "{:?}",
+            result.diagnostics()
+        );
+        assert_eq!(result.total_records(), 1);
+        assert_eq!(
+            result.entries()[0].reference(),
+            "rfs://workspace/workspace/a.txt"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn rejects_symlink_escape() {
     use std::os::unix::fs::symlink;
 
@@ -495,10 +664,12 @@ async fn reads_maximum_sized_file_within_budget() {
     let elapsed = started.elapsed();
 
     assert_eq!(resource.content().as_bytes(), exact);
-    assert!(
-        elapsed <= Duration::from_millis(100),
-        "maximum-sized read took {elapsed:?}"
-    );
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_secs(2)
+    } else {
+        Duration::from_millis(100)
+    };
+    assert!(elapsed <= budget, "maximum-sized read took {elapsed:?}");
 }
 
 #[tokio::test]
@@ -540,12 +711,12 @@ async fn filesystem_streams_narrow_large_range() {
     assert_eq!(selected.content(), TARGET);
     assert_eq!(selected.version_tag().as_str(), expected_tag);
     assert!(selected.content().len() <= 70 * 1024 * 1024);
-    if !cfg!(debug_assertions) {
-        assert!(
-            elapsed <= Duration::from_secs(10),
-            "256 MiB selection took {elapsed:?}"
-        );
-    }
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_secs(200)
+    } else {
+        Duration::from_secs(10)
+    };
+    assert!(elapsed <= budget, "256 MiB selection took {elapsed:?}");
 }
 
 #[cfg(feature = "test-support")]
@@ -1755,6 +1926,7 @@ async fn glob_language_kinds_and_order() {
         fs::write(root.join(path), path).expect("C7 Rust fixture");
     }
     fs::write(root.join("README.md"), "readme").expect("C7 Markdown fixture");
+    #[cfg(unix)]
     fs::write(root.join("literal*.txt"), "literal star").expect("C7 escaped-star fixture");
     let source = single_source(&root).await.expect("C7 filesystem source");
     let (_cache, _session, engine) = discovery_fixture(source).await;
@@ -1859,24 +2031,28 @@ async fn glob_language_kinds_and_order() {
         "C7 directory text has trailing slash"
     );
 
-    let escaped = engine
-        .glob(
-            GlobRequest::new(
-                GlobTarget::new(r"literal\*.txt").expect("C7 escaped target"),
-                GlobOptions::default(),
-                0,
-                GlobLimits::default(),
-            ),
-            &OperationGuard::new(),
-        )
-        .await
-        .expect("C7 escaped glob");
-    assert_eq!(escaped.entries().len(), 1, "C7 escaped match count");
-    assert_eq!(
-        escaped.entries()[0].reference(),
-        "rfs://workspace/workspace/literal*.txt",
-        "C7 backslash is an escape"
-    );
+    // A literal '*' is a native filename only on Unix.
+    #[cfg(unix)]
+    {
+        let escaped = engine
+            .glob(
+                GlobRequest::new(
+                    GlobTarget::new(r"literal\*.txt").expect("C7 escaped target"),
+                    GlobOptions::default(),
+                    0,
+                    GlobLimits::default(),
+                ),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("C7 escaped glob");
+        assert_eq!(escaped.entries().len(), 1, "C7 escaped match count");
+        assert_eq!(
+            escaped.entries()[0].reference(),
+            "rfs://workspace/workspace/literal*.txt",
+            "C7 backslash is an escape"
+        );
+    }
 
     let invalid = engine
         .glob(

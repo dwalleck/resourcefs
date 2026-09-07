@@ -2,6 +2,7 @@
 pub(crate) mod mutation;
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     io::{self, BufRead, BufReader},
     path::{Component, Path, PathBuf},
@@ -1395,9 +1396,9 @@ fn open_workspace_entry(
     let workspace_path = WorkspacePath::new(path)?;
     let provisional = PathReference::canonical(root.metadata.id().clone(), workspace_path.clone());
     let identity = provisional.requested();
-    let metadata = capability_metadata(root, &workspace_path, identity)?;
+    let (metadata, validated_path) = capability_metadata(root, &workspace_path, identity)?;
     if metadata.is_dir() {
-        let directory = open_capability_directory(root, &workspace_path, identity)?;
+        let directory = open_capability_directory(root, &validated_path, identity)?;
         let final_path = normalize_handle_path(
             final_directory_path(&directory)
                 .map_err(|error| resource_io_error(identity, "resolve", error))?,
@@ -1412,7 +1413,7 @@ fn open_workspace_entry(
         });
     }
     if metadata.is_file() {
-        let file = open_capability_file(root, &workspace_path, identity)?;
+        let file = open_capability_file(root, &validated_path, identity)?;
         let actual = file
             .metadata()
             .map_err(|error| resource_io_error(identity, "inspect", error))?;
@@ -1441,20 +1442,25 @@ fn open_workspace_entry(
     ))
 }
 
-fn capability_metadata(
+fn capability_metadata<'a>(
     root: &FilesystemRoot,
-    path: &WorkspacePath,
+    path: &'a WorkspacePath,
     identity: &str,
-) -> Result<cap_std::fs::Metadata, ResourceError> {
-    let mut candidate = path.clone();
+) -> Result<(cap_std::fs::Metadata, Cow<'a, WorkspacePath>), ResourceError> {
+    let mut candidate = Cow::Borrowed(path);
     for _ in 0..40 {
-        match root.directory.metadata(candidate.as_path()) {
-            Ok(metadata) => return Ok(metadata),
+        let metadata = if candidate.is_root() {
+            root.directory.dir_metadata()
+        } else {
+            root.directory.metadata(candidate.as_path())
+        };
+        match metadata {
+            Ok(metadata) => return Ok((metadata, candidate)),
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-                let Some(resolved) = rewrite_absolute_symlink(root, &candidate)? else {
+                let Some(resolved) = rewrite_absolute_symlink(root, &candidate, identity)? else {
                     return Err(resource_io_error(identity, "inspect", error));
                 };
-                candidate = resolved;
+                candidate = Cow::Owned(resolved);
             }
             Err(error) => return Err(resource_io_error(identity, "inspect", error)),
         }
@@ -1470,15 +1476,20 @@ fn open_capability_directory(
     path: &WorkspacePath,
     identity: &str,
 ) -> Result<Dir, ResourceError> {
-    let mut candidate = path.clone();
+    let mut candidate = Cow::Borrowed(path);
     for _ in 0..40 {
-        match root.directory.open_dir(candidate.as_path()) {
+        let directory = if candidate.is_root() {
+            root.directory.try_clone()
+        } else {
+            root.directory.open_dir(candidate.as_path())
+        };
+        match directory {
             Ok(directory) => return Ok(directory),
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-                let Some(resolved) = rewrite_absolute_symlink(root, &candidate)? else {
+                let Some(resolved) = rewrite_absolute_symlink(root, &candidate, identity)? else {
                     return Err(resource_io_error(identity, "open directory", error));
                 };
-                candidate = resolved;
+                candidate = Cow::Owned(resolved);
             }
             Err(error) => return Err(resource_io_error(identity, "open directory", error)),
         }
@@ -2424,7 +2435,25 @@ fn read_address(
             ),
         ));
     }
-    let mut file = open_capability_file(&resolved.root, &resolved.path, identity)?;
+    let mut file = match open_capability_file(&resolved.root, &resolved.path, identity) {
+        Ok(file) => file,
+        #[cfg(windows)]
+        Err(error) if error.category() == ErrorCategory::PermissionDenied => {
+            // Windows rejects a file-style directory open. Reclassify only
+            // after the existing directory open proves access and containment.
+            match open_workspace_entry(&resolved.root, resolved.path.as_path()) {
+                Ok(OpenedWorkspaceEntry::Directory { .. }) => {
+                    return Err(ResourceError::new(
+                        ErrorCategory::UnsupportedProjection,
+                        format!("Resource '{identity}' is not a text file"),
+                    ));
+                }
+                // A failed classification cannot override the access denial.
+                Ok(OpenedWorkspaceEntry::File { .. }) | Err(_) => return Err(error),
+            }
+        }
+        Err(error) => return Err(error),
+    };
     let metadata = file
         .metadata()
         .map_err(|error| resource_io_error(identity, "inspect", error))?;
@@ -2488,15 +2517,22 @@ fn open_capability_file(
     path: &WorkspacePath,
     identity: &str,
 ) -> Result<File, ResourceError> {
-    let mut candidate = path.clone();
+    let mut candidate = Cow::Borrowed(path);
     for _ in 0..40 {
-        match root.directory.open(candidate.as_path()) {
+        let file = if candidate.is_root() {
+            root.directory
+                .try_clone()
+                .map(|directory| File::from_std(directory.into_std_file()))
+        } else {
+            root.directory.open(candidate.as_path())
+        };
+        match file {
             Ok(file) => return Ok(file),
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-                let Some(resolved) = rewrite_absolute_symlink(root, &candidate)? else {
+                let Some(resolved) = rewrite_absolute_symlink(root, &candidate, identity)? else {
                     return Err(resource_io_error(identity, "open", error));
                 };
-                candidate = resolved;
+                candidate = Cow::Owned(resolved);
             }
             Err(error) => return Err(resource_io_error(identity, "open", error)),
         }
@@ -2510,6 +2546,7 @@ fn open_capability_file(
 fn rewrite_absolute_symlink(
     root: &FilesystemRoot,
     path: &WorkspacePath,
+    identity: &str,
 ) -> Result<Option<WorkspacePath>, ResourceError> {
     let components = path.as_path().components().collect::<Vec<_>>();
     let mut prefix = PathBuf::new();
@@ -2518,52 +2555,43 @@ fn rewrite_absolute_symlink(
             unreachable!("WorkspacePath contains only normal components");
         };
         prefix.push(value);
-        let metadata = match root.directory.symlink_metadata(&prefix) {
-            Ok(metadata) => metadata,
-            Err(_) => return Ok(None),
-        };
+        let metadata = root
+            .directory
+            .symlink_metadata(&prefix)
+            .map_err(|error| resource_io_error(identity, "resolve", error))?;
         if !metadata.file_type().is_symlink() {
             continue;
         }
         let target = root
             .directory
             .read_link_contents(&prefix)
-            .map_err(|error| resource_io_error("symlink", "resolve", error))?;
+            .map_err(|error| resource_io_error(identity, "resolve", error))?;
         if !target.is_absolute() {
             continue;
         }
-        let target = resolve_absolute_target(&target)?;
+        // This path addresses an existing Resource, not a creation destination.
+        // In particular, a missing component before `..` must remain NotFound.
+        let target = normalize_platform_path(
+            std::fs::canonicalize(&target)
+                .map_err(|error| resource_io_error(identity, "resolve", error))?,
+        );
         let Some(relative_target) = strip_beneath(&target, &root.canonical_path) else {
             return Err(ResourceError::new(
                 ErrorCategory::PermissionDenied,
                 "Resource symlink resolves outside the selected Workspace Root",
             ));
         };
-        let mut rewritten = normalize_relative_symlink_target(&relative_target)?;
+        let mut rewritten = relative_target;
         for remainder in &components[index + 1..] {
             rewritten.push(remainder.as_os_str());
         }
-        return WorkspacePath::new(rewritten).map(Some);
+        return if rewritten.as_os_str().is_empty() {
+            Ok(Some(WorkspacePath::root()))
+        } else {
+            WorkspacePath::new(rewritten).map(Some)
+        };
     }
     Ok(None)
-}
-
-fn normalize_relative_symlink_target(path: &Path) -> Result<PathBuf, ResourceError> {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(value) => normalized.push(value),
-            Component::CurDir => {}
-            Component::ParentDir if normalized.pop() => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(ResourceError::new(
-                    ErrorCategory::PermissionDenied,
-                    "Resource symlink resolves outside the selected Workspace Root",
-                ));
-            }
-        }
-    }
-    Ok(normalized)
 }
 
 fn resolve_address(
@@ -2690,7 +2718,11 @@ fn contained_workspace_path(target: &Path, root: &Path) -> Result<WorkspacePath,
             "Resource handle resolves outside the selected Workspace Root",
         )
     })?;
-    WorkspacePath::new(relative)
+    if relative.as_os_str().is_empty() {
+        Ok(WorkspacePath::root())
+    } else {
+        WorkspacePath::new(relative)
+    }
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -2888,8 +2920,12 @@ mod tests {
             };
             (
                 *generation,
-                find(&fs::canonicalize(&removed).expect("removed root path")),
-                find(&fs::canonicalize(&retained).expect("retained root path")),
+                find(&normalize_platform_path(
+                    fs::canonicalize(&removed).expect("removed root path"),
+                )),
+                find(&normalize_platform_path(
+                    fs::canonicalize(&retained).expect("retained root path"),
+                )),
             )
         };
 
