@@ -471,7 +471,7 @@ async fn read_only_body_ceiling_is_independent_of_mutations_and_debug_is_redacte
 }
 
 #[test]
-fn read_only_replay_shares_384kib_payload_across_10000_copies() {
+fn read_only_replay_shares_384kib_payload_across_10000_copies_within_budget() {
     let started = std::time::Instant::now();
     let body = vec![b'x'; 384 * 1024];
     let request = HttpRequest::post_json_read_only(

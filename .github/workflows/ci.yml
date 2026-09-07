@@ -3,12 +3,22 @@
 # Formatting, lints, functional tests, release-mode production budgets, and
 # dependency vetting run on each supported platform. Hosted execution is
 # the workflow oracle; matching command text is not proof that a job runs.
+#
+# Each commit runs once per platform. Pull requests take their required
+# `gates (<os>)` checks from the push run on the head commit instead of
+# starting a second run for the same tree; branch protection already requires
+# the head to be up to date with main. A newer push to a branch cancels the
+# run it supersedes; main keeps every run because each merge's checks are the
+# record for that commit.
 
 name: CI
 
 on:
   push:
-  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always

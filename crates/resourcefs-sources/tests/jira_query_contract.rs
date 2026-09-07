@@ -669,7 +669,7 @@ async fn query_changed_validator_rows_are_not_cached_and_shared_controls_apply()
 }
 
 #[tokio::test]
-async fn query_production_scale_thousand_rows_preserves_order_and_wall_bound() {
+async fn query_production_scale_thousand_rows_preserves_order_and_wall_budget() {
     let query = format!("text ~ \"{}\" ORDER BY key DESC", "q".repeat(4096));
     let native_query = query.clone();
     let summary = "s".repeat(4096);

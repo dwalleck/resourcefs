@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Run the local/CI gates: python scripts/ci-gates.py (Python 3.9+, cargo-deny).
 
+The functional suite runs once, in debug. Release mode runs only the production
+budgets: every test a RELEASE_FILTERS substring selects, ignored rows included,
+in one build and one serialized invocation so timing assertions measure
+optimized code without neighbours. A source oracle fails closed when a test
+scales an assertion on `debug_assertions` but no release filter selects it, so
+a budget cannot silently drop out of the release pass.
+
 Ignored tests are inventoried from compiled release harnesses, not source text.
 Unknown or missing ignored rows fail closed; live tests and the child-server
 entry point are never enabled. Add new ignored rows to the appropriate set.
@@ -9,10 +16,15 @@ entry point are never enabled. Add new ignored rows to the appropriate set.
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
+# libtest substring filters that select the release pass. Every production
+# budget, ignored or not, must match one of these; `release_selection` proves it.
+RELEASE_FILTERS = ("budget",)
 BUDGETS = {
     "reference_parse_budget",
     "operation_journal_budget",
@@ -43,6 +55,10 @@ EXCLUDED = {
 # overrides must not silently select debug-scaled production assertions.
 RELEASE = ["--release", "--config", "profile.release.debug-assertions=false"]
 ENV = dict(os.environ, CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS="false")
+# A test whose bound depends on the build profile. `cfg!(debug_assertions)`,
+# `#[cfg(debug_assertions)]`, and `#[cfg(not(debug_assertions))]` all count.
+DEBUG_SCALED = re.compile(r"cfg!?\((?:not\()?debug_assertions")
+FN = re.compile(r"^(\s*)(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z0-9_]+)")
 
 
 def run(command, *, capture=False):
@@ -53,7 +69,45 @@ def run(command, *, capture=False):
     )
 
 
-def ignored_budgets():
+def selected(name):
+    return any(needle in name for needle in RELEASE_FILTERS)
+
+
+def release_selection():
+    """The release filters select every budget and nothing that must stay off."""
+    passed = True
+    for name in sorted(BUDGETS):
+        if not selected(name):
+            print(f"Ignored budget {name} matches no release filter {RELEASE_FILTERS}.", file=sys.stderr)
+            passed = False
+    for name in sorted(EXCLUDED):
+        if selected(name):
+            print(f"Excluded row {name} matches a release filter and would run.", file=sys.stderr)
+            passed = False
+    for path in sorted(ROOT.glob("crates/**/*.rs")):
+        enclosing = None
+        closing = None
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            match = FN.match(line)
+            if match and not line.rstrip().endswith("}"):
+                enclosing = match.group(2)
+                closing = match.group(1) + "}"
+            elif line.rstrip() == closing:
+                enclosing = closing = None
+            if DEBUG_SCALED.search(line) and not (enclosing and selected(enclosing)):
+                owner = f"`{enclosing}`" if enclosing else "a module-level item"
+                print(
+                    f"{path.relative_to(ROOT)}:{number}: {owner} scales on debug_assertions "
+                    f"but no release filter {RELEASE_FILTERS} selects it; name the test after a "
+                    "filter or extend RELEASE_FILTERS.",
+                    file=sys.stderr,
+                )
+                passed = False
+    return passed
+
+
+def release_inventory():
+    """Classify every ignored row of the compiled release harnesses; run nothing."""
     result = run([
         "cargo", "test", *RELEASE, "--workspace", "--all-features",
         "--no-run", "--message-format=json",
@@ -88,42 +142,31 @@ def ignored_budgets():
             seen.add(name)
             if name in EXCLUDED:
                 print(f"Excluded {name}: {EXCLUDED[name]}", flush=True)
-                continue
-            if name not in BUDGETS:
+            elif name not in BUDGETS:
                 print(f"Unclassified ignored test: {name}", file=sys.stderr)
                 passed = False
-                continue
-            target = artifact["target"]
-            kind = target["kind"]
-            if "test" in kind:
-                selector = ["--test", target["name"]]
-            elif "lib" in kind:
-                selector = ["--lib"]
-            elif "bin" in kind:
-                selector = ["--bin", target["name"]]
-            else:
-                print(f"Unsupported ignored-test target: {target}", file=sys.stderr)
-                passed = False
-                continue
-            result = run([
-                "cargo", "test", *RELEASE, "-p", artifact["package_id"],
-                "--all-features", *selector, "--", "--ignored", "--exact", name,
-                "--test-threads=1",
-            ])
-            passed = result.returncode == 0 and passed
     missing = BUDGETS - seen
     if missing:
         print(f"Missing production budget rows: {sorted(missing)}", file=sys.stderr)
     return passed and not missing
 
 
+def release_budgets():
+    """Every budget, ignored rows included, optimized and serialized, in one build."""
+    return run([
+        "cargo", "test", *RELEASE, "--workspace", "--all-features", "--no-fail-fast",
+        "--", *RELEASE_FILTERS, "--include-ignored", "--test-threads=1",
+    ]).returncode == 0
+
+
 def main():
     gates = [
         ("Formatting", ["cargo", "fmt", "--all", "--", "--check"]),
+        ("Release selection", release_selection),
         ("Lints", ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]),
         ("Functional tests", ["cargo", "test", "--workspace", "--all-features", "--no-fail-fast"]),
-        ("Release workspace", ["cargo", "test", *RELEASE, "--workspace", "--all-features", "--no-fail-fast", "--", "--test-threads=1"]),
-        ("Ignored production budgets", None),
+        ("Release inventory", release_inventory),
+        ("Release budgets", release_budgets),
         ("Dependency vetting", ["cargo", "deny", "check"]),
     ]
     if sys.platform == "linux":
@@ -132,13 +175,16 @@ def main():
             [sys.executable, ".rfs-nae2/oracles/module_shape.py", "--stage", "query"],
         ))
     failed = []
-    for name, command in gates:
+    for name, gate in gates:
         print(f"\n=== {name} ===", flush=True)
+        started = time.monotonic()
         try:
-            passed = ignored_budgets() if command is None else run(command).returncode == 0
+            passed = gate() if callable(gate) else run(gate).returncode == 0
         except (OSError, ValueError, KeyError) as error:
             print(f"{name}: {error}", file=sys.stderr)
             passed = False
+        verdict = "passed" if passed else "FAILED"
+        print(f"=== {name} {verdict} in {time.monotonic() - started:.0f}s ===", flush=True)
         if not passed:
             failed.append(name)
     if failed:

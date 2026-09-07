@@ -289,7 +289,7 @@ fn moved_issue_key_alias_publishes_returned_stable_identity() {
 }
 
 #[test]
-fn canonical_json_maximum_fixture() {
+fn canonical_json_maximum_fixture_within_budget() {
     let value = "x".repeat(MAX_HTTP_FETCH_BYTES - 1_024);
     let body = valid_issue(
         &format!(r#"{{"large":"{value}"}}"#),

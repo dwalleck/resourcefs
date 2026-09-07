@@ -206,7 +206,7 @@ fn empty_field_set_renders_complete_empty_documents() {
 }
 
 #[test]
-fn adf_maximum_fixture() {
+fn adf_maximum_fixture_within_budget() {
     let value = "x".repeat(MAX_HTTP_FETCH_BYTES - 2_048);
     let fields = format!(
         r#"{{"description":{{"version":1,"type":"doc","content":[{{"type":"paragraph","content":[{{"type":"text","text":"{value}"}}]}}]}}}}"#

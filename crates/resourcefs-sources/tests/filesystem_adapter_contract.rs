@@ -673,7 +673,7 @@ async fn reads_maximum_sized_file_within_budget() {
 }
 
 #[tokio::test]
-async fn filesystem_streams_narrow_large_range() {
+async fn filesystem_streams_narrow_large_range_within_budget() {
     const SOURCE_BYTES: u64 = 256 * 1024 * 1024;
     const TARGET: &str = "unique target π\r\n";
     const EXPECTED_TAG: &str =
