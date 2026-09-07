@@ -1,0 +1,262 @@
+{
+  "source_sha256": "82c6dfe15cdf1b1dab51a1431bb2d249fbe9ee7464a0f91d40f331327460585e",
+  "all_absent_recovery": {
+    "before": {
+      "resources": [
+        {
+          "logical_id": "primary-project",
+          "path": "/rest/api/3/project/10049",
+          "http": 404
+        },
+        {
+          "logical_id": "secondary-project",
+          "path": "/rest/api/3/project/10050",
+          "http": 404
+        },
+        {
+          "logical_id": "primary-root-issue",
+          "path": "/rest/api/3/issue/10093",
+          "http": 404
+        },
+        {
+          "logical_id": "primary-child-issue",
+          "path": "/rest/api/3/issue/10094",
+          "http": 404
+        },
+        {
+          "logical_id": "secondary-issue",
+          "path": "/rest/api/3/issue/10095",
+          "http": 404
+        },
+        {
+          "logical_id": "public-space",
+          "path": "/wiki/api/v2/spaces/26574850",
+          "http": 404
+        },
+        {
+          "logical_id": "private-space",
+          "path": "/wiki/api/v2/spaces/26607618",
+          "http": 404
+        },
+        {
+          "logical_id": "public-root-page",
+          "path": "/wiki/api/v2/pages/26575042",
+          "http": 404
+        },
+        {
+          "logical_id": "public-child-page",
+          "path": "/wiki/api/v2/pages/26640385",
+          "http": 404
+        },
+        {
+          "logical_id": "private-root-page",
+          "path": "/wiki/api/v2/pages/26673153",
+          "http": 404
+        },
+        {
+          "logical_id": "public-page-comment",
+          "path": "/wiki/api/v2/footer-comments/26345494",
+          "http": 404
+        },
+        {
+          "logical_id": "public-page-comment-second",
+          "path": "/wiki/api/v2/footer-comments/26607762",
+          "http": 404
+        },
+        {
+          "logical_id": "primary-root-comment",
+          "path": "/rest/api/3/issue/10093/comment/10016",
+          "http": 404
+        },
+        {
+          "logical_id": "primary-root-comment-second",
+          "path": "/rest/api/3/issue/10093/comment/10017",
+          "http": 404
+        }
+      ],
+      "jira_trash": [
+        {
+          "id": "10049",
+          "http": 200,
+          "empty": true,
+          "terminal": true
+        },
+        {
+          "id": "10050",
+          "http": 200,
+          "empty": true,
+          "terminal": true
+        }
+      ],
+      "pass": true
+    },
+    "exit": 0,
+    "receipt_removed": true
+  },
+  "bootstrap": {
+    "exit": 0,
+    "resource_count": 14
+  },
+  "verify": {
+    "exit": 0
+  },
+  "trash_interruption": {
+    "exit": 1,
+    "error": "error: transport_failure actor=provisioner operation=confluence_page_delete",
+    "page_id": "26869761",
+    "page_http": 200,
+    "status": "trashed",
+    "exact_v2_owner": true,
+    "receipt_unchanged": true
+  },
+  "space_interruption": {
+    "exit": 1,
+    "error": "error: transport_failure actor=provisioner operation=longtask_status",
+    "first_native_task": {
+      "ari": "<REDACTED>",
+      "id": "<REDACTED>",
+      "name": {
+        "key": "<REDACTED>",
+        "args": []
+      },
+      "elapsedTime": 114,
+      "percentageComplete": 0,
+      "successful": false,
+      "finished": false,
+      "messages": [
+        {
+          "translation": "<REDACTED>",
+          "args": []
+        }
+      ],
+      "status": "RUNNING",
+      "errors": [],
+      "additionalDetails": {},
+      "_links": {
+        "base": "<REDACTED>",
+        "context": "<REDACTED>"
+      }
+    },
+    "receipt_unchanged": true
+  },
+  "resume": {
+    "exit": 0,
+    "receipt_absent": true,
+    "pending_absent": true,
+    "independent_absence": {
+      "resources": [
+        {
+          "logical_id": "primary-project",
+          "path": "/rest/api/3/project/10053",
+          "http": 404
+        },
+        {
+          "logical_id": "secondary-project",
+          "path": "/rest/api/3/project/10054",
+          "http": 404
+        },
+        {
+          "logical_id": "primary-root-issue",
+          "path": "/rest/api/3/issue/10099",
+          "http": 404
+        },
+        {
+          "logical_id": "primary-child-issue",
+          "path": "/rest/api/3/issue/10100",
+          "http": 404
+        },
+        {
+          "logical_id": "secondary-issue",
+          "path": "/rest/api/3/issue/10101",
+          "http": 404
+        },
+        {
+          "logical_id": "public-space",
+          "path": "/wiki/api/v2/spaces/26738926",
+          "http": 404
+        },
+        {
+          "logical_id": "private-space",
+          "path": "/wiki/api/v2/spaces/26640550",
+          "http": 404
+        },
+        {
+          "logical_id": "public-root-page",
+          "path": "/wiki/api/v2/pages/26476553",
+          "http": 404
+        },
+        {
+          "logical_id": "public-child-page",
+          "path": "/wiki/api/v2/pages/26640692",
+          "http": 404
+        },
+        {
+          "logical_id": "private-root-page",
+          "path": "/wiki/api/v2/pages/26869761",
+          "http": 404
+        },
+        {
+          "logical_id": "public-page-comment",
+          "path": "/wiki/api/v2/footer-comments/26476573",
+          "http": 404
+        },
+        {
+          "logical_id": "public-page-comment-second",
+          "path": "/wiki/api/v2/footer-comments/26804227",
+          "http": 404
+        },
+        {
+          "logical_id": "primary-root-comment",
+          "path": "/rest/api/3/issue/10099/comment/10020",
+          "http": 404
+        },
+        {
+          "logical_id": "primary-root-comment-second",
+          "path": "/rest/api/3/issue/10099/comment/10021",
+          "http": 404
+        }
+      ],
+      "jira_trash": [
+        {
+          "id": "10053",
+          "http": 200,
+          "empty": true,
+          "terminal": true
+        },
+        {
+          "id": "10054",
+          "http": 200,
+          "empty": true,
+          "terminal": true
+        }
+      ],
+      "pass": true
+    },
+    "first_task_final_http": 200,
+    "first_task_final": {
+      "ari": "<REDACTED>",
+      "id": "<REDACTED>",
+      "name": {
+        "key": "<REDACTED>",
+        "args": []
+      },
+      "elapsedTime": 569,
+      "percentageComplete": 100,
+      "successful": true,
+      "finished": true,
+      "messages": [
+        {
+          "translation": "<REDACTED>",
+          "args": []
+        }
+      ],
+      "status": "FINISH_SUCCESS",
+      "errors": [],
+      "additionalDetails": {},
+      "_links": {
+        "base": "<REDACTED>",
+        "context": "<REDACTED>"
+      }
+    }
+  }
+}

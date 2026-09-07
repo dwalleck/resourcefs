@@ -594,7 +594,7 @@ def handle(config, store, actor, method, path, query, body):
             return 404, {}, "space_delete_poll"
         task["polls"] = int(task.get("polls", 0)) + 1
         if task["polls"] == 1:
-            return 200, {"id": match.group(1), "status": "RUNNING"}, "space_delete_poll"
+            return 200, {"id": match.group(1), "status": "RUNNING", "finished": False, "successful": False, "errors": []}, "space_delete_poll"
         space = find_one(store["spaces"], task["space"])
         if space:
             store["spaces"].remove(space)
@@ -606,7 +606,7 @@ def handle(config, store, actor, method, path, query, body):
             )
             store["confluence_comments"][:] = [comment for comment in store["confluence_comments"] if comment.get("page") not in page_ids]
             purge_content_properties(store, removed_ids)
-        return 200, {"id": match.group(1), "status": "FINISH_SUCCESS", "finished": True}, "space_delete_poll"
+        return 200, {"id": match.group(1), "status": "FINISH_SUCCESS", "finished": True, "successful": True, "errors": []}, "space_delete_poll"
 
     # Confluence pages and footer comments.
     match = re.fullmatch(r"/wiki/api/v2/spaces/([^/]+)/pages", path)
@@ -627,6 +627,7 @@ def handle(config, store, actor, method, path, query, body):
             page_body = dict(page_body, value=confluence_ingest(page_body["value"]))
         row = {
             "id": fresh_id(store, "confluence-page", str(body.get("title", ""))),
+            "status": "current",
             "space": sid,
             "spaceId": sid,
             "title": body.get("title", ""),
@@ -649,6 +650,11 @@ def handle(config, store, actor, method, path, query, body):
         row = find_one(store["pages"], match.group(1))
         if not row:
             return 404, {}, "confluence_page_delete"
+        if query.get("purge") != ["true"]:
+            row["status"] = "trashed"
+            return 204, "", "confluence_page_delete"
+        if row.get("status") != "trashed":
+            return 409, {}, "confluence_page_delete"
         store["pages"].remove(row)
         removed_comments = [item for item in store["confluence_comments"] if item.get("page") == row.get("id")]
         store["confluence_comments"][:] = [
@@ -658,6 +664,8 @@ def handle(config, store, actor, method, path, query, body):
         return 204, "", "confluence_page_delete"
     match = re.fullmatch(r"/wiki/api/v2/pages/([^/]+)/footer-comments", path)
     if match and method == "GET":
+        if find_one(store["pages"], match.group(1)) is None:
+            return 404, {}, "comment_list"
         rows = [
             item
             for item in store["confluence_comments"]
@@ -748,6 +756,45 @@ def handle(config, store, actor, method, path, query, body):
         purge_content_properties(store, removed_ids)
         return 204, "", "confluence_comment_delete"
 
+    # Unlike the v1 singleton, the native v2 collection retains trash ownership.
+    match = re.fullmatch(r"/wiki/api/v2/pages/([^/]+)/properties", path)
+    if match and method == "GET":
+        content_id = match.group(1)
+        if find_one(store["pages"], content_id) is None:
+            return 404, {}, "page_properties"
+        rows = [
+            property_row(store, content_id, key, value)
+            for key, value in store["properties"].get(content_id, {}).items()
+            if key in query.get("key", [])
+        ]
+        fault = store.get("property_fault", {})
+        if fault.get("id") == content_id:
+            mode = fault["mode"]
+            if mode == "404":
+                return 404, {}, "page_properties"
+            if mode == "malformed":
+                return 200, {"results": {}, "_links": {}}, "page_properties"
+            if mode == "scalar":
+                rows = [42]
+            if mode == "duplicate":
+                rows = rows + rows
+            if mode == "wrong_key":
+                rows = [dict(row, key="not-rfs-owner") for row in rows]
+            if mode in ("continued", "duplicate_later", "loop", "untrusted", "limit"):
+                cursor = query.get("cursor", [""])[0]
+                index = int(cursor.rsplit("-", 1)[-1]) if cursor else 0
+                prefix = f"/wiki/api/v2/pages/{content_id}/properties?key=rfs-owner&cursor="
+                if mode == "untrusted":
+                    next_link = "https://foreign.test/steal"
+                elif mode == "loop":
+                    next_link = prefix + "property-1"
+                else:
+                    next_link = prefix + f"property-{index + 1}"
+                more = mode in ("loop", "untrusted", "limit") or index == 0
+                page = rows if index == 0 or mode == "duplicate_later" else []
+                return 200, {"results": page, "_links": {"next": next_link} if more else {}}, "page_properties"
+        return 200, {"results": rows, "_links": {}}, "page_properties"
+
     # Confluence v1 content properties (pages and footer comments).
     match = re.fullmatch(r"/wiki/rest/api/content/([^/]+)/property", path)
     if match and method == "POST":
@@ -761,6 +808,9 @@ def handle(config, store, actor, method, path, query, body):
         return 200, property_row(store, match.group(1), key, value), "owner_property_create"
     match = re.fullmatch(r"/wiki/rest/api/content/([^/]+)/property/([^/]+)", path)
     if match and method == "GET":
+        page = find_one(store["pages"], match.group(1))
+        if page and page.get("status") == "trashed":
+            return 404, {}, "owner_property_get"
         value = store["properties"].get(str(match.group(1)), {}).get(match.group(2))
         if value is None:
             return 404, {"message": "content property not found"}, "owner_property_get"
@@ -796,6 +846,14 @@ def main():
     method = str(config.get("request", "GET")).upper()
     actor = actor_for(config)
     store = ensure_seed(load_store())
+    # Test-selected faults are synthetic, not alleged native response captures.
+    # Collection races occur only on the collection request, after any direct
+    # parent precheck. Direct reads therefore remain an independent oracle.
+    collection_fault = store.get("collection_fault", {})
+    forced_collection = method == "GET" and path == collection_fault.get("path")
+    if forced_collection and collection_fault.get("remove_parent"):
+        collection, target_id = collection_fault["remove_parent"]
+        store[collection][:] = [item for item in store[collection] if item["id"] != target_id]
     response_path = str(config.get("output", ""))
     user_value = str(config.get("user", ""))
     argv_safe = sys.argv[1:] == ["--config", "-"]
@@ -809,7 +867,65 @@ def main():
         "credential_pair_valid": actor != "invalid",
         "temp_canary": temp_contains_canary(),
     })
-    status, payload, operation = handle(config, store, actor, method, path, query, body)
+    if forced_collection:
+        status, payload, operation = 404, {}, "collection_fault"
+    else:
+        status, payload, operation = handle(config, store, actor, method, path, query, body)
+    task_fault = store.get("task_fault")
+    if operation == "space_delete_poll" and task_fault is not None:
+        # A task may finish independently while its response is lost or invalid.
+        status = None if task_fault == "transport" else 200
+        payload = task_fault
+    switch = store.get("late_switch", {})
+    if (
+        operation == switch.get("after")
+        and method == "DELETE"
+        and status in (202, 204)
+        and not store["faults"].get("late_switch")
+    ):
+        collection, target_id = switch["target"]
+        target = find_one(store[collection], target_id)
+        if target is not None:
+            if "replacement" in switch:
+                store[collection].remove(target)
+                store[collection].append(switch["replacement"])
+            else:
+                target.update(switch.get("fields", {}))
+            if "marker" in switch:
+                store["properties"].setdefault(target_id, {})["rfs-owner"] = switch["marker"]
+            store["faults"]["late_switch"] = True
+    lingering = store.get("linger")
+    terminal_space = (
+        operation == "space_delete_poll"
+        and isinstance(payload, dict)
+        and payload.get("status") == "FINISH_SUCCESS"
+        and not store["spaces"]
+    )
+    terminal_project = operation == "jira_project_delete" and status == 204 and not store["projects"]
+    if lingering and not store["faults"].get("linger"):
+        # Inject only after the target family's last destructive transition.
+        # Jira runs after Confluence, so trash residue must appear after its
+        # final project DELETE rather than during the earlier space task.
+        finished = terminal_project if lingering["collection"] == "projects" else terminal_space
+        if finished:
+            store[lingering["collection"]].append(lingering["row"])
+            store["faults"]["linger"] = True
+    interrupt = store.get("interrupt")
+    interrupt_now = (
+        interrupt == "page_trash"
+        and operation == "confluence_page_delete"
+        and method == "DELETE"
+        and query.get("purge") != ["true"]
+        and status == 204
+    ) or (
+        interrupt == "space_complete"
+        and operation == "space_delete_poll"
+        and isinstance(payload, dict)
+        and payload.get("status") == "FINISH_SUCCESS"
+    )
+    if interrupt_now and not store["faults"].get(interrupt):
+        store["faults"][interrupt] = True
+        status, payload = None, ""
     row = {
         "actor": actor,
         "config_user_present": bool(user_value),

@@ -1,0 +1,190 @@
+Archived non-executable audit sources for rfs-br1u.
+Historical filenames in evidence.md refer to these snapshots. Premise probes ran against 7de8d14; the curl observer also drove final repaired-operator acceptance. No credentials are embedded.
+
+===== probe.curl.py; SHA-256 036f9800b0ca8c7082bb9fb10533891847a97a7caa07b8571eb6426bdff96c37 =====
+#!/usr/bin/env python3
+"""Throwaway curl observer: capture task reads or interrupt an accepted page trash."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+from urllib.parse import urlsplit
+
+config = sys.stdin.read()
+fields = {}
+for line in config.splitlines():
+    if ' = ' in line:
+        key, value = line.split(' = ', 1)
+        fields[key] = json.loads(value)
+result = subprocess.run(['/usr/bin/curl', *sys.argv[1:]], input=config, text=True, capture_output=True)
+path = urlsplit(fields.get('url', '')).path
+if (os.environ.get('RFS_PROBE_INTERRUPT') == 'page_delete'
+        and fields.get('request') == 'DELETE'
+        and path.startswith('/wiki/api/v2/pages/')
+        and path.removeprefix('/wiki/api/v2/pages/').isdigit()
+        and not urlsplit(fields['url']).query
+        and result.returncode == 0 and result.stdout == '204'):
+    capture = Path(os.environ['RFS_PROBE_CAPTURE'])
+    capture.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (capture / 'trashed-page-id').write_text(path.rsplit('/', 1)[1])
+    sys.exit(97)
+if '/wiki/rest/api/longtask/' in path:
+    output = Path(fields['output']).read_text()
+    capture = Path(os.environ['RFS_PROBE_CAPTURE'])
+    capture.mkdir(mode=0o700, parents=True, exist_ok=True)
+    raw = capture / 'longtask-private.json'
+    raw.write_text(output)
+    raw.chmod(0o600)
+    payload = json.loads(output)
+    def redact(value, key=''):
+        if isinstance(value, dict):
+            return {k: redact(v, k) for k, v in value.items()}
+        if isinstance(value, list):
+            return [redact(v, key) for v in value]
+        if isinstance(value, str):
+            if key in {'status', 'state'} and len(value) < 80 and all(c.isalnum() or c == '_' for c in value):
+                return value
+            return '<REDACTED>'
+        return value
+    (capture / 'longtask-sanitized.json').write_text(json.dumps(redact(payload), indent=2) + '\n')
+    (capture / 'task-id').write_text(path.rsplit('/', 1)[1])
+    if os.environ.get('RFS_PROBE_INTERRUPT') == '1':
+        sys.exit(97)
+sys.stdout.write(result.stdout)
+sys.stderr.write(result.stderr)
+sys.exit(result.returncode)
+
+===== probe.interrupted.py; SHA-256 2c5a89433a3af860316d70a250dc1dd9cc54e0c73c69e110a56c1755d21abd91 =====
+#!/usr/bin/env python3
+"""Throwaway real-operator reproduction using existing fake provider state."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+FAKE = ROOT / 'crates/resourcefs-sources/tests/fixtures/atlassian_fixture_operator/fake_curl.py'
+
+def run_case(case):
+    with tempfile.TemporaryDirectory(prefix='rfs-br1u-repro-') as directory:
+        temp = Path(directory)
+        binary = temp / 'bin'
+        binary.mkdir()
+        (binary / 'curl').symlink_to(FAKE)
+        env = os.environ.copy()
+        env.update(PATH=str(binary) + ':' + env['PATH'],
+                   FAKE_CURL_STORE=str(temp / 'store.json'), FAKE_CURL_LOG=str(temp / 'requests.jsonl'),
+                   ATLASSIAN_PROVISIONER_EMAIL='provisioner-canary@example.test',
+                   ATLASSIAN_PROVISIONER_API_TOKEN='provisioner-token-canary',
+                   ATLASSIAN_READER_EMAIL='reader-canary@example.test',
+                   ATLASSIAN_READER_API_TOKEN='reader-token-canary')
+        state = temp / 'state.json'
+        def operator(mode):
+            return subprocess.run(['bash', str(ROOT / 'scripts/atlassian-fixture-bootstrap.sh'), mode,
+                                   '--site', 'https://example.test', '--state', str(state)],
+                                  cwd=ROOT, env=env, capture_output=True, text=True, timeout=90)
+        setup = operator('bootstrap')
+        assert setup.returncode == 0, setup.stderr
+        store_path = temp / 'store.json'
+        store = json.loads(store_path.read_text())
+        if case == 'trashed-page':
+            page = store['pages'][-1]
+            original_property = store['properties'][page['id']]
+            page['status'] = 'trashed'
+            # Native v1 property GET hides trash; model the observed missing property.
+            store['properties'].pop(page['id'], None)
+            # Properties may be keyed by content ID plus property key.
+            for key in list(store['properties']):
+                if key.startswith(page['id'] + ':'):
+                    del store['properties'][key]
+            expected = 'foreign_collision logical=page'
+        else:
+            sid = store['spaces'][0]['id']
+            page_ids = {r['id'] for r in store['pages'] if r['space'] == sid}
+            store['spaces'] = [r for r in store['spaces'] if r['id'] != sid]
+            store['pages'] = [r for r in store['pages'] if r['space'] != sid]
+            store['confluence_comments'] = [r for r in store['confluence_comments'] if r['page'] not in page_ids]
+            expected = 'operation=page_list status=404'
+        store_path.write_text(json.dumps(store))
+        before = len((temp / 'requests.jsonl').read_text().splitlines())
+        result = operator('cleanup')
+        rows = [json.loads(line) for line in (temp / 'requests.jsonl').read_text().splitlines()[before:]]
+        reproduced = result.returncode != 0 and expected in result.stderr and state.exists()
+        print(json.dumps({'case':case, 'exit':result.returncode, 'stderr':result.stderr.strip(),
+                          'receipt_retained':state.exists(), 'delete_requests':sum(r['method']=='DELETE' for r in rows),
+                          'reported_failure_reproduced':reproduced}))
+        assert reproduced, 'Probe did not reproduce the reported symptom'
+        if case == 'trashed-page':
+            unchanged = json.loads(store_path.read_text())
+            assert any(r['id'] == page['id'] for r in unchanged['pages'])
+            unchanged['properties'][page['id']] = original_property
+            store_path.write_text(json.dumps(unchanged))
+            control = operator('cleanup')
+            final_store = json.loads(store_path.read_text())
+            assert control.returncode == 0, control.stderr
+            assert not state.exists() and not any(r['id'] == page['id'] for r in final_store['pages'])
+            print(json.dumps({'claim':'C1', 'same_target_valid_marker_control':'PASS', 'page_absent':True, 'receipt_removed':True}))
+
+for case in ['trashed-page', 'deleted-owner-space']:
+    run_case(case)
+
+===== probe.purge.py; SHA-256 8bfe74d0002b0e7a70949b8547ca57c8bac5365ac2057375103978a8de5035bf =====
+#!/usr/bin/env python3
+"""Probe the documented trash→purge transition on one freshly bootstrapped owned page."""
+import base64
+import json
+import os
+from pathlib import Path
+import urllib.error
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+receipt = json.loads((ROOT / '.resourcefs/atlassian-fixture-state.json').read_text())
+manifest = json.loads((ROOT / 'fixtures/atlassian-live/manifest.json').read_text())
+site = os.environ['RFS_ATLASSIAN_SITE'].rstrip('/')
+assert site == receipt['site']['origin'] == 'https://kiro-tethys.atlassian.net'
+row = next(r for r in receipt['confluence']['pages'] if r['logical_id'] == 'private-root-page')
+owner = next(r for r in manifest['confluence']['pages'] if r['id'] == row['logical_id'])
+space = next(r for r in receipt['confluence']['spaces'] if r['logical_id'] == owner['space'])
+space_owner = next(r for r in manifest['confluence']['spaces'] if r['id'] == owner['space'])
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+opener = urllib.request.build_opener(NoRedirect)
+credentials = base64.b64encode((os.environ['ATLASSIAN_PROVISIONER_EMAIL'] + ':' + os.environ['ATLASSIAN_PROVISIONER_API_TOKEN']).encode()).decode()
+def request(method, path):
+    req = urllib.request.Request(site + path, method=method, headers={'Authorization':'Basic ' + credentials, 'Accept':'application/json'})
+    try:
+        response = opener.open(req, timeout=30)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        raw = response.read(4194305)
+        assert len(raw) <= 4194304
+        return response.status, json.loads(raw) if raw else None
+
+def owned_page(expected_status):
+    status, page = request('GET', '/wiki/api/v2/pages/' + row['id'] + '?body-format=storage')
+    assert status == 200 and page['id'] == row['id'] and page['spaceId'] == space['id'] and page['status'] == expected_status
+    status, properties = request('GET', '/wiki/api/v2/pages/' + row['id'] + '/properties?key=rfs-owner')
+    assert status == 200 and len(properties['results']) == 1 and not properties.get('_links', {}).get('next')
+    prop = properties['results'][0]
+    assert prop['key'] == 'rfs-owner' and prop['value'] == owner['marker']
+
+owned_page('current')
+status, _ = request('DELETE', '/wiki/api/v2/pages/' + row['id'])
+assert status == 204
+comments_status, comments_payload = request('GET', '/wiki/api/v2/pages/' + row['id'] + '/footer-comments?limit=1&body-format=storage')
+assert comments_status == 200 and comments_payload['results'] == []
+owned_page('trashed')
+status, _ = request('DELETE', '/wiki/api/v2/pages/' + row['id'] + '?purge=true')
+assert status == 204
+status, _ = request('GET', '/wiki/api/v2/pages/' + row['id'])
+assert status == 404
+status, parent = request('GET', '/wiki/api/v2/spaces/' + space['id'] + '?description-format=plain')
+assert status == 200 and parent['id'] == space['id'] and parent['key'] == space['key']
+assert parent['description']['plain']['value'] == space_owner['marker']
+print(json.dumps({'page_id':row['id'], 'current_owned':True, 'trash_http':204, 'trashed_owned':True, 'purge_http':204, 'page_absent_http':404, 'owner_space_still_current':parent['status']=='current'}))
+

@@ -1,0 +1,256 @@
+{
+  "source_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+  "operator_suite": {
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "atlassian_fixture_operator_contract",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 0,
+    "passed": 33,
+    "source_sha256": "82c6dfe15cdf1b1dab51a1431bb2d249fbe9ee7464a0f91d40f331327460585e",
+    "retained_applicability": "Only --help text changed afterward; lifecycle code and fixtures unchanged. Final repository gate runs assembled source."
+  },
+  "mutations": [
+    {
+      "claim": "C1",
+      "test": "cleanup_refuses_unproven_trashed_page_ownership",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_refuses_unproven_trashed_page_ownership",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "mutation": {
+        "from": "'.results[0].value == $marker'",
+        "to": "'true'"
+      },
+      "mutant_sha256": "8194930726833588402baa58369698bf31c7d77c2246866e08ca982b849d8850",
+      "red_exit": 101,
+      "restored_exit": 0,
+      "restored_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+      "red_seconds": 17.66,
+      "green_seconds": 282.39
+    },
+    {
+      "claim": "C2",
+      "test": "cleanup_resumes_trashed_pages_without_deleting_foreign_space",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_resumes_trashed_pages_without_deleting_foreign_space",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "mutation": {
+        "from": "path=\"/wiki/api/v2/pages/${sid}?purge=true\"",
+        "to": "path=\"/wiki/api/v2/pages/${sid}\""
+      },
+      "mutant_sha256": "26a28149eea8cb706adf6786d139e3c0e6af1486c608e3996b1993ea9f622ff8",
+      "red_exit": 101,
+      "restored_exit": 0,
+      "restored_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+      "red_seconds": 23.64,
+      "green_seconds": 45.61
+    },
+    {
+      "claim": "C3",
+      "test": "cleanup_distinguishes_absent_parent_from_collection_failure",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_distinguishes_absent_parent_from_collection_failure",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "mutation": {
+        "from": "  [[ \"$RESPONSE_STATUS\" == 404 ]] ||\n    die \"upstream_failure actor=provisioner operation=$operation status=404\"",
+        "to": "  RESPONSE_STATUS=404"
+      },
+      "mutant_sha256": "a77c026743db62ba1dfaf64db377708df8a409055ae5e3008011c64cbcfd1b02",
+      "red_exit": 101,
+      "restored_exit": 0,
+      "restored_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+      "red_seconds": 19.87,
+      "green_seconds": 112.35
+    },
+    {
+      "claim": "C4",
+      "test": "cleanup_preserves_receipt_for_uncertain_space_task",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_preserves_receipt_for_uncertain_space_task",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "mutation": {
+        "from": "      *) die \"invalid_response operation=space_delete_poll\" ;;",
+        "to": "      *) return ;;"
+      },
+      "mutant_sha256": "edd6277baf82271553a32c75e628737f8b73709d6157cd1ba6d7d3aff6d32888",
+      "red_exit": 101,
+      "restored_exit": 0,
+      "restored_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+      "red_seconds": 49.71,
+      "green_seconds": 327.77
+    },
+    {
+      "claim": "C5",
+      "test": "cleanup_revalidates_each_destructive_target",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_revalidates_each_destructive_target",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "mutation": {
+        "from": "\n  cleanup_validate_target \"$kind\" \"$logical\" \"$sid\"\n",
+        "to": "\n  :\n"
+      },
+      "mutant_sha256": "113e388cd79d56391f53a7df72d25058ab326c63008fe5e09d048b01f0b3fcba",
+      "red_exit": 101,
+      "restored_exit": 0,
+      "restored_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+      "red_seconds": 12.81,
+      "green_seconds": 157.69
+    },
+    {
+      "claim": "C6",
+      "test": "cleanup_retains_receipt_until_all_targets_absent",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_retains_receipt_until_all_targets_absent",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "mutation": {
+        "from": "\n  cleanup_assert_absent\n",
+        "to": "\n  :\n"
+      },
+      "mutant_sha256": "e80bffbe1d1cb41d10b02b5469f6e7a7ba31ae9e258cdd06ff819084caefcc86",
+      "red_exit": 101,
+      "restored_exit": 0,
+      "restored_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+      "red_seconds": 17.4,
+      "green_seconds": 75.24
+    }
+  ],
+  "review_reproductions": [
+    {
+      "finding": "F1",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_refuses_unproven_trashed_page_ownership",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "observation": "LF-suffixed foreign marker falsely authorized complete cleanup"
+    },
+    {
+      "finding": "F2",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_preserves_receipt_for_uncertain_space_task",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "observation": "LF-suffixed unknown status submitted second-space deletion"
+    }
+  ],
+  "original_source_regressions": {
+    "source_sha256": "05160d56fa9c2b0c6c76316b9e88a9e5b3c838d45bea536387509eac6442b77f",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "atlassian_fixture_operator_contract",
+      "cleanup_",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "passed": 3,
+    "failed": 12,
+    "corrected_absent_receipt": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_resumes_all_already_absent_receipt",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "observation": "page_list404 after preserving original receipt permissions"
+    }
+  },
+  "repository_gate": {
+    "command": [
+      "python",
+      "scripts/ci-gates.py"
+    ],
+    "exit": 0,
+    "source_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+    "result": "All repository gates passed.",
+    "dependency_vetting": "advisories ok, bans ok, licenses ok, sources ok"
+  }
+}
