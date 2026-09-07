@@ -158,3 +158,13 @@ Independent conformance: JqlHttpReviewer reconstructed request/read/client owner
 Assembled quality: workspace all-target/all-feature clippy passes with warnings denied (artifact://1125); pinned 1.98.0 formatting passes. Native-platform execution is delegated to the draft PR's exact-head CI, not claimed from local Linux results. CI now invokes the staged new oracle explicitly; S2 changes the stage to query.
 
 Cleanup/sweep: no TODO/deferred/failure-suppression residue in touched request/read code. No user-facing behavior changed, so Behavior Contract/domain/changelog content intentionally remains unchanged. Issue workflow/proof artifacts retain the evidence. No live tenant fixtures remain from empirical probes.
+
+### S1 CI checkout repair
+
+PR6 run 34128574578 / Ubuntu job 101762955799 failed only Module placement: the shallow checkout lacked pinned commit fad4cf2, so `git cat-file -e` exited 128. The other hosted gates passed. This is a deterministic missing-input failure, not a flaky test.
+
+Repair: `.github/workflows/ci.yml` sets checkout `fetch-depth: 0`; no oracle predicate, source behavior or limit is weakened. C1/C12 already require the approved baseline.
+
+Proof: clone the exact S1 branch with depth 1 from the local Git repository, run the real staged oracle and observe the same missing-baseline failure; fetch full history, rerun it and observe C1/C12 PASS including inherited h212 checks. The disposable checkout was removed. Detailed receipt: local://rfs-nae2-ci-history-proof.txt.
+
+Bounded-repair gates: affected Rust tests N/A (no executable Rust changed; prior S1 proof retained); falsifier PASS; stress N/A (checkout configuration only); implementation/oracle PASS; module shape PASS; runtime budget N/A (one-off CI checkout); existing fence PASS; shallow-input mutation red PASS; full-history restoration green PASS. Fresh exact-head hosted CI remains required before merging.

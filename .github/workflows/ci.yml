@@ -24,6 +24,9 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
+        with:
+          # Placement oracles compare against their pinned approved baseline.
+          fetch-depth: 0
 
       - name: Install modern Bash for fixture operators
         if: runner.os == 'macOS'
