@@ -190,3 +190,7 @@ impl BoundedRead<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "read_tests.rs"]
+mod tests;

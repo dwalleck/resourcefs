@@ -7,10 +7,10 @@ Date: 2026-09-06
 
 | # | Test | Evidence | Verdict |
 |---|------|----------|---------|
-| 1 | Empirical premise | `docs/research/jira-cloud-contracts.md` documents enhanced POST search and opaque tokens but explicitly leaves terminal token shapes and tenant cursor behavior probe-backed. `.rfs-pm0y/evidence.md` covers direct issue reads, not enhanced-query response/error decoding. `.rfs-bcym/evidence.md` proves fixture search execution, not the complete native-query ordering/error/continuation contract. Current applicable evidence does not discharge every query premise. | yes |
-| 2 | Structural boundary | Existing Jira address dispatch supports issue Aggregates, Fields, and key aliases. Query addresses, typed cursor identity, collection rendering, and source dispatch require cross-module placement. Open prerequisite `rfs-h212` owns the missing Jira fixed-collection/address/pagination work; it must not be silently duplicated or absorbed into this issue. | yes |
+| 1 | Empirical premise | Retain `.rfs-h212/evidence.md` P3 for enhanced GET identity/token/terminal observations and `.rfs-bcym/evidence.md` corrected C12 for successful read-only POST execution. Neither records an independent ordered POST traversal or malformed-native-JQL POST diagnostic envelope. Those two POST-specific comparisons remain unverified; published request/response and shared substrate facts are retained rather than reprobed. | yes |
+| 2 | Structural boundary | Merged browsing provides Jira grammar, typed source cursors, compact issue decoding/rendering, fixed collection assembly, and bounded GET transport. Native query identity/admission, native-order assembly, uncached query-specific status handling, and explicit read-only POST replay/deadline semantics require cross-module placement. Existing browsing owners remain authoritative; do not duplicate them or widen mutation retry eligibility. | yes |
 | 3 | Production-scale risk | Upstream pages, opaque continuation state, response bodies, and retained recovery content must remain bounded at 100 requested items, 1,000 records, and ten requests per logical page. Atomic failure, retry/deadline behavior, and artifact/source continuation coexistence require explicit stress and oracle checks. | yes |
-| 4 | Explicit behavior | The issue and closed query/continuation decision `rfs-qsyk` specify the observable behavior below. The unresolved prerequisite work order is a scope/architecture decision, not permission to weaken these requirements. | yes |
+| 4 | Explicit behavior | The issue and closed query/continuation decision `rfs-qsyk` specify the observable behavior below; `rfs-lbps` fixes read-only POST retry and no-cache policy. The requester chose browsing first, and that prerequisite is now merged and closed. | yes |
 
 Unknown tests: none.
 
@@ -33,9 +33,9 @@ Empirical — query wire/terminal/error premises require independent evidence, a
 |---|---|---|
 | route.md | change-workflow | this file |
 | spec.md | interrogated-spec | N/A — requested behavior is explicit in the issue and existing domain decisions |
-| evidence.md, probe.* | prove-it-prototype | required — enhanced-query premises remain unverified |
-| design.md | falsifiable-design | required — placement, authority, continuation, and scale decisions require approval |
-| plan.md | budgeted-plan | required — independently green implementation slices |
+| evidence.md, probe.* | prove-it-prototype | PASS — P1 retained; fresh ordered POST and rejection comparisons P2/P3 passed; owned fixtures cleaned |
+| design.md | falsifiable-design | approved — requester selected "Approve design" on 2026-09-07; no risk acceptances |
+| plan.md | budgeted-plan | recorded — two independently verifiable increments with per-slice checkpoints |
 
 Oracle checkpoint in `checkpointed-build`: required — Empirical route.
 
@@ -45,11 +45,11 @@ prove-it-prototype → falsifiable-design → budgeted-plan → checkpointed-bui
 
 ## Prerequisite and ownership boundary
 
-- Claimed `rfs-nae2` for Daryl Walleck on branch `rfs-nae2`; discovered upstream is `origin/main` at routing time.
-- `rfs-h212` remains open and remains an explicit blocking dependency. Existing HTTP transport, issue identity, regex search, and ADR-0006 recovery can be reused; Jira fixed-collection/address/page seams are not yet implemented.
-- No dependency was removed, prerequisite implementation was absorbed, or production source code was changed.
-- Before implementation, either the prerequisite lands or the requester explicitly approves a revised work order and ownership of shared seams. Design approval remains required afterward.
+- Claimed `rfs-nae2` for Daryl Walleck; resumed in isolated branch `rfs-nae2-query` from discovered upstream `origin/main` at `fad4cf2c11ec27f4272355c9e741badc9be0920e`.
+- `rfs-h212` is closed on merged main. PR #3 merged as `47abb6f67f0e2e2b18346d21ace15ccab20830e6`; PR #4 merged as `fad4cf2c11ec27f4272355c9e741badc9be0920e`, after both exact-head native matrices passed.
+- The blocking dependency remains recorded and is satisfied, not removed or absorbed. Reuse its grammar/cursor/wire/render/transport and HTTP/regex/recovery seams. The original dirty parent checkout remains untouched.
+- Query execution is not implemented yet. Empirical evidence and design approval are complete; S1 HTTP and shape writers are working in separate isolated worktrees. Main supplies integration and every checkpoint gate.
 
 ## Terminal criterion
 
-Empirical — every empirical premise passes the prove-it-prototype gate, every downstream artifact satisfies its owning stage's completion criterion, and checkpointed-build records no FAIL. Not complete: prerequisite work-order decision and all downstream gates remain outstanding.
+Empirical — every empirical premise passes the prove-it-prototype gate, every downstream artifact satisfies its owning stage's completion criterion, and checkpointed-build records no FAIL. Evidence and approval are complete; implementation, verification and delivery remain outstanding.
