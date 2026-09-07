@@ -111,6 +111,13 @@ pub enum JiraAddress {
     Projects {
         site: AtlassianSiteId,
     },
+    Issues {
+        site: AtlassianSiteId,
+    },
+    ProjectIssues {
+        site: AtlassianSiteId,
+        project: JiraProjectId,
+    },
     Project {
         site: AtlassianSiteId,
         project_id: JiraProjectId,
@@ -136,6 +143,8 @@ impl JiraAddress {
             Self::Issue { site, .. }
             | Self::IssueKeyAlias { site, .. }
             | Self::Projects { site }
+            | Self::Issues { site }
+            | Self::ProjectIssues { site, .. }
             | Self::Project { site, .. }
             | Self::ProjectKeyAlias { site, .. } => site,
         }
@@ -146,6 +155,8 @@ impl JiraAddress {
             Self::Issue { issue_id, .. } => Some(issue_id),
             Self::IssueKeyAlias { .. }
             | Self::Projects { .. }
+            | Self::Issues { .. }
+            | Self::ProjectIssues { .. }
             | Self::Project { .. }
             | Self::ProjectKeyAlias { .. } => None,
         }
@@ -156,6 +167,8 @@ impl JiraAddress {
             Self::IssueKeyAlias { issue_key, .. } => Some(issue_key),
             Self::Issue { .. }
             | Self::Projects { .. }
+            | Self::Issues { .. }
+            | Self::ProjectIssues { .. }
             | Self::Project { .. }
             | Self::ProjectKeyAlias { .. } => None,
         }
@@ -166,6 +179,8 @@ impl JiraAddress {
             Self::Issue { resource, .. } => Some(resource),
             Self::IssueKeyAlias { .. }
             | Self::Projects { .. }
+            | Self::Issues { .. }
+            | Self::ProjectIssues { .. }
             | Self::Project { .. }
             | Self::ProjectKeyAlias { .. } => None,
         }
@@ -174,6 +189,14 @@ impl JiraAddress {
     pub(crate) fn canonical_reference(&self) -> String {
         match self {
             Self::Projects { site } => format!("{JIRA_PREFIX}{}/projects", site.as_str()),
+            Self::Issues { site } => format!("{JIRA_PREFIX}{}/issues", site.as_str()),
+            Self::ProjectIssues { site, project } => {
+                format!(
+                    "{JIRA_PREFIX}{}/projects/{}/issues",
+                    site.as_str(),
+                    project.as_str()
+                )
+            }
             Self::Project { site, project_id } => {
                 format!(
                     "{JIRA_PREFIX}{}/projects/{}",
@@ -223,6 +246,13 @@ pub(super) fn parse_jira_address(input: &str) -> Result<JiraAddress, ResourceErr
     match segments.as_slice() {
         [site, "projects"] => Ok(JiraAddress::Projects {
             site: AtlassianSiteId::new((*site).to_owned())?,
+        }),
+        [site, "issues"] => Ok(JiraAddress::Issues {
+            site: AtlassianSiteId::new((*site).to_owned())?,
+        }),
+        [site, "projects", project, "issues"] => Ok(JiraAddress::ProjectIssues {
+            site: AtlassianSiteId::new((*site).to_owned())?,
+            project: JiraProjectId::new((*project).to_owned())?,
         }),
         [site, "projects", project_id] => Ok(JiraAddress::Project {
             site: AtlassianSiteId::new((*site).to_owned())?,
@@ -291,8 +321,10 @@ pub(super) fn parse_jira_reference(
     input: &str,
 ) -> Result<(JiraAddress, Option<ProjectionSelector>), ResourceError> {
     // Native page markers belong only to Jira; literal workspace/URL interpretations stay intact.
-    let split = input
-        .find(":offset:")
+    let split = [input.find(":offset:"), input.find(":cursor:")]
+        .into_iter()
+        .flatten()
+        .min()
         .map(|index| (&input[..index], &input[index + 1..]))
         .or_else(|| projection_candidate_split(input));
     let (base, projection) = match split {
@@ -309,6 +341,18 @@ pub(super) fn parse_jira_reference(
             "source offset requires a Jira projects collection",
         ));
     }
+    if projection
+        .as_ref()
+        .is_some_and(|selector| selector.source_cursor().is_some())
+        && !matches!(
+            address,
+            JiraAddress::Issues { .. } | JiraAddress::ProjectIssues { .. }
+        )
+    {
+        return Err(invalid_reference(
+            "source cursor requires a Jira issues collection",
+        ));
+    }
     Ok((address, projection))
 }
 
@@ -320,8 +364,12 @@ pub(crate) fn canonical_record_identity(reference: &PathReference, address: &Jir
     match reference.projection() {
         None => reference.requested() == canonical,
         Some(selector) => {
-            matches!(address, JiraAddress::Projects { .. })
-                && selector.source_offset().is_some()
+            ((matches!(address, JiraAddress::Projects { .. })
+                && selector.source_offset().is_some())
+                || (matches!(
+                    address,
+                    JiraAddress::Issues { .. } | JiraAddress::ProjectIssues { .. }
+                ) && selector.source_cursor().is_some()))
                 && reference.requested() == format!("{canonical}:{}", selector.as_str())
         }
     }

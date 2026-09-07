@@ -157,3 +157,34 @@ Caller inventory: Jira parsing/selector changes flow through `reference.rs`, `re
 ### S2 Windows fixture correction
 
 Native S2 runs `34077882338`/`34077897727` passed Linux/macOS but failed the same core reference row in debug and release on Windows. `file:offset:7` is a reserved file URI, not the intended relative workspace literal; Windows correctly requires its drive/UNC form. The fixture now uses `notes:offset:7`, preserving the no-source-offset and legacy line-candidate assertions without weakening file-URI validation. The exact core row passes locally; the pushed follow-up requires native Windows verification. S1's updated native matrix is green.
+
+## S3 checkpoint — 2026-09-07
+
+Issue browsing adds only the approved site/project issue families and cursor selector. The native enhanced GET uses the proven `project IS NOT EMPTY ORDER BY key ASC` or stable-ID project predicate with `key,summary,status,project` selected. Cursor decoding precedes parent I/O; bounded serialization rejects unrepresentable tokens before either forwarding or publishing them. Core stores one validated cursor spelling, without a duplicate large token allocation. Parent validation and page traversal share `JiraRead`'s original attempt/retry/deadline budget.
+
+| Gate | State | Evidence |
+|---|---|---|
+| Affected tests | PASS | Core Jira reference target: 15 cases; five browse targets: 26 cases; existing direct adapter: 12 cases. Final focused cursor replay, including duplicate JSON owner, passes with no extra requests. |
+| Assigned falsifiers | PASS | C2/C4/C5/C7/C8/C9/C10/C12/C13/C14/C15 discharged; S2 fences remain green and C16 is rechecked. |
+| Stress fixture | PASS | Opaque Unicode/space tokens, empty nonterminal pages, malformed/contradictory/repeated tokens, cross-owner/origin replay, required metadata/authority failures, optional status shapes, duplicate rows, parent-charged retry/deadline, oversized body/continuation and artifact spill. |
+| Implementation versus oracle | PASS | Independent native request/error/identity oracles agree; real `live_jira_browse` traverses all three collection shapes and matches a direct summary Field read in 3.29 seconds. |
+| Production-scale budgets | PASS | Explicit assertion-disabled release run: 1,000 issue rows with 4-KiB summaries processed in 22.146303 ms; numeric order, ten-request and cardinality bounds pass. |
+| Permanent fences | PASS | Full debug workspace, release workspace, all ignored production budgets, dependency vetting and issues-stage placement pass; final formatting/strict Clippy and changed core/cursor fences pass after the lint-only correction. |
+| Named mutations | PASS | Thirteen: C2/C4/C5/C7/C8/C9/C10/C10-duplicates/C12/C13/C14/C15/C16. Each reaches its intended assertion; compilation failures and unrelated fixture panics do not count. |
+| Restored fences | PASS | Every mutation restores byte-identical source and reruns green. C16 moves the actual issue decoder into core; the oracle rejects wrong ownership even while the parent remains below its line ceiling. |
+
+Aggregate evidence is deliberately precise: the first attempt failed from local `/tmp` exhaustion plus an unnecessary test clone. After reclaiming obsolete Cargo targets, `python scripts/ci-gates.py` completed in 587.81 seconds with only that lint failing; debug/release suites, all production budgets and dependency checks passed (artifact 932). The clone was removed; `cargo +1.98.0 fmt --all -- --check`, full strict Clippy, all 15 core cases and the final duplicate-envelope replay fence then passed (artifact 935). Mutation driver completed all thirteen claims in 78.11 seconds (artifact 940). No single all-green aggregate invocation is claimed.
+
+Standards review: no hard violations; one P3 duplicated-comparator heuristic retained intentionally. Both short comparisons stay beside their distinct typed project/issue loops rather than introducing a raw-string abstraction solely for six repeated lines; both numeric fences pass. Spec review: no findings. A proposed duplicate-envelope defect was withdrawn after checking Serde's derived struct visitor and confirmed by the public zero-egress fence.
+
+Caller inventory: core `reference.rs`/Jira child/source-page child and exports; generic text selection's explicit source-selector rejection; existing resource/discovery canonical identity delegation; Jira facade read/search/catalog dispatch; private cursor/browse owners; compact wire/render owners and minimal test-support reexports. Direct issue and Field behavior remains unchanged. S3 also replaces its own accidental `file:` literal fixture with a real relative workspace name; production URI rules are unchanged.
+
+Live fixtures were marker-revalidated, deleted and verified absent by the operator after final provider proof; details are in evidence.md. The original dirty parent checkout remains preserved. Native CI is separate: the S2 portable-fixture follow-up must pass Windows, and S3's new draft PR must run its own matrix. Caller-authored JQL remains rfs-nae2, not part of this checkpoint.
+
+### Final integration — 2026-09-07
+
+Both native matrices for S3 head `4a1978fb6344d9237457c7ef3eec705d1f5c74b4` passed all Linux, macOS and Windows gates: runs `34084562325` and `34084565600`. The final integration head `b1a12994524b6b77239b95ac6f86d88e96ef9380` also passed both complete native matrices, `34088299908` and `34088303129`. All browsing acceptance criteria and C1–C16 are discharged.
+
+S2 follow-up `d332733` isolates mount construction timing, adds a 50 ms release CI guard with diagnostics, and records investigation `rfs-a3ag`. Its complete 12-case assertion-disabled release adapter target and strict Clippy passed; maximum construction measured 1.077304 ms. Both final S2 matrices (`34088081077`, `34088081527`) passed all three platforms. PR #3 merged as `47abb6f67f0e2e2b18346d21ace15ccab20830e6`.
+
+GitHub's automatic restack onto that merge dropped the tracker closure and this evidence when they existed only in the integration merge commit. They now ride atomically with the S3 feature commit itself; the restack did not change production source. The final pushed S3 head must pass its own native checks before merging PR #4. Nextest remains an experiment only; the Cargo-based gates are unchanged.

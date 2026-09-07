@@ -33,6 +33,7 @@ EXCLUDED = {
     "live_https_reads_hold_up": "live HTTPS smoke",
     "live_jira_issue_read": "live Jira smoke",
     "live_jira_project_browse": "live Jira project smoke",
+    "live_jira_browse": "live Jira project and issue browse smoke",
     "profile_https_test_server": "child server, invoked by functional tests",
 }
 # Both command-line config and environment are explicit: local Cargo profile
@@ -125,7 +126,7 @@ def main():
     if sys.platform == "linux":
         gates.insert(0, (
             "Module placement",
-            [sys.executable, ".rfs-h212/oracles/module_shape.py", "--stage", "projects"],
+            [sys.executable, ".rfs-h212/oracles/module_shape.py", "--stage", "issues"],
         ))
     failed = []
     for name, command in gates:

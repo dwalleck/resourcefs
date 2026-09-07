@@ -248,3 +248,89 @@ async fn live_jira_project_browse() {
         "exercise a real native continuation"
     );
 }
+
+#[tokio::test]
+#[ignore = "reader-only live Jira browse; needs retained project and issue fixtures"]
+async fn live_jira_browse() {
+    let Some(config) = live_config() else { return };
+    let Ok(project_id) = std::env::var("ATLASSIAN_PROJECT_ID") else {
+        eprintln!("missing ATLASSIAN_PROJECT_ID; skipping");
+        return;
+    };
+    let (source, _session) = live_source(&config).await;
+    let source = source
+        .with_jira_browse_limits_for_test(1, 1, 3)
+        .expect("lower live limits");
+    let project = format!("jira://{}/projects/{project_id}", config.site_id);
+    let issue = format!("jira://{}/issues/{}", config.site_id, config.issue_id);
+    let direct = read(&source, issue.clone()).await;
+    assert_eq!(direct.canonical_reference(), issue);
+    let summary = read(&source, format!("{issue}/fields/summary")).await;
+    let summary: String = serde_json::from_str(summary.content()).expect("direct summary Field");
+    let summary_row = format!(
+        "Summary: {}",
+        serde_json::to_string(&summary).expect("summary JSON")
+    );
+    for (collection, identity, cursor) in [
+        (
+            format!("jira://{}/projects", config.site_id),
+            project.clone(),
+            false,
+        ),
+        (
+            format!("jira://{}/issues", config.site_id),
+            issue.clone(),
+            true,
+        ),
+        (format!("{project}/issues"), issue.clone(), true),
+    ] {
+        let mut next = Some(collection.clone());
+        let mut visited = std::collections::HashSet::new();
+        let mut found = false;
+        while let Some(reference) = next {
+            assert!(
+                visited.insert(reference.clone()),
+                "native continuation must advance"
+            );
+            assert!(visited.len() <= 1000, "fixture traversal safety ceiling");
+            let page = read(&source, reference).await;
+            assert_eq!(page.canonical_reference(), collection);
+            assert_eq!(page.content_type(), "text/markdown; charset=utf-8");
+            assert_eq!(
+                page.version_tag(),
+                &VersionTag::from_content(page.content().as_bytes())
+            );
+            if page.content().contains(&format!("Reference: {identity}\n")) {
+                found = true;
+                if cursor {
+                    assert!(
+                        page.content().contains(&summary_row),
+                        "selected summary agrees with direct Field read"
+                    );
+                    assert!(
+                        page.content().contains(&project),
+                        "selected project identity agrees with fixture"
+                    );
+                }
+            }
+            next = page.continuation().map(str::to_owned);
+            if let Some(reference) = &next {
+                let typed = PathReference::parse(reference).expect("typed source continuation");
+                let selector = typed.projection().expect("native page selector");
+                if cursor {
+                    assert!(selector.source_cursor().is_some());
+                } else {
+                    assert!(selector.source_offset().is_some());
+                }
+            }
+            if found && visited.len() > 1 {
+                break;
+            }
+        }
+        assert!(found, "reader-visible fixture must occur in {collection}");
+        assert!(
+            visited.len() > 1,
+            "exercise native pagination for {collection}"
+        );
+    }
+}

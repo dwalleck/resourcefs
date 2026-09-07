@@ -58,7 +58,7 @@ pub use reference::{
     MAX_LOCAL_NAME_BYTES, MAX_PATH_REFERENCE_BYTES, MAX_WORKSPACE_ROOTS, PathReference,
     ProjectionSelector, PullRequestAddress, PullRequestNumber, PullRequestResource,
     ResourceAddress, ReviewCommentId, ReviewId, SelectedLocalAddress, SelectedWorkspaceAddress,
-    SourceOffset, WorkspaceAddress, WorkspacePath, WorkspaceRoot, WorkspaceRootId,
+    SourceCursor, SourceOffset, WorkspaceAddress, WorkspacePath, WorkspaceRoot, WorkspaceRootId,
     WorkspaceRootSet,
 };
 pub use resource::{

@@ -76,10 +76,12 @@ where
             "artifact page selectors are executed by the bounded read engine",
         ));
     }
-    if projection.is_some_and(|selector| selector.source_offset().is_some()) {
+    if projection.is_some_and(|selector| {
+        selector.source_offset().is_some() || selector.source_cursor().is_some()
+    }) {
         return Err(ResourceError::new(
             ErrorCategory::UnsupportedProjection,
-            "source offset selectors must be consumed by the source adapter",
+            "source page selectors must be consumed by the source adapter",
         ));
     }
 

@@ -1,9 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use resourcefs_core::{AllowedOrigin, JiraProjectId, JiraProjectKey, ResourceError, SourceOffset};
+use resourcefs_core::{
+    AllowedOrigin, JiraIssueId, JiraIssueKey, JiraProjectId, JiraProjectKey, ResourceError,
+    SourceOffset,
+};
 use url::Url;
 
-use super::{StrictJson, StrictParser, malformed_upstream, required_string, validate_object_self};
+use super::{
+    StrictJson, StrictParser, malformed_upstream, required_object, required_string,
+    validate_object_self,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Presence<T> {
@@ -32,6 +38,151 @@ pub(crate) struct ProjectPage {
     pub(crate) values: Vec<JiraProject>,
     pub(crate) max_results: u64,
     pub(crate) next_offset: Option<SourceOffset>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct JiraIssueSummary {
+    pub(crate) id: JiraIssueId,
+    pub(crate) key: JiraIssueKey,
+    pub(crate) summary: String,
+    pub(crate) self_url: String,
+    pub(crate) project_id: JiraProjectId,
+    pub(crate) status: Presence<JiraIssueStatus>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct JiraIssueStatus {
+    pub(crate) name: Presence<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeIssueToken(String);
+
+impl NativeIssueToken {
+    pub(crate) fn new(value: String) -> Result<Self, ResourceError> {
+        if value.is_empty() {
+            return Err(malformed_upstream("Jira issue continuation token is empty"));
+        }
+        Ok(Self(value))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn into_string(self) -> String {
+        self.0
+    }
+}
+
+pub(crate) struct IssuePage {
+    pub(crate) values: Vec<JiraIssueSummary>,
+    pub(crate) next_token: Option<NativeIssueToken>,
+}
+
+pub(crate) fn decode_issue_page(
+    body: &[u8],
+    origin: &AllowedOrigin,
+) -> Result<IssuePage, ResourceError> {
+    let StrictJson::Object(mut object) = StrictParser::parse(body)? else {
+        return Err(malformed_upstream(
+            "Jira issue page must be one JSON object",
+        ));
+    };
+    let next_token = match object.remove("nextPageToken") {
+        None => None,
+        Some(StrictJson::String(value)) => Some(NativeIssueToken::new(value)?),
+        Some(_) => {
+            return Err(malformed_upstream(
+                "Jira issue continuation must be a string",
+            ));
+        }
+    };
+    match object.remove("isLast") {
+        None => {}
+        Some(StrictJson::Bool(value)) if value == next_token.is_none() => {}
+        Some(_) => {
+            return Err(malformed_upstream(
+                "Jira issue terminal state is malformed or contradicts its continuation",
+            ));
+        }
+    }
+    let Some(StrictJson::Array(rows)) = object.remove("issues") else {
+        return Err(malformed_upstream(
+            "Jira issue page requires an array of issues",
+        ));
+    };
+    let mut seen = BTreeSet::new();
+    let mut values = Vec::with_capacity(rows.len());
+    for row in rows {
+        let issue = decode_issue_summary(row, origin)?;
+        if !seen.insert(issue.id.clone()) {
+            return Err(malformed_upstream(
+                "Jira issue page contains duplicate stable IDs",
+            ));
+        }
+        values.push(issue);
+    }
+    Ok(IssuePage { values, next_token })
+}
+
+fn decode_issue_summary(
+    value: StrictJson,
+    origin: &AllowedOrigin,
+) -> Result<JiraIssueSummary, ResourceError> {
+    let StrictJson::Object(mut object) = value else {
+        return Err(malformed_upstream(
+            "Jira issue summary must be one JSON object",
+        ));
+    };
+    let id = JiraIssueId::new(required_string(&mut object, "id", "issue.id")?)
+        .map_err(|_| malformed_upstream("Jira issue ID is malformed"))?;
+    let key = JiraIssueKey::new(required_string(&mut object, "key", "issue.key")?)
+        .map_err(|_| malformed_upstream("Jira issue key is malformed"))?;
+    let self_url = required_string(&mut object, "self", "issue.self")?;
+    validate_object_self(
+        origin,
+        &self_url,
+        &format!("/rest/api/3/issue/{}", id.as_str()),
+    )?;
+    let mut fields = required_object(&mut object, "fields", "issue.fields")?;
+    let summary = required_string(&mut fields, "summary", "issue.fields.summary")?;
+    let mut project = required_object(&mut fields, "project", "issue.fields.project")?;
+    let project_id = JiraProjectId::new(required_string(
+        &mut project,
+        "id",
+        "issue.fields.project.id",
+    )?)
+    .map_err(|_| malformed_upstream("Jira issue project ID is malformed"))?;
+    let project_self = required_string(&mut project, "self", "issue.fields.project.self")?;
+    validate_object_self(
+        origin,
+        &project_self,
+        &format!("/rest/api/3/project/{}", project_id.as_str()),
+    )?;
+    let status = match fields.remove("status") {
+        None => Presence::Absent,
+        Some(StrictJson::Null) => Presence::Null,
+        Some(StrictJson::Object(mut status)) => Presence::Value(JiraIssueStatus {
+            name: optional_value(&mut status, "name", |value| match value {
+                StrictJson::String(value) => Some(value),
+                _ => None,
+            })?,
+        }),
+        Some(_) => {
+            return Err(malformed_upstream(
+                "Jira issue status must be an object or null",
+            ));
+        }
+    };
+    Ok(JiraIssueSummary {
+        id,
+        key,
+        summary,
+        self_url,
+        project_id,
+        status,
+    })
 }
 
 pub(crate) fn decode_project(
@@ -103,7 +254,7 @@ fn optional_value<T>(
         None => Ok(Presence::Absent),
         Some(StrictJson::Null) => Ok(Presence::Null),
         Some(value) => decode(value).map(Presence::Value).ok_or_else(|| {
-            malformed_upstream(format!("Jira project field '{field}' has the wrong type"))
+            malformed_upstream(format!("Jira optional field '{field}' has the wrong type"))
         }),
     }
 }
@@ -345,4 +496,34 @@ fn observe_presence<T>(value: Presence<T>) -> Option<Option<T>> {
         Presence::Null => Some(None),
         Presence::Value(value) => Some(Some(value)),
     }
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Debug)]
+pub struct JiraIssuePageObservation {
+    pub ids: Vec<String>,
+    pub next_token: Option<String>,
+    pub rendered: String,
+}
+
+#[cfg(feature = "test-support")]
+pub fn inspect_issue_wire_for_test(
+    body: &[u8],
+    origin: &str,
+) -> Result<JiraIssuePageObservation, ResourceError> {
+    let origin = AllowedOrigin::new(origin, false)?;
+    let page = decode_issue_page(body, &origin)?;
+    let address = resourcefs_core::JiraAddress::Issues {
+        site: resourcefs_core::AtlassianSiteId::new("test")?,
+    };
+    let rendered = crate::atlassian::render::collections::render_issues(&address, &page.values)?;
+    Ok(JiraIssuePageObservation {
+        ids: page
+            .values
+            .iter()
+            .map(|issue| issue.id.as_str().to_owned())
+            .collect(),
+        next_token: page.next_token.map(NativeIssueToken::into_string),
+        rendered,
+    })
 }

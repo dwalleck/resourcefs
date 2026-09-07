@@ -1,4 +1,5 @@
 pub(super) mod browse;
+mod cursor;
 mod transport;
 
 use std::io::Cursor;
@@ -39,6 +40,8 @@ impl AtlassianSource {
             JiraAddress::Projects { .. }
                 | JiraAddress::Project { .. }
                 | JiraAddress::ProjectKeyAlias { .. }
+                | JiraAddress::Issues { .. }
+                | JiraAddress::ProjectIssues { .. }
         ) {
             return self.read_browse(reference, address, site, operation).await;
         }
@@ -64,6 +67,8 @@ impl AtlassianSource {
                 &JiraIssueResource::Aggregate,
             ),
             JiraAddress::Projects { .. }
+            | JiraAddress::Issues { .. }
+            | JiraAddress::ProjectIssues { .. }
             | JiraAddress::Project { .. }
             | JiraAddress::ProjectKeyAlias { .. } => {
                 return Err(unsupported_jira_projection());
@@ -192,7 +197,7 @@ impl SourceCatalogMetadata for AtlassianSource {
     fn catalog_entries(&self) -> Result<Vec<SourceCatalogEntry>, ResourceError> {
         Ok(vec![SourceCatalogEntry::new(
             "jira://",
-            "jira://<site>/issues/<issue-id>[/fields[/<field-id>]][:selector] | jira://<site>/issue-keys/<issue-key>[:selector] | jira://<site>/projects[:offset:N] | jira://<site>/projects/<project-id>[:selector] | jira://<site>/project-keys/<project-key>[:selector]",
+            "jira://<site>/issues/<issue-id>[/fields[/<field-id>]][:selector] | jira://<site>/issue-keys/<issue-key>[:selector] | jira://<site>/projects[:offset:N] | jira://<site>/projects/<project-id>[:selector] | jira://<site>/project-keys/<project-key>[:selector] | jira://<site>/issues[:cursor:C] | jira://<site>/projects/<project-id>/issues[:cursor:C]",
             "jira://site/issues/10001",
             None,
         )?])
@@ -214,7 +219,9 @@ impl DiscoveryAdapter for AtlassianSource {
         };
         let source_selector = reference
             .projection()
-            .filter(|selector| selector.source_offset().is_some())
+            .filter(|selector| {
+                selector.source_offset().is_some() || selector.source_cursor().is_some()
+            })
             .cloned();
         let requested = PathReference::jira(address.clone(), source_selector.clone())?;
         let source = self.read(&requested, operation).await?;
@@ -262,7 +269,7 @@ impl DiscoveryAdapter for AtlassianSource {
 fn unsupported_jira_projection() -> ResourceError {
     ResourceError::new(
         ErrorCategory::UnsupportedProjection,
-        "Jira Source Adapter supports explicit issue and project Resources and project collections",
+        "Jira Source Adapter supports explicit issue and project Resources and fixed collections",
     )
 }
 

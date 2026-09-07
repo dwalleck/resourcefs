@@ -20,7 +20,7 @@ pub use jira::{
     JiraAddress, JiraFieldId, JiraIssueId, JiraIssueKey, JiraIssueResource, JiraProjectId,
     JiraProjectKey, MAX_JIRA_ISSUE_ID_BYTES, MAX_JIRA_PROJECT_ID_BYTES, MAX_JIRA_SEGMENT_BYTES,
 };
-pub use source_page::SourceOffset;
+pub use source_page::{SourceCursor, SourceOffset};
 
 const WORKSPACE_PREFIX: &str = "rfs://workspace/";
 pub(crate) const SOURCE_CATALOG_REFERENCE: &str = "rfs://";
@@ -744,11 +744,13 @@ enum ProjectionKind {
     Lines(LineSelector),
     Page(u64),
     Offset(SourceOffset),
+    Cursor(SourceCursor),
 }
 
 /// Typed projection plus the caller's accepted spelling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionSelector {
+    // Cursor owns the full spelling; this string stays empty for that variant.
     spelling: String,
     kind: ProjectionKind,
 }
@@ -756,6 +758,9 @@ pub struct ProjectionSelector {
 impl ProjectionSelector {
     pub fn parse(spelling: impl Into<String>) -> Result<Self, ResourceError> {
         let spelling = spelling.into();
+        if spelling.starts_with("cursor:") {
+            return SourceCursor::from_spelling(spelling).map(Self::from_source_cursor);
+        }
         if spelling == "raw" {
             return Ok(Self {
                 spelling,
@@ -795,35 +800,63 @@ impl ProjectionSelector {
     }
 
     pub fn as_str(&self) -> &str {
-        &self.spelling
+        match &self.kind {
+            ProjectionKind::Cursor(cursor) => cursor.spelling(),
+            _ => &self.spelling,
+        }
     }
 
     pub const fn is_raw(&self) -> bool {
         match &self.kind {
             ProjectionKind::Raw => true,
             ProjectionKind::Lines(selection) => selection.is_raw(),
-            ProjectionKind::Page(_) | ProjectionKind::Offset(_) => false,
+            ProjectionKind::Page(_) | ProjectionKind::Offset(_) | ProjectionKind::Cursor(_) => {
+                false
+            }
         }
     }
 
     pub const fn line_selection(&self) -> Option<&LineSelector> {
         match &self.kind {
             ProjectionKind::Lines(selection) => Some(selection),
-            ProjectionKind::Raw | ProjectionKind::Page(_) | ProjectionKind::Offset(_) => None,
+            ProjectionKind::Raw
+            | ProjectionKind::Page(_)
+            | ProjectionKind::Offset(_)
+            | ProjectionKind::Cursor(_) => None,
         }
     }
 
     pub const fn page_offset(&self) -> Option<u64> {
         match &self.kind {
             ProjectionKind::Page(offset) => Some(*offset),
-            ProjectionKind::Raw | ProjectionKind::Lines(_) | ProjectionKind::Offset(_) => None,
+            ProjectionKind::Raw
+            | ProjectionKind::Lines(_)
+            | ProjectionKind::Offset(_)
+            | ProjectionKind::Cursor(_) => None,
         }
     }
 
     pub const fn source_offset(&self) -> Option<SourceOffset> {
         match self.kind {
             ProjectionKind::Offset(offset) => Some(offset),
-            ProjectionKind::Raw | ProjectionKind::Lines(_) | ProjectionKind::Page(_) => None,
+            ProjectionKind::Raw
+            | ProjectionKind::Lines(_)
+            | ProjectionKind::Page(_)
+            | ProjectionKind::Cursor(_) => None,
+        }
+    }
+
+    pub fn from_source_cursor(cursor: SourceCursor) -> Self {
+        Self {
+            spelling: String::new(),
+            kind: ProjectionKind::Cursor(cursor),
+        }
+    }
+
+    pub const fn source_cursor(&self) -> Option<&SourceCursor> {
+        match &self.kind {
+            ProjectionKind::Cursor(cursor) => Some(cursor),
+            _ => None,
         }
     }
 }
