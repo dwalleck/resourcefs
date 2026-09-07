@@ -1,0 +1,77 @@
+{
+  "date": "2026-09-07",
+  "site": "https://kiro-tethys.atlassian.net",
+  "bootstrap_exit": 0,
+  "verify_exit": 0,
+  "reader_only_adapter": {
+    "test": "live_jira_jql",
+    "exit": 0,
+    "seconds": 2.12
+  },
+  "reader_only_stdio": {
+    "test": "server::jira_query_tests::live_jira_query_stdio",
+    "exit": 0,
+    "seconds": 2.3,
+    "surface": "real MCP service in reexecuted test-host, not shipped Atlassian profile"
+  },
+  "operator_cleanup_attempts": [
+    {
+      "exit": 1,
+      "error": "invalid_response operation=space_delete_poll"
+    },
+    {
+      "exit": 1,
+      "error": "foreign_collision logical=page"
+    },
+    {
+      "exit": 1,
+      "error": "upstream_failure actor=provisioner operation=page_list status=404"
+    }
+  ],
+  "audited_reconciliation": [
+    {
+      "operation": "delete_remaining_marker_owned_space",
+      "id": "25886722",
+      "http": 202
+    },
+    {
+      "operation": "remaining_space_and_owned_page_absence",
+      "http": [
+        404,
+        404
+      ],
+      "poll": 2
+    },
+    {
+      "operation": "delete_marker_owned_project_permanently",
+      "id": "10045",
+      "http": 204
+    },
+    {
+      "operation": "delete_marker_owned_project_permanently",
+      "id": "10046",
+      "http": 204
+    },
+    {
+      "operation": "all_receipt_resource_absence",
+      "resources": 14,
+      "http": 404,
+      "project_trash_empty": 2
+    }
+  ],
+  "receipt_absent": true,
+  "pending_absent": true,
+  "operator_defect": "rfs-br1u",
+  "final_harness_repeat": {
+    "bootstrap_exit": 0,
+    "verify_exit": 0,
+    "adapter_exit": 0,
+    "adapter_seconds": 2.4,
+    "stdio_exit": 0,
+    "stdio_seconds": 2.4,
+    "operator_cleanup_exit": 0,
+    "operator_output": "cleaned site=https://kiro-tethys.atlassian.net",
+    "receipt_absent": true,
+    "pending_absent": true
+  }
+}

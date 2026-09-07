@@ -12,9 +12,9 @@ use super::{AtlassianSite, AtlassianSource, malformed_upstream, transport::JiraR
 
 #[derive(Clone, Copy)]
 pub(crate) struct BrowseLimits {
-    native: usize,
-    records: usize,
-    attempts: usize,
+    pub(super) native: usize,
+    pub(super) records: usize,
+    pub(super) attempts: usize,
 }
 
 impl Default for BrowseLimits {
@@ -64,6 +64,10 @@ impl AtlassianSource {
         operation: BoundedRead<'_>,
     ) -> Result<SourceResource, ResourceError> {
         match address {
+            JiraAddress::Query { query, .. } => {
+                self.read_query(reference, address, query, site, operation)
+                    .await
+            }
             JiraAddress::Projects { .. } => self.read_projects(reference, site, operation).await,
             JiraAddress::Issues { .. } | JiraAddress::ProjectIssues { .. } => {
                 self.read_issues(reference, address, site, operation).await

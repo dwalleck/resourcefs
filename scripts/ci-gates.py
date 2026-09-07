@@ -34,6 +34,9 @@ EXCLUDED = {
     "live_jira_issue_read": "live Jira smoke",
     "live_jira_project_browse": "live Jira project smoke",
     "live_jira_browse": "live Jira project and issue browse smoke",
+    "live_jira_jql": "live Jira native JQL smoke",
+    "server::jira_query_tests::live_jira_query_stdio": "live Jira native JQL stdio smoke",
+    "server::jira_query_tests::jira_query_stdio_test_host": "child server, invoked by functional tests",
     "profile_https_test_server": "child server, invoked by functional tests",
 }
 # Both command-line config and environment are explicit: local Cargo profile
@@ -126,7 +129,7 @@ def main():
     if sys.platform == "linux":
         gates.insert(0, (
             "Module placement",
-            [sys.executable, ".rfs-nae2/oracles/module_shape.py", "--stage", "http"],
+            [sys.executable, ".rfs-nae2/oracles/module_shape.py", "--stage", "query"],
         ))
     failed = []
     for name, command in gates:

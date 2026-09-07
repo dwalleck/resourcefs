@@ -73,11 +73,25 @@ pub async fn fixture_with_session<R>(
 where
     R: Fn(&str) -> FixtureResponse + Send + Sync + 'static,
 {
+    fixture_with_request_session(move |request| router(request.target()), ceilings).await
+}
+
+pub async fn fixture_with_request_session<R>(
+    router: R,
+    ceilings: HttpCeilings,
+) -> (
+    TlsListener,
+    AtlassianSource,
+    session_support::ScratchFixture,
+)
+where
+    R: Fn(&tls::FixtureRequest) -> FixtureResponse + Send + Sync + 'static,
+{
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let dynamic_port = Arc::new(AtomicU16::new(0));
     let observed_port = Arc::clone(&dynamic_port);
-    let listener = TlsListener::serve_router(loopback, 0, match_cert(), move |path| {
-        let mut response = router(path);
+    let listener = TlsListener::serve_request_router(loopback, 0, match_cert(), move |request| {
+        let mut response = router(request);
         if let FixtureResponse::Response { body, .. } = &mut response {
             let rewritten = String::from_utf8_lossy(body).replace(
                 "https://tls.invalid/",

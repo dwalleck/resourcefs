@@ -1,4 +1,4 @@
-//! Request construction, source-header validation, and replay ownership.
+//! Request construction, source-header validation, and explicit replay intent.
 
 use bytes::Bytes;
 use resourcefs_core::{ErrorCategory, MAX_ARTIFACT_BYTES, ResourceError};
@@ -9,6 +9,13 @@ use super::header;
 const MAX_SOURCE_REQUEST_HEADERS: usize = 16;
 pub(super) const MAX_SOURCE_REQUEST_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HTTP_MUTATION_REQUEST_BYTES: usize = MAX_ARTIFACT_BYTES * 6 + 64 * 1024;
+const MAX_HTTP_READ_ONLY_REQUEST_BYTES: usize = 384 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestIntent {
+    ReadOnly,
+    Mutation,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SourceRequestHeader {
@@ -30,7 +37,7 @@ pub(super) enum RedirectBehavior {
 }
 
 /// One source-neutral request for the substrate to perform.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct HttpRequest {
     pub(super) url: Url,
     pub(super) method: HttpMethod,
@@ -38,6 +45,19 @@ pub struct HttpRequest {
     pub(super) body: Option<Bytes>,
     pub(super) headers: Vec<SourceRequestHeader>,
     header_bytes: usize,
+    intent: RequestIntent,
+}
+
+impl std::fmt::Debug for HttpRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("redirect", &self.redirect)
+            .field("intent", &self.intent)
+            .field("body_bytes", &self.body.as_ref().map(Bytes::len))
+            .finish_non_exhaustive()
+    }
 }
 
 impl HttpRequest {
@@ -51,12 +71,32 @@ impl HttpRequest {
             body: None,
             headers: Vec::new(),
             header_bytes: 0,
+            intent: RequestIntent::ReadOnly,
         }
     }
 
     /// Builds one bounded non-redirecting JSON POST request.
     pub fn post_json(url: Url, body: Vec<u8>) -> Result<Self, ResourceError> {
         Self::json(url, HttpMethod::Post, body)
+    }
+
+    /// Builds a nonredirecting POST whose caller guarantees read-only semantics.
+    ///
+    /// Callers preflight input lengths before JSON serialization. The encoded
+    /// body has its own 384 KiB ceiling and transfers into shared immutable bytes
+    /// once, so replay never copies or reserializes the payload.
+    pub(crate) fn post_json_read_only(url: Url, body: Vec<u8>) -> Result<Self, ResourceError> {
+        if body.len() > MAX_HTTP_READ_ONLY_REQUEST_BYTES {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                format!(
+                    "HTTP read-only request body exceeds the {MAX_HTTP_READ_ONLY_REQUEST_BYTES}-byte encoded ceiling"
+                ),
+            ));
+        }
+        let mut request = Self::json(url, HttpMethod::Post, body)?;
+        request.intent = RequestIntent::ReadOnly;
+        Ok(request)
     }
 
     /// Builds one bounded non-redirecting JSON PATCH request.
@@ -80,6 +120,7 @@ impl HttpRequest {
             body: Some(Bytes::from(body)),
             headers: Vec::new(),
             header_bytes: 0,
+            intent: RequestIntent::Mutation,
         })
     }
 
@@ -103,7 +144,7 @@ impl HttpRequest {
             .map_err(|_| invalid_source_header("HTTP request header name is invalid"))?;
         if self.body.is_some() && parsed_name == header::CONTENT_TYPE {
             return Err(invalid_source_header(
-                "HTTP JSON mutation requests own their Content-Type header",
+                "HTTP JSON requests own their Content-Type header",
             ));
         }
         if is_authority_or_framing_header(&parsed_name) {
@@ -151,10 +192,9 @@ impl HttpRequest {
     }
 
     pub(super) fn retry_copy(&self) -> Option<Self> {
-        if self.method != HttpMethod::Get {
+        if self.intent != RequestIntent::ReadOnly {
             return None;
         }
-        debug_assert!(self.body.is_none(), "GET requests never carry a body");
         Some(Self {
             url: self.url.clone(),
             method: self.method,
@@ -162,6 +202,7 @@ impl HttpRequest {
             body: self.body.clone(),
             headers: self.headers.clone(),
             header_bytes: self.header_bytes,
+            intent: self.intent,
         })
     }
 }

@@ -45,7 +45,7 @@ REQUIRED = {
 OWNERS = {
     "parse_jira_address": CORE + "reference/jira.rs",
     "encode_jira_segment": CORE + "reference/jira.rs",
-    "fetch_idempotent": SOURCES + "http/read.rs",
+    "fetch_bounded_attempts": SOURCES + "http/read.rs",
     "decode_project_page": SOURCES + "atlassian/wire/collections.rs",
     "decode_project": SOURCES + "atlassian/wire/collections.rs",
     "decode_issue_page": SOURCES + "atlassian/wire/collections.rs",

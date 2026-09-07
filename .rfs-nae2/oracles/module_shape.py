@@ -56,7 +56,7 @@ REQUEST_SYMBOLS = (
 )
 READ_SYMBOLS = (
     "HttpReadBudget", "BoundedRead", "MAX_HTTP_READ_ATTEMPTS",
-    "fetch_idempotent", "fetch_with_optional_budget", "charge_attempt",
+    "fetch_bounded_attempts", "fetch_with_optional_budget", "charge_attempt",
 )
 DECL = re.compile(r"\b(?:fn|struct|enum|trait|const|type)\s+([A-Za-z_]\w*)")
 FN = re.compile(r"\bfn\s+([A-Za-z_]\w*)")

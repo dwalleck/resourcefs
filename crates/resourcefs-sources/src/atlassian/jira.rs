@@ -1,5 +1,6 @@
 pub(super) mod browse;
 mod cursor;
+mod query;
 mod transport;
 
 use std::io::Cursor;
@@ -35,6 +36,11 @@ impl AtlassianSource {
         if projection.is_some_and(|selector| selector.page_offset().is_some()) {
             return Err(unsupported_jira_projection());
         }
+        if let JiraAddress::Query { query, .. } = address {
+            return self
+                .read_query(reference, address, query, site, operation)
+                .await;
+        }
         if matches!(
             address,
             JiraAddress::Projects { .. }
@@ -68,6 +74,7 @@ impl AtlassianSource {
             ),
             JiraAddress::Projects { .. }
             | JiraAddress::Issues { .. }
+            | JiraAddress::Query { .. }
             | JiraAddress::ProjectIssues { .. }
             | JiraAddress::Project { .. }
             | JiraAddress::ProjectKeyAlias { .. } => {
@@ -197,7 +204,7 @@ impl SourceCatalogMetadata for AtlassianSource {
     fn catalog_entries(&self) -> Result<Vec<SourceCatalogEntry>, ResourceError> {
         Ok(vec![SourceCatalogEntry::new(
             "jira://",
-            "jira://<site>/issues/<issue-id>[/fields[/<field-id>]][:selector] | jira://<site>/issue-keys/<issue-key>[:selector] | jira://<site>/projects[:offset:N] | jira://<site>/projects/<project-id>[:selector] | jira://<site>/project-keys/<project-key>[:selector] | jira://<site>/issues[:cursor:C] | jira://<site>/projects/<project-id>/issues[:cursor:C]",
+            "jira://<site>/issues/<issue-id>[/fields[/<field-id>]][:selector] | jira://<site>/issue-keys/<issue-key>[:selector] | jira://<site>/projects[:offset:N] | jira://<site>/projects/<project-id>[:selector] | jira://<site>/project-keys/<project-key>[:selector] | jira://<site>/issues[:cursor:C] | jira://<site>/projects/<project-id>/issues[:cursor:C] | jira://<site>/search/<percent-encoded-jql>[:cursor:C]",
             "jira://site/issues/10001",
             None,
         )?])
@@ -269,7 +276,7 @@ impl DiscoveryAdapter for AtlassianSource {
 fn unsupported_jira_projection() -> ResourceError {
     ResourceError::new(
         ErrorCategory::UnsupportedProjection,
-        "Jira Source Adapter supports explicit issue and project Resources and fixed collections",
+        "Jira Source Adapter supports explicit issue and project Resources, collections and queries",
     )
 }
 

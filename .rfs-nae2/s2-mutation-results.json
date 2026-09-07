@@ -1,0 +1,147 @@
+{
+  "status": "PASS",
+  "source_sha256": {
+    "crates/resourcefs-core/src/reference.rs": "e579f654567c8b403577377f66c2c8c9a93911da0249499fc724c549689aab3d",
+    "crates/resourcefs-core/src/reference/jira.rs": "6b845dbc2e8ce81379690d8f22cf96331af1aa79288933f52be204865305f146",
+    "crates/resourcefs-sources/src/atlassian/jira.rs": "4e13fbdf591973a3630ec67f774d522f2e6857505bd990a261526b3bc919448d",
+    "crates/resourcefs-sources/src/atlassian/jira/cursor.rs": "4ba49c6719b0e96d3ddf6385099699286c031de8e7c46ec52f3d759bc354f790",
+    "crates/resourcefs-sources/src/atlassian/jira/query.rs": "6b4587cdaf36c3c2ce321fc5c1d53ffcc5229a782c32676f1ee7f5c55bc85b7a",
+    "crates/resourcefs-sources/src/atlassian/jira/transport.rs": "1b03e79788b2b7f0c2fd94274ac34c8c18ff652c18776d0bf24afc5b8bd54ead",
+    "crates/resourcefs-sources/src/atlassian/wire/collections.rs": "d94adfcd221b5dcb5fc4a4936b09c4ccdb5ed5e68f914d5257bc2f153722cc9f",
+    "crates/resourcefs-sources/src/atlassian/wire/query.rs": "beaf0196b8ef5186a6bb997b51db63fab7fa739201e2c52a0128c9eff0db5c04",
+    "crates/resourcefs-sources/src/http/request.rs": "7979edf8a9c43457b64abd90d4201765847b6ab5dbfac8e7ece252e9f8bc459a"
+  },
+  "restored_bytes": true,
+  "claims": [
+    {
+      "claim": "C1",
+      "mutation": "Move encode_jira_segment from grammar child into protected reference parent; import from child (same executable body)",
+      "command": "python3 .rfs-nae2/oracles/module_shape.py --stage query --root /tmp/rfs-nae2-s2-proof --repository /tmp/rfs-nae2-s2-proof",
+      "compiled_exit": 0,
+      "red_exit": 1,
+      "restored_exit": 0,
+      "status": "PASS"
+    },
+    {
+      "claim": "C2",
+      "mutation": "Apply existing JiraIssueKey validation to exact native JQL",
+      "command": "cargo +1.98.0 test -p resourcefs-core --test jira_query_reference_contract canonical_query_corpus_preserves_exact_native_bytes -- --exact --nocapture",
+      "compiled_exit": 0,
+      "red_exit": 101,
+      "restored_exit": 0,
+      "status": "PASS"
+    },
+    {
+      "claim": "C3",
+      "mutation": "Ignore exact query identity while retaining same-site query family and origin checks",
+      "command": "cargo +1.98.0 test -p resourcefs-sources --test jira_query_contract query_cursor_owner_cells_refuse_before_egress_and_valid_owner_advances -- --exact --nocapture",
+      "compiled_exit": 0,
+      "red_exit": 101,
+      "restored_exit": 0,
+      "status": "PASS"
+    },
+    {
+      "claim": "C4",
+      "mutation": "Apply fixed-collection numeric ID sort to assembled query rows",
+      "command": "cargo +1.98.0 test -p resourcefs-sources --test jira_query_contract query_post_preserves_native_order_through_short_and_empty_pages -- --exact --nocapture",
+      "compiled_exit": 0,
+      "red_exit": 101,
+      "restored_exit": 0,
+      "status": "PASS"
+    },
+    {
+      "claim": "C5",
+      "mutation": "Discard issue self-URL authority validation result in the shared row decoder actually called by query assembly",
+      "command": "cargo +1.98.0 test -p resourcefs-sources --test jira_query_contract query_stable_authority_and_later_corruption_are_atomic -- --exact --nocapture",
+      "compiled_exit": 0,
+      "red_exit": 101,
+      "restored_exit": 0,
+      "status": "PASS"
+    },
+    {
+      "claim": "C6",
+      "mutation": "Remove query physical-attempt stop; leave shared transport budget enforcement intact",
+      "command": "cargo +1.98.0 test -p resourcefs-sources --test jira_query_contract query_attempt_budget_counts_retry_once_across_native_pages -- --exact --nocapture",
+      "compiled_exit": 0,
+      "red_exit": 101,
+      "restored_exit": 0,
+      "status": "PASS"
+    },
+    {
+      "claim": "C7",
+      "mutation": "Set ordinary post_json request intent to ReadOnly; preserve PATCH mutation intent and ordinary POST body ceiling",
+      "command": "cargo +1.98.0 test -p resourcefs-sources --lib http::read::tests::ordinary_mutations_never_replay_without_budget_on_retryable_status_or_disconnect -- --exact --nocapture",
+      "compiled_exit": 0,
+      "red_exit": 101,
+      "restored_exit": 0,
+      "status": "PASS"
+    },
+    {
+      "claim": "C8",
+      "mutation": "Append actual native rejection body to otherwise validated InvalidPattern diagnostics",
+      "command": "cargo +1.98.0 test -p resourcefs-sources --test jira_query_contract query_native_rejection_is_structural_redacted_and_uncached -- --exact --nocapture",
+      "compiled_exit": 0,
+      "red_exit": 101,
+      "restored_exit": 0,
+      "status": "PASS"
+    },
+    {
+      "claim": "C9",
+      "mutation": "Cache successful POST query payload by exact serialized request and serve cached bytes without refetch; reuse session cache and generation helper",
+      "command": "cargo +1.98.0 test -p resourcefs-sources --test jira_query_contract query_changed_validator_rows_are_not_cached_and_shared_controls_apply -- --exact --nocapture",
+      "compiled_exit": 0,
+      "red_exit": 101,
+      "restored_exit": 0,
+      "status": "PASS"
+    },
+    {
+      "claim": "C10",
+      "mutation": "Discard source continuation when constructing query SourceResource",
+      "command": "cargo +1.98.0 test -p resourcefs-mcp --lib server::jira_query_tests::c10_query_recovery_and_source_continuation_are_independent -- --exact --nocapture",
+      "compiled_exit": 0,
+      "red_exit": 101,
+      "restored_exit": 0,
+      "status": "PASS"
+    },
+    {
+      "claim": "C11",
+      "mutation": "Reject Query in Jira search only, leaving successful read and unsupported glob unchanged",
+      "command": "cargo +1.98.0 test -p resourcefs-mcp --lib server::jira_query_tests::c11_query_search_uses_rendered_regex_and_pcre2_and_glob_is_unsupported -- --exact --nocapture",
+      "compiled_exit": 0,
+      "red_exit": 101,
+      "restored_exit": 0,
+      "status": "PASS"
+    },
+    {
+      "claim": "C12",
+      "mutation": "Move complete query assembler impl into protected Jira facade; qualify existing decoder/render paths and add only necessary imports",
+      "command": "python3 .rfs-nae2/oracles/module_shape.py --stage query --root /tmp/rfs-nae2-s2-proof --repository /tmp/rfs-nae2-s2-proof",
+      "compiled_exit": 0,
+      "red_exit": 1,
+      "restored_exit": 0,
+      "status": "PASS"
+    }
+  ],
+  "restored_green": [
+    {
+      "command": "cargo +1.98.0 test -p resourcefs-core --test jira_query_reference_contract",
+      "exit": 0
+    },
+    {
+      "command": "cargo +1.98.0 test -p resourcefs-sources --test jira_query_contract",
+      "exit": 0
+    },
+    {
+      "command": "cargo +1.98.0 test -p resourcefs-sources --lib http::",
+      "exit": 0
+    },
+    {
+      "command": "cargo +1.98.0 test -p resourcefs-mcp --lib server::jira_query_tests",
+      "exit": 0
+    },
+    {
+      "command": "python3 .rfs-nae2/oracles/module_shape.py --stage query --root /tmp/rfs-nae2-s2-proof --repository /tmp/rfs-nae2-s2-proof",
+      "exit": 0
+    }
+  ]
+}

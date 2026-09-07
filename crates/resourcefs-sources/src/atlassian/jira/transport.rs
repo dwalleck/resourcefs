@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use resourcefs_core::{ErrorCategory, ResourceError, SessionCacheEntry, SessionCacheKey};
+use resourcefs_core::{
+    ErrorCategory, JiraQuery, ResourceError, SessionCacheEntry, SessionCacheKey,
+};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -9,6 +11,10 @@ use crate::{
     http::{BoundedRead, HttpReadBudget},
 };
 
+use super::super::wire::{
+    collections::NativeIssueToken,
+    query::{decode_query_rejection, encode_query_request},
+};
 use super::{AtlassianSite, AtlassianSource, malformed_upstream};
 
 const ACCEPT: &str = "application/json";
@@ -23,7 +29,7 @@ pub(super) struct FetchedResponse {
     pub(super) body: Arc<[u8]>,
 }
 
-/// GET/cache/status state for one Jira read with an optional collection budget.
+/// Site-owned fetch/cache/status state for one Jira read with an optional page budget.
 pub(super) struct JiraRead<'a> {
     source: &'a AtlassianSource,
     operation: BoundedRead<'a>,
@@ -194,6 +200,54 @@ impl<'a> JiraRead<'a> {
                 "Jira response exceeds the bounded HTTP body ceiling",
             ));
         }
+        Ok(FetchedResponse {
+            body: Arc::from(response.into_body()),
+        })
+    }
+
+    /// Query results are deliberately never read from or written to the session cache.
+    pub(super) async fn fetch_query(
+        &mut self,
+        site: &AtlassianSite,
+        query: &JiraQuery,
+        token: Option<&NativeIssueToken>,
+        requested: usize,
+    ) -> Result<FetchedResponse, ResourceError> {
+        let url = site
+            .origin()
+            .base_url()
+            .join("rest/api/3/search/jql")
+            .map_err(|_| malformed_upstream("Jira query endpoint is invalid"))?;
+        let body = encode_query_request(query, token, requested)?;
+        let request = HttpRequest::post_json_read_only(url.clone(), body)?
+            .with_header("Accept", ACCEPT)?
+            .with_header("User-Agent", USER_AGENT)?;
+        let response = self.fetch(request).await?;
+        if response.final_url() != &url {
+            return Err(malformed_upstream(
+                "Jira query endpoint returned an unexpected redirect",
+            ));
+        }
+        if response.truncated() {
+            return Err(ResourceError::new(
+                ErrorCategory::LimitExceeded,
+                "Jira response exceeds the bounded HTTP body ceiling",
+            ));
+        }
+        if response.status() == 400 {
+            if !response.content_type().is_some_and(|value| {
+                value
+                    .split(';')
+                    .next()
+                    .is_some_and(|media| media.trim().eq_ignore_ascii_case(ACCEPT))
+            }) {
+                return Err(malformed_upstream(
+                    "Jira query rejection requires JSON media",
+                ));
+            }
+            return Err(decode_query_rejection(response.body())?);
+        }
+        Self::classify_status(&response)?;
         Ok(FetchedResponse {
             body: Arc::from(response.into_body()),
         })

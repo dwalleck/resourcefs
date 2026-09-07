@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroU64,
+};
 
 use resourcefs_core::{
     AllowedOrigin, JiraIssueId, JiraIssueKey, JiraProjectId, JiraProjectKey, ResourceError,
@@ -75,9 +78,16 @@ impl NativeIssueToken {
     }
 }
 
+/// Optional native metadata is interpreted only by query reads; fixed browsing ignores it.
+pub(crate) enum NativePageMaximum {
+    Valid(NonZeroU64),
+    Invalid,
+}
+
 pub(crate) struct IssuePage {
     pub(crate) values: Vec<JiraIssueSummary>,
     pub(crate) next_token: Option<NativeIssueToken>,
+    pub(crate) max_results: Option<NativePageMaximum>,
 }
 
 pub(crate) fn decode_issue_page(
@@ -88,6 +98,14 @@ pub(crate) fn decode_issue_page(
         return Err(malformed_upstream(
             "Jira issue page must be one JSON object",
         ));
+    };
+    let max_results = match object.remove("maxResults") {
+        None => None,
+        Some(StrictJson::Number(value)) => Some(match value.parse::<NonZeroU64>() {
+            Ok(maximum) => NativePageMaximum::Valid(maximum),
+            Err(_) => NativePageMaximum::Invalid,
+        }),
+        Some(_) => Some(NativePageMaximum::Invalid),
     };
     let next_token = match object.remove("nextPageToken") {
         None => None,
@@ -123,7 +141,11 @@ pub(crate) fn decode_issue_page(
         }
         values.push(issue);
     }
-    Ok(IssuePage { values, next_token })
+    Ok(IssuePage {
+        values,
+        next_token,
+        max_results,
+    })
 }
 
 fn decode_issue_summary(
