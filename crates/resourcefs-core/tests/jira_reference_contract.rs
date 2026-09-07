@@ -4,11 +4,11 @@ use std::{
 };
 
 use resourcefs_core::{
-    select_utf8, AtlassianSiteId, ErrorCategory, JiraAddress, JiraFieldId, JiraIssueId,
-    JiraIssueKey, JiraIssueResource, JiraProjectId, JiraProjectKey, PathReference,
-    ProjectionSelector, ResourceAddress, SearchRecord, SourceOffset, SourceResource,
-    Utf8ContentType, MAX_ATLASSIAN_SITE_ID_BYTES, MAX_JIRA_ISSUE_ID_BYTES,
-    MAX_JIRA_PROJECT_ID_BYTES, MAX_JIRA_SEGMENT_BYTES, MAX_PATH_REFERENCE_BYTES,
+    AtlassianSiteId, ErrorCategory, JiraAddress, JiraFieldId, JiraIssueId, JiraIssueKey,
+    JiraIssueResource, JiraProjectId, JiraProjectKey, MAX_ATLASSIAN_SITE_ID_BYTES,
+    MAX_JIRA_ISSUE_ID_BYTES, MAX_JIRA_PROJECT_ID_BYTES, MAX_JIRA_SEGMENT_BYTES,
+    MAX_PATH_REFERENCE_BYTES, PathReference, ProjectionSelector, ResourceAddress, SearchRecord,
+    SourceOffset, SourceResource, Utf8ContentType, select_utf8,
 };
 
 #[test]
@@ -443,17 +443,21 @@ fn source_offsets_do_not_change_global_selector_markers() {
         panic!("HTTPS address")
     };
     assert_eq!(address.as_str(), "https://example.com/file:offset");
-    assert!(https
-        .projection()
-        .expect("legacy line selection")
-        .line_selection()
-        .is_some());
+    assert!(
+        https
+            .projection()
+            .expect("legacy line selection")
+            .line_selection()
+            .is_some()
+    );
     let local = PathReference::parse("local://file:offset:7").expect("scratch name");
     assert!(local.projection().is_none());
-    assert!(local
-        .local_selector_candidate()
-        .expect("legacy local candidate")
-        .selector()
-        .line_selection()
-        .is_some());
+    assert!(
+        local
+            .local_selector_candidate()
+            .expect("legacy local candidate")
+            .selector()
+            .line_selection()
+            .is_some()
+    );
 }
