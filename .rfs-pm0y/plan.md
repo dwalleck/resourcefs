@@ -97,6 +97,10 @@ Slices 4–5. Mergeable definition: the ignored real Jira row proves the complet
 
 **Wall budget/phase:** mount validation is one-off with no wall budget; direct read/search is always-on with 30 seconds total from `HttpCeilings`, including retry wait/attempts, and 4 seconds Adapter-local CPU at the body ceiling.
 
+**CI measurement follow-up (`rfs-a3ag`, 2026-09-07):** Windows run `34082162966` exceeded the five-millisecond guard while duplicate run `34082163611` passed identical source. The fixture now captures elapsed construction time before dropping the returned mount and its sole-owned HTTP substrate; teardown was incorrectly inside the measurement. The failure log did not capture elapsed time, so this is not claimed as the proven Windows cause. Per the requester's instruction to raise unstable budgets and investigate, the release CI wall-clock guard is 50 ms (debug remains 100 ms), with elapsed/budget diagnostics and unchanged maximum cardinality. The original five-millisecond CPU objective remains under investigation; no production deadline or validation behavior changes.
+
+Local verification: Rust 1.98.0 formatting and strict Clippy passed; the complete assertion-disabled release `atlassian_jira_adapter_contract` target passed all 12 cases. Maximum Site Mount construction measured 1.077304 ms against the 50 ms CI guard (artifact 973). The isolated build target is disk-backed; native CI must pass on the pushed revision before merge.
+
 **Files:** `crates/resourcefs-core/src/{resource.rs,lib.rs}`; `crates/resourcefs-core/tests/source_resource_content_type_contract.rs`; `crates/resourcefs-sources/src/atlassian/{mod.rs,jira.rs,wire.rs,render.rs}`; `crates/resourcefs-sources/src/{lib.rs,compiled.rs}`; all LSP-enumerated `CompiledSources::new` callsites in sources/MCP; `crates/resourcefs-sources/tests/{jira_wire_contract.rs,jira_render_contract.rs,atlassian_jira_adapter_contract.rs,compiled_sources_contract.rs}`; TLS/session support as required; architecture contracts.
 
 **Estimate:** 20–30 hours.
