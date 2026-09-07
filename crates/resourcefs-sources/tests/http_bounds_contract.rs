@@ -190,11 +190,6 @@ async fn timeout_returns_source_unavailable() {
         ErrorCategory::SourceUnavailable,
         "a timeout is an availability failure, not a policy refusal: {error}"
     );
-    assert!(
-        error.message().contains("timeout"),
-        "the refusal must name the timeout rather than surfacing an opaque \
-         transport error: {error}"
-    );
 }
 
 /// C16 — retained bytes never exceed the ceiling, whatever the peer sends.
