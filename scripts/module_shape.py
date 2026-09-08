@@ -21,9 +21,16 @@ SERVER = MCP + "server.rs"
 GITHUB = SOURCES + "github/mod.rs"
 
 
-def load_inherited(repository):
+def load_inherited():
+    """The shared placement machinery, vendored beside this gate.
+
+    This runs from `scripts/ci-gates.py` on every branch, so it resolves a
+    sibling rather than reaching into a ticket directory: the ticket trees are
+    frozen evidence, and a permanent gate that imports one breaks whenever that
+    evidence is archived.
+    """
     spec = importlib.util.spec_from_file_location(
-        "nae2_shape", repository / ".rfs-nae2/oracles/module_shape.py")
+        "module_shape_base", HERE / "module_shape_base.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -176,7 +183,7 @@ class Transition:
 
 
 def check(root, repository, ledger, stage):
-    inherited = load_inherited(repository)
+    inherited = load_inherited()
     policy = Transition(ledger, stage, inherited)
     failures, observations = inherited.check(root, repository, 'query', policy)
     failures = ['C02 inherited ' + failure for failure in failures]
@@ -387,11 +394,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stage', choices=('baseline', 'core', 'configuration', 'transport', 'fetch', 'mcp', 'facts'))
     parser.add_argument('--root', type=Path, help='disposable source tree')
-    parser.add_argument('--repository', type=Path, default=HERE.parents[1], help='Git baseline provider')
+    parser.add_argument('--repository', type=Path, default=HERE.parent, help='Git baseline provider')
     args = parser.parse_args()
     try:
         repository = args.repository.resolve(strict=True)
-        inherited = load_inherited(repository)
+        inherited = load_inherited()
         repository = Path(inherited.git(repository, 'rev-parse', '--show-toplevel'))
         root = args.root.resolve(strict=True) if args.root else repository
         # Policy is trusted checker input, not mutable fixture/source content.
