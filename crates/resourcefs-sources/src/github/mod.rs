@@ -845,7 +845,10 @@ impl SourceAdapter for GithubSource {
             .saturating_add(std::time::Duration::from_secs(1));
         let pending = async {
             match fact {
-                Some(fact) => self.read_facts(reference, fact, operation, acquisition).await,
+                Some(fact) => {
+                    self.read_facts(reference, fact, operation, acquisition)
+                        .await
+                }
                 None => {
                     let operation = self.substrate.begin_read_with_limits(operation, &limits)?.0;
                     self.read_resource(reference, operation).await

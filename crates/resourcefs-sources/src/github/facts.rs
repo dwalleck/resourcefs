@@ -10,8 +10,8 @@ use std::{
 
 use resourcefs_core::{
     AcquisitionLimitKind, ErrorCategory, ErrorReason, LimitDetail, OperationGuard, PathReference,
-    PullRequestAddress, PullRequestFact, PullRequestResource, ReadAcquisitionLimits,
-    ResourceAddress, ResourceError, ResourceErrorDetails, SourceResource, Utf8ContentType,
+    PullRequestAddress, PullRequestFact, ReadAcquisitionLimits, ResourceAddress, ResourceError,
+    ResourceErrorDetails, SourceResource, Utf8ContentType,
 };
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
