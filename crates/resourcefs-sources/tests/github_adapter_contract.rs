@@ -165,10 +165,15 @@ where
         "github",
         false,
         MutationGrants::default(),
-        Some(format!("https://{FIXTURE_HOST}:{port}/")),
+        resourcefs_sources::GithubDeployment::new(
+            Some(format!("https://{FIXTURE_HOST}:{port}/")),
+            None,
+        )
+        .expect("fixture deployment"),
         true,
         SecretReference::environment("GITHUB_TOKEN").expect("secret reference"),
         vec![GithubRepository::new("owner/repo", MutationGrants::default()).expect("repository")],
+        resourcefs_core::ReadAcquisitionLimits::default(),
     )
     .expect("GitHub config");
     let mut substrate = HttpSubstrate::with_host_lookup_and_roots(

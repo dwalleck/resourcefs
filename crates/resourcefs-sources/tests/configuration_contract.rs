@@ -6,11 +6,11 @@ use resourcefs_sources::{
     AgentExportConfig, ChildEnvironment, CommandSpec, ConfigurationDirectory,
     ConfigurationTargetKind, ConverterInput, CredentialHeader, DocumentConverter, DocumentsConfig,
     DownstreamMcpConfig, DownstreamServer, DownstreamTransport, EnvironmentValue, GithubConfig,
-    GithubRepository, HttpsConfig, HttpsOrigin, MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMAND_ARGUMENTS,
-    MAX_COMMAND_ENVIRONMENT_ENTRIES, MAX_CONFIGURATION_ENTRIES, MAX_CONFIGURATION_ID_BYTES,
-    MAX_EXTENSION_BYTES, MemoryConfig, MemoryRoot, MutationGrants, MutationSupport, RulesConfig,
-    SchemeClaim, SecretReference, SkillsConfig, SshConfig, SshHost, VaultConfig, VaultRoot,
-    validate_configuration_id,
+    GithubDeployment, GithubRepository, HttpsConfig, HttpsOrigin, MAX_COMMAND_ARGUMENT_BYTES,
+    MAX_COMMAND_ARGUMENTS, MAX_COMMAND_ENVIRONMENT_ENTRIES, MAX_CONFIGURATION_ENTRIES,
+    MAX_CONFIGURATION_ID_BYTES, MAX_EXTENSION_BYTES, MemoryConfig, MemoryRoot, MutationGrants,
+    MutationSupport, RulesConfig, SchemeClaim, SecretReference, SkillsConfig, SshConfig, SshHost,
+    VaultConfig, VaultRoot, validate_configuration_id,
 };
 use tempfile::TempDir;
 
@@ -399,6 +399,80 @@ fn https_policy_matrix() {
     assert!(CredentialHeader::new("bad header", None, secret()).is_err());
 }
 
+#[test]
+fn github_deployment_pairing_and_custom_identity() {
+    for (api, web, expected) in [
+        (None, None, "https://github.com"),
+        (
+            Some("https://api.github.com/"),
+            Some("https://github.com/"),
+            "https://github.com",
+        ),
+        (
+            Some("https://api.acme-2.ghe.com/"),
+            None,
+            "https://acme-2.ghe.com",
+        ),
+        (
+            Some("https://api.acme.ghe.com"),
+            Some("https://acme.ghe.com"),
+            "https://acme.ghe.com",
+        ),
+        (
+            Some("https://custom.example:8443/api/v3"),
+            Some("https://web.example:8443"),
+            "https://web.example:8443",
+        ),
+    ] {
+        let deployment = GithubDeployment::new(api.map(str::to_owned), web.map(str::to_owned))
+            .expect("matched deployment");
+        assert_eq!(deployment.web_origin(), Some(expected));
+    }
+    let api = "https://custom.example:8443/api/v3";
+    let custom = GithubDeployment::new(Some(api.to_owned()), None).expect("legacy custom base");
+    assert_eq!(
+        custom.api_base_url(),
+        api,
+        "legacy base prefix remains usable"
+    );
+    assert_eq!(
+        custom.web_origin(),
+        None,
+        "custom identity cannot be invented"
+    );
+
+    for (api, web) in [
+        ("https://api.github.com", Some("https://other.example")),
+        ("https://api.a.ghe.com", Some("https://b.ghe.com")),
+        ("https://api.a.ghe.com/api/v3", None),
+        ("https://api.a.ghe.com:443", None),
+        ("https://api.a.ghe.com:8443", None),
+        ("https://api.a.b.ghe.com", None),
+        ("https://api.-a.ghe.com", None),
+        ("https://api.a-.ghe.com", None),
+        ("https://api.a_b.ghe.com", None),
+        ("https://api..ghe.com", None),
+        ("http://api.a.ghe.com", None),
+        ("https://user@api.a.ghe.com", None),
+        ("https://api.a.ghe.com?x", None),
+        ("https://api.a.ghe.com#x", None),
+        ("https://api.github.com/api/v3", None),
+        (
+            "https://custom.example/api/v3",
+            Some("https://web.example/path"),
+        ),
+        ("https://custom.example", Some("http://web.example")),
+        ("https://custom.example", Some("https://user@web.example")),
+        ("https://custom.example", Some("https://web.example?x")),
+        ("https://custom.example", Some("https://web.example#x")),
+    ] {
+        assert!(
+            GithubDeployment::new(Some(api.to_owned()), web.map(str::to_owned)).is_err(),
+            "unsafe or mismatched deployment: {api} {web:?}"
+        );
+    }
+}
+
 fn github_repository(name: &str, grants: MutationGrants) -> GithubRepository {
     GithubRepository::new(name, grants).expect("valid GitHub repository identity")
 }
@@ -411,10 +485,11 @@ fn github_config(
         "github-source",
         false,
         grants,
-        None,
+        GithubDeployment::default(),
         false,
         secret(),
         repositories.into_iter().collect(),
+        resourcefs_core::ReadAcquisitionLimits::default(),
     )
 }
 
@@ -528,24 +603,17 @@ fn github_policy_matrix() {
             "github-source",
             false,
             none,
-            Some("https://github.example.test/api/v3".to_owned()),
+            GithubDeployment::new(Some("https://github.example.test/api/v3".to_owned()), None)
+                .expect("custom deployment"),
             true,
             secret(),
             vec![github_repository("owner/repository", none)],
+            resourcefs_core::ReadAcquisitionLimits::default(),
         )
         .is_ok()
     );
     assert!(
-        GithubConfig::new(
-            "github-source",
-            false,
-            none,
-            Some("http://github.example.test/api/v3".to_owned()),
-            false,
-            secret(),
-            vec![github_repository("owner/repository", none)],
-        )
-        .is_err()
+        GithubDeployment::new(Some("http://github.example.test/api/v3".to_owned()), None,).is_err()
     );
 }
 

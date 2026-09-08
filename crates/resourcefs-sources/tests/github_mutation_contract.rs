@@ -338,10 +338,15 @@ async fn fixture_with_grants(
         "github",
         false,
         grants,
-        Some(format!("https://{FIXTURE_HOST}:{port}/")),
+        resourcefs_sources::GithubDeployment::new(
+            Some(format!("https://{FIXTURE_HOST}:{port}/")),
+            None,
+        )
+        .expect("fixture deployment"),
         true,
         SecretReference::environment("GITHUB_TOKEN").expect("[C8] secret reference"),
         vec![GithubRepository::new("owner/repo", grants).expect("[C8] repository")],
+        resourcefs_core::ReadAcquisitionLimits::default(),
     )
     .expect("[C8] config");
     let substrate = HttpSubstrate::with_host_lookup_and_roots(

@@ -2,6 +2,7 @@
 
 use std::error::Error;
 
+mod acquisition;
 mod cli;
 mod launch;
 mod logging;

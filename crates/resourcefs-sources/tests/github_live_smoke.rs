@@ -47,10 +47,11 @@ async fn live_source(token: String) -> Option<GithubSource> {
         "github",
         true,
         MutationGrants::default(),
-        None,
+        resourcefs_sources::GithubDeployment::default(),
         false,
         SecretReference::environment("GITHUB_TOKEN").expect("secret reference"),
         vec![GithubRepository::new(REPOSITORY, MutationGrants::default()).expect("repository")],
+        resourcefs_core::ReadAcquisitionLimits::default(),
     )
     .expect("GitHub config");
     let session = session_support::scratch_fixture().await;

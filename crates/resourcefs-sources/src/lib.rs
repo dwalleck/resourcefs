@@ -30,12 +30,12 @@ pub use configuration::{
     AgentExportConfig, ChildEnvironment, CommandSpec, ConfigurationDirectory, ConfigurationError,
     ConfigurationTargetKind, ConverterInput, CredentialHeader, DocumentConverter, DocumentsConfig,
     DownstreamMcpConfig, DownstreamServer, DownstreamTransport, EnvironmentValue, GithubConfig,
-    GithubRepository, HttpsConfig, HttpsOrigin, MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMAND_ARGUMENTS,
-    MAX_COMMAND_ENVIRONMENT_ENTRIES, MAX_CONFIGURATION_ENTRIES, MAX_CONFIGURATION_ID_BYTES,
-    MAX_EXTENSION_BYTES, MAX_SCHEME_CLAIM_BYTES, MemoryConfig, MemoryRoot, MemoryTarget,
-    MemoryTargetKind, MutationGrants, MutationSupport, RulesConfig, SchemeClaim, SecretReference,
-    SkillsConfig, SshConfig, SshHost, VaultConfig, VaultRoot, VaultTarget,
-    validate_configuration_id,
+    GithubDeployment, GithubRepository, HttpsConfig, HttpsOrigin, MAX_COMMAND_ARGUMENT_BYTES,
+    MAX_COMMAND_ARGUMENTS, MAX_COMMAND_ENVIRONMENT_ENTRIES, MAX_CONFIGURATION_ENTRIES,
+    MAX_CONFIGURATION_ID_BYTES, MAX_EXTENSION_BYTES, MAX_SCHEME_CLAIM_BYTES, MemoryConfig,
+    MemoryRoot, MemoryTarget, MemoryTargetKind, MutationGrants, MutationSupport, RulesConfig,
+    SchemeClaim, SecretReference, SkillsConfig, SshConfig, SshHost, VaultConfig, VaultRoot,
+    VaultTarget, validate_configuration_id,
 };
 pub use github::{GithubSource, GithubSourceMount};
 #[cfg(feature = "test-support")]

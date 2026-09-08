@@ -243,6 +243,95 @@ fn profile_with_source(source: Value) -> Value {
 }
 
 #[test]
+fn github_profile_deployment_validation_is_shared() {
+    for required in [false, true] {
+        for (api, web, valid) in [
+            ("https://api.github.com/", "https://github.com", true),
+            ("https://api.a.ghe.com/", "https://a.ghe.com", true),
+            ("https://api.a.ghe.com/", "https://b.ghe.com", false),
+            ("https://api.github.com/", "https://a.ghe.com", false),
+            ("https://api.a.ghe.com/api/v3", "https://a.ghe.com", false),
+            (
+                "https://custom.example/api/v3",
+                "https://custom.example",
+                true,
+            ),
+            (
+                "https://custom.example/api/v3",
+                "https://custom.example/path",
+                false,
+            ),
+        ] {
+            let mut source = source_with_entries("github", 1);
+            source["required"] = json!(required);
+            source["apiBaseUrl"] = json!(api);
+            source["webOrigin"] = json!(web);
+            assert_eq!(
+                parse(&profile_with_source(source)).is_ok(),
+                valid,
+                "{api} {web}"
+            );
+        }
+    }
+    for value in [Value::Null, json!(1), json!(false), json!({}), json!([])] {
+        let mut source = source_with_entries("github", 1);
+        source["webOrigin"] = value;
+        assert!(parse(&profile_with_source(source)).is_err());
+    }
+}
+
+#[test]
+fn github_profile_acquisition_presence_types_and_hard_boundaries() {
+    let make_profile = |acquisition: Value| {
+        let mut source = source_with_entries("github", 1);
+        source["acquisition"] = acquisition;
+        profile_with_source(source)
+    };
+    parse(&make_profile(json!({}))).expect("empty acquisition uses hard defaults");
+    for value in [
+        Value::Null,
+        json!(1),
+        json!("limits"),
+        json!([]),
+        json!({"unknown":1}),
+    ] {
+        assert!(parse(&make_profile(value)).is_err());
+    }
+    for (field, hard) in [
+        ("maxAttempts", 10_u64),
+        ("timeoutMs", 30_000),
+        ("maxResponseBytes", 8_388_608),
+        ("maxAcceptedBodyBytes", 16_777_216),
+        ("maxRepresentationBytes", 16_777_216),
+    ] {
+        for value in [1, hard] {
+            let mut acquisition = json!({});
+            acquisition[field] = json!(value);
+            parse(&make_profile(acquisition)).expect("positive boundary");
+        }
+        for value in [
+            Value::Null,
+            json!(false),
+            json!("1"),
+            json!([]),
+            json!({}),
+            json!(-1),
+            json!(1.5),
+            json!(0),
+            json!(hard + 1),
+            json!(u64::MAX),
+        ] {
+            let mut acquisition = json!({});
+            acquisition[field] = value;
+            assert!(
+                parse(&make_profile(acquisition)).is_err(),
+                "invalid {field}"
+            );
+        }
+    }
+}
+
+#[test]
 fn accepts_valid_profiles() {
     for (name, profile) in [
         ("scratch-only", json!({"schemaVersion": 1})),

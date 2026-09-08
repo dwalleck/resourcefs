@@ -6,6 +6,7 @@
     )
 )]
 
+use crate::acquisition::AcquisitionInput;
 use crate::logging::{
     DEFAULT_RETAINED_FILES, LogConfig, LogError, LogErrorKind, LogLevel, MAX_ROTATION_BYTES,
 };
@@ -923,6 +924,12 @@ pub(super) struct GithubSourceProfile {
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
     #[schemars(with = "String")]
     api_base_url: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    #[schemars(with = "String")]
+    web_origin: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    #[schemars(with = "AcquisitionInput")]
+    acquisition: Option<AcquisitionInput>,
     allow_private_network: bool,
     credential: SecretReferenceProfile,
     #[serde(deserialize_with = "deserialize_bounded_vec")]
@@ -1193,23 +1200,27 @@ impl CredentialHeaderProfile {
     }
 }
 
+type GithubSourceParts = (
+    String,
+    bool,
+    MutationGrants,
+    Option<String>,
+    Option<String>,
+    Option<AcquisitionInput>,
+    bool,
+    SecretReferenceProfile,
+    Vec<GithubRepositoryProfile>,
+);
+
 impl GithubSourceProfile {
-    pub(super) fn into_parts(
-        self,
-    ) -> (
-        String,
-        bool,
-        MutationGrants,
-        Option<String>,
-        bool,
-        SecretReferenceProfile,
-        Vec<GithubRepositoryProfile>,
-    ) {
+    pub(super) fn into_parts(self) -> GithubSourceParts {
         (
             self.id,
             self.required,
             grants_or_default(self.grants),
             self.api_base_url,
+            self.web_origin,
+            self.acquisition,
             self.allow_private_network,
             self.credential,
             self.repositories,
