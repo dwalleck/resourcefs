@@ -693,6 +693,7 @@ impl ResourceFsServer {
             reference,
             limits,
             numbered,
+            acquisition: None,
         };
         match self.read_engine.read(request, operation).await {
             Ok(resource) => render::success(path, resource),

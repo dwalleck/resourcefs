@@ -1,6 +1,6 @@
 {
   "baseline": "7de8d1477af6be825bada9015a6996b3f2917c7d",
-  "stage": "baseline",
+  "stage": "core",
   "stages": ["baseline", "core", "configuration", "transport", "fetch", "mcp", "facts"],
   "owners": {
     "crates/resourcefs-core/src/acquisition.rs": {"stage": "core", "maximum": 300, "symbols": ["ReadAcquisitionLimits", "intersect"], "parent": "crates/resourcefs-core/src/lib.rs", "module": "acquisition"},

@@ -130,12 +130,28 @@ fn selected(root: &str, selector: &str) -> PathReference {
 async fn artifact_root_raw_ranges_and_pages_match_immutable_bytes() {
     let fixture = fixture().await;
     let expected_tag = VersionTag::from_content(fixture.content.as_bytes());
+    let controls = resourcefs_core::ReadAcquisitionLimits::default();
+    let error = fixture
+        .source
+        .read(
+            &PathReference::parse(&fixture.root).expect("root reference"),
+            &OperationGuard::new(),
+            Some(&controls),
+        )
+        .await
+        .expect_err("direct artifact controls must be refused");
+    assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(
+        error.details().expect("typed refusal").reason(),
+        resourcefs_core::ErrorReason::AcquisitionControlsUnsupported
+    );
 
     let root = fixture
         .source
         .read(
             &PathReference::parse(&fixture.root).expect("root reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("root read");
@@ -151,7 +167,11 @@ async fn artifact_root_raw_ranges_and_pages_match_immutable_bytes() {
 
     let raw = fixture
         .source
-        .read(&selected(&fixture.root, "raw"), &OperationGuard::new())
+        .read(
+            &selected(&fixture.root, "raw"),
+            &OperationGuard::new(),
+            None,
+        )
         .await
         .expect("raw read");
     assert_eq!(raw.content(), fixture.content);
@@ -162,6 +182,7 @@ async fn artifact_root_raw_ranges_and_pages_match_immutable_bytes() {
         .read(
             &selected(&fixture.root, "3-3,1-2,3-3"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("range read");
@@ -171,7 +192,7 @@ async fn artifact_root_raw_ranges_and_pages_match_immutable_bytes() {
 
     let suffix = fixture
         .source
-        .read(&selected(&fixture.root, "2-"), &OperationGuard::new())
+        .read(&selected(&fixture.root, "2-"), &OperationGuard::new(), None)
         .await
         .expect("suffix read");
     assert_eq!(suffix.content(), "beta\ngamma\r\ndelta");
@@ -185,7 +206,11 @@ async fn artifact_root_raw_ranges_and_pages_match_immutable_bytes() {
 
     let page = fixture
         .source
-        .read(&selected(&fixture.root, "page:2"), &OperationGuard::new())
+        .read(
+            &selected(&fixture.root, "page:2"),
+            &OperationGuard::new(),
+            None,
+        )
         .await
         .expect("page read");
     assert_eq!(page.content(), &fixture.content[2..]);
@@ -202,7 +227,11 @@ async fn invalid_page_and_non_artifact_authority_fail_without_disclosure() {
     let fixture = fixture().await;
     let invalid_boundary = fixture
         .source
-        .read(&selected(&fixture.root, "page:1"), &OperationGuard::new())
+        .read(
+            &selected(&fixture.root, "page:1"),
+            &OperationGuard::new(),
+            None,
+        )
         .await
         .expect_err("UTF-8 midpoint");
     assert_eq!(invalid_boundary.category(), ErrorCategory::InvalidReference);
@@ -213,6 +242,7 @@ async fn invalid_page_and_non_artifact_authority_fail_without_disclosure() {
         .read(
             &selected(&fixture.root, &format!("page:{end}")),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("end is not a progressing page");
@@ -224,7 +254,7 @@ async fn invalid_page_and_non_artifact_authority_fail_without_disclosure() {
     );
     let wrong_source = fixture
         .source
-        .read(&workspace, &OperationGuard::new())
+        .read(&workspace, &OperationGuard::new(), None)
         .await
         .expect_err("workspace authority");
     assert_eq!(
@@ -250,7 +280,7 @@ async fn disconnect_invalidates_all_artifact_projections() {
     ] {
         let error = fixture
             .source
-            .read(&reference, &OperationGuard::new())
+            .read(&reference, &OperationGuard::new(), None)
             .await
             .expect_err("inactive artifact");
         assert_eq!(error.category(), ErrorCategory::NotFound);

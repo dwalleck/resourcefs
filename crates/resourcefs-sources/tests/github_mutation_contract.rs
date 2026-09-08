@@ -363,6 +363,7 @@ async fn read_tag(source: &GithubSource, path: &str) -> VersionTag {
         .read(
             &PathReference::parse(path).expect("[C8] read reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("[C8] Field read");

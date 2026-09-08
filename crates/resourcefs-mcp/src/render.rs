@@ -1352,6 +1352,7 @@ mod tests {
             &self,
             _reference: &PathReference,
             _operation: &OperationGuard,
+            _acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
         ) -> Result<resourcefs_core::SourceResource, ResourceError> {
             let next = PathReference::parse("issue://owner/repo:page:2".to_owned())?;
             Ok(resourcefs_core::SourceResource::text(
@@ -1435,6 +1436,7 @@ mod tests {
                             .expect("relative reference"),
                         limits: resourcefs_core::TextLimits::default(),
                         numbered: false,
+                        acquisition: None,
                     },
                     &OperationGuard::new(),
                 )

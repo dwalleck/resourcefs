@@ -102,3 +102,23 @@ The changed oracle was run against the unchanged pinned production tree and inde
 Caller/helper review: the runner's Linux shape command delegates to the successor; other runner commands remain unchanged. Existing inherited loaders, production masking, baseline discovery and responsibility checks are reused. Legacy direct nae2 invocation has unchanged default policy. S0 creates no production parallel path; runtime error/logging/fallback symmetry is N/A. Stale-reference review retains prior probe conclusions as historical evidence rather than claiming implementation completion.
 
 S0 drift reconciliation: origin/main advanced by three Atlassian fixture-operator/test-bootstrap commits; its changed-path inventory contains no production Rust path and no S0-owned path. Rebased the unpublished local checkpoint onto that upstream without conflict. Fresh baseline C02 PASS after rebase (4.14 s command wall time). Gates 2–4 and 7–9 retain their exact unchanged-source mutation evidence; gate 5 is fresh. No publication occurred.
+
+## S1 checkpoint — source-neutral read controls and details
+
+Integrated the complete seven-adapter signature cutover and every compiled caller. Existing SourceAdapter/ReadEngine/CompiledSources seams remain; no extra provider trait or Facts placeholder. The writer's empty linked-worktree LSP result required scoped and macro-contained caller inspection. `oracles/read-callers.json` retains the post-cutover structural candidate locations; `cargo check --workspace --all-targets --all-features` is the semantic omission fence, including test-support consumers.
+
+`oracles/s1-results.json` records commands, mutation outcomes and the actual standalone release probe source/output. Focused checks passed 17 core tests, 18 source tests and the dependency test. All-target/all-feature checking and clippy passed. The only qualification repair was replacing a manual Result-to-Option match with an audited `.ok()` for an unrepresentable optional diagnostic number: invalid Duration still returns the same typed error, never success. Existing guard-observation coverage is retained because it detects a source continuing expensive work after caller cancellation, not merely an echoed argument.
+
+| Gate | Result |
+|---|---|
+| 1. Affected unit tests | PASS — acquisition/read-engine and compiled/direct-source contracts, 35 tests total. |
+| 2. Falsifiers | PASS — dependency fence plus unequal five-dimensional limits, invalid boundaries and observable unsupported-control refusals. |
+| 3. Stress fixture | PASS — independent unequal minima, integer/Duration invalid boundaries, absent/present details, and successful no-override controls paired with direct/compiled refusals. |
+| 4. Implementation / independent oracle | PASS — explicit mathematical boundary/minimum corpus and actual public source outcomes; the standalone program performs real validating constructors/intersections, not a mock. |
+| 5. Approved module shape | PASS — C02 core stage after formatting/restoration; the new core owner is pure, old source owners only reject/forward controls, protected unrelated bodies remain frozen. |
+| 6. Budget | PASS — 100,000 constructor/intersection pairs: 1,363,632 ns, checksum 490,000, versus 100,000,000 ns ceiling. Limits/detail payloads remain finite scalar values without heap fields. Background phase N/A per S1. |
+| 7. Regression fence | PASS — focused contracts and architecture fence. |
+| 8. Named mutations | PASS — all-five min→max, zero→one clamping, disabled direct-local refusal, and actual compiling core JSON decoder plus dependency each produced its intended failure. |
+| 9. Restoration | PASS — each exact source restoration followed by its focused GREEN; final architecture and core placement checks also passed. |
+
+Symmetry/reuse: absent-control behavior is unchanged; explicit controls fail consistently with `unsupported_projection`/`acquisition_controls_unsupported`, rather than silently falling through. Existing error category/message constructors, cancellation guard, source dispatch, and read recovery remain authoritative. No new path normalization, logging or fallback subsystem. Core public doc comments describe the new validating values/details; external MCP/profile schema docs remain intentionally unchanged here because this slice does not yet expose new protocol fields.

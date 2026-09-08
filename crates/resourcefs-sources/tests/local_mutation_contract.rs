@@ -45,6 +45,7 @@ async fn scratch_needs_no_grant() {
         .read(
             &PathReference::local("plan.md").expect("scratch reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("scratch read");
@@ -85,6 +86,7 @@ async fn scratch_needs_no_grant() {
                 reference: PathReference::local("plan.md").expect("scratch reference"),
                 limits: resourcefs_core::TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )
@@ -124,6 +126,7 @@ async fn scratch_needs_no_grant() {
                 reference: PathReference::local("final.md").expect("destination"),
                 limits: resourcefs_core::TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )
@@ -212,6 +215,7 @@ async fn cross_source_mv_rejected() {
         .read(
             &PathReference::local("source.md").expect("scratch reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("source scratch survives a rejected move");

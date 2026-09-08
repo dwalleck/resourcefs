@@ -38,7 +38,7 @@ async fn root_lists_all_scratch_sorted() {
 
     // Zero scratch: the listing is still non-empty and says so explicitly.
     let empty = local
-        .read(&PathReference::local_root(), &OperationGuard::new())
+        .read(&PathReference::local_root(), &OperationGuard::new(), None)
         .await
         .expect("root listing with no scratch");
     assert!(
@@ -76,7 +76,7 @@ async fn root_lists_all_scratch_sorted() {
     }
 
     let listing = local
-        .read(&PathReference::local_root(), &OperationGuard::new())
+        .read(&PathReference::local_root(), &OperationGuard::new(), None)
         .await
         .expect("root listing");
 
@@ -100,7 +100,7 @@ async fn root_lists_all_scratch_sorted() {
         let reference = PathReference::parse(entry.clone())
             .unwrap_or_else(|error| panic!("rendered entry {entry} must re-parse: {error}"));
         local
-            .read(&reference, &OperationGuard::new())
+            .read(&reference, &OperationGuard::new(), None)
             .await
             .unwrap_or_else(|error| panic!("rendered entry {entry} must resolve: {error}"));
     }
@@ -113,7 +113,7 @@ async fn root_is_immutable() {
 
     // The listing itself reports read-only, unlike a named scratch Resource.
     let listing = local
-        .read(&PathReference::local_root(), &OperationGuard::new())
+        .read(&PathReference::local_root(), &OperationGuard::new(), None)
         .await
         .expect("root listing");
     assert!(

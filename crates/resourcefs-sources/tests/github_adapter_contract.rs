@@ -209,6 +209,7 @@ async fn creation_target_reads_are_unsupported() {
             .read(
                 &PathReference::parse(path).expect("[C2] reference"),
                 &OperationGuard::new(),
+                None,
             )
             .await
             .expect_err("[C2] Creation Target is write-only");
@@ -232,11 +233,26 @@ async fn issue_aggregate_and_fields_are_stable_and_read_only() {
         other => panic!("unexpected route {other}"),
     })
     .await;
+    let controls = resourcefs_core::ReadAcquisitionLimits::default();
+    let error = source
+        .read(
+            &PathReference::parse("issue://owner/repo/42").expect("reference"),
+            &OperationGuard::new(),
+            Some(&controls),
+        )
+        .await
+        .expect_err("explicit acquisition controls must be refused before fetch");
+    assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(
+        error.details().expect("typed refusal").reason(),
+        resourcefs_core::ErrorReason::AcquisitionControlsUnsupported
+    );
 
     let aggregate = source
         .read(
             &PathReference::parse("issue://owner/repo/42").expect("reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("issue aggregate");
@@ -250,6 +266,7 @@ async fn issue_aggregate_and_fields_are_stable_and_read_only() {
         .read(
             &PathReference::parse("issue://owner/repo/42/title").expect("title"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("title field");
@@ -258,6 +275,7 @@ async fn issue_aggregate_and_fields_are_stable_and_read_only() {
         .read(
             &PathReference::parse("issue://owner/repo/42/body").expect("body"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("body field");
@@ -289,6 +307,7 @@ async fn pr_projection_kinds_remain_distinct_and_patch_absence_is_explicit() {
         .read(
             &PathReference::parse("pr://owner/repo/7").expect("reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("PR aggregate");
@@ -311,6 +330,7 @@ async fn pr_projection_kinds_remain_distinct_and_patch_absence_is_explicit() {
         .read(
             &PathReference::parse("pr://owner/repo/7/reviews/202").expect("review"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("review field");
@@ -321,6 +341,7 @@ async fn pr_projection_kinds_remain_distinct_and_patch_absence_is_explicit() {
         .read(
             &PathReference::parse("pr://owner/repo/7/review-comments/303").expect("inline"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("inline field");
@@ -331,6 +352,7 @@ async fn pr_projection_kinds_remain_distinct_and_patch_absence_is_explicit() {
         .read(
             &PathReference::parse("pr://owner/repo/7/diff/2").expect("diff file"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("binary diff metadata");
@@ -343,6 +365,7 @@ async fn pr_projection_kinds_remain_distinct_and_patch_absence_is_explicit() {
         .read(
             &PathReference::parse("pr://owner/repo/7/reviews").expect("reviews"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("reviews listing");
@@ -357,6 +380,7 @@ async fn pr_projection_kinds_remain_distinct_and_patch_absence_is_explicit() {
         .read(
             &PathReference::parse("pr://owner/repo/7/review-comments").expect("review comments"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("review comments listing");
@@ -383,6 +407,7 @@ async fn repository_policy_precedes_egress() {
         .read(
             &PathReference::parse("issue://other/repo/1").expect("reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("unallowlisted repository");
@@ -432,6 +457,7 @@ async fn errors_match_typed_status_header_matrix() {
             .read(
                 &PathReference::parse("issue://owner/repo/42/title").expect("reference"),
                 &OperationGuard::new(),
+                None,
             )
             .await
             .expect_err(status);
@@ -451,6 +477,7 @@ async fn search_and_line_selectors_use_the_rendered_resource() {
         .read(
             &PathReference::parse("issue://owner/repo/42:1-3").expect("line selector"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("selected aggregate");
@@ -531,6 +558,7 @@ async fn compiled_registry_mounts_dispatches_and_requires_github_grant() {
         .read(
             &PathReference::parse("rfs://").expect("catalog"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("catalog read");
@@ -539,7 +567,7 @@ async fn compiled_registry_mounts_dispatches_and_requires_github_grant() {
     let title_reference = PathReference::parse("issue://owner/repo/42/title").expect("title");
     assert_eq!(
         compiled
-            .read(&title_reference, &OperationGuard::new())
+            .read(&title_reference, &OperationGuard::new(), None)
             .await
             .expect("compiled read")
             .content(),
@@ -599,6 +627,7 @@ async fn repository_collections_are_bounded_filtered_and_continuable() {
         .read(
             &PathReference::parse("issue://owner/repo").expect("collection"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("bounded listing");
@@ -738,6 +767,7 @@ async fn an_all_pull_request_page_is_explicitly_empty() {
         .read(
             &PathReference::parse("issue://owner/repo").expect("collection"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("all-PR listing");
@@ -774,22 +804,22 @@ async fn etag_cache_revalidates_replaces_and_never_hides_requests() {
         .await;
     let reference = PathReference::parse("issue://owner/repo/42/title").expect("title");
     let first = source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect("first");
     let unchanged = source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect("304");
     let changed = source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect("changed");
     assert_eq!(first.content(), "Parser bug");
     assert_eq!(unchanged.content(), "Parser bug");
     assert_eq!(changed.content(), "Parser fixed");
     let failure = source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect_err("failed revalidation must not serve stale content");
     assert_eq!(failure.category(), ErrorCategory::SourceUnavailable);
@@ -829,6 +859,7 @@ async fn retry_is_single_and_machine_signaled() {
         .read(
             &PathReference::parse("issue://owner/repo/42/title").expect("title"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("rate retry");
@@ -849,6 +880,7 @@ async fn retry_is_single_and_machine_signaled() {
         .read(
             &PathReference::parse("issue://owner/repo/42/title").expect("title"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("transport retry");
@@ -878,6 +910,7 @@ async fn pagination_links_are_confined_and_page_failures_are_atomic() {
         .read(
             &PathReference::parse("issue://owner/repo").expect("collection"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("cross-repository Link");
@@ -910,6 +943,7 @@ async fn pagination_links_are_confined_and_page_failures_are_atomic() {
         .read(
             &PathReference::parse("issue://owner/repo").expect("collection"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("page two failure cannot return partial success");
@@ -949,6 +983,7 @@ async fn retry_after_beyond_the_deadline_is_refused_without_waiting() {
         .read(
             &PathReference::parse("issue://owner/repo/42/title").expect("title"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("Retry-After exceeds logical deadline");
@@ -1006,6 +1041,7 @@ async fn pagination_retries_share_the_original_logical_deadline() {
         .read(
             &PathReference::parse("issue://owner/repo").expect("collection"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("page-two wait cannot refresh the original deadline");
@@ -1032,6 +1068,7 @@ async fn typed_page_continuations_are_directly_readable() {
         .read(
             &PathReference::parse("issue://owner/repo:page:11").expect("page reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("page read");
@@ -1070,6 +1107,7 @@ async fn link_headers_are_parsed_strictly_and_confined_by_family() {
         .read(
             &PathReference::parse("issue://owner/repo").expect("collection"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("token-form rel is followed");
@@ -1094,6 +1132,7 @@ async fn link_headers_are_parsed_strictly_and_confined_by_family() {
         .read(
             &PathReference::parse("issue://owner/repo").expect("collection"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("a malformed Link is not the last page");
@@ -1117,6 +1156,7 @@ async fn link_headers_are_parsed_strictly_and_confined_by_family() {
         .read(
             &PathReference::parse("issue://owner/repo").expect("collection"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("no next relation is the last page");
@@ -1147,6 +1187,7 @@ async fn link_headers_are_parsed_strictly_and_confined_by_family() {
         .read(
             &PathReference::parse("issue://owner/repo").expect("collection"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("cross-family id-form Link");
@@ -1182,6 +1223,7 @@ async fn diff_file_indices_resolve_on_their_listing_page() {
         .read(
             &PathReference::parse("pr://owner/repo/7/diff/45").expect("diff file"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("index 45 lives on page 1");
@@ -1190,6 +1232,7 @@ async fn diff_file_indices_resolve_on_their_listing_page() {
         .read(
             &PathReference::parse("pr://owner/repo/7/diff/101").expect("diff file"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("index 101 lives on page 2");
@@ -1198,6 +1241,7 @@ async fn diff_file_indices_resolve_on_their_listing_page() {
         .read(
             &PathReference::parse("pr://owner/repo/7/diff/102").expect("diff file"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("index 102 is past the last file");
@@ -1258,6 +1302,7 @@ async fn object_kinds_and_comment_parents_are_verified() {
             .read(
                 &PathReference::parse(reference).expect("reference"),
                 &OperationGuard::new(),
+                None,
             )
             .await
             .expect_err(why);
@@ -1271,6 +1316,7 @@ async fn object_kinds_and_comment_parents_are_verified() {
         .read(
             &PathReference::parse("pr://owner/repo/17/title").expect("title"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("the same number reads as a pull request under pr://");
@@ -1300,7 +1346,7 @@ async fn oversized_validators_are_dropped_not_fatal() {
     let reference = PathReference::parse("issue://owner/repo/42/title").expect("title");
     for attempt in 0..2 {
         let title = source
-            .read(&reference, &OperationGuard::new())
+            .read(&reference, &OperationGuard::new(), None)
             .await
             .unwrap_or_else(|error| panic!("read {attempt} failed: {}", error.message()));
         assert_eq!(title.content(), "Parser bug");
@@ -1348,7 +1394,7 @@ async fn cache_ceilings_never_fail_an_accepted_read() {
     let reference = PathReference::parse("issue://owner/repo/42/body").expect("body");
     for _ in 0..2 {
         let body = source
-            .read(&reference, &OperationGuard::new())
+            .read(&reference, &OperationGuard::new(), None)
             .await
             .expect("an accepted response is served uncached");
         assert_eq!(body.content(), large_body);
@@ -1405,6 +1451,7 @@ async fn github_pagination_cache_budget() {
         .read(
             &PathReference::parse("issue://owner/repo").expect("collection"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("1,000-object listing");

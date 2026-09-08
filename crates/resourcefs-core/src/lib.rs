@@ -1,5 +1,6 @@
 //! Source-neutral ResourceFS Behavior Contract.
 
+mod acquisition;
 mod discovery;
 mod error;
 mod http_policy;
@@ -18,6 +19,7 @@ mod version;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub use acquisition::ReadAcquisitionLimits;
 #[cfg(feature = "test-support")]
 pub use discovery::DiscoveryRetainGate;
 pub use discovery::{
@@ -27,7 +29,10 @@ pub use discovery::{
     SearchRecord, SearchRequest, SearchResult, SearchSourceResult, SearchTarget, SourceGlobResult,
     catalog_discovery_unsupported,
 };
-pub use error::{ErrorCategory, ResourceError};
+pub use error::{
+    AccessAmbiguity, AcquisitionLimitKind, ErrorCategory, ErrorReason, HttpStatus, LimitDetail,
+    ResourceError, ResourceErrorDetails, RetryGuidance,
+};
 pub use http_policy::{
     AddressClass, AddressPolicy, AllowedOrigin, HttpCeilings, HttpCeilingsInput,
     MAX_HTTP_FETCH_BYTES, MAX_HTTP_REDIRECT_DEPTH, MAX_HTTP_TIMEOUT_MILLIS, OriginAllowlist,

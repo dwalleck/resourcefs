@@ -209,7 +209,7 @@ async fn browse_errors_are_typed_redacted_and_read_only() {
     let reference = PathReference::parse("jira://acme/projects").expect("collection");
     assert_eq!(
         source
-            .read(&reference, &operation)
+            .read(&reference, &operation, None)
             .await
             .expect_err("cancelled")
             .category(),
@@ -352,6 +352,7 @@ async fn browse_errors_are_typed_redacted_and_read_only() {
             .read(
                 &PathReference::parse("jira://acme/projects").expect("collection"),
                 &pending_guard,
+                None,
             )
             .await
     });
@@ -619,7 +620,7 @@ async fn issue_browse_errors_are_typed_redacted_and_read_only() {
         cancelled.cancel();
         assert_eq!(
             source
-                .read(&reference, &cancelled)
+                .read(&reference, &cancelled, None)
                 .await
                 .expect_err("cancelled")
                 .category(),
@@ -731,6 +732,7 @@ async fn issue_browse_errors_are_typed_redacted_and_read_only() {
             .read(
                 &PathReference::parse("jira://acme/projects/2/issues").expect("issues"),
                 &pending_guard,
+                None,
             )
             .await
     });

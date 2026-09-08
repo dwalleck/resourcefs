@@ -74,6 +74,7 @@ pub struct ReadRequest {
     pub reference: PathReference,
     pub limits: TextLimits,
     pub numbered: bool,
+    pub acquisition: Option<crate::ReadAcquisitionLimits>,
 }
 
 #[derive(Clone)]
@@ -109,7 +110,10 @@ impl ReadEngine {
     ) -> Result<ReadResource, ResourceError> {
         let limits = request.limits.lowered_by(self.limits.text_limits());
         ensure_live(&self.session, operation)?;
-        let source = self.sources.read(&request.reference, operation).await?;
+        let source = self
+            .sources
+            .read(&request.reference, operation, request.acquisition.as_ref())
+            .await?;
         ensure_live(&self.session, operation)?;
 
         let requested_artifact = match request.reference.address() {

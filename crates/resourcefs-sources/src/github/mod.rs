@@ -1115,7 +1115,17 @@ impl SourceAdapter for GithubSource {
         &self,
         reference: &PathReference,
         operation: &OperationGuard,
+        acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
+        if acquisition.is_some() {
+            return Err(ResourceError::new(
+                ErrorCategory::UnsupportedProjection,
+                "acquisition controls are not supported for this resource",
+            )
+            .with_details(resourcefs_core::ResourceErrorDetails::new(
+                resourcefs_core::ErrorReason::AcquisitionControlsUnsupported,
+            )));
+        }
         let timeout = self.substrate.ceilings().timeout();
         let operation = self.substrate.begin_read(operation)?;
         tokio::time::timeout(timeout, self.read_resource(reference, operation))
@@ -1176,7 +1186,7 @@ impl DiscoveryAdapter for GithubSource {
             }
             _ => return Err(unsupported_github_projection()),
         };
-        let source = self.read(&searched, operation).await?;
+        let source = self.read(&searched, operation, None).await?;
         let continuation = source
             .continuation()
             .map(|next| PathReference::parse(next.to_owned()))

@@ -49,6 +49,7 @@ async fn read_scratch(session: &ScratchSession, name: &str) -> String {
         .read(
             &PathReference::local(name).expect("scratch reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .unwrap_or_else(|error| panic!("read {name}: {error}"))
@@ -147,7 +148,7 @@ async fn sessions_never_cross() {
         // root listing — same boundary through the family root
         let listing = session
             .local
-            .read(&PathReference::local_root(), &OperationGuard::new())
+            .read(&PathReference::local_root(), &OperationGuard::new(), None)
             .await
             .expect("root listing")
             .content()
@@ -165,6 +166,7 @@ async fn sessions_never_cross() {
         .read(
             &PathReference::local(SHARED).expect("scratch reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("A reads its own shared scratch")
@@ -222,6 +224,7 @@ async fn disconnect_invalidates() {
         .read(
             &PathReference::local(SHARED).expect("scratch reference"),
             &OperationGuard::new(),
+            None,
         )
         .await;
     assert!(read.is_err(), "a disconnected session cannot read scratch");
@@ -229,7 +232,7 @@ async fn disconnect_invalidates() {
     let listing = pair
         .a
         .local
-        .read(&PathReference::local_root(), &OperationGuard::new())
+        .read(&PathReference::local_root(), &OperationGuard::new(), None)
         .await;
     assert!(
         listing.is_err(),
@@ -244,6 +247,7 @@ async fn disconnect_invalidates() {
                 reference: PathReference::local(SHARED).expect("scratch reference"),
                 limits: TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )

@@ -100,6 +100,7 @@ async fn read(source: &AtlassianSource, reference: String) -> SourceResource {
         .read(
             &PathReference::parse(&reference).expect("Path Reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .unwrap_or_else(|error| {

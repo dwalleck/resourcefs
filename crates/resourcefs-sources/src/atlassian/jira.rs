@@ -186,7 +186,17 @@ impl SourceAdapter for AtlassianSource {
         &self,
         reference: &PathReference,
         operation: &OperationGuard,
+        acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
+        if acquisition.is_some() {
+            return Err(ResourceError::new(
+                ErrorCategory::UnsupportedProjection,
+                "acquisition controls are not supported for this resource",
+            )
+            .with_details(resourcefs_core::ResourceErrorDetails::new(
+                resourcefs_core::ErrorReason::AcquisitionControlsUnsupported,
+            )));
+        }
         let timeout = self.substrate.ceilings().timeout();
         let operation = self.substrate.begin_read(operation)?;
         tokio::time::timeout(timeout, self.read_resource(reference, operation))
@@ -231,7 +241,7 @@ impl DiscoveryAdapter for AtlassianSource {
             })
             .cloned();
         let requested = PathReference::jira(address.clone(), source_selector.clone())?;
-        let source = self.read(&requested, operation).await?;
+        let source = self.read(&requested, operation, None).await?;
         let canonical = PathReference::parse(source.canonical_reference().to_owned())?;
         let ResourceAddress::Jira(canonical_address) = canonical.address() else {
             return Err(unsupported_jira_projection());

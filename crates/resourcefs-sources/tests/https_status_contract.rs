@@ -79,6 +79,7 @@ async fn upstream_statuses_map_to_stable_categories_before_any_body_is_content()
                 .read(
                     &PathReference::parse(spelling.clone()).expect("reference"),
                     &OperationGuard::new(),
+                    None,
                 )
                 .await
                 .expect_err("an error page is not a Resource");
@@ -104,11 +105,27 @@ async fn upstream_statuses_map_to_stable_categories_before_any_body_is_content()
     // Positive control: the same markup under 200 is a Resource, so the
     // refusals above come from the status and not from the page shape.
     let (port, source) = source_serving("200 OK").await;
+    let controls = resourcefs_core::ReadAcquisitionLimits::default();
+    let error = source
+        .read(
+            &PathReference::parse(format!("https://{FIXTURE_HOST}:{port}/present"))
+                .expect("reference"),
+            &OperationGuard::new(),
+            Some(&controls),
+        )
+        .await
+        .expect_err("explicit acquisition controls must be refused before fetch");
+    assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(
+        error.details().expect("typed refusal").reason(),
+        resourcefs_core::ErrorReason::AcquisitionControlsUnsupported
+    );
     let rendered = source
         .read(
             &PathReference::parse(format!("https://{FIXTURE_HOST}:{port}/present"))
                 .expect("reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("a 200 page renders");
@@ -159,6 +176,7 @@ async fn unusable_retry_guidance_is_terminal_without_wait() {
                 &PathReference::parse(format!("https://{FIXTURE_HOST}:{port}/retry:raw"))
                     .expect("fixture reference"),
                 &OperationGuard::new(),
+                None,
             )
             .await
             .expect_err("unusable guidance is terminal");

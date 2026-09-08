@@ -105,6 +105,7 @@ async fn search_keeps_selected_page_identity() {
                 reference: PathReference::parse("jira://acme/projects:raw").expect("raw"),
                 limits: TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )
@@ -160,6 +161,7 @@ async fn artifact_recovery_and_source_pages_remain_independent() {
                 reference: PathReference::parse("jira://acme/projects").expect("collection"),
                 limits: TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )
@@ -199,6 +201,7 @@ async fn artifact_recovery_and_source_pages_remain_independent() {
                     reference: PathReference::parse(reference).expect("artifact continuation"),
                     limits: TextLimits::default(),
                     numbered: false,
+                    acquisition: None,
                 },
                 &OperationGuard::new(),
             )
@@ -223,6 +226,7 @@ async fn artifact_recovery_and_source_pages_remain_independent() {
                 .expect("next page"),
                 limits: TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )
@@ -338,6 +342,7 @@ async fn issue_search_keeps_selected_page_identity() {
                 reference: PathReference::parse("jira://acme/issues:raw").expect("raw"),
                 limits: TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )
@@ -351,6 +356,7 @@ async fn issue_search_keeps_selected_page_identity() {
                 reference: PathReference::parse(selected).expect("cursor"),
                 limits: TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )
@@ -383,6 +389,7 @@ async fn issue_artifact_recovery_and_source_pages_remain_independent() {
                 reference: PathReference::parse("jira://acme/issues").expect("collection"),
                 limits: TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )
@@ -420,6 +427,7 @@ async fn issue_artifact_recovery_and_source_pages_remain_independent() {
                     reference: PathReference::parse(reference).expect("artifact page"),
                     limits: TextLimits::default(),
                     numbered: false,
+                    acquisition: None,
                 },
                 &OperationGuard::new(),
             )
@@ -440,6 +448,7 @@ async fn issue_artifact_recovery_and_source_pages_remain_independent() {
                 .expect("next source page"),
                 limits: TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )
@@ -457,6 +466,7 @@ async fn issue_artifact_recovery_and_source_pages_remain_independent() {
                 .expect("last page"),
                 limits: TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )
