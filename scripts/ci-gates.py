@@ -129,7 +129,7 @@ def main():
     if sys.platform == "linux":
         gates.insert(0, (
             "Module placement",
-            [sys.executable, ".rfs-nae2/oracles/module_shape.py", "--stage", "query"],
+            [sys.executable, ".rfs-0n97/oracles/module_shape.py"],
         ))
     failed = []
     for name, command in gates:

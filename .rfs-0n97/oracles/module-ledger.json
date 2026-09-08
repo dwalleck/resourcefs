@@ -1,0 +1,38 @@
+{
+  "baseline": "7de8d1477af6be825bada9015a6996b3f2917c7d",
+  "stage": "baseline",
+  "stages": ["baseline", "core", "configuration", "transport", "fetch", "mcp", "facts"],
+  "owners": {
+    "crates/resourcefs-core/src/acquisition.rs": {"stage": "core", "maximum": 300, "symbols": ["ReadAcquisitionLimits", "intersect"], "parent": "crates/resourcefs-core/src/lib.rs", "module": "acquisition"},
+    "crates/resourcefs-mcp/src/acquisition.rs": {"stage": "configuration", "maximum": 200, "symbols": ["AcquisitionInput", "into_limits"], "parent": "crates/resourcefs-mcp/src/lib.rs", "module": "acquisition"},
+    "crates/resourcefs-sources/src/github/fetch.rs": {"stage": "fetch", "maximum": 650, "symbols": ["CacheMetadata", "FetchedResponse", "fetch", "cache_key", "cache"], "parent": "crates/resourcefs-sources/src/github/mod.rs", "module": "fetch"},
+    "crates/resourcefs-mcp/src/server/read.rs": {"stage": "mcp", "maximum": 400, "symbols": ["ReadInput", "ReadLimitsInput", "into_text_limits", "execute_read", "dispatch_read"], "parent": "crates/resourcefs-mcp/src/server.rs", "module": "read"},
+    "crates/resourcefs-mcp/src/render/error.rs": {"stage": "mcp", "maximum": 300, "symbols": [], "parent": "crates/resourcefs-mcp/src/render.rs", "module": "error"},
+    "crates/resourcefs-sources/src/github/facts.rs": {"stage": "facts", "maximum": 750, "symbols": [], "parent": "crates/resourcefs-sources/src/github/mod.rs", "module": "facts"}
+  },
+  "body_changes": {
+    "core": {"crates/resourcefs-sources/src/atlassian/jira.rs": ["read", "search", "glob"]},
+    "transport": {"crates/resourcefs-sources/src/http/mod.rs": ["begin_read", "fetch_attempt", "read_bounded"]},
+    "facts": {"crates/resourcefs-core/src/reference.rs": ["canonical_reference#5", "parse_pull_request_address"]}
+  },
+  "github_moves": ["CacheMetadata", "FetchedResponse", "body", "request", "cache_key", "fetch", "cache", "classify_status", "next_link", "next_link_target", "link_value_is_next", "GITHUB_JSON", "GITHUB_DIFF", "GITHUB_API_VERSION", "USER_AGENT", "GITHUB_CACHE_NAMESPACE"],
+  "github_changes": {
+    "core": ["read", "search", "glob"],
+    "configuration": ["new"],
+    "fetch": ["json"],
+    "facts": ["pull_request_resource", "read", "catalog_entries"]
+  },
+  "server_moves": ["ReadLimitsInput", "ReadInput", "into_text_limits", "execute_read", "dispatch_read", "cancelled_read_error"],
+  "server_imports": ["ReadRequest", "TextLimits"],
+  "protected_limits": {"crates/resourcefs-sources/src/github/mod.rs": 1498, "crates/resourcefs-mcp/src/server.rs": 1431},
+  "forbidden_dependencies": {
+    "crates/resourcefs-core/src/acquisition.rs": "serde|serde_json|rmcp|reqwest|tokio|Github|Jira|HttpSubstrate|Instant",
+    "crates/resourcefs-core/src/error.rs": "serde_json|rmcp|reqwest|tokio|GithubSource|AtlassianSource|HttpSubstrate|Deserialize|Serializer|Deserializer",
+    "crates/resourcefs-core/src/read.rs": "serde_json|rmcp|reqwest|GithubSource|AtlassianSource|GithubConfig|AtlassianSite|HttpSubstrate",
+    "crates/resourcefs-sources/src/github/facts.rs": "reqwest|ClientBuilder|HttpSubstrate|CacheMetadata|SessionCacheWrite|sleep|retry_available",
+    "crates/resourcefs-sources/src/github/fetch.rs": "schemaVersion|unavailableFacts|PullRequestFacts|rmcp|schemars",
+    "crates/resourcefs-mcp/src/acquisition.rs": "reqwest|HttpSubstrate|Github|Jira",
+    "crates/resourcefs-mcp/src/server/read.rs": "reqwest|HttpSubstrate|Github|PullRequestFacts",
+    "crates/resourcefs-mcp/src/render/error.rs": "reqwest|HttpSubstrate|Github|PullRequestFacts"
+  }
+}

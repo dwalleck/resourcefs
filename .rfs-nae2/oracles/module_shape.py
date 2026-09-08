@@ -175,7 +175,14 @@ def functions(source):
     return result
 
 
-def check(root, repository, stage):
+def check(root, repository, stage, transition=None):
+    """Run historical assertions, optionally using an explicit successor policy.
+
+    transition supplies admitted_paths, changed_bodies and server_tokens(source).
+    The latter projects only approved read nodes; all other server tokens remain
+    frozen. The caller must independently enforce those nodes and new owners.
+    Omitting the policy retains the historical invocation exactly.
+    """
     failures, observations = [], []
 
     def fail(path, predicate):
@@ -194,6 +201,8 @@ def check(root, repository, stage):
     limits = {path: limit for path, limit in LIMITS.items()
               if stage == "query" or path not in (QUERY, WIRE_QUERY)}
     ledger = set(PARENTS) | set(limits)
+    if transition is not None:
+        ledger.update(transition.admitted_paths)
     sources = {}
     for crate in sorted((root / "crates").glob("*/src")):
         for path in sorted(crate.rglob("*.rs")):
@@ -225,7 +234,8 @@ def check(root, repository, stage):
             ledger.add(mcp_tests)
             codes[mcp_tests] = ""
         before_server = git(repository, "show", f"{BASELINE}:{mcp_parent}")
-        if TOKEN.findall(without_mount) != TOKEN.findall(production(before_server)):
+        server_tokens = TOKEN.findall if transition is None else transition.server_tokens
+        if server_tokens(without_mount) != server_tokens(production(before_server)):
             fail(mcp_parent, "MCP query proof permits only a cfg(test) child declaration, not new production constructors/visibility/profile wiring")
     for path, maximum in sorted({**PARENTS, **limits}.items()):
         if path not in sources:
@@ -333,6 +343,10 @@ def check(root, repository, stage):
                 continue
             old_body, old_raw = old_functions[key]
             if TOKEN.findall(body) == TOKEN.findall(old_body) and re.findall(r'"(?:\\.|[^"\\])*"', raw_body) == re.findall(r'"(?:\\.|[^"\\])*"', old_raw):
+                continue
+            allowed_bodies = () if transition is None else transition.changed_bodies.get(path, ())
+            if symbol in allowed_bodies or f"{symbol}#{key[1]}" in allowed_bodies:
+                observations.append(f"C12 {path}: successor-owned body delta {symbol}")
                 continue
             if path in (HTTP + "mod.rs", SOURCES + "atlassian/wire.rs", SOURCES + "atlassian/render.rs"):
                 fail(path, f"changed responsibility body {symbol}; only extraction/declarations/visibility permitted; delta={delta:+d}")
