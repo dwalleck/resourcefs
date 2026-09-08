@@ -65,3 +65,14 @@ Both clients' full projections are compared field-by-field in `.rfs-bfwa/probe-o
 ## Probe-stage hand-off
 
 P1 and P2 are fresh PASS; P3 is a retained PASS with its applicability reason; N1–N4 are `N/A — <reason>`. The probe and oracle artifacts and both result files are retained. Hand off to [`falsifiable-design`](../.agents/skills/gilfoyle/references/falsifiable-design.md) with this `evidence.md` path. Production implementation and design approval remain pending; no production file was changed and no feature test was added.
+
+## S6 live read-only proof (2026-09-08)
+
+Revision: the tree committed as S6 on `feat/rfs-bfwa` (base `feat/rfs-0n97` = `084d136`). Gate: `RFS_LIVE=1`, `GITHUB_TOKEN=$(gh auth token)`; public `rust-lang/rust` PR 159232, read-only.
+
+| Row | Command | Observed |
+|---|---|---|
+| L7 adapter | `RFS_LIVE=1 GITHUB_TOKEN=… cargo test -p resourcefs-sources --test github_live_smoke -- --ignored --nocapture` | PASS — `live_github_conversation_comment_facts_hold_up` read 7 conversation comments with `state: complete`; the first record's `id`/`nodeId`/`body` and the parent `id`/`number` matched an independent `gh api …/issues/159232/comments` observation, every record named the verified parent, no `providerCap` was invented, and the single-comment read matched the same native record. |
+| S-comment stdio | `RFS_LIVE=1 GITHUB_TOKEN=… cargo test -p resourcefs-mcp --test stdio_live_smoke -- --ignored --nocapture` | PASS — `live_stdio_github_comment_facts_match_native_observation` drove the real `rfs serve` over stdio: the collection matched the independent observation (7 records) and the single-comment document overflowed the inline page, so its artifact continuation chain was followed and the reconstructed bytes parsed to the same native record. Credential sentinel absent from output. |
+
+Without the gate both rows print an explicit skip and are never counted as passes. These are Linux runtime plus public GitHub live proofs; corporate `ghe.com`, native Windows and Cyril acceptance remain the separate gate.

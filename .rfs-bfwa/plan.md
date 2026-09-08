@@ -237,6 +237,10 @@ Gate: 1 `PASS` — stdio (45), architecture (7), profile (19), schema (4), mutat
 - With the gate absent → both rows skip explicitly and are never counted as passes.
 - `python scripts/ci-gates.py` → complete repository gate on the final tree.
 
+### Checkpoint S6 (2026-09-08)
+
+Gate: 1 `PASS` — the live rows compile and skip cleanly without the gate; with the gate they run; 2 `PASS` — C20 rows executed against real GitHub; 3 `N/A` — live upstream, assertions are shape/invariant based and never compare moving counts; 4 `PASS` — independent `gh api` observation on the same public PR; 5 `N/A` — no production ownership change; 6 `N/A` — one-off credential-gated phase; 7 `PASS` — both live rows; 8 `N/A` — approved risk: no fence mutation for a live row (absence of the gate is a skip, never a pass); 9 `N/A` — approved risk: no fence to restore. Evidence recorded in `evidence.md` (S6 live read-only proof) with the exact commands and observations.
+
 ## Self-review
 
 1. Every design row is assigned: C1,C2→S1; C3,C4,C9→S4; C5,C6,C7,C8,C14,C15,C19→S3; C10,C11,C12,C17→S2; C13,C16→S5; C18→S0; C20→S6. Every `PENDING` falsifier is discharged by its claim's slice.
