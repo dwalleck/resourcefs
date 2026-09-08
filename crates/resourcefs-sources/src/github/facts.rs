@@ -358,6 +358,7 @@ struct FactsRead<'a> {
 
 mod collection;
 mod comment;
+mod continuation;
 mod pull;
 
 fn acquisition(ctx: &FactsRead<'_>) -> Result<Acquisition, ResourceError> {
@@ -496,7 +497,12 @@ impl GithubSource {
         else {
             return Err(super::unsupported_github_projection());
         };
-        if reference.projection().is_some() {
+        let cursor = reference
+            .projection()
+            .and_then(|selector| selector.source_cursor());
+        if reference.projection().is_some()
+            && !(matches!(fact, PullRequestFact::Comments) && cursor.is_some())
+        {
             return Err(super::unsupported_github_projection());
         }
         let canonical = PathReference::pull_request(address.clone(), None)?;
@@ -537,7 +543,9 @@ impl GithubSource {
             PullRequestFact::Comment(id) => {
                 comment::read_item(self, repository, number, id.get(), &mut ctx).await
             }
-            PullRequestFact::Comments => collection::read(self, repository, number, &mut ctx).await,
+            PullRequestFact::Comments => {
+                collection::read(self, repository, number, cursor, &mut ctx).await
+            }
         }
     }
 }

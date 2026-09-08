@@ -52,9 +52,9 @@
     "crates/resourcefs-mcp/src/render/error.rs": "reqwest|HttpSubstrate|Github|PullRequestFacts",
     "crates/resourcefs-mcp/src/server/read.rs": "reqwest|HttpSubstrate|Github|PullRequestFacts",
     "crates/resourcefs-sources/src/github/facts.rs": "reqwest|ClientBuilder|HttpSubstrate|CacheMetadata|SessionCacheWrite|sleep|retry_available",
-    "crates/resourcefs-sources/src/github/facts/collection.rs": "reqwest|ClientBuilder|CacheMetadata|SessionCacheWrite|sleep|retry_available|SourceCursor|sha2",
+    "crates/resourcefs-sources/src/github/facts/collection.rs": "reqwest|ClientBuilder|CacheMetadata|SessionCacheWrite|sleep|retry_available|sha2",
     "crates/resourcefs-sources/src/github/facts/comment.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference",
-    "crates/resourcefs-sources/src/github/facts/continuation.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|GithubSource|finish_facts",
+    "crates/resourcefs-sources/src/github/facts/continuation.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",
     "crates/resourcefs-sources/src/github/facts/identity.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|Serialize|Serializer|Deserialize|Deserializer|serde_json|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",
     "crates/resourcefs-sources/src/github/facts/pull.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference",
     "crates/resourcefs-sources/src/github/fetch.rs": "schemaVersion|unavailableFacts|PullRequestFacts|rmcp|schemars"
@@ -242,7 +242,7 @@
     "dispatch_read",
     "cancelled_read_error"
   ],
-  "stage": "collection",
+  "stage": "continuation",
   "stages": [
     "baseline",
     "core",

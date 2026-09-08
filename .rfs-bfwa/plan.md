@@ -186,6 +186,11 @@ Gate: 1 `PASS` — facts (30 + 2 ignored budget rows), adapter (24), mutation (1
 - `cargo test -p resourcefs-core --test github_reference_contract` → cursor grammar rows still pass.
 - `python scripts/module_shape_bfwa.py --stage continuation` → PASS.
 
+
+### Checkpoint S4 (2026-09-08)
+
+Gate: 1 `PASS` — facts (33 + 2 ignored budgets), adapter (24), mutation (15); 2 `PASS` — C3/C4/C9 fences; 3 `PASS` — resumed page, foreign session, foreign resource, tampered origin, non-canonical handle, repeated target; 4 `PASS` — envelope decoded independently in the test with a test-local base64url codec and compared field by field; 5 `PASS` — fence at stage `continuation` (continuation.rs 130 ≤ 320); 6 `PASS` — retained collection/PR release budgets; 7 `PASS` — the three fences; 8 `PASS` — padded-handle encoder, dropped session binding and undetected repeated target each red; 9 `PASS` — all restored green. Notes: the handle is issued only for a page never fetched (local limit or retryable attempt/deadline exhaustion), never for a fetched-but-malformed page; when naming the handle would push an otherwise admitted document over the representation ceiling it is dropped and the honest pages are published alone. Two mutation attempts were rejected as non-decisive (padded base64 is byte-identical for this payload; a cancelled read is still rejected by the final acceptance check) and were replaced with observable equivalents.
+
 ## Slice S5: MCP recovery, catalog, mutation refusal, docs
 
 **Claim IDs:** C13, C16.

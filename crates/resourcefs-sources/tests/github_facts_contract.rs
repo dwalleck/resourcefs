@@ -2298,3 +2298,178 @@ async fn github_collection_production_budget() {
         elapsed.as_nanos()
     );
 }
+
+/// Minimal base64url (no padding) codec so the fence can tamper with an
+/// opaque handle without reaching into production internals.
+fn b64_decode(value: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut bits = 0_u32;
+    let mut width = 0_u32;
+    let mut out = Vec::new();
+    for byte in value.bytes() {
+        let digit = ALPHABET
+            .iter()
+            .position(|candidate| *candidate == byte)
+            .expect("canonical base64url alphabet") as u32;
+        bits = (bits << 6) | digit;
+        width += 6;
+        if width >= 8 {
+            width -= 8;
+            out.push((bits >> width) as u8);
+            bits &= (1 << width) - 1;
+        }
+    }
+    out
+}
+fn b64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let mut block = [0_u8; 3];
+        block[..chunk.len()].copy_from_slice(chunk);
+        let value = u32::from_be_bytes([0, block[0], block[1], block[2]]);
+        for index in 0..chunk.len() + 1 {
+            let digit = (value >> (18 - 6 * index)) & 0x3f;
+            out.push(ALPHABET[digit as usize] as char);
+        }
+    }
+    out
+}
+
+/// A truncated collection whose next page is never fetched, so the handle is
+/// issued from the attempt budget rather than from a failed page.
+async fn truncated_collection() -> (TlsListener, GithubSource) {
+    collection_fixture(|target, api, _| {
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        if target.contains("page=2") {
+            comment_page(&(101..=200).collect::<Vec<_>>(), api, None)
+        } else {
+            comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
+        }
+    })
+    .await
+}
+
+#[tokio::test]
+async fn continuation_encoding_is_canonical_and_bounded() {
+    let (_, source) = truncated_collection().await;
+    let controls = ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("budget");
+    let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
+        .await
+        .expect("truncated collection");
+    let facts = document(&resource);
+    let continuation = facts["collection"]["continuation"]
+        .as_str()
+        .expect("continuation named");
+    assert_eq!(resource.continuation(), Some(continuation));
+    assert!(continuation.starts_with("pr://owner/repo/7/comments/facts:cursor:"));
+    assert!(
+        continuation.len() <= resourcefs_core::MAX_PATH_REFERENCE_BYTES,
+        "handle must fit the reference ceiling"
+    );
+    let parsed = PathReference::parse(continuation).expect("handle parses");
+    assert!(
+        parsed
+            .projection()
+            .and_then(resourcefs_core::ProjectionSelector::source_cursor)
+            .is_some(),
+        "handle is a typed source cursor"
+    );
+    // The envelope is canonical unpadded base64url JSON naming the native page.
+    let encoded = continuation
+        .rsplit(":cursor:")
+        .next()
+        .expect("cursor spelling");
+    let envelope: Value = serde_json::from_slice(&b64_decode(encoded)).expect("canonical envelope");
+    assert_eq!(envelope["version"], 1);
+    assert_eq!(envelope["resource"], COLLECTION_RESOURCE);
+    assert!(envelope["origin"].as_str().expect("origin").len() == 64);
+    assert!(envelope["session"].as_str().expect("session").len() == 64);
+    assert!(envelope["next"].as_str().expect("next").contains("page=2"));
+
+    // A padded or non-canonical handle is refused by the grammar.
+    for malformed in [
+        format!("{COLLECTION_RESOURCE}:cursor:{encoded}="),
+        format!("{COLLECTION_RESOURCE}:cursor:e30"),
+    ] {
+        let parsed = PathReference::parse(&malformed);
+        assert!(
+            parsed.is_err()
+                || parsed
+                    .expect("parse")
+                    .projection()
+                    .is_none_or(|selector| selector.source_cursor().is_none())
+                || read_reference(&source, &malformed, None).await.is_err(),
+            "{malformed}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn continuation_is_session_and_authority_bound() {
+    // A valid handle resumes exactly the next native page.
+    let (listener, source) = truncated_collection().await;
+    let controls = ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("budget");
+    let first = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
+        .await
+        .expect("first read");
+    let cursor = document(&first)["collection"]["continuation"]
+        .as_str()
+        .expect("handle")
+        .to_owned();
+    let before = listener.requests().len();
+    let resumed = read_reference(&source, &cursor, None)
+        .await
+        .expect("resume");
+    let facts = document(&resumed);
+    assert_eq!(facts["data"]["records"][0]["id"], "101");
+    assert_eq!(facts["collection"]["acceptedCount"], 100);
+    assert_eq!(
+        listener.requests().len(),
+        before + 2,
+        "resume re-reads the parent and the named page"
+    );
+
+    // Another Path Session acquires nothing.
+    let (other, _session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
+    let quiet = listener.requests().len();
+    let error = read_reference(&other, &cursor, None)
+        .await
+        .expect_err("foreign session");
+    assert_eq!(error.category(), ErrorCategory::InvalidReference);
+    assert_eq!(
+        listener.requests().len(),
+        quiet,
+        "no egress for a foreign handle"
+    );
+
+    // Another resource acquires nothing.
+    let error = read_reference(&source, "pr://owner/repo/8/comments/facts:cursor:AAA", None)
+        .await
+        .expect_err("foreign resource");
+    assert!(matches!(error.category(), ErrorCategory::InvalidReference));
+    assert_eq!(
+        listener.requests().len(),
+        quiet,
+        "no egress for a foreign resource"
+    );
+
+    // A tampered origin acquires nothing: the envelope is re-encoded with a
+    // different origin digest and presented to the same source.
+    let encoded = cursor.rsplit(":cursor:").next().expect("cursor");
+    let mut envelope: Value = serde_json::from_slice(&b64_decode(encoded)).expect("envelope");
+    envelope["origin"] = json!("0".repeat(64));
+    let tampered = format!(
+        "{COLLECTION_RESOURCE}:cursor:{}",
+        b64_encode(serde_json::to_vec(&envelope).expect("encode").as_slice())
+    );
+    let error = read_reference(&source, &tampered, None)
+        .await
+        .expect_err("foreign origin");
+    assert_eq!(error.category(), ErrorCategory::InvalidReference);
+    assert_eq!(
+        listener.requests().len(),
+        quiet,
+        "no egress for a foreign origin"
+    );
+}

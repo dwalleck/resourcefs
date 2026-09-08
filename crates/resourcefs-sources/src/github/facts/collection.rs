@@ -15,7 +15,7 @@ use super::super::GithubSource;
 use super::super::fetch::BodyObservation;
 use super::{
     Acquisition, Facts, FactsRead, NativeId, RepositoryName, Unavailable, Upstream, acquisition,
-    comment, failure, finish_facts, identity,
+    comment, continuation, failure, finish_facts, identity,
 };
 
 /// Bounded reserve for coverage facts, acquisition digit growth and one page
@@ -53,13 +53,15 @@ struct Inconsistency {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Collection {
+struct Collection<'a> {
     state: &'static str,
     accepted_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     local_limit: Option<LocalLimit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure: Option<FailureFacts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    continuation: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     inconsistency: Option<Inconsistency>,
 }
@@ -87,7 +89,7 @@ struct CollectionBody<'a> {
     observed: CollectionObserved<'a>,
     upstream: Pages<'a>,
     data: Records<'a>,
-    collection: Collection,
+    collection: Collection<'a>,
 }
 
 /// Effective acquisition metadata with zeroed observations, used only to
@@ -152,6 +154,15 @@ fn serialized_len<T: Serialize>(value: &T) -> Result<usize, ResourceError> {
     Ok(counter.0)
 }
 
+/// Whether a failed page acquisition is retryable, so its target stays a
+/// valid continuation. A denied or absent page is not.
+fn retryable(error: &ResourceError) -> bool {
+    matches!(
+        error.category(),
+        ErrorCategory::SourceUnavailable | ErrorCategory::LimitExceeded
+    )
+}
+
 /// Whether an error rejects the whole read even after earlier pages were
 /// admitted: explicit cancellation and authority failures are never softened
 /// into a partial result.
@@ -206,8 +217,21 @@ pub(super) async fn read(
     source: &GithubSource,
     repository: &resourcefs_core::GithubRepositoryIdentity,
     number: u64,
+    cursor: Option<&resourcefs_core::SourceCursor>,
     ctx: &mut FactsRead<'_>,
 ) -> Result<SourceResource, ResourceError> {
+    let suffix = format!("issues/{number}/comments");
+    let owner = continuation::CursorOwner::new(ctx.canonical.clone(), source);
+    // Decode and confine the handle before any upstream request: a handle from
+    // another resource, origin or session must acquire nothing.
+    let resumed = cursor
+        .map(|cursor| {
+            source
+                .confine_next(owner.decode(cursor)?, repository, &suffix)
+                .map(Some)
+        })
+        .transpose()?
+        .flatten();
     let (pull, parent_endpoint) = comment::fetch_parent(source, repository, number, ctx).await?;
     let web = Url::parse(ctx.web_origin).map_err(|_| failure(ErrorReason::UpstreamUnavailable))?;
     let identity = identity::validate(
@@ -218,7 +242,6 @@ pub(super) async fn read(
         &source.api_base,
         &web,
     )?;
-    let suffix = format!("issues/{number}/comments");
     // Measure the fixed part of the document once: envelope, request, observed
     // parent and an empty data/collection pair. Admission then compares the
     // real record bytes against the remaining ceiling.
@@ -259,12 +282,16 @@ pub(super) async fn read(
                 accepted_count: 0,
                 local_limit: None,
                 failure: None,
+                continuation: None,
                 inconsistency: None,
             },
         },
         unavailable_facts: Vec::new(),
     })?;
-    let mut next = Some(source.page_url(repository, &suffix, &[], 1)?);
+    let mut pending = Some(match resumed {
+        Some(target) => target,
+        None => source.page_url(repository, &suffix, &[], 1)?,
+    });
     let mut seen: Vec<String> = Vec::new();
     let mut observations: Vec<BodyObservation> = Vec::new();
     let mut revalidations: Vec<Option<BodyObservation>> = Vec::new();
@@ -275,7 +302,7 @@ pub(super) async fn read(
     let mut local_limit = None;
     let mut recorded_failure = None;
     let mut inconsistency = None;
-    while let Some(url) = next.take() {
+    while let Some(url) = pending.take() {
         if seen.iter().any(|seen| seen == url.as_str()) {
             // Observed pagination does not progress; never loop and never
             // claim the collection is complete or a snapshot.
@@ -289,6 +316,9 @@ pub(super) async fn read(
             if comments.is_empty() || rejects_every_page(&error) {
                 return Err(error);
             }
+            if retryable(&error) {
+                pending = Some(url);
+            }
             state = "incomplete";
             recorded_failure = Some(failure_facts(&error));
             break;
@@ -301,6 +331,9 @@ pub(super) async fn read(
             Err(error) => {
                 if comments.is_empty() || rejects_every_page(&error) {
                     return Err(error);
+                }
+                if retryable(&error) {
+                    pending = Some(url);
                 }
                 state = "incomplete";
                 recorded_failure = Some(failure_facts(&error));
@@ -395,7 +428,7 @@ pub(super) async fn read(
         observations.push(page.observation);
         revalidations.push(page.revalidation);
         comments.extend(decoded);
-        next = page.next;
+        pending = page.next;
     }
     let mut projection_unavailable = Vec::new();
     let records = comments
@@ -411,7 +444,17 @@ pub(super) async fn read(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let facts = Facts {
+    // A continuation is named only when a further page was left unfetched and
+    // traversal did not observe inconsistent pagination.
+    let continuation = match (&pending, state) {
+        (Some(_), "complete" | "unknown") => None,
+        (Some(target), _) => owner.continuation(target)?,
+        (None, _) => None,
+    };
+    let continuation_text = continuation
+        .as_ref()
+        .map(|reference| reference.requested().to_owned());
+    let mut facts = Facts {
         schema_version: super::SchemaVersion { major: 1, minor: 0 },
         kind: "github.conversation_comment_collection",
         resource: ctx.canonical.requested(),
@@ -452,15 +495,28 @@ pub(super) async fn read(
                 accepted_count: comments.len(),
                 local_limit,
                 failure: recorded_failure,
+                continuation: None,
                 inconsistency,
             },
         },
         unavailable_facts,
     };
-    finish_facts(
-        &facts,
-        ctx.limits.max_representation_bytes(),
-        ctx.canonical.clone(),
-        ctx.read,
-    )
+    let cap = ctx.limits.max_representation_bytes();
+    let Some(text) = continuation_text.as_deref() else {
+        return finish_facts(&facts, cap, ctx.canonical.clone(), ctx.read);
+    };
+    facts.body.collection.continuation = Some(text);
+    match finish_facts(&facts, cap, ctx.canonical.clone(), ctx.read) {
+        Ok(resource) => Ok(match &continuation {
+            Some(reference) => resource.with_continuation(reference),
+            None => resource,
+        }),
+        // The continuation is optional: when naming it would push an otherwise
+        // admitted document over the ceiling, publish the honest pages alone.
+        Err(error) if error.category() == ErrorCategory::LimitExceeded => {
+            facts.body.collection.continuation = None;
+            finish_facts(&facts, cap, ctx.canonical.clone(), ctx.read)
+        }
+        Err(error) => Err(error),
+    }
 }
