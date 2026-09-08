@@ -1,10 +1,5 @@
 {
   "added_functions": {
-    "grammar": {
-      "crates/resourcefs-core/src/reference.rs": [
-        "parse_pull_request_reference"
-      ]
-    },
     "transport": {
       "crates/resourcefs-sources/src/http/mod.rs": [
         "last_modified",
@@ -52,6 +47,7 @@
     "crates/resourcefs-core/src/acquisition.rs": "serde|serde_json|rmcp|reqwest|tokio|Github|Jira|HttpSubstrate|Instant",
     "crates/resourcefs-core/src/error.rs": "serde_json|rmcp|reqwest|tokio|GithubSource|AtlassianSource|HttpSubstrate|Deserialize|Serializer|Deserializer",
     "crates/resourcefs-core/src/read.rs": "serde_json|rmcp|reqwest|GithubSource|AtlassianSource|GithubConfig|AtlassianSite|HttpSubstrate",
+    "crates/resourcefs-core/src/reference/pull.rs": "serde|serde_json|rmcp|reqwest|tokio|Github|Jira|HttpSubstrate",
     "crates/resourcefs-mcp/src/acquisition.rs": "reqwest|HttpSubstrate|Github|Jira",
     "crates/resourcefs-mcp/src/render/error.rs": "reqwest|HttpSubstrate|Github|PullRequestFacts",
     "crates/resourcefs-mcp/src/server/read.rs": "reqwest|HttpSubstrate|Github|PullRequestFacts",
@@ -125,6 +121,16 @@
         "intersect"
       ]
     },
+    "crates/resourcefs-core/src/reference/pull.rs": {
+      "maximum": 650,
+      "module": "pull",
+      "parent": "crates/resourcefs-core/src/reference.rs",
+      "stage": "grammar",
+      "symbols": [
+        "PullRequestFact",
+        "parse_pull_request_reference"
+      ]
+    },
     "crates/resourcefs-mcp/src/acquisition.rs": {
       "maximum": 200,
       "module": "acquisition",
@@ -156,7 +162,7 @@
       ]
     },
     "crates/resourcefs-sources/src/github/facts.rs": {
-      "maximum": 750,
+      "maximum": 760,
       "module": "facts",
       "parent": "crates/resourcefs-sources/src/github/mod.rs",
       "stage": "facts",
@@ -236,7 +242,7 @@
     "dispatch_read",
     "cancelled_read_error"
   ],
-  "stage": "facts",
+  "stage": "grammar",
   "stages": [
     "baseline",
     "core",

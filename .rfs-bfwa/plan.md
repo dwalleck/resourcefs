@@ -28,7 +28,7 @@ Baseline production lines are physical counts at `084d136`; ranges are drift tri
 |---|---:|---:|---|---|---|
 | `crates/resourcefs-core/src/reference.rs` | 1946 | 1990–2045 | add fact-family sum and `:cursor:` split | `PullRequestFact`, `parse_pull_request_reference` | body changes limited to `parse`, `parse_pull_request_reference`, `canonical_reference`, `parse_pull_request_address` |
 | `crates/resourcefs-core/src/lib.rs` | 78 | 80–86 | add `MAX_COLLECTION_RECORDS` | new public constant | wiring only |
-| `crates/resourcefs-sources/src/github/facts.rs` | 741 | 470–620 | envelope + dispatch only; PR projection moves out | generic `Facts<B>`, `read_facts(fact)` | net shrink; no family bodies |
+| `crates/resourcefs-sources/src/github/facts.rs` | 748 | 470–620 | envelope + dispatch only; PR projection moves out | generic `Facts<B>`, `read_facts(fact)` | net shrink; no family bodies. Tripwire raised to 760 for the rebase: origin/main's reviewed file is 748 lines and the family dispatch lands in S1 before the S2 extraction returns it to 569 |
 | `crates/resourcefs-sources/src/github/facts/pull.rs` | 0 | 240–340 | create: singular PR projection | private body entry | private; no HTTP/cache/clock/cursor |
 | `crates/resourcefs-sources/src/github/facts/comment.rs` | 0 | 220–330 | create: comment decoding + record projection | private decoders/record | private; no HTTP client/coverage/cursor |
 | `crates/resourcefs-sources/src/github/facts/collection.rs` | 0 | 420–620 | create: page loop, atomic admission, coverage | private `read` entry | private; no HTTP stack/cache/cursor encoding |
@@ -45,7 +45,7 @@ Baseline production lines are physical counts at `084d136`; ranges are drift tri
 
 | Slice | Changed-line estimate |
 |---|---:|
-| S0 successor placement fence | 3,400 (measured at commit `2c03296`) |
+| S0 successor placement fence | 2,642 (measured at commit `0baf162`) |
 | S1 core route grammar and cursor scope | 450 |
 | S2 shared envelope and singular comment read | 1100 |
 | S3 bounded collection read | 1300 |
@@ -53,9 +53,9 @@ Baseline production lines are physical counts at `084d136`; ranges are drift tri
 | S5 MCP recovery, catalog, mutation, docs | 550 |
 | S6 live read-only proof | 350 |
 
-Sum 7,850; churn margin 20% = 1,570 (fixture/schema/caller migration, structural-oracle repairs, and the one-time workflow evidence this ticket carries); total **9,420**, above 4,000, so partition is mandatory.
+Sum 7,092; churn margin 20% = 1,418 (fixture/schema/caller migration, structural-oracle repairs, and the one-time workflow evidence this ticket carries); total **8,510**, above 4,000, so partition is mandatory.
 
-S0 plan correction (2026-09-08): the original 800-line estimate counted only the fence, ledger and runner. The measured commit is 3,402 lines, dominated by one-time workflow evidence — route/evidence/design/plan markdown (553), retained probe and oracle result JSON (1,636), fence and probe scripts (439), and the rest — none of which recurs in later slices. The remaining slice estimates are unchanged, the partition policy is unchanged, and the tripwire basis is now the measured value.
+S0 plan correction (2026-09-08): the original 800-line estimate counted only the fence, ledger and runner. The measured commit is 2,642 lines, dominated by one-time workflow evidence — route/evidence/design/plan markdown (553), retained probe and oracle result JSON (1,636, less the probe lock removed as build noise), fence and probe scripts (439), and the rest — none of which recurs in later slices. The remaining slice estimates are unchanged, the partition policy is unchanged, and the tripwire basis is now the measured value.
 
 | Increment | Slices | Mergeable definition | What verifies it without later increments |
 |---|---|---|---|
@@ -79,7 +79,7 @@ S0 plan correction (2026-09-08): the original 800-line estimate counted only the
 **Module shape:** no production ownership yet; the merged ledger stages the new owners and approves the `reference.rs` body changes. `python scripts/module_shape_bfwa.py --stage baseline` → PASS with inherited h212/nae2/0n97 assertions retained.
 **Files:** `scripts/module_shape_bfwa.py`, `scripts/module-ledger-bfwa.json`, `scripts/ci-gates.py`.
 **Estimate:** one bounded oracle implementation/review pass.
-**Diff estimate:** 3,400 measured (see partition arithmetic; one-time workflow evidence dominates).
+**Diff estimate:** 2,642 measured (see partition arithmetic; one-time workflow evidence dominates).
 **PR increment:** A — placement and grammar.
 **Commands and expected results:**
 - `python scripts/module_shape_bfwa.py --stage baseline` → unchanged tree accepted, inherited checks retained.

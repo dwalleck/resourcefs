@@ -503,7 +503,7 @@ impl GithubSource {
         let number = number.get();
         let base = format!("pr://{}/{number}", repository.as_str());
         match resource {
-            PullRequestResource::Facts => Err(unsupported_github_projection()),
+            PullRequestResource::Facts(_) => Err(unsupported_github_projection()),
             PullRequestResource::Aggregate => {
                 let pull = self.pull(repository, number, operation).await?;
                 let (mut comments, comment_next): (Vec<ConversationComment>, Option<u64>) = self
@@ -815,14 +815,14 @@ impl SourceAdapter for GithubSource {
         operation: &OperationGuard,
         acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
-        let facts = matches!(
-            reference.address(),
+        let fact = match reference.address() {
             ResourceAddress::PullRequest(PullRequestAddress::Item {
-                resource: PullRequestResource::Facts,
+                resource: PullRequestResource::Facts(fact),
                 ..
-            })
-        );
-        if !facts {
+            }) => Some(*fact),
+            _ => None,
+        };
+        if fact.is_none() {
             resourcefs_core::reject_acquisition(acquisition)?;
         }
         // The operator's configured ceiling bounds every read from this
@@ -844,11 +844,12 @@ impl SourceAdapter for GithubSource {
             .min(limits.timeout())
             .saturating_add(std::time::Duration::from_secs(1));
         let pending = async {
-            if facts {
-                self.read_facts(reference, operation, acquisition).await
-            } else {
-                let operation = self.substrate.begin_read_with_limits(operation, &limits)?.0;
-                self.read_resource(reference, operation).await
+            match fact {
+                Some(fact) => self.read_facts(reference, fact, operation, acquisition).await,
+                None => {
+                    let operation = self.substrate.begin_read_with_limits(operation, &limits)?.0;
+                    self.read_resource(reference, operation).await
+                }
             }
         };
         tokio::time::timeout(wall, pending).await.map_err(|_| {
@@ -911,7 +912,7 @@ impl DiscoveryAdapter for GithubSource {
             // names a reference that cannot be read back. Refuse the search
             // rather than answer it with records nothing can follow.
             ResourceAddress::PullRequest(PullRequestAddress::Item {
-                resource: PullRequestResource::Facts,
+                resource: PullRequestResource::Facts(_),
                 ..
             }) => return Err(unsupported_github_projection()),
             ResourceAddress::PullRequest(address) => {

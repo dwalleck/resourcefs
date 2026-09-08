@@ -53,6 +53,7 @@ Date: 2026-09-08. Route: Empirical (`route.md`). Evidence: `evidence.md` (P1/P2 
 | Module | Production lines | Interface | Responsibility clusters | Change |
 |---|---:|---|---|---|
 | `crates/resourcefs-core/src/reference.rs` | 1946 | `PathReference`, `PullRequestAddress`, `PullRequestResource` | address parsing, canonical spelling, selector typing, per-family selector split | deepen |
+| `crates/resourcefs-core/src/reference/pull.rs` | 0 | private pull-fact sum + cursor split | grammar child of `reference.rs` | create (technical correction, S1) |
 | `crates/resourcefs-core/src/lib.rs` | 78 | crate exports and public constants | wiring | deepen (one constant) |
 | `crates/resourcefs-sources/src/github/mod.rs` | 1136 | `GithubSource`, `SourceAdapter`, `SourceCatalogMetadata` | route dispatch, human rendering, parent/identity validation, catalog | deepen (dispatch arm + catalog string only) |
 | `crates/resourcefs-sources/src/github/fetch.rs` | 565 | private fetch/cache/pagination | conditional fetch, cache, Link confinement | deepen (one page seam) |
@@ -93,6 +94,7 @@ Selected: **2** — one envelope owner, one serialization order, family sections
 | Module/path | Interface | Owns | Hides/reuses | Must not own | Adapters | Tests through | Change |
 |---|---|---|---|---|---|---|---|
 | `crates/resourcefs-core/src/reference.rs` | `PathReference`, `PullRequestResource`, `PullRequestFact` | route grammar, canonical spelling, typed child ids, per-family `:cursor:` split | existing address/selector types | provider behavior, HTTP | N/A | `github_reference_contract` | deepen |
+| `crates/resourcefs-core/src/reference/pull.rs` | private `PullRequestFact`, `parse_pull_request_reference` | pull-fact sum, `:cursor:` split and route scope | `super` grammar helpers | provider behavior, HTTP, serde | N/A | `github_reference_contract` | create |
 | `crates/resourcefs-core/src/lib.rs` | public constants | `MAX_COLLECTION_RECORDS` | — | provider names, family policy | N/A | core contracts | deepen |
 | `crates/resourcefs-sources/src/github/mod.rs` | `GithubSource` | dispatch, catalog string, parent/identity validation | all private owners | new fact bodies | N/A | adapter contracts | deepen |
 | `crates/resourcefs-sources/src/github/fetch.rs` | private fetch/cache/pagination | conditional fetch, cache, Link confinement, one page seam | `BoundedHttpResponse`, `HttpReadBudget` | fact schema, coverage policy | N/A | HTTP/GitHub contracts | deepen |
@@ -109,7 +111,7 @@ Selected: **2** — one envelope owner, one serialization order, family sections
 |---|---|---|---|---|
 | `crates/resourcefs-sources/src/github/mod.rs` | route dispatch, human rendering, validation helpers, catalog | one `Facts(fact)` dispatch arm, catalog string, no new helper body beyond wiring | new fact projection/admission/decoding bodies | production lines < 1136 and no new responsibility declaration |
 | `crates/resourcefs-mcp/src/server.rs` | tool registration/dispatch | none | any change | byte-identical to base |
-| `crates/resourcefs-core/src/reference.rs` | grammar | two parse arms, one canonical arm, new enum, `parse_pull_request_reference` and the `PULL_REQUEST_PREFIX` branch delegating to it | provider or transport vocabulary | compiles with exhaustive matches at the three production sites and the shape fence approves exactly `parse`, `parse_pull_request_reference`, `canonical_reference` and `parse_pull_request_address` body changes |
+| `crates/resourcefs-core/src/reference.rs` | grammar | two parse arms, one canonical arm, the `Facts(PullRequestFact)` variant, `mod pull;` and the `PULL_REQUEST_PREFIX` branch delegating to the child | provider or transport vocabulary | production lines ≤ the inherited 1989 ceiling, and the shape fence approves exactly `parse`, `canonical_reference` and `parse_pull_request_address` body changes |
 
 ### Shape fence
 
@@ -194,6 +196,8 @@ Result: `PASS` — `.rfs-bfwa/falsifier-cursor-result.json`, `all_pass: true`. P
 | padded-base64 mutation | no | yes | `InvalidReference` |
 | positive control `:page:2` | n/a | n/a | accepted (`selector_kind: page`) |
 | positive control `:2-4` | n/a | n/a | accepted (`selector_kind: lines`) |
+
+**Technical placement correction (S1, 2026-09-08).** The build found the inherited h212 placement census caps `crates/resourcefs-core/src/reference.rs` at 1989 production lines; the new grammar pushed it to 2004 and the fence rejected both the overrun and a new parent declaration. The approved owner and interface are unchanged, so this is a technical correction determined by an existing obligation: `PullRequestFact` and `parse_pull_request_reference` moved into a private `crates/resourcefs-core/src/reference/pull.rs` child, mirroring the existing `reference/jira.rs` and `reference/source_page.rs` children, and `reference.rs` re-exports `PullRequestFact` from the same public path. `reference.rs` is now 1964 lines, the child is 51, ownership and the public interface are identical, and the successor fence passes at stage `grammar`.
 
 **Design correction from this run (first attempt falsified the design).** The original C3 asserted that `PathReference::parse` already accepts a canonical cursor on a `pr://` facts reference. It does not: `projection_candidate_split` only recognizes `:raw`, `:page:` and trailing line ranges, and `pr://` has no scheme-specific split, so `pr://…/facts:cursor:<x>` is parsed as an address segment and fails with `InvalidReference`. Jira's `parse_jira_reference` is the existing pattern that solves exactly this. The design now adds `parse_pull_request_reference` (C2) as a required core change, narrows C3 to the encoding/canonicality/ceiling claim, and records the `reference.rs` body-change approval in the protected-parent table. The positive controls prove selector support already exists on this family, so the gap is isolated to the missing `:cursor:` split and not a parser quirk. Re-run after the correction: `PASS`.
 

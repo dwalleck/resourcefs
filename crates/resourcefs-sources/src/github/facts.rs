@@ -9,7 +9,7 @@ use std::{
 
 use resourcefs_core::{
     AcquisitionLimitKind, ErrorCategory, ErrorReason, LimitDetail, OperationGuard, PathReference,
-    PullRequestAddress, ReadAcquisitionLimits, ResourceAddress, ResourceError,
+    PullRequestAddress, PullRequestFact, ReadAcquisitionLimits, ResourceAddress, ResourceError,
     ResourceErrorDetails, SourceResource, Utf8ContentType,
 };
 use serde::{
@@ -544,12 +544,19 @@ impl GithubSource {
     pub(super) async fn read_facts(
         &self,
         reference: &PathReference,
+        fact: PullRequestFact,
         operation: &OperationGuard,
         acquisition: Option<&ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
-        self.facts_resource(reference, operation, acquisition)
-            .await
-            .map_err(sanitize)
+        match fact {
+            PullRequestFact::Pull => self
+                .facts_resource(reference, operation, acquisition)
+                .await
+                .map_err(sanitize),
+            PullRequestFact::Comments | PullRequestFact::Comment(_) => {
+                Err(super::unsupported_github_projection())
+            }
+        }
     }
 
     async fn facts_resource(
