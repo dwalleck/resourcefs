@@ -242,7 +242,7 @@
     "dispatch_read",
     "cancelled_read_error"
   ],
-  "stage": "item",
+  "stage": "collection",
   "stages": [
     "baseline",
     "core",

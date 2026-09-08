@@ -12,6 +12,11 @@ pub const MAX_TEXT_BYTES: usize = 48 * 1024;
 pub const MAX_TEXT_LINES: usize = 3_000;
 pub const MAX_TEXT_COLUMNS: usize = 512;
 pub const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
+/// Local ceiling on records admitted by one bounded collection read.
+///
+/// Source-neutral: an adapter counts its own records and admits whole pages
+/// only while this and the representation ceiling both fit.
+pub const MAX_COLLECTION_RECORDS: usize = 1_000;
 pub const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
 pub const MARKDOWN_CONTENT_TYPE: &str = "text/markdown; charset=utf-8";
 

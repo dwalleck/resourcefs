@@ -31,11 +31,21 @@ struct CacheMetadata {
 }
 
 pub(super) struct FetchedResponse {
-    body: Arc<[u8]>,
-    link: Option<String>,
+    pub(super) body: Arc<[u8]>,
+    pub(super) link: Option<String>,
     pub(super) observation: BodyObservation,
     pub(super) revalidation: Option<BodyObservation>,
     pub(super) cache_generation: u64,
+}
+
+/// One controlled collection page: the accepted body, its provenance and the
+/// confined target of the next page, if the provider names one.
+pub(super) struct PageResponse {
+    pub(super) body: Arc<[u8]>,
+    pub(super) observation: BodyObservation,
+    pub(super) revalidation: Option<BodyObservation>,
+    pub(super) cache_generation: u64,
+    pub(super) next: Option<Url>,
 }
 
 impl FetchedResponse {
@@ -355,6 +365,29 @@ impl GithubSource {
             observation,
             revalidation: None,
             cache_generation,
+        })
+    }
+
+    /// Fetches one controlled collection page and resolves its next target
+    /// inside the same origin and repository endpoint family.
+    pub(super) async fn facts_page(
+        &self,
+        url: Url,
+        repository: &GithubRepositoryIdentity,
+        suffix: &str,
+        operation: BoundedRead<'_>,
+        budget: &mut HttpReadBudget,
+    ) -> Result<PageResponse, ResourceError> {
+        let response = self
+            .fetch_controlled(url, GITHUB_JSON, operation, Some(budget))
+            .await?;
+        let next = self.next_link(response.link.as_deref(), repository, suffix)?;
+        Ok(PageResponse {
+            body: response.body,
+            observation: response.observation,
+            revalidation: response.revalidation,
+            cache_generation: response.cache_generation,
+            next,
         })
     }
 

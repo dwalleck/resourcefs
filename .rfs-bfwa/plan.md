@@ -161,6 +161,11 @@ Gate: 1 `PASS` — facts (24), adapter (24), mutation (15), MCP architecture (7)
 - `cargo test -p resourcefs-mcp --test architecture_contract enforces_dependency_direction -- --exact` → core stays source-neutral.
 - `python scripts/module_shape_bfwa.py --stage collection` → PASS.
 
+
+### Checkpoint S3 (2026-09-08)
+
+Gate: 1 `PASS` — facts (30 + 2 ignored budget rows), adapter (24), mutation (15) suites; 2 `PASS` — seven named fences; 3 `PASS` — 600+400, 600+401, 1,001 first page, empty complete, 404/403, malformed later page, malformed first page, cancellation after a page, repeated pagination, attempt-budget exhaustion, representation boundary; 4 `PASS` — independent record/byte counting and the measured-cap derivation in the representation fence; 5 `PASS` — fence at stage `collection` (collection.rs 455 ≤ 700, fetch.rs 598 ≤ 650); 6 `PASS` — release `github_collection_production_budget` 32.7 ms at 900 records / 6.4 MB vs 1 s, plus retained PR-facts budget; 7 `PASS` — the seven fences; 8 `PASS` — per-page record counting, complete-empty on error, dropped earlier pages, local stop marked complete, fresh budget per page, admission without envelope bytes and a forbidden core dependency each red; 9 `PASS` — all restored green. Technical corrections recorded: `AcquisitionLimitKind::CollectionRecords` added for the approved record ceiling (DESIGN.md updated in the same commit), and the admission reserve is now a measured envelope plus a bounded outcome/page reserve. Reachable maximum with the default budget is nine data pages plus the parent lookup (900 records at per_page=100); the 1,000-record ceiling remains the local admission limit. Known flake `rfs-kpgy` unchanged.
+
 ## Slice S4: Opaque session continuation
 
 **Claim IDs:** C3, C4, C9.

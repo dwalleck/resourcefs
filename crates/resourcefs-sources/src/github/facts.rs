@@ -356,6 +356,7 @@ struct FactsRead<'a> {
     started: tokio::time::Instant,
 }
 
+mod collection;
 mod comment;
 mod pull;
 
@@ -536,7 +537,7 @@ impl GithubSource {
             PullRequestFact::Comment(id) => {
                 comment::read_item(self, repository, number, id.get(), &mut ctx).await
             }
-            PullRequestFact::Comments => Err(super::unsupported_github_projection()),
+            PullRequestFact::Comments => collection::read(self, repository, number, &mut ctx).await,
         }
     }
 }

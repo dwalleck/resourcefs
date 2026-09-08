@@ -36,7 +36,7 @@ struct ParentLinks<'a> {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ParentFacts<'a> {
+pub(super) struct ParentFacts<'a> {
     kind: &'static str,
     id: &'a NativeId,
     number: &'a NativeId,
@@ -101,7 +101,7 @@ fn native_field<'a, T>(value: &'a Presence<T>, field: &str) -> Result<&'a T, Res
         .ok_or_else(|| malformed_upstream(&format!("GitHub {field} is required")))
 }
 
-fn parent_facts<'a>(
+pub(super) fn parent_facts<'a>(
     pull: &'a pull::NativePull,
     identity: &identity::ValidatedIdentity<'a>,
 ) -> ParentFacts<'a> {

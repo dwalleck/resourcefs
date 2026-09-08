@@ -1872,3 +1872,429 @@ async fn envelope_serializes_shared_fields_in_order() {
         ]
     );
 }
+
+const COLLECTION_RESOURCE: &str = "pr://owner/repo/7/comments/facts";
+
+fn comment_json(id: u64, api: &str) -> Value {
+    json!({
+        "id": id,
+        "node_id": format!("IC_{id}"),
+        "url": format!("{api}repos/owner/repo/issues/comments/{id}"),
+        "html_url": format!("https://github.example/owner/repo/pull/7#issuecomment-{id}"),
+        "issue_url": format!("{api}repos/owner/repo/issues/7"),
+        "body": format!("comment {id}"),
+        "user": {
+            "id": 500 + id,
+            "node_id": "U_commenter",
+            "login": "commenter",
+            "url": format!("{api}users/commenter"),
+            "html_url": "https://github.example/commenter"
+        },
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-02T00:00:00Z"
+    })
+}
+
+fn comment_page(ids: &[u64], api: &str, next: Option<&str>) -> FixtureResponse {
+    let records: Vec<Value> = ids.iter().map(|id| comment_json(*id, api)).collect();
+    let mut headers = Vec::new();
+    if let Some(next) = next {
+        headers.push(("Link".to_string(), format!("<{next}>; rel=\"next\"")));
+    }
+    response(
+        "200 OK",
+        serde_json::to_string(&records).expect("page JSON"),
+        headers,
+    )
+}
+
+/// Routes the parent pull request and the conversation-comment collection,
+/// handing the transform the API base so it can build native pages.
+async fn collection_fixture<F>(transform: F) -> (TlsListener, GithubSource)
+where
+    F: Fn(&str, &str, usize) -> FixtureResponse + Send + Sync + 'static,
+{
+    let count = AtomicUsize::new(0);
+    let listener = TlsListener::serve_request_router(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+        tls::match_cert(),
+        move |request| {
+            assert_eq!(request.method(), "GET", "facts cannot write");
+            let host = request
+                .head()
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':')
+                        .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
+                        .map(|(_, value)| value.trim())
+                })
+                .expect("Host header");
+            let api = format!("https://{host}/");
+            let target = request.target().to_owned();
+            if target.starts_with("/repos/owner/repo/pulls/") {
+                return response("200 OK", NATIVE.replace("@API@", &api), vec![]);
+            }
+            transform(&target, &api, count.fetch_add(1, Ordering::SeqCst))
+        },
+    )
+    .await;
+    let (source, _session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
+    (listener, source)
+}
+
+async fn read_with_operation(
+    source: &GithubSource,
+    reference: &str,
+    limits: Option<&ReadAcquisitionLimits>,
+    operation: &OperationGuard,
+) -> Result<SourceResource, resourcefs_core::ResourceError> {
+    source
+        .read(
+            &PathReference::parse(reference).expect("facts reference"),
+            operation,
+            limits,
+        )
+        .await
+}
+
+#[tokio::test]
+async fn collection_admits_whole_pages_atomically() {
+    // 600 + 400 records are admitted whole.
+    let (listener, source) = collection_fixture(|target, api, _| {
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        if target.contains("page=2") {
+            comment_page(&(601..=1000).collect::<Vec<_>>(), api, None)
+        } else {
+            comment_page(&(1..=600).collect::<Vec<_>>(), api, Some(&page_two))
+        }
+    })
+    .await;
+    let resource = read_reference(&source, COLLECTION_RESOURCE, None)
+        .await
+        .expect("600+400 admitted");
+    let facts = document(&resource);
+    assert_eq!(facts["collection"]["state"], "complete");
+    assert_eq!(facts["collection"]["acceptedCount"], 1000);
+    assert_eq!(
+        facts["data"]["records"].as_array().expect("records").len(),
+        1000
+    );
+    assert!(facts["collection"].get("localLimit").is_none());
+    assert_eq!(facts["acquisition"]["usage"]["attemptedRequests"], 3);
+    assert_eq!(listener.requests().len(), 3);
+
+    // 600 followed by 401 retains only the first page.
+    let (listener, source) = collection_fixture(|target, api, _| {
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        if target.contains("page=2") {
+            comment_page(&(601..=1001).collect::<Vec<_>>(), api, None)
+        } else {
+            comment_page(&(1..=600).collect::<Vec<_>>(), api, Some(&page_two))
+        }
+    })
+    .await;
+    let facts = document(
+        &read_reference(&source, COLLECTION_RESOURCE, None)
+            .await
+            .expect("first page retained"),
+    );
+    assert_eq!(facts["collection"]["state"], "incomplete");
+    assert_eq!(facts["collection"]["acceptedCount"], 600);
+    assert_eq!(facts["collection"]["localLimit"]["kind"], "records");
+    assert_eq!(facts["collection"]["localLimit"]["bound"], 1000);
+    assert_eq!(facts["collection"]["localLimit"]["observed"], 1001);
+    assert_eq!(facts["acquisition"]["usage"]["attemptedRequests"], 3);
+    assert_eq!(listener.requests().len(), 3);
+
+    // A 1,001-record first page is a typed failure, never an empty success.
+    let (_, source) =
+        collection_fixture(|_, api, _| comment_page(&(1..=1001).collect::<Vec<_>>(), api, None))
+            .await;
+    let error = read_reference(&source, COLLECTION_RESOURCE, None)
+        .await
+        .expect_err("unreturnable first page");
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+    assert_eq!(
+        error
+            .details()
+            .expect("typed limit")
+            .limit()
+            .expect("limit detail")
+            .kind()
+            .as_str(),
+        "collection_records"
+    );
+}
+
+#[tokio::test]
+async fn empty_complete_is_not_inaccessible() {
+    let (_, source) = collection_fixture(|_, _, _| comment_page(&[], "", None)).await;
+    let facts = document(
+        &read_reference(&source, COLLECTION_RESOURCE, None)
+            .await
+            .expect("empty complete collection"),
+    );
+    assert_eq!(facts["collection"]["state"], "complete");
+    assert_eq!(facts["collection"]["acceptedCount"], 0);
+    assert_eq!(
+        facts["data"]["records"].as_array().expect("records").len(),
+        0
+    );
+
+    for status in ["404 Not Found", "403 Forbidden"] {
+        let (_, source) =
+            collection_fixture(move |_, _, _| response(status, "{}".into(), vec![])).await;
+        let error = read_reference(&source, COLLECTION_RESOURCE, None)
+            .await
+            .expect_err("inaccessible collection");
+        assert!(matches!(
+            error.category(),
+            ErrorCategory::NotFound | ErrorCategory::PermissionDenied
+        ));
+    }
+}
+
+#[tokio::test]
+async fn partial_retention_and_rejection_precedence() {
+    // A malformed later page retains the verified first page with honest
+    // coverage; the collection is not reported complete.
+    let (listener, source) = collection_fixture(|target, api, _| {
+        if target.contains("page=2") {
+            return response("200 OK", "{malformed".into(), vec![]);
+        }
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
+    })
+    .await;
+    let facts = document(
+        &read_reference(&source, COLLECTION_RESOURCE, None)
+            .await
+            .expect("first page retained"),
+    );
+    assert_eq!(facts["collection"]["state"], "incomplete");
+    assert_eq!(facts["collection"]["acceptedCount"], 100);
+    assert_eq!(
+        facts["collection"]["failure"]["category"],
+        "source_unavailable"
+    );
+    assert_eq!(
+        facts["collection"]["failure"]["reason"],
+        "upstream_malformed"
+    );
+    assert_eq!(listener.requests().len(), 3);
+
+    // A malformed first page is a typed failure, not an empty collection.
+    let (_, source) =
+        collection_fixture(|_, _, _| response("200 OK", "{malformed".into(), vec![])).await;
+    let error = read_reference(&source, COLLECTION_RESOURCE, None)
+        .await
+        .expect_err("unusable first page");
+    assert_eq!(
+        error.details().expect("typed").reason(),
+        ErrorReason::UpstreamMalformed
+    );
+
+    // Cancellation after a verified page rejects every page of this read.
+    let operation = Arc::new(OperationGuard::new());
+    let cancelling = Arc::clone(&operation);
+    let (_, source) = collection_fixture(move |target, api, index| {
+        if index == 0 {
+            cancelling.cancel();
+            let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+            return comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two));
+        }
+        comment_page(&[], api, None)
+    })
+    .await;
+    let error = read_with_operation(&source, COLLECTION_RESOURCE, None, &operation)
+        .await
+        .expect_err("cancellation rejects the component");
+    assert_eq!(error.category(), ErrorCategory::Cancelled);
+}
+
+#[tokio::test]
+async fn collection_coverage_vocabulary_is_honest() {
+    let (_, source) = collection_fixture(|_, api, _| comment_page(&[1, 2, 3], api, None)).await;
+    let facts = document(
+        &read_reference(&source, COLLECTION_RESOURCE, None)
+            .await
+            .expect("complete collection"),
+    );
+    let collection = facts["collection"].as_object().expect("collection object");
+    for key in ["state", "acceptedCount"] {
+        assert!(collection.contains_key(key), "{key}");
+    }
+    // This family has no provider cap and no supplied total; neither is invented.
+    for absent in ["providerCap", "reportedTotal", "continuation"] {
+        assert!(!collection.contains_key(absent), "{absent} must be absent");
+    }
+    assert_eq!(facts["kind"], "github.conversation_comment_collection");
+    assert_eq!(
+        facts["data"]["records"][0]["kind"],
+        "github.conversation_comment"
+    );
+    assert_eq!(facts["data"]["records"][0]["parent"]["number"], "7");
+}
+
+#[tokio::test]
+async fn one_budget_covers_parent_and_pages() {
+    let (listener, source) = collection_fixture(|target, api, _| {
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        if target.contains("page=2") {
+            comment_page(&(101..=200).collect::<Vec<_>>(), api, None)
+        } else {
+            comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
+        }
+    })
+    .await;
+    let controls =
+        ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("two attempts");
+    let facts = document(
+        &read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
+            .await
+            .expect("parent plus one page fit the budget"),
+    );
+    assert_eq!(facts["collection"]["state"], "incomplete");
+    assert_eq!(facts["collection"]["acceptedCount"], 100);
+    assert_eq!(facts["collection"]["failure"]["category"], "limit_exceeded");
+    assert_eq!(facts["acquisition"]["usage"]["attemptedRequests"], 2);
+    assert_eq!(listener.requests().len(), 2, "the attempt budget is shared");
+}
+
+#[tokio::test]
+async fn representation_ceiling_includes_outcome_overhead() {
+    // Measure two real documents so the cap is derived from observed bytes,
+    // never from the admission arithmetic under test.
+    let (_, source) = collection_fixture(|_, api, _| comment_page(&[1], api, None)).await;
+    let one = read_reference(&source, COLLECTION_RESOURCE, None)
+        .await
+        .expect("one record")
+        .content()
+        .len();
+    let (_, source) = collection_fixture(|_, api, _| comment_page(&[1, 2], api, None)).await;
+    let two = read_reference(&source, COLLECTION_RESOURCE, None)
+        .await
+        .expect("two records")
+        .content()
+        .len();
+    assert!(two > one + 1_024, "records must dominate the reserve");
+
+    // A cap that admits one record but not two keeps the first page and names
+    // the representation limit; the second page is never admitted.
+    let (_, source) = collection_fixture(|target, api, _| {
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        if target.contains("page=2") {
+            comment_page(&[2], api, None)
+        } else {
+            comment_page(&[1], api, Some(&page_two))
+        }
+    })
+    .await;
+    let controls = ReadAcquisitionLimits::new(None, None, None, None, Some(two)).expect("cap");
+    let facts = document(
+        &read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
+            .await
+            .expect("first page fits"),
+    );
+    assert_eq!(facts["collection"]["state"], "incomplete");
+    assert_eq!(
+        facts["collection"]["localLimit"]["kind"],
+        "representation_bytes"
+    );
+    assert_eq!(facts["collection"]["acceptedCount"], 1);
+
+    // A first page that cannot fit is a typed failure.
+    let (_, source) = collection_fixture(|_, api, _| comment_page(&[1], api, None)).await;
+    let controls = ReadAcquisitionLimits::new(None, None, None, None, Some(one - 1)).expect("cap");
+    let error = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
+        .await
+        .expect_err("unreturnable first page");
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+}
+
+#[tokio::test]
+async fn repeated_pagination_is_explicit() {
+    let (listener, source) = collection_fixture(|target, api, _| {
+        // Every page names the same next target, so traversal cannot progress.
+        let repeated = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        if target.contains("page=2") {
+            comment_page(&(101..=200).collect::<Vec<_>>(), api, Some(&repeated))
+        } else {
+            comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&repeated))
+        }
+    })
+    .await;
+    let facts = document(
+        &read_reference(&source, COLLECTION_RESOURCE, None)
+            .await
+            .expect("repeated pagination is reported, not looped"),
+    );
+    assert_eq!(facts["collection"]["state"], "unknown");
+    assert_eq!(
+        facts["collection"]["inconsistency"]["reason"],
+        "repeated_pagination"
+    );
+    assert_eq!(facts["collection"]["acceptedCount"], 200);
+    assert_eq!(listener.requests().len(), 3, "bounded request count");
+}
+
+#[tokio::test]
+#[ignore = "checkpointed-build production-scale budget"]
+async fn github_collection_production_budget() {
+    // Nine pages of 100 records: one shared attempt budget spends the first
+    // attempt on the parent, so nine data pages is the reachable maximum.
+    let body = "x".repeat(6_000);
+    let (_, source) = collection_fixture(move |target, api, _| {
+        // `per_page=100` also contains `page=`, so take the last occurrence.
+        let page: u64 = target
+            .rsplit("page=")
+            .next()
+            .and_then(|value| value.split('&').next())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1);
+        let start = (page - 1) * 100 + 1;
+        let ids: Vec<u64> = (start..start + 100).collect();
+        let mut records: Vec<Value> = ids.iter().map(|id| comment_json(*id, api)).collect();
+        for record in &mut records {
+            record["body"] = json!(body.clone());
+        }
+        let mut headers = Vec::new();
+        if page < 9 {
+            headers.push((
+                "Link".to_string(),
+                format!(
+                    "<{api}repos/owner/repo/issues/7/comments?per_page=100&page={}>; rel=\"next\"",
+                    page + 1
+                ),
+            ));
+        }
+        response(
+            "200 OK",
+            serde_json::to_string(&records).expect("page JSON"),
+            headers,
+        )
+    })
+    .await;
+    let started = Instant::now();
+    let resource = read_reference(&source, COLLECTION_RESOURCE, None)
+        .await
+        .expect("production-size collection");
+    let elapsed = started.elapsed();
+    let facts = document(&resource);
+    assert_eq!(facts["collection"]["acceptedCount"], 900);
+    assert_eq!(facts["collection"]["state"], "complete");
+    let output_bytes = resource.content().len();
+    assert!(
+        output_bytes > 6_000_000,
+        "production-size output: {output_bytes}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "local processing took {elapsed:?}"
+    );
+    eprintln!(
+        "collection_budget phase=wall records=900 output_bytes={output_bytes} local_processing_ns={} limit_ns=1000000000",
+        elapsed.as_nanos()
+    );
+}

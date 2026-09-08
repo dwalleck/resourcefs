@@ -23,6 +23,7 @@ BUDGETS = {
     "github_single_resource_render_budget",
     "github_cache_namespace_removal_budget",
     "github_facts_production_budget",
+    "github_collection_production_budget",
     "creation_document_budget",
     "github_wire_decode_budget",
     "http_mutation_request_budget",
