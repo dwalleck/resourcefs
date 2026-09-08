@@ -127,8 +127,8 @@
       "path": "crates/resourcefs-sources/src/github/facts.rs",
       "old": "let mut writer = CappedWriter {\n        bytes: Vec::new(),\n        cap,\n        exceeded: false,\n    };",
       "new": "let mut writer = CappedWriter {\n        bytes: Vec::new(),\n        cap: cap.saturating_add(4096),\n        exceeded: false,\n    };",
-      "test_command": "cargo test -p resourcefs-sources --lib github::facts::tests::final_facts_exact_pretty_bytes_and_hash_fit_cap_but_one_less_refuses -- --exact",
-      "expected": "Treating envelope/metadata as an extra unmetered allowance admits EXPECTED.len() bytes under EXPECTED.len()-1 cap. The private behavioral exact-byte fixture fails expect_err; this is not a source-text or compile-error fence. The public escaping test may still reject because its expansion exceeds the allowance, hence use exact private fence."
+      "test_command": "cargo test -p resourcefs-sources --all-features --lib github::facts::tests::final_facts_measured_bytes_and_hash_fit_cap_but_one_less_refuses -- --exact",
+      "expected": "Treating envelope/metadata as an extra unmetered allowance admits the complete measured representation under a measured-length-minus-one cap. The consumer-observable exact-byte fixture fails expect_err."
     }
   ],
   [

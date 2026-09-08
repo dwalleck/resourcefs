@@ -299,4 +299,209 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 running 0 tests
 
-[Showing lines 1-300 of 507. Use :301 to continue]
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+     Running tests/github_wire_contract.rs (target/debug/deps/github_wire_contract-387f6af5d102c3c2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/http_bounds_contract.rs (target/debug/deps/http_bounds_contract-e200f1d6355eb1a0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/http_extract_contract.rs (target/debug/deps/http_extract_contract-43e09bc2bf17dd31)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/http_policy_contract.rs (target/debug/deps/http_policy_contract-9a3403f8ec84d0ad)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+     Running tests/http_substrate_contract.rs (target/debug/deps/http_substrate_contract-45bd52233f1aa849)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+     Running tests/http_tls_contract.rs (target/debug/deps/http_tls_contract-69dcf1551f3f8e21)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/https_credential_contract.rs (target/debug/deps/https_credential_contract-3f8e5c9f1de014f7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/https_live_smoke.rs (target/debug/deps/https_live_smoke-785c6954d83014d7)
+
+running 1 test
+H1 reader mode: 6826 bytes, 165 lines
+H2 raw: 30474 bytes; :1-5 slice ok
+H3 redirect: 7604 bytes
+H4 refusals: not_found, permission_denied
+H5 search: 12 records, first at line 29
+test live_https_reads_hold_up ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+
+     Running tests/https_status_contract.rs (target/debug/deps/https_status_contract-6ca9c103159b0ff6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/jira_browse_budget_contract.rs (target/debug/deps/jira_browse_budget_contract-d2722fd1c08c2aa3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/jira_browse_discovery_contract.rs (target/debug/deps/jira_browse_discovery_contract-d1a132229bdfd901)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/jira_browse_wire_contract.rs (target/debug/deps/jira_browse_wire_contract-e04c46ac0cede97b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/jira_issue_browse_contract.rs (target/debug/deps/jira_issue_browse_contract-5e2d3f19f39dda81)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/jira_live_smoke.rs (target/debug/deps/jira_live_smoke-d24e29e108a15865)
+
+running 4 tests
+missing reader-only Jira JQL environment; skipping
+missing Jira live-smoke environment names: ATLASSIAN_SITE_URL, ATLASSIAN_SITE_ID, ATLASSIAN_EMAIL, ATLASSIAN_API_TOKEN, ATLASSIAN_ISSUE_ID, ATLASSIAN_ISSUE_KEY, ATLASSIAN_JSON_FIELD_ID, ATLASSIAN_ADF_FIELD_ID; skipping
+missing Jira live-smoke environment names: ATLASSIAN_SITE_URL, ATLASSIAN_SITE_ID, ATLASSIAN_EMAIL, ATLASSIAN_API_TOKEN, ATLASSIAN_ISSUE_ID, ATLASSIAN_ISSUE_KEY, ATLASSIAN_JSON_FIELD_ID, ATLASSIAN_ADF_FIELD_ID; skipping
+missing Jira live-smoke environment names: ATLASSIAN_SITE_URL, ATLASSIAN_SITE_ID, ATLASSIAN_EMAIL, ATLASSIAN_API_TOKEN, ATLASSIAN_ISSUE_ID, ATLASSIAN_ISSUE_KEY, ATLASSIAN_JSON_FIELD_ID, ATLASSIAN_ADF_FIELD_ID; skipping
+test live_jira_jql ... ok
+test live_jira_issue_read ... ok
+test live_jira_browse ... ok
+test live_jira_project_browse ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/jira_project_browse_contract.rs (target/debug/deps/jira_project_browse_contract-48aedaffe2745612)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/jira_query_contract.rs (target/debug/deps/jira_query_contract-03cf1d68692a195e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/jira_render_contract.rs (target/debug/deps/jira_render_contract-69df555fb33f84e7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/jira_wire_contract.rs (target/debug/deps/jira_wire_contract-d3949aec79938488)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+     Running tests/local_concurrency_contract.rs (target/debug/deps/local_concurrency_contract-5ef37fb02d11a4a5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/local_dispatch_contract.rs (target/debug/deps/local_dispatch_contract-31a715f202338865)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/local_isolation_contract.rs (target/debug/deps/local_isolation_contract-262fe19086ffc615)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/local_mutation_contract.rs (target/debug/deps/local_mutation_contract-07cfce3e7eba198a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/local_root_contract.rs (target/debug/deps/local_root_contract-25c1462eeabb5ff9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/local_selector_contract.rs (target/debug/deps/local_selector_contract-997de68db57c267a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/pattern_contract.rs (target/debug/deps/pattern_contract-cb9bb6284980d449)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/probe_runner_contract.rs (target/debug/deps/probe_runner_contract-38bcd1c60fffe746)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/process_contract.rs (target/debug/deps/process_contract-178922adc45939fc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/secret_contract.rs (target/debug/deps/secret_contract-788e1fd19c18c7f0)
+     Running tests/session_storage_contract.rs (target/debug/deps/session_storage_contract-d859983e569f12cb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+   Doc-tests resourcefs_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests resourcefs_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests resourcefs_sources
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+
+Wall time: 43.38 seconds

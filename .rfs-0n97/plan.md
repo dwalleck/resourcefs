@@ -236,3 +236,13 @@ Mechanical caller test files under sources/tests: artifact_adapter_contract.rs, 
 - Rust platform checklist: no new OS-specific path semantics, no claim that Linux establishes native Windows behavior. Corporate/native consumer acceptance remains cyril-9qn7/cyril-wcxv. Every error/control/identity branch follows design's shape matrix, preserves missing versus corrupt, and uses stable categories, not error-message matching.
 - Subsequent collection/source/comparison/CI work remains in the seven verified successor tickets named in design.md; no additional untracked deferral or parent-tracker modification.
 - This document plans work only. checkpointed-build exclusively records completion and assembled evidence; no slice is declared done here.
+
+## Single-PR publication amendment
+
+Requester authorization: “Lets just push it as one PR. It seems like more work to break it up”.
+
+This explicitly replaces the local-only restriction and subsequent draft-stack authorization with one draft PR for rfs-0n97. The requester accepts the oversized review instead of further partition work; the >4,000-line partition requirement is N/A for this publication by that explicit decision. No behavioral, security, module-placement or verification requirement is waived. No merge or tracker closure is authorized.
+
+Publish the original `feat/rfs-0n97` history, not the experimental restacked branches. S3–S5 remain historical local mechanism checkpoints, not independently mergeable/full-CI claims. The assembled head must pass all applicable gates. Include the bounded representation-test repair and recovered complete live transcript; discard experimental publication scheduling and intermediate source removal.
+
+The small test repair preserves exact-cap success, cap-minus-one rejection, independently computed content hash, semantic values and late cancellation/deadline refusal, while removing an incidental JSON whitespace/order promise. Its affected envelope, off-by-one and lifecycle mutations require fresh red/restored-green proof; all unchanged production evidence remains reusable under the workflow's Evidence validity rule.

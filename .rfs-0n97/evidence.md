@@ -243,3 +243,19 @@ This is Linux runtime proof plus public GitHub live proof. It is not native Wind
 `DESIGN.md` and `docs/operating.md` document the completed contract. Root domain/agent documents and ADRs intentionally remain unchanged: this adds no bounded context or architectural decision beyond the approved design. There is no existing README or changelog to update. Temporary execution/probe drivers and generated Python caches were removed; retained oracle fixtures and evidence are intentional.
 
 All work remains on local checkpoints. No push, pull request, merge or tracker closure is authorized or performed.
+
+## Single-PR publication qualification
+
+The requester replaced the stack with one PR: “Lets just push it as one PR. It seems like more work to break it up”. The owning plan records the explicit size/partition exception. No runtime/security/placement gate is waived; no merge or tracker closure is authorized. Experimental stack scheduling and intermediate API removal are not part of this branch.
+
+`oracles/publication-validation.json` is the owning fresh/retained evidence and review-decision record (F1–F3). Only the private `cfg(test)` Facts child changed executable code after f5e3b34; production owners, public fixtures, manifests and runner remain unchanged. The original full gate in `final-ci.log` remains valid for unchanged obligations. Fresh repaired-source formatting, all-target/all-feature Clippy and the complete debug workspace passed; all three affected private tests also passed in release mode. Main's original placement ledger was separately checked and passed. The superseded full stack rerun was cancelled during unchanged release Atlassian fixture tests; it is not claimed as a completed rerun. Its complete captured output is retained losslessly in `publication-validation.log.gz`.
+
+| Finding | Evidence state / decision | Correction and verification |
+|---|---|---|
+| F1 — incidental JSON encoding expectation | Verified / Accept | Removed the prescribed pretty-JSON golden. Parsed semantic values, independent byte hashing, exact measured-cap success, cap-minus-one refusal, and late cancellation/deadline refusal remain. `publication-fence-repair.json` and `publication-envelope-repair.json` record four actual production defects producing RED and exact restorations GREEN: rejecting the exact cap, omitting final acceptance, accepting before serialization, and granting an unmetered envelope allowance. |
+| F2 — truncated retained live output | Verified / Accept | Recovered all 507 original output lines rather than saving the tool's first-300-line display. Actual Source/stdio Facts live pass rows and disabled/Jira gate skips are retained; no new live result is invented. |
+| F3 — deadline category documentation | Verified / Accept | Corrected DESIGN.md to the already-tested `source_unavailable` / `deadline_exceeded` result; no operational behavior changed. |
+
+Bounded repair gates 1–4 and 7–9: PASS through the fresh debug/release private tests, semantic/hash/exact-cap oracle and four red/restored-green mutations. Gate 5: PASS through fresh Main placement plus retained unchanged-production design review. Gate 6: PASS retained from S3/S5/S6 measurements because this repair adds no production loop, allocation or phase. Existing unrelated mutations, live premises and regression results remain valid; the affected envelope/lifecycle results now reference the fresh records above.
+
+The publication retains the original checkpoint history and adds this bounded qualification commit. Draft publication is the only newly authorized external action.

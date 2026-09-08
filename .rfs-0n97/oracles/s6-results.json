@@ -44,7 +44,12 @@
     "final-ci.log",
     "assembled-source.json",
     "identity-shape-results.json",
-    "final-review.json"
+    "final-review.json",
+    "publication-validation.json",
+    "publication-validation.log.gz",
+    "publication-fence-repair.json",
+    "publication-envelope-repair.json"
   ],
-  "authorization": "Local checkpoint commits only; no push, PR, merge or tracker closure."
+  "authorization": "One draft PR authorized; no merge or tracker closure.",
+  "publication_qualification": "publication-validation.json"
 }
