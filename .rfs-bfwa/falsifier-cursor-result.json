@@ -1,0 +1,89 @@
+{
+  "all_pass": true,
+  "rows": [
+    {
+      "agrees": true,
+      "case": "observed_next",
+      "encoded_len": 386,
+      "grammar": {
+        "cursor_value": null,
+        "error_category": "InvalidReference",
+        "reference_parse_ok": false,
+        "selector_kind": "none"
+      },
+      "oracle": {
+        "alphabet": true,
+        "canonical": true,
+        "canonical_tail": true,
+        "decodable": true,
+        "no_padding": true,
+        "selector_len": 426,
+        "within_ceiling": true
+      }
+    },
+    {
+      "agrees": true,
+      "case": "synthetic_2kib_next",
+      "encoded_len": 3146,
+      "grammar": {
+        "cursor_value": null,
+        "error_category": "InvalidReference",
+        "reference_parse_ok": false,
+        "selector_kind": "none"
+      },
+      "oracle": {
+        "alphabet": true,
+        "canonical": true,
+        "canonical_tail": true,
+        "decodable": true,
+        "no_padding": true,
+        "selector_len": 3186,
+        "within_ceiling": true
+      }
+    },
+    {
+      "agrees": true,
+      "case": "padded_mutation",
+      "encoded_len": 388,
+      "grammar": {
+        "cursor_value": null,
+        "error_category": "InvalidReference",
+        "reference_parse_ok": false,
+        "selector_kind": "none"
+      },
+      "oracle": {
+        "alphabet": false,
+        "canonical": false,
+        "canonical_tail": false,
+        "decodable": true,
+        "no_padding": false,
+        "selector_len": 428,
+        "within_ceiling": true
+      }
+    },
+    {
+      "agrees": true,
+      "case": "positive_control_page",
+      "encoded_len": 0,
+      "grammar": {
+        "cursor_value": null,
+        "error_category": null,
+        "reference_parse_ok": true,
+        "selector_kind": "page"
+      },
+      "oracle": null
+    },
+    {
+      "agrees": true,
+      "case": "positive_control_lines",
+      "encoded_len": 0,
+      "grammar": {
+        "cursor_value": null,
+        "error_category": null,
+        "reference_parse_ok": true,
+        "selector_kind": "lines"
+      },
+      "oracle": null
+    }
+  ]
+}

@@ -1,0 +1,445 @@
+{
+  "api": "https://api.github.com",
+  "observations": {
+    "busy_oversized_per_page": {
+      "body_bytes": 880398,
+      "count": 100,
+      "field_presence": {
+        "body": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "created_at": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "html_url": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "id": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "int"
+          ]
+        },
+        "issue_url": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "node_id": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "updated_at": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "url": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "user": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "dict"
+          ]
+        }
+      },
+      "link_present": true,
+      "next_target": "https://api.github.com/repositories/724712/issues/112049/comments?per_page=1000&page=2",
+      "path": "/repos/rust-lang/rust/issues/112049/comments?per_page=1000&page=1",
+      "pull_request_key_present": false,
+      "record_keys": [
+        "author_association",
+        "body",
+        "created_at",
+        "html_url",
+        "id",
+        "issue_url",
+        "minimized",
+        "node_id",
+        "performed_via_github_app",
+        "reactions",
+        "updated_at",
+        "url",
+        "user"
+      ],
+      "status": 200
+    },
+    "busy_page1": {
+      "body_bytes": 880398,
+      "count": 100,
+      "field_presence": {
+        "body": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "created_at": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "html_url": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "id": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "int"
+          ]
+        },
+        "issue_url": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "node_id": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "updated_at": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "url": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "user": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "dict"
+          ]
+        }
+      },
+      "link_present": true,
+      "next_target": "https://api.github.com/repositories/724712/issues/112049/comments?per_page=100&page=2",
+      "path": "/repos/rust-lang/rust/issues/112049/comments?per_page=100&page=1",
+      "pull_request_key_present": false,
+      "record_keys": [
+        "author_association",
+        "body",
+        "created_at",
+        "html_url",
+        "id",
+        "issue_url",
+        "minimized",
+        "node_id",
+        "performed_via_github_app",
+        "reactions",
+        "updated_at",
+        "url",
+        "user"
+      ],
+      "status": 200
+    },
+    "busy_page2": {
+      "body_bytes": 1263596,
+      "count": 100,
+      "field_presence": {
+        "body": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "created_at": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "html_url": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "id": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "int"
+          ]
+        },
+        "issue_url": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "node_id": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "updated_at": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "url": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "str"
+          ]
+        },
+        "user": {
+          "null": 0,
+          "present": 100,
+          "types": [
+            "dict"
+          ]
+        }
+      },
+      "link_present": true,
+      "next_target": "https://api.github.com/repositories/724712/issues/112049/comments?per_page=100&page=3",
+      "path": "/repos/rust-lang/rust/issues/112049/comments?per_page=100&page=2",
+      "pull_request_key_present": false,
+      "record_keys": [
+        "author_association",
+        "body",
+        "created_at",
+        "html_url",
+        "id",
+        "issue_url",
+        "minimized",
+        "node_id",
+        "performed_via_github_app",
+        "reactions",
+        "updated_at",
+        "url",
+        "user"
+      ],
+      "status": 200
+    },
+    "busy_past_end": {
+      "body_bytes": 2,
+      "count": 0,
+      "field_presence": {
+        "body": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "created_at": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "html_url": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "id": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "issue_url": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "node_id": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "updated_at": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "url": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "user": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        }
+      },
+      "link_present": true,
+      "next_target": null,
+      "path": "/repos/rust-lang/rust/issues/112049/comments?per_page=100&page=99999",
+      "pull_request_key_present": false,
+      "record_keys": [],
+      "status": 200
+    },
+    "empty_page1": {
+      "body_bytes": 2,
+      "count": 0,
+      "field_presence": {
+        "body": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "created_at": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "html_url": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "id": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "issue_url": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "node_id": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "updated_at": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "url": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "user": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        }
+      },
+      "link_present": false,
+      "next_target": null,
+      "path": "/repos/rust-lang/rust/issues/162473/comments?per_page=100&page=1",
+      "pull_request_key_present": false,
+      "record_keys": [],
+      "status": 200
+    },
+    "empty_past_end": {
+      "body_bytes": 2,
+      "count": 0,
+      "field_presence": {
+        "body": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "created_at": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "html_url": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "id": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "issue_url": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "node_id": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "updated_at": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "url": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        },
+        "user": {
+          "null": 0,
+          "present": 0,
+          "types": []
+        }
+      },
+      "link_present": false,
+      "next_target": null,
+      "path": "/repos/rust-lang/rust/issues/162473/comments?per_page=100&page=2",
+      "pull_request_key_present": false,
+      "record_keys": [],
+      "status": 200
+    }
+  },
+  "repository": "rust-lang/rust",
+  "rest_version": "2022-11-28"
+}

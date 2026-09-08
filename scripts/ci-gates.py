@@ -132,7 +132,7 @@ def main():
     if sys.platform == "linux":
         gates.insert(0, (
             "Module placement",
-            [sys.executable, "scripts/module_shape.py"],
+            [sys.executable, "scripts/module_shape_bfwa.py"],
         ))
     failed = []
     for name, command in gates:
