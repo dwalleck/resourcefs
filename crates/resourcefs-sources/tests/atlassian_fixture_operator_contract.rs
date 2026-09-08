@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use rstest::{fixture, rstest};
 use serde_json::{Value, json};
 use std::cell::Cell;
 use std::collections::BTreeSet;
@@ -7,7 +8,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
@@ -88,6 +89,14 @@ fn write_executable(path: &Path, bytes: &[u8]) {
     permissions.set_mode(0o700);
     fs::set_permissions(path, permissions).expect("make fake curl executable");
 }
+
+// Once fixtures retain only immutable bytes and metadata, never cleanup-owned paths.
+struct BootstrapSnapshot {
+    store: Vec<u8>,
+    receipt: Vec<u8>,
+    receipt_permissions: fs::Permissions,
+}
+
 struct Harness {
     temp: TempDir,
     fake_bin: PathBuf,
@@ -118,6 +127,9 @@ impl Harness {
             .expect("selected Bash interpreter must canonicalize");
         symlink(bash, fake_bin.join("bash")).expect("retain selected Bash in isolated PATH");
         write_executable(&fake_bin.join("curl"), FIXTURE);
+        // Only the test clock is replaced; the real bounded poll loop runs.
+        // Audit cases overwrite this shim with the real-helper audit.
+        write_executable(&fake_bin.join("sleep"), b"#!/bin/sh\nexit 0\n");
         Self {
             store: temp.path().join("store.json"),
             log: temp.path().join("requests.ndjson"),
@@ -127,6 +139,21 @@ impl Harness {
             fake_bin,
             audit_enabled: Cell::new(false),
         }
+    }
+
+    fn materialize(&self, snapshot: &BootstrapSnapshot) {
+        fs::write(&self.store, &snapshot.store).expect("materialize bootstrap store");
+        let mut receipt = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(snapshot.receipt_permissions.mode())
+            .open(&self.state)
+            .expect("create private bootstrap receipt");
+        receipt
+            .write_all(&snapshot.receipt)
+            .expect("materialize bootstrap receipt");
+        fs::set_permissions(&self.state, snapshot.receipt_permissions.clone())
+            .expect("restore bootstrap receipt permissions");
     }
 
     fn enable_audit(&self) {
@@ -305,6 +332,65 @@ impl Harness {
 fn manifest() -> Value {
     serde_json::from_slice(&fs::read(checked_in_manifest()).expect("read checked-in manifest"))
         .expect("checked-in manifest is JSON")
+}
+
+fn reply_manifest() -> Value {
+    let mut custom = manifest();
+    custom["confluence"]["comments"][1]["parent"] =
+        custom["confluence"]["comments"][0]["id"].clone();
+    custom
+}
+
+fn capture_bootstrap(custom_manifest: Option<&Value>) -> BootstrapSnapshot {
+    let harness = Harness::new();
+    let manifest_path = custom_manifest.map(|value| harness.write_manifest(value));
+    assert_success(&harness.command_with(
+        "bootstrap",
+        SITE,
+        manifest_path.as_deref(),
+        None,
+        "normal",
+    ));
+    assert_eq!(
+        fs::symlink_metadata(harness.pending_path())
+            .expect_err("completed bootstrap must not retain a pending receipt")
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    // The local Harness (including TempDir) drops before these bytes are shared.
+    BootstrapSnapshot {
+        store: fs::read(&harness.store).expect("capture bootstrap store"),
+        receipt: fs::read(&harness.state).expect("capture bootstrap receipt"),
+        receipt_permissions: fs::metadata(&harness.state)
+            .expect("bootstrap receipt metadata")
+            .permissions(),
+    }
+}
+
+#[fixture]
+#[once]
+fn default_bootstrap() -> BootstrapSnapshot {
+    capture_bootstrap(None)
+}
+
+#[fixture]
+fn bootstrapped_harness(default_bootstrap: &BootstrapSnapshot) -> Harness {
+    let harness = Harness::new();
+    harness.materialize(default_bootstrap);
+    harness
+}
+
+#[fixture]
+#[once]
+fn reply_bootstrap() -> BootstrapSnapshot {
+    capture_bootstrap(Some(&reply_manifest()))
+}
+
+#[fixture]
+fn reply_harness(reply_bootstrap: &BootstrapSnapshot) -> Harness {
+    let harness = Harness::new();
+    harness.materialize(reply_bootstrap);
+    harness
 }
 
 fn operation_rows<'a>(rows: &'a [Value], operation: &str) -> Vec<&'a Value> {
@@ -1578,117 +1664,116 @@ fn assert_cleanup_refused(harness: &Harness) {
     assert_no_secrets(&output.stderr);
 }
 
-#[test]
-fn cleanup_refuses_unproven_trashed_page_ownership() {
-    for mode in [
-        "foreign_newline",
-        "foreign_nul",
-        "missing",
-        "foreign",
-        "value_object",
-        "malformed",
-        "scalar",
-        "duplicate",
-        "duplicate_later",
-        "wrong_key",
-        "404",
-        "loop",
-        "untrusted",
-        "limit",
-    ] {
-        let harness = Harness::new();
-        assert_success(&harness.command("bootstrap"));
-        let mut store = harness.read_store();
-        let id = store["pages"][0]["id"]
-            .as_str()
-            .expect("page id")
-            .to_owned();
-        let marker = store["properties"][&id]["rfs-owner"].clone();
-        store["pages"][0]["status"] = json!("trashed");
-        match mode {
-            "missing" => {
-                store["properties"][&id]
-                    .as_object_mut()
-                    .expect("properties")
-                    .remove("rfs-owner");
-            }
-            "foreign" => store["properties"][&id]["rfs-owner"] = json!("foreign"),
-            "foreign_newline" => {
-                store["properties"][&id]["rfs-owner"] =
-                    json!(format!("{}\n", marker.as_str().expect("marker")));
-            }
-            "foreign_nul" => {
-                store["properties"][&id]["rfs-owner"] =
-                    json!(format!("{}\0", marker.as_str().expect("marker")));
-            }
-            "value_object" => store["properties"][&id]["rfs-owner"] = json!({"marker": marker}),
-            _ => store["property_fault"] = json!({"id": id, "mode": mode}),
+#[rstest]
+#[case::foreign_newline("foreign_newline")]
+#[case::foreign_nul("foreign_nul")]
+#[case::missing_marker("missing")]
+#[case::foreign_marker("foreign")]
+#[case::object_marker("value_object")]
+#[case::malformed_response("malformed")]
+#[case::scalar_response("scalar")]
+#[case::duplicate_marker("duplicate")]
+#[case::duplicate_on_later_page("duplicate_later")]
+#[case::wrong_property_key("wrong_key")]
+#[case::property_not_found("404")]
+#[case::pagination_loop("loop")]
+#[case::untrusted_pagination("untrusted")]
+#[case::pagination_limit("limit")]
+fn cleanup_refuses_unproven_trashed_page_ownership(
+    #[from(bootstrapped_harness)] harness: Harness,
+    #[case] mode: &str,
+) {
+    let mut store = harness.read_store();
+    let id = store["pages"][0]["id"]
+        .as_str()
+        .expect("page id")
+        .to_owned();
+    let marker = store["properties"][&id]["rfs-owner"].clone();
+    store["pages"][0]["status"] = json!("trashed");
+    match mode {
+        "missing" => {
+            store["properties"][&id]
+                .as_object_mut()
+                .expect("properties")
+                .remove("rfs-owner");
         }
-        harness.write_store(&store);
-        harness.clear_log();
-        assert_cleanup_refused(&harness);
-        let residue = harness.read_store();
-        assert!(
-            residue["pages"]
-                .as_array()
-                .expect("pages")
-                .iter()
-                .any(|row| row["id"] == id),
-            "{mode} authorized page deletion"
-        );
-        assert!(
-            harness
-                .read_log()
-                .iter()
-                .all(|row| row["method"] != "DELETE")
-        );
-        assert!(harness.read_log().len() <= 512, "request budget exceeded");
-        if mode == "limit" {
-            assert!(operation_rows(&harness.read_log(), "page_properties").len() <= 10);
+        "foreign" => store["properties"][&id]["rfs-owner"] = json!("foreign"),
+        "foreign_newline" => {
+            store["properties"][&id]["rfs-owner"] =
+                json!(format!("{}\n", marker.as_str().expect("marker")));
         }
-        // Same identity and provider graph, with only ownership evidence repaired.
-        let mut repaired = residue;
-        repaired
-            .as_object_mut()
-            .expect("store")
-            .remove("property_fault");
-        repaired["properties"][&id]["rfs-owner"] = marker;
-        harness.write_store(&repaired);
-        assert_success(&harness.command("cleanup"));
-        assert_graph_absent(&harness);
+        "foreign_nul" => {
+            store["properties"][&id]["rfs-owner"] =
+                json!(format!("{}\0", marker.as_str().expect("marker")));
+        }
+        "value_object" => store["properties"][&id]["rfs-owner"] = json!({"marker": marker}),
+        _ => store["property_fault"] = json!({"id": id, "mode": mode}),
     }
+    harness.write_store(&store);
+    harness.clear_log();
+    assert_cleanup_refused(&harness);
+    let residue = harness.read_store();
+    assert!(
+        residue["pages"]
+            .as_array()
+            .expect("pages")
+            .iter()
+            .any(|row| row["id"] == id),
+        "{mode} authorized page deletion"
+    );
+    assert!(
+        harness
+            .read_log()
+            .iter()
+            .all(|row| row["method"] != "DELETE")
+    );
+    assert!(harness.read_log().len() <= 512, "request budget exceeded");
+    if mode == "limit" {
+        assert!(operation_rows(&harness.read_log(), "page_properties").len() <= 10);
+    }
+    // Same identity and provider graph, with only ownership evidence repaired.
+    let mut repaired = residue;
+    repaired
+        .as_object_mut()
+        .expect("store")
+        .remove("property_fault");
+    repaired["properties"][&id]["rfs-owner"] = marker;
+    harness.write_store(&repaired);
+    assert_success(&harness.command("cleanup"));
+    assert_graph_absent(&harness);
 }
 
-#[test]
-fn cleanup_resumes_trashed_pages_without_deleting_foreign_space() {
-    for status in ["current", "trashed"] {
-        let harness = Harness::new();
-        assert_success(&harness.command("bootstrap"));
-        let mut store = harness.read_store();
-        let foreign = json!({
-            "id": "9100000002", "key": "FOREIGNSPACE", "name": "Foreign",
-            "description": "foreign container", "private": false,
-            "homepageId": 9_100_000_003_u64
-        });
-        store["spaces"]
-            .as_array_mut()
-            .expect("spaces")
-            .push(foreign.clone());
-        store["pages"][0]["space"] = foreign["id"].clone();
-        store["pages"][0]["spaceId"] = foreign["id"].clone();
-        store["pages"][0]["status"] = json!(status);
-        let id = store["pages"][0]["id"].clone();
-        // A valid marker followed by an empty terminal property page is owned.
-        store["property_fault"] = json!({"id": id, "mode": "continued"});
-        harness.write_store(&store);
-        harness.clear_log();
-        assert_success(&harness.command("cleanup"));
-        let residue = harness.read_store();
-        assert_eq!(residue["pages"], json!([]), "{status} page was not purged");
-        assert_eq!(residue["spaces"], json!([foreign]));
-        assert!(!harness.state.exists());
-        assert!(harness.read_log().len() <= 512);
-    }
+#[rstest]
+#[case::current("current")]
+#[case::trashed("trashed")]
+fn cleanup_resumes_trashed_pages_without_deleting_foreign_space(
+    #[from(bootstrapped_harness)] harness: Harness,
+    #[case] status: &str,
+) {
+    let mut store = harness.read_store();
+    let foreign = json!({
+        "id": "9100000002", "key": "FOREIGNSPACE", "name": "Foreign",
+        "description": "foreign container", "private": false,
+        "homepageId": 9_100_000_003_u64
+    });
+    store["spaces"]
+        .as_array_mut()
+        .expect("spaces")
+        .push(foreign.clone());
+    store["pages"][0]["space"] = foreign["id"].clone();
+    store["pages"][0]["spaceId"] = foreign["id"].clone();
+    store["pages"][0]["status"] = json!(status);
+    let id = store["pages"][0]["id"].clone();
+    // A valid marker followed by an empty terminal property page is owned.
+    store["property_fault"] = json!({"id": id, "mode": "continued"});
+    harness.write_store(&store);
+    harness.clear_log();
+    assert_success(&harness.command("cleanup"));
+    let residue = harness.read_store();
+    assert_eq!(residue["pages"], json!([]), "{status} page was not purged");
+    assert_eq!(residue["spaces"], json!([foreign]));
+    assert!(!harness.state.exists());
+    assert!(harness.read_log().len() <= 512);
 }
 
 #[test]
@@ -1718,207 +1803,203 @@ fn cleanup_resumes_after_space_delete_interruption() {
     assert_graph_absent(&harness);
 }
 
-#[test]
-fn cleanup_distinguishes_absent_parent_from_collection_failure() {
-    for family in ["pages", "footer-comments", "children"] {
-        for absent in [false, true] {
-            let harness = Harness::new();
-            let mut custom = manifest();
-            custom["confluence"]["comments"][1]["parent"] =
-                custom["confluence"]["comments"][0]["id"].clone();
-            let manifest_path = harness.write_manifest(&custom);
-            let command =
-                |mode| harness.command_with(mode, SITE, Some(&manifest_path), None, "normal");
-            assert_success(&command("bootstrap"));
-            let mut store = harness.read_store();
-            let (collection, id, path) = match family {
-                "pages" => {
-                    let id = store["spaces"][0]["id"].as_str().expect("space").to_owned();
-                    (
-                        "spaces",
-                        id.clone(),
-                        format!("/wiki/api/v2/spaces/{id}/pages"),
-                    )
-                }
-                "footer-comments" => {
-                    let id = store["pages"][0]["id"].as_str().expect("page").to_owned();
-                    (
-                        "pages",
-                        id.clone(),
-                        format!("/wiki/api/v2/pages/{id}/footer-comments"),
-                    )
-                }
-                _ => {
-                    let id = store["confluence_comments"][0]["id"]
-                        .as_str()
-                        .expect("comment")
-                        .to_owned();
-                    (
-                        "confluence_comments",
-                        id.clone(),
-                        format!("/wiki/api/v2/footer-comments/{id}/children"),
-                    )
-                }
-            };
-            store["collection_fault"] = json!({"path": path});
-            if absent {
-                // Parent disappears between the precheck and collection read;
-                // saved children remain independently addressable for cleanup.
-                store["collection_fault"]["remove_parent"] = json!([collection, id]);
-            }
-            harness.write_store(&store);
-            if absent {
-                assert_success(&command("cleanup"));
-                assert_graph_absent(&harness);
-            } else {
-                harness.clear_log();
-                let receipt = fs::read(&harness.state).expect("receipt");
-                assert_failure(&command("cleanup"), "upstream_failure");
-                assert_eq!(fs::read(&harness.state).expect("retained receipt"), receipt);
-                assert!(
-                    harness.read_store()[collection]
-                        .as_array()
-                        .expect("parents")
-                        .iter()
-                        .any(|row| row["id"] == id)
-                );
-                assert!(
-                    harness
-                        .read_log()
-                        .iter()
-                        .all(|row| row["method"] != "DELETE")
-                );
-                let mut repaired = harness.read_store();
-                repaired
-                    .as_object_mut()
-                    .expect("store")
-                    .remove("collection_fault");
-                harness.write_store(&repaired);
-                assert_success(&command("cleanup"));
-                assert_graph_absent(&harness);
-            }
+#[rstest]
+#[case::pages_parent_present("pages", false)]
+#[case::pages_parent_absent("pages", true)]
+#[case::footer_comments_parent_present("footer-comments", false)]
+#[case::footer_comments_parent_absent("footer-comments", true)]
+#[case::children_parent_present("children", false)]
+#[case::children_parent_absent("children", true)]
+fn cleanup_distinguishes_absent_parent_from_collection_failure(
+    #[from(reply_harness)] harness: Harness,
+    #[case] family: &str,
+    #[case] absent: bool,
+) {
+    let manifest_path = harness.write_manifest(&reply_manifest());
+    let command = |mode| harness.command_with(mode, SITE, Some(&manifest_path), None, "normal");
+    let mut store = harness.read_store();
+    let (collection, id, path) = match family {
+        "pages" => {
+            let id = store["spaces"][0]["id"].as_str().expect("space").to_owned();
+            (
+                "spaces",
+                id.clone(),
+                format!("/wiki/api/v2/spaces/{id}/pages"),
+            )
         }
+        "footer-comments" => {
+            let id = store["pages"][0]["id"].as_str().expect("page").to_owned();
+            (
+                "pages",
+                id.clone(),
+                format!("/wiki/api/v2/pages/{id}/footer-comments"),
+            )
+        }
+        _ => {
+            let id = store["confluence_comments"][0]["id"]
+                .as_str()
+                .expect("comment")
+                .to_owned();
+            (
+                "confluence_comments",
+                id.clone(),
+                format!("/wiki/api/v2/footer-comments/{id}/children"),
+            )
+        }
+    };
+    store["collection_fault"] = json!({"path": path});
+    if absent {
+        // Parent disappears between the precheck and collection read;
+        // saved children remain independently addressable for cleanup.
+        store["collection_fault"]["remove_parent"] = json!([collection, id]);
     }
-}
-
-#[test]
-fn cleanup_preserves_receipt_for_uncertain_space_task() {
-    // Synthetic fault envelopes cover distinct parser and transition boundaries.
-    for envelope in [
-        json!({"status": "FINISH_SUCCESS\n"}),
-        json!({"status": "FINISH_SUCCESS\u{0}"}),
-        json!({"status": "UNKNOWN"}),
-        json!({}),
-        json!({"status": null}),
-        json!({"status": 42}),
-        json!({"status": "FAILED"}),
-        json!({"status": "FINISH_SUCCESS", "state": "RUNNING"}),
-        json!({"status": "FINISH_SUCCESS", "finished": false}),
-        json!({"status": "FINISH_SUCCESS", "successful": false}),
-        json!({"status": "FINISH_SUCCESS", "finished": "true"}),
-        json!({"status": "FINISH_SUCCESS", "successful": 1}),
-        json!({"status": "FINISH_SUCCESS", "errors": ["synthetic failure"]}),
-        json!({"status": "FINISH_SUCCESS", "errors": {}}),
-        json!({"status": "RUNNING", "finished": true, "successful": true}),
-        json!({"status": "RUNNING", "finished": false, "successful": false, "errors": []}),
-        json!("transport"),
-    ] {
-        let harness = Harness::new();
-        assert_success(&harness.command("bootstrap"));
-        // Only the test clock is replaced; the real bounded poll loop runs.
-        write_executable(&harness.fake_bin.join("sleep"), b"#!/bin/sh\nexit 0\n");
-        let mut store = harness.read_store();
-        let second_space = store["spaces"][1].clone();
-        store["task_fault"] = envelope.clone();
-        harness.write_store(&store);
+    harness.write_store(&store);
+    if absent {
+        assert_success(&command("cleanup"));
+        assert_graph_absent(&harness);
+    } else {
         harness.clear_log();
-        assert_cleanup_refused(&harness);
-        let residue = harness.read_store();
+        let receipt = fs::read(&harness.state).expect("receipt");
+        assert_failure(&command("cleanup"), "upstream_failure");
+        assert_eq!(fs::read(&harness.state).expect("retained receipt"), receipt);
         assert!(
-            residue["spaces"]
+            harness.read_store()[collection]
                 .as_array()
-                .expect("spaces")
-                .contains(&second_space),
-            "advanced past uncertain task {envelope}"
+                .expect("parents")
+                .iter()
+                .any(|row| row["id"] == id)
         );
         assert!(
-            residue["tasks"]
-                .as_object()
-                .expect("tasks")
-                .values()
-                .all(|task| task["space"] != second_space["id"])
+            harness
+                .read_log()
+                .iter()
+                .all(|row| row["method"] != "DELETE")
         );
-        assert!(
-            !residue["tasks"].as_object().expect("tasks").is_empty(),
-            "never reached accepted DELETE"
-        );
-        let polls = operation_rows(&harness.read_log(), "space_delete_poll").len();
-        assert!(polls <= 30, "poll ceiling exceeded");
-        if envelope["status"] == "RUNNING" && envelope["finished"] == false {
-            assert_eq!(
-                polls, 30,
-                "known progress did not exhaust the bounded poll budget"
-            );
-        }
-        let mut repaired = residue;
+        let mut repaired = harness.read_store();
         repaired
             .as_object_mut()
             .expect("store")
-            .remove("task_fault");
+            .remove("collection_fault");
         harness.write_store(&repaired);
-        assert_success(&harness.command("cleanup"));
+        assert_success(&command("cleanup"));
         assert_graph_absent(&harness);
     }
 }
 
-#[test]
-fn cleanup_revalidates_each_destructive_target() {
-    for (collection, index, after) in [
-        ("confluence_comments", 0, "confluence_comment_delete"),
-        ("pages", 0, "confluence_comment_delete"),
-        ("spaces", 0, "confluence_page_delete"),
-        ("jira_comments", 1, "jira_comment_delete"),
-        ("issues", 0, "jira_comment_delete"),
-        ("projects", 0, "jira_issue_delete"),
-    ] {
-        let harness = Harness::new();
-        assert_success(&harness.command("bootstrap"));
-        let mut store = harness.read_store();
-        let original = store[collection][index].clone();
-        let id = original["id"].clone();
-        let mut switch = json!({"after": after, "target": [collection, id]});
-        match collection {
-            "pages" | "confluence_comments" => switch["marker"] = json!("foreign"),
-            "spaces" | "projects" => switch["fields"] = json!({"description": "foreign"}),
-            "issues" => {
-                let mut fields = original["fields"].clone();
-                fields["description"] = json!({"type": "doc", "version": 1, "content": []});
-                switch["fields"] = json!({"fields": fields});
-            }
-            _ => switch["fields"] = json!({"body": {"type": "doc", "version": 1, "content": []}}),
-        }
-        store["late_switch"] = switch;
-        harness.write_store(&store);
-        assert_cleanup_refused(&harness);
-        let mut residue = harness.read_store();
+#[rstest]
+#[case::success_newline(json!({"status": "FINISH_SUCCESS\n"}))]
+#[case::success_nul(json!({"status": "FINISH_SUCCESS\u{0}"}))]
+#[case::unknown_status(json!({"status": "UNKNOWN"}))]
+#[case::missing_status(json!({}))]
+#[case::null_status(json!({"status": null}))]
+#[case::numeric_status(json!({"status": 42}))]
+#[case::failed_status(json!({"status": "FAILED"}))]
+#[case::conflicting_state(json!({"status": "FINISH_SUCCESS", "state": "RUNNING"}))]
+#[case::unfinished_success(json!({"status": "FINISH_SUCCESS", "finished": false}))]
+#[case::unsuccessful_success(json!({"status": "FINISH_SUCCESS", "successful": false}))]
+#[case::string_finished(json!({"status": "FINISH_SUCCESS", "finished": "true"}))]
+#[case::numeric_successful(json!({"status": "FINISH_SUCCESS", "successful": 1}))]
+#[case::reported_errors(json!({"status": "FINISH_SUCCESS", "errors": ["synthetic failure"]}))]
+#[case::object_errors(json!({"status": "FINISH_SUCCESS", "errors": {}}))]
+#[case::running_but_finished(json!({"status": "RUNNING", "finished": true, "successful": true}))]
+#[case::running_exhausts_budget(json!({"status": "RUNNING", "finished": false, "successful": false, "errors": []}))]
+#[case::transport_failure(json!("transport"))]
+fn cleanup_preserves_receipt_for_uncertain_space_task(
+    #[from(bootstrapped_harness)] harness: Harness,
+    #[case] envelope: Value,
+) {
+    // Synthetic fault envelopes cover distinct parser and transition boundaries.
+    let mut store = harness.read_store();
+    let second_space = store["spaces"][1].clone();
+    store["task_fault"] = envelope.clone();
+    harness.write_store(&store);
+    harness.clear_log();
+    assert_cleanup_refused(&harness);
+    let residue = harness.read_store();
+    assert!(
+        residue["spaces"]
+            .as_array()
+            .expect("spaces")
+            .contains(&second_space),
+        "advanced past uncertain task {envelope}"
+    );
+    assert!(
+        residue["tasks"]
+            .as_object()
+            .expect("tasks")
+            .values()
+            .all(|task| task["space"] != second_space["id"])
+    );
+    assert!(
+        !residue["tasks"].as_object().expect("tasks").is_empty(),
+        "never reached accepted DELETE"
+    );
+    let polls = operation_rows(&harness.read_log(), "space_delete_poll").len();
+    assert!(polls <= 30, "poll ceiling exceeded");
+    if envelope["status"] == "RUNNING" && envelope["finished"] == false {
         assert_eq!(
-            residue["faults"]["late_switch"], true,
-            "late seam not reached for {collection}"
+            polls, 30,
+            "known progress did not exhaust the bounded poll budget"
         );
-        let target = residue[collection]
-            .as_array_mut()
-            .expect("targets")
-            .iter_mut()
-            .find(|row| row["id"] == id)
-            .expect("foreign target survived");
-        *target = original;
-        if let Some(marker) = store["properties"][id.as_str().expect("id")].get("rfs-owner") {
-            residue["properties"][id.as_str().expect("id")]["rfs-owner"] = marker.clone();
-        }
-        harness.write_store(&residue);
-        assert_success(&harness.command("cleanup"));
-        assert_graph_absent(&harness);
     }
+    let mut repaired = residue;
+    repaired
+        .as_object_mut()
+        .expect("store")
+        .remove("task_fault");
+    harness.write_store(&repaired);
+    assert_success(&harness.command("cleanup"));
+    assert_graph_absent(&harness);
+}
+
+#[rstest]
+#[case::confluence_comment("confluence_comments", 0, "confluence_comment_delete")]
+#[case::page("pages", 0, "confluence_comment_delete")]
+#[case::space("spaces", 0, "confluence_page_delete")]
+#[case::jira_comment("jira_comments", 1, "jira_comment_delete")]
+#[case::issue("issues", 0, "jira_comment_delete")]
+#[case::project("projects", 0, "jira_issue_delete")]
+fn cleanup_revalidates_each_destructive_target(
+    #[from(bootstrapped_harness)] harness: Harness,
+    #[case] collection: &str,
+    #[case] index: usize,
+    #[case] after: &str,
+) {
+    let mut store = harness.read_store();
+    let original = store[collection][index].clone();
+    let id = original["id"].clone();
+    let mut switch = json!({"after": after, "target": [collection, id]});
+    match collection {
+        "pages" | "confluence_comments" => switch["marker"] = json!("foreign"),
+        "spaces" | "projects" => switch["fields"] = json!({"description": "foreign"}),
+        "issues" => {
+            let mut fields = original["fields"].clone();
+            fields["description"] = json!({"type": "doc", "version": 1, "content": []});
+            switch["fields"] = json!({"fields": fields});
+        }
+        _ => switch["fields"] = json!({"body": {"type": "doc", "version": 1, "content": []}}),
+    }
+    store["late_switch"] = switch;
+    harness.write_store(&store);
+    assert_cleanup_refused(&harness);
+    let mut residue = harness.read_store();
+    assert_eq!(
+        residue["faults"]["late_switch"], true,
+        "late seam not reached for {collection}"
+    );
+    let target = residue[collection]
+        .as_array_mut()
+        .expect("targets")
+        .iter_mut()
+        .find(|row| row["id"] == id)
+        .expect("foreign target survived");
+    *target = original;
+    if let Some(marker) = store["properties"][id.as_str().expect("id")].get("rfs-owner") {
+        residue["properties"][id.as_str().expect("id")]["rfs-owner"] = marker.clone();
+    }
+    harness.write_store(&residue);
+    assert_success(&harness.command("cleanup"));
+    assert_graph_absent(&harness);
 }
 
 #[test]
@@ -1975,46 +2056,48 @@ fn cleanup_skips_absent_space_id_with_reused_key() {
     assert!(!harness.state.exists());
 }
 
-#[test]
-fn cleanup_retains_receipt_until_all_targets_absent() {
-    for collection in ["pages", "spaces", "projects"] {
-        let harness = Harness::new();
-        assert_success(&harness.command("bootstrap"));
-        let mut store = harness.read_store();
-        let mut row = store[collection][0].clone();
-        if collection == "projects" {
-            row["deleted"] = json!(true);
-        }
-        store["linger"] = json!({"collection": collection, "row": row});
-        harness.write_store(&store);
-        assert_cleanup_refused(&harness);
-        let residue = harness.read_store();
-        assert_eq!(
-            residue["faults"]["linger"], true,
-            "did not reach final task"
-        );
-        assert!(
-            residue[collection]
-                .as_array()
-                .expect("targets")
-                .contains(&row)
-        );
-        // Independent provider completion, with the same retained receipt.
-        let mut completed = residue;
-        for name in [
-            "projects",
-            "issues",
-            "jira_comments",
-            "spaces",
-            "pages",
-            "confluence_comments",
-        ] {
-            completed[name] = json!([]);
-        }
-        harness.write_store(&completed);
-        assert_success(&harness.command("cleanup"));
-        assert_graph_absent(&harness);
+#[rstest]
+#[case::page("pages")]
+#[case::space("spaces")]
+#[case::project("projects")]
+fn cleanup_retains_receipt_until_all_targets_absent(
+    #[from(bootstrapped_harness)] harness: Harness,
+    #[case] collection: &str,
+) {
+    let mut store = harness.read_store();
+    let mut row = store[collection][0].clone();
+    if collection == "projects" {
+        row["deleted"] = json!(true);
     }
+    store["linger"] = json!({"collection": collection, "row": row});
+    harness.write_store(&store);
+    assert_cleanup_refused(&harness);
+    let residue = harness.read_store();
+    assert_eq!(
+        residue["faults"]["linger"], true,
+        "did not reach final task"
+    );
+    assert!(
+        residue[collection]
+            .as_array()
+            .expect("targets")
+            .contains(&row)
+    );
+    // Independent provider completion, with the same retained receipt.
+    let mut completed = residue;
+    for name in [
+        "projects",
+        "issues",
+        "jira_comments",
+        "spaces",
+        "pages",
+        "confluence_comments",
+    ] {
+        completed[name] = json!([]);
+    }
+    harness.write_store(&completed);
+    assert_success(&harness.command("cleanup"));
+    assert_graph_absent(&harness);
 }
 
 #[test]
@@ -2040,26 +2123,29 @@ fn cleanup_resumes_all_already_absent_receipt() {
     );
 }
 
-#[test]
-fn cleanup_refuses_unknown_page_status() {
-    for status in [json!("archived"), json!(null), json!(42), json!({})] {
-        let harness = Harness::new();
-        assert_success(&harness.command("bootstrap"));
-        let mut store = harness.read_store();
-        let id = store["pages"][0]["id"].clone();
-        store["pages"][0]["status"] = status;
-        harness.write_store(&store);
-        assert_cleanup_refused(&harness);
-        let mut residue = harness.read_store();
-        let page = residue["pages"]
-            .as_array_mut()
-            .expect("pages")
-            .iter_mut()
-            .find(|row| row["id"] == id)
-            .expect("unknown-status page survives");
-        page["status"] = json!("current");
-        harness.write_store(&residue);
-        assert_success(&harness.command("cleanup"));
-        assert_graph_absent(&harness);
-    }
+#[rstest]
+#[case::archived(json!("archived"))]
+#[case::null(json!(null))]
+#[case::numeric(json!(42))]
+#[case::object(json!({}))]
+fn cleanup_refuses_unknown_page_status(
+    #[from(bootstrapped_harness)] harness: Harness,
+    #[case] status: Value,
+) {
+    let mut store = harness.read_store();
+    let id = store["pages"][0]["id"].clone();
+    store["pages"][0]["status"] = status;
+    harness.write_store(&store);
+    assert_cleanup_refused(&harness);
+    let mut residue = harness.read_store();
+    let page = residue["pages"]
+        .as_array_mut()
+        .expect("pages")
+        .iter_mut()
+        .find(|row| row["id"] == id)
+        .expect("unknown-status page survives");
+    page["status"] = json!("current");
+    harness.write_store(&residue);
+    assert_success(&harness.command("cleanup"));
+    assert_graph_absent(&harness);
 }

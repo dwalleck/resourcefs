@@ -35,6 +35,7 @@ One increment, CleanupResume, based on discovered upstream origin/main (7de8d14 
 - .rfs-br1u/{route.md,evidence.md,design.md,plan.md,review-decisions.md,probe-results.json,live-acceptance.json,verification-results.json,probe.sources.txt}. Probe sources are retained as non-executable audit text; active throwaway instruments are removed after successful live smoke.
 - Existing owning operator usage documentation if its cleanup description needs updating; locate exact owning section before editing.
 - .rivets/issues.jsonl, through Rivets only, closure atomically with implementation after all required verification.
+- R3 test-only optimization also owns workspace Cargo.toml, Cargo.lock and crates/resourcefs-sources/Cargo.toml for the user-requested rstest dev dependency.
 
 **Estimate:** One tightly coupled implementation/checkpoint; timing is a scheduling signal only, never a gate or permission to narrow scope.
 
@@ -46,7 +47,7 @@ One increment, CleanupResume, based on discovered upstream origin/main (7de8d14 
 - `cargo test -p resourcefs-sources --test atlassian_fixture_operator_contract cleanup_ -- --nocapture` against new regressions before source integration → affected resume/purge/fresh-validation cases fail for the approved behavior, not compilation or unrelated transport.
 - Same command after integration → owned graphs converge; foreign/replacement objects survive; uncertain receipts remain; independently controlled collection/task failure states are distinguished.
 - `cargo test -p resourcefs-sources --test atlassian_fixture_operator_contract -- --nocapture` → all existing and new fixture operator security/lifecycle contracts pass.
-- Individual exact test filters named by C1–C6, under each source mutation then after restoration → expected localized red and restored green; write exact commands/results/source hashes in checkpoint evidence.
+- C1–C6 generated group-prefix filters without `--exact`, under each source mutation then after restoration → expected localized red and restored green. Enumerate and require each expected nonzero case count first; write exact commands/results/source hashes in checkpoint evidence.
 - `bash scripts/atlassian-fixture-bootstrap.sh cleanup --site https://kiro-tethys.atlassian.net --state <private copied all-absent receipt>` → all-already-absent recovery completes and removes only that state file, zero owned resources recreated.
 - `bash scripts/atlassian-fixture-bootstrap.sh bootstrap --site https://kiro-tethys.atlassian.net`, then verify, then cleanup with response-capturing interrupt shim, then unmodified-path cleanup resume → setup/verify succeed, interruption retains state, standard resume exits 0 and removes state/pending. Independently check all recorded IDs and Jira trash absent. No ad hoc reconciliation can substitute for this postimplementation live PASS.
 - `python scripts/ci-gates.py` → complete repository gate PASS, including its own authoritative budget and ignored-row inventory. Run once on assembled source after writing agents finish; no concurrent validation in writers.
@@ -73,9 +74,19 @@ Checkpoint judgment: PASS. Implementation and technical proof repairs R1/F1 and 
 | 5. Module shape | N/A — unchanged responsibility ownership | Approved route T2 is no; no new production module/interface/dependency. Repository placement gate separately passed. |
 | 6. Budgets | PASS | Measured request/page counts in lifecycle fixtures remain within 512 requests and 10 property pages; task timeout fixture exhausts exactly 30 polls. Existing 4 MiB response ceiling unchanged. Production-scale/wall classes: N/A — bounded one-off operator per approved plan. Repository production-budget inventory also passed. |
 | 7. Regression fences | PASS | All named C1–C6 fences passed, including same-target valid controls and final live standard resume. |
-| 8. Named mutations | PASS | Six single-match semantic mutations each passed Bash syntax and caused its named fence to fail behaviorally with exit101. |
+| 8. Named mutations | PASS after R3 correction | Six semantic mutations cause named fences to fail with exit101. C5's original skip-call proof was insufficient: the replacement retains native reads/state and ignores foreign-ownership rejection, causing actual false cleanup success in all six families. |
 | 9. Exact restored fences | PASS | Each exact source restoration reproduced SHA-256 dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479 and its same complete fence passed with exit0. |
 
 Final assembled verification: PASS — `python scripts/ci-gates.py`, including dependency vetting. Independent review and verified R1/R2 repairs complete. The post-live help-only edit was exercised through the actual CLI and did not invalidate lifecycle evidence; the full gate and mutation/restoration runs used that final source. Domain docs intentionally unchanged: no new domain terms or contracts. Active throwaway probes retired after live success, source provenance archived as text.
 
 Final partition measurement before this two-line ledger entry: 2,554 changed lines across 14 staged files (987 implementation/test/fixture, 1,565 provenance/research, 2 tracker). Including this entry: 2,556, versus original 2,000 (+556), corrected allowance 3,100 (-544), and hard ceiling 4,000. Provenance used 65 lines of the planned churn allowance; no PR split or scope reduction is needed.
+
+## R3 checkpoint: test-only runtime optimization
+
+Owner: Main; user approved optimization before merge and suggested rstest. The existing C1–C6 slice and production ownership remain unchanged. Immutable default/reply bootstrap snapshots plus fresh per-case harnesses replace repeated setup; normal fake clock no longer sleeps, while polling ceilings and credential auditing remain exercised.
+
+Source review: PASS by RstestReview; all 52 matrix cases and 26 other tests retain their assertions. Execution: PASS, 78 tests in 129.17s. Named-prefix selection guards and all six red/restored mutation groups pass; C5 now uses a behavioral authority-bypass mutant rather than a skipped-fault setup failure. Exact production restoration remains dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479.
+
+R3 checkpoint: PASS. Complete repository/dependency gate passes; comparable serial-release execution passes all78 tests in818.25s versus1179.10s baseline (30.6% reduction, compilation excluded), meeting the30% target. The ENOSPC repair relocated only task-owned build cache, preserving Cargo paths and the test scratch filesystem. Historical S1 evidence above remains distinguishable from current R3 records. Native live evidence is retained because production, provider fake, manifests, adapters and live clock are unchanged. Temporary writing workspace retired; remote CI and merge approval remain publication steps.
+
+R3 publication measurement: 2,890 changed lines across17 files before this entry;2,892 including it, below corrected3,100 allowance and hard4,000 ceiling. The established live-credential absence scan passes all17 publication files; no additional PR partition is needed.
