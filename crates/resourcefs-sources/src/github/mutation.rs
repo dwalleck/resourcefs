@@ -14,8 +14,8 @@ use resourcefs_core::{
 use crate::{BoundedHttpResponse, HttpRequest, http::HttpFetchFailure};
 
 use super::{
-    GITHUB_API_VERSION, GITHUB_CACHE_NAMESPACE, GITHUB_JSON, GithubSource, USER_AGENT,
-    authoritative_body, malformed_upstream, render,
+    GITHUB_API_VERSION, GITHUB_JSON, GithubSource, USER_AGENT, authoritative_body,
+    fetch::GITHUB_CACHE_NAMESPACE, malformed_upstream, render,
     wire::{self, ConversationComment, Issue, PullRequest},
 };
 

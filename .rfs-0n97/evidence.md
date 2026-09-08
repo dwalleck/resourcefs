@@ -161,3 +161,22 @@ Caller/helper review: every GithubConfig constructor is migrated; URL validation
 | 9. Restoration | PASS — each controlled-source mutation restored and focused test GREEN; manifest mutation was disposable and original resolved graph GREEN. |
 
 Symmetry/reuse: legacy reads retain their prior substrate policy and no implicit cumulative byte cap. The new private limit-bearing entrypoints have no production Facts caller at this local checkpoint, so the compiler reports three dead-code warning groups; no warning is suppressed. This is a compiling, behavior-checked local mechanism checkpoint, not a claim of standalone full-CI readiness or publication. S6 supplies their production consumer, and the assembled full gate must be warning-free. The local-only authorization remains unchanged.
+
+
+## S4 checkpoint — single fetch owner and exact native diff
+
+`oracles/s4-results.json` and `s4-mutation-results.json` retain the extraction checks and all three native-diff defects. The isolated extraction source predated S1/S2; reapplied those exact earlier GitHub signature/config changes before qualification, retaining S3's unchanged-ceiling mutation calls. No Facts implementation is present at this checkpoint.
+
+| Gate | Result |
+|---|---|
+| 1. Affected unit tests | PASS — 42 adapter/wire/mutation tests across three suites; 6 intentionally ignored rows remain classified separately. |
+| 2. Falsifiers | PASS — native media and original byte vector preserved; truncation and invalid UTF-8 refused. |
+| 3. Stress fixture | PASS — CRLF, Unicode, no final newline, distinct JSON/diff conditional entries, exact ceiling and truncated neighbor. |
+| 4. Implementation / independent oracle | PASS — actual Accept header and original upstream bytes, not file-patch reconstruction. |
+| 5. Approved module shape | PASS — C02 fetch stage; shared fetch owner 400 lines, source parent 1126, unique extracted functions and protected unrelated bodies retained. |
+| 6. Budget | N/A — S4 extraction adds no production loop or runtime phase; existing bounded fetch policy retained. |
+| 7. Regression fence | PASS — all affected compatibility/native contracts. |
+| 8. Named mutations | PASS — JSON Accept, actual reconstruction from files collection, and accepted truncation each cause behavioral RED. |
+| 9. Restoration | PASS — every source restored and corresponding real adapter contract GREEN. |
+
+Reuse/symmetry: all human, conditional and mutation paths use the same extracted fetch/cache implementation. Media remains part of cache identity. No new write authority, cache or renderer. S3's temporary unused-private-control warnings remain until the S6 production consumer; this local checkpoint makes no standalone full-CI or publication claim. The post-S3 default-remote fetch reported no upstream movement.
