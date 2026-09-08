@@ -23,7 +23,7 @@ The official Rust `rmcp` SDK is the runtime. The server advertises MCP `2026-07-
 Model-controlled tools are canonical:
 
 1. `rfs_read`
-   - Input: `path`; optional lower-only output `limits` (`maxBytes`, `maxLines`, `maxColumns`), `numbered`, and lower-only source `acquisition` controls (currently PR Facts only).
+   - Input: `path`; optional lower-only output `limits` (`bytes`, `lines`, `columns`), `numbered`, and lower-only source `acquisition` controls (currently PR Facts only).
    - Reads a Resource or projection, directory, archive member, SQLite row, document, image, notebook, web URL, or internal Path Reference.
    - Parseable code with no selector returns a Structural Summary; selectors recover exact omitted ranges.
 2. `rfs_search`

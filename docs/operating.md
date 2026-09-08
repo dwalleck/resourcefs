@@ -178,7 +178,7 @@ Call `rfs_read` with a PR Facts path and optional per-call lower acquisition lim
     "timeoutMs": 5000
   },
   "limits": {
-    "maxBytes": 16384
+    "bytes": 16384
   }
 }
 ```
@@ -188,6 +188,8 @@ The example is a tool input, not a profile fragment. Output `limits` control the
 Facts return `application/json; charset=utf-8` in the normal read-result envelope. The inner JSON schema is `{"major": 1, "minor": 0}` under `schemaVersion`, with `kind: "github.pull_request"`. Native numeric IDs and PR numbers are decimal strings, not JSON numbers. Optional nulls, omitted fields, empty strings and false values remain distinct. Both branches have validated commit SHAs; missing or null repository metadata is reported via `repositoryAvailability`, not filled with a guessed repository. See the [complete Facts contract](../DESIGN.md#pr-facts-version-1) for fields and provenance.
 
 Read Facts without a selector (`:raw` is also unsupported). This is not an issue Facts, collection, review, or diff API. It performs no mutation, automatic link follow, head-repository fetch, ref resolution, or commit comparison. Returned URLs and fork metadata do not grant authority to fetch those destinations.
+
+A Facts acquisition also refuses HTTP redirects, unlike the sibling `pr://` and `issue://` reads, which follow them: each hop would be a physical request outside the attempt budget, and the identity check compares the object's own `url` against the endpoint that was requested. A renamed or moved repository therefore fails the Facts read with the redirect's `httpStatus` in `details` rather than silently resolving; re-read the canonical reference.
 
 One logical deadline covers the acquisition, retry waits, and final acceptance, with at most one retry within the attempt budget. Cache revalidation retains original body provenance separately from the 304 observation, and reused body bytes still count toward admission limits. Acquisition overflow or cancellation never returns partial Facts JSON. A complete representation that exceeds the separate text output limit uses normal lossless artifact recovery; follow the returned artifact selectors rather than appending a selector to `/facts`.
 
