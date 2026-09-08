@@ -1,0 +1,421 @@
+{
+  "source_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+  "operator_suite": {
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--all-features",
+      "--test",
+      "atlassian_fixture_operator_contract"
+    ],
+    "exit": 0,
+    "passed": 78,
+    "test_seconds": 129.17,
+    "source_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+    "test_source_sha256": "a21c7e739aba6d0180dbaad34262131ed2cc294ba0684447d385d0aa2f420e57"
+  },
+  "mutations": [
+    {
+      "claim": "C1",
+      "test_group": "cleanup_refuses_unproven_trashed_page_ownership",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--all-features",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_refuses_unproven_trashed_page_ownership::",
+        "--",
+        "--nocapture"
+      ],
+      "selected_count": 14,
+      "mutation": {
+        "from": "'.results[0].value == $marker'",
+        "to": "'true'"
+      },
+      "mutant_sha256": "8194930726833588402baa58369698bf31c7d77c2246866e08ca982b849d8850",
+      "red_exit": 101,
+      "red_counts": {
+        "passed": 11,
+        "failed": 3,
+        "ignored": 0
+      },
+      "red_failed_cases": [
+        "cleanup_refuses_unproven_trashed_page_ownership::case_01_foreign_newline",
+        "cleanup_refuses_unproven_trashed_page_ownership::case_02_foreign_nul",
+        "cleanup_refuses_unproven_trashed_page_ownership::case_04_foreign_marker"
+      ],
+      "restored_exit": 0,
+      "restored_counts": {
+        "passed": 14,
+        "failed": 0,
+        "ignored": 0
+      },
+      "restored_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+      "red_seconds": 17.11,
+      "green_seconds": 16.56
+    },
+    {
+      "claim": "C2",
+      "test_group": "cleanup_resumes_trashed_pages_without_deleting_foreign_space",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--all-features",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_resumes_trashed_pages_without_deleting_foreign_space::",
+        "--",
+        "--nocapture"
+      ],
+      "selected_count": 2,
+      "mutation": {
+        "from": "path=\"/wiki/api/v2/pages/${sid}?purge=true\"",
+        "to": "path=\"/wiki/api/v2/pages/${sid}\""
+      },
+      "mutant_sha256": "26a28149eea8cb706adf6786d139e3c0e6af1486c608e3996b1993ea9f622ff8",
+      "red_exit": 101,
+      "red_counts": {
+        "passed": 0,
+        "failed": 2,
+        "ignored": 0
+      },
+      "red_failed_cases": [
+        "cleanup_resumes_trashed_pages_without_deleting_foreign_space::case_2_trashed",
+        "cleanup_resumes_trashed_pages_without_deleting_foreign_space::case_1_current"
+      ],
+      "restored_exit": 0,
+      "restored_counts": {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      "restored_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+      "red_seconds": 13.4,
+      "green_seconds": 13.73
+    },
+    {
+      "claim": "C3",
+      "test_group": "cleanup_distinguishes_absent_parent_from_collection_failure",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--all-features",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_distinguishes_absent_parent_from_collection_failure::",
+        "--",
+        "--nocapture"
+      ],
+      "selected_count": 6,
+      "mutation": {
+        "from": "  [[ \"$RESPONSE_STATUS\" == 404 ]] ||\n    die \"upstream_failure actor=provisioner operation=$operation status=404\"",
+        "to": "  RESPONSE_STATUS=404"
+      },
+      "mutant_sha256": "a77c026743db62ba1dfaf64db377708df8a409055ae5e3008011c64cbcfd1b02",
+      "red_exit": 101,
+      "red_counts": {
+        "passed": 3,
+        "failed": 3,
+        "ignored": 0
+      },
+      "red_failed_cases": [
+        "cleanup_distinguishes_absent_parent_from_collection_failure::case_1_pages_parent_present",
+        "cleanup_distinguishes_absent_parent_from_collection_failure::case_3_footer_comments_parent_present",
+        "cleanup_distinguishes_absent_parent_from_collection_failure::case_5_children_parent_present"
+      ],
+      "restored_exit": 0,
+      "restored_counts": {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      "restored_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+      "red_seconds": 13.5,
+      "green_seconds": 17.31
+    },
+    {
+      "claim": "C4",
+      "test_group": "cleanup_preserves_receipt_for_uncertain_space_task",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--all-features",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_preserves_receipt_for_uncertain_space_task::",
+        "--",
+        "--nocapture"
+      ],
+      "selected_count": 17,
+      "mutation": {
+        "from": "      *) die \"invalid_response operation=space_delete_poll\" ;;",
+        "to": "      *) return ;;"
+      },
+      "mutant_sha256": "edd6277baf82271553a32c75e628737f8b73709d6157cd1ba6d7d3aff6d32888",
+      "red_exit": 101,
+      "red_counts": {
+        "passed": 16,
+        "failed": 1,
+        "ignored": 0
+      },
+      "red_failed_cases": [
+        "cleanup_preserves_receipt_for_uncertain_space_task::case_03_unknown_status"
+      ],
+      "restored_exit": 0,
+      "restored_counts": {
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0
+      },
+      "restored_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+      "red_seconds": 22.85,
+      "green_seconds": 23.18
+    },
+    {
+      "claim": "C5",
+      "test_group": "cleanup_revalidates_each_destructive_target",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--all-features",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_revalidates_each_destructive_target::",
+        "--",
+        "--nocapture"
+      ],
+      "selected_count": 6,
+      "mutation": {
+        "from": "cleanup_validate_target() {\n  local kind=$1 logical=$2 sid=$3 marker issue_logical issue_id current object_response\n  CLEANUP_TARGET_PRESENT=0\n  CLEANUP_PAGE_STATUS=''\n  case \"$kind\" in\n    jira_project)\n      marker=$(jq -r --arg id \"$logical\" '.jira.projects[] | select(.id==$id) | .marker' \"$MANIFEST_PATH\")\n      read_cleanup_jira_project \"$sid\" cleanup_project_get\n      [[ \"$RESPONSE_STATUS\" != 404 ]] || return 0\n      jq -e --arg id \"$sid\" --arg marker \"$marker\" '\n        (.id|tostring) == $id and .description == $marker\n      ' \"$RESPONSE_FILE\" >/dev/null 2>&1 ||\n        die \"foreign_collision logical=project\"\n      current=$(jq -er '.key | strings' \"$RESPONSE_FILE\" 2>/dev/null) ||\n        die \"invalid_response operation=cleanup_project_get\"\n      JIRA_PROJECT_KEYS[$logical]=$current\n      ;;\n    jira_issue)\n      marker=$(jq -r --arg id \"$logical\" '.jira.issues[] | select(.id==$id) | .marker' \"$MANIFEST_PATH\")\n      api_request provisioner GET \"/rest/api/3/issue/${sid}?fields=summary,description,project,parent\" '' 200,404 cleanup_issue_get\n      [[ \"$RESPONSE_STATUS\" != 404 ]] || return 0\n      jq -e --arg id \"$sid\" --arg marker \"$marker\" '\n        (.id|tostring) == $id and\n        ([.fields.description? | .. | objects | select(.type? == \"text\") | .text? | strings] | any(. == $marker))\n      ' \"$RESPONSE_FILE\" >/dev/null 2>&1 ||\n        die \"foreign_collision logical=issue\"\n      current=$(jq -er '.fields.project.key | strings' \"$RESPONSE_FILE\" 2>/dev/null) ||\n        die \"invalid_response operation=cleanup_issue_get\"\n      JIRA_ISSUE_SEARCH_PROJECT[$logical]=$current\n      ;;\n    jira_comment)\n      marker=$(jq -r --arg id \"$logical\" '.jira.issues[]?.comments[]? | select(.id==$id) | .marker' \"$MANIFEST_PATH\")\n      issue_logical=$(jq -r --arg id \"$logical\" '.jira.issues[] | select(any(.comments[]?; .id==$id)) | .id' \"$MANIFEST_PATH\")\n      issue_id=${CLEANUP_JIRA_COMMENT_ISSUE[$logical]-${JIRA_ISSUE_IDS[$issue_logical]-}}\n      [[ \"$issue_id\" =~ ^[0-9]+$ ]] || die \"state_missing_object logical=jira_comment\"\n      api_request provisioner GET \"/rest/api/3/issue/${issue_id}/comment/${sid}\" '' 200,404 cleanup_comment_get\n      [[ \"$RESPONSE_STATUS\" != 404 ]] || return 0\n      jq -e --arg id \"$sid\" --arg marker \"$marker\" '\n        (.id|tostring) == $id and\n        ([.body? | .. | objects | select(.type? == \"text\") | .text? | strings] | any(. == $marker))\n      ' \"$RESPONSE_FILE\" >/dev/null 2>&1 ||\n        die \"foreign_collision logical=jira_comment\"\n      CLEANUP_JIRA_COMMENT_ISSUE[$logical]=$issue_id\n      ;;\n    conf_space)\n      marker=$(jq -r --arg id \"$logical\" '.confluence.spaces[] | select(.id==$id) | .marker' \"$MANIFEST_PATH\")\n      api_request provisioner GET \"/wiki/api/v2/spaces/${sid}?description-format=plain\" '' 200,404 cleanup_space_get\n      [[ \"$RESPONSE_STATUS\" != 404 ]] || return 0\n      jq -e --arg id \"$sid\" --arg marker \"$marker\" '\n        (.id|tostring) == $id and\n        ((if (.description|type) == \"string\" then .description\n          elif (.description|type) == \"object\" and (.description.value?|type) == \"string\" then .description.value\n          elif (.description|type) == \"object\" and (.description.plain?|type) == \"object\"\n            and (.description.plain.value?|type) == \"string\" then .description.plain.value\n          else empty end) == $marker)\n      ' \"$RESPONSE_FILE\" >/dev/null 2>&1 ||\n        die \"foreign_collision logical=space\"\n      current=$(jq -er '.key | strings | select(test(\"^[A-Za-z0-9]+$\"))' \"$RESPONSE_FILE\" 2>/dev/null) ||\n        die \"invalid_response operation=cleanup_space_get\"\n      CONF_SPACE_KEYS[$logical]=$current\n      CLEANUP_CONF_SPACE_KEY[\"${logical}:${sid}\"]=$current\n      ;;\n    conf_page)\n      api_request provisioner GET \"/wiki/api/v2/pages/${sid}?body-format=storage\" '' 200,404 cleanup_page_get\n      [[ \"$RESPONSE_STATUS\" != 404 ]] || return 0\n      object_response=$RESPONSE_FILE\n      jq -e --arg id \"$sid\" '(.id|tostring) == $id' \"$object_response\" >/dev/null 2>&1 ||\n        die \"foreign_collision logical=page\"\n      CLEANUP_PAGE_STATUS=$(jq -er '.status | strings | select(. == \"current\" or . == \"trashed\")' \"$object_response\" 2>/dev/null) ||\n        die \"invalid_response operation=cleanup_page_get\"\n      validate_cleanup_page_owner \"$sid\" \"$logical\"\n      current=$(jq -er '.spaceId | tostring | select(test(\"^[0-9]+$\"))' \"$object_response\" 2>/dev/null) ||\n        die \"invalid_response operation=cleanup_page_get\"\n      CONF_PAGE_SEARCH_SPACE[$logical]=$current\n      ;;\n    conf_comment)\n      marker=$(jq -r --arg id \"$logical\" '.confluence.comments[] | select(.id==$id) | .marker' \"$MANIFEST_PATH\")\n      api_request provisioner GET \"/wiki/api/v2/footer-comments/${sid}?body-format=storage\" '' 200,404 cleanup_comment_get\n      [[ \"$RESPONSE_STATUS\" != 404 ]] || return 0\n      object_response=$RESPONSE_FILE\n      jq -e --arg id \"$sid\" '(.id|tostring) == $id' \"$object_response\" >/dev/null 2>&1 ||\n        die \"foreign_collision logical=confluence_comment\"\n      read_owner_property provisioner \"$sid\"\n      [[ \"$OWNER_PROPERTY_VALUE\" == \"$marker\" ]] ||\n        die \"foreign_collision logical=confluence_comment\"\n      current=$(jq -er '.pageId | tostring | select(test(\"^[0-9]+$\"))' \"$object_response\" 2>/dev/null) ||\n        die \"invalid_response operation=cleanup_comment_get\"\n      CONF_COMMENT_SEARCH_PAGE[$logical]=$current\n      current=$(jq -r 'if (.parentCommentId|type) == \"number\" then (.parentCommentId|tostring) elif (.parentCommentId|type) == \"string\" then .parentCommentId else \"\" end' \"$object_response\")\n      CONF_COMMENT_SEARCH_PARENT[$logical]=$current\n      ;;\n    *) die \"invalid_response operation=cleanup_target\" ;;\n  esac\n  CLEANUP_TARGET_PRESENT=1\n}",
+        "to": "cleanup_validate_target() {\n  local kind=$1 logical=$2 sid=$3 marker issue_logical issue_id current object_response\n  CLEANUP_TARGET_PRESENT=0\n  CLEANUP_PAGE_STATUS=''\n  case \"$kind\" in\n    jira_project)\n      marker=$(jq -r --arg id \"$logical\" '.jira.projects[] | select(.id==$id) | .marker' \"$MANIFEST_PATH\")\n      read_cleanup_jira_project \"$sid\" cleanup_project_get\n      [[ \"$RESPONSE_STATUS\" != 404 ]] || return 0\n      jq -e --arg id \"$sid\" --arg marker \"$marker\" '\n        (.id|tostring) == $id and .description == $marker\n      ' \"$RESPONSE_FILE\" >/dev/null 2>&1 ||\n        :\n      current=$(jq -er '.key | strings' \"$RESPONSE_FILE\" 2>/dev/null) ||\n        die \"invalid_response operation=cleanup_project_get\"\n      JIRA_PROJECT_KEYS[$logical]=$current\n      ;;\n    jira_issue)\n      marker=$(jq -r --arg id \"$logical\" '.jira.issues[] | select(.id==$id) | .marker' \"$MANIFEST_PATH\")\n      api_request provisioner GET \"/rest/api/3/issue/${sid}?fields=summary,description,project,parent\" '' 200,404 cleanup_issue_get\n      [[ \"$RESPONSE_STATUS\" != 404 ]] || return 0\n      jq -e --arg id \"$sid\" --arg marker \"$marker\" '\n        (.id|tostring) == $id and\n        ([.fields.description? | .. | objects | select(.type? == \"text\") | .text? | strings] | any(. == $marker))\n      ' \"$RESPONSE_FILE\" >/dev/null 2>&1 ||\n        :\n      current=$(jq -er '.fields.project.key | strings' \"$RESPONSE_FILE\" 2>/dev/null) ||\n        die \"invalid_response operation=cleanup_issue_get\"\n      JIRA_ISSUE_SEARCH_PROJECT[$logical]=$current\n      ;;\n    jira_comment)\n      marker=$(jq -r --arg id \"$logical\" '.jira.issues[]?.comments[]? | select(.id==$id) | .marker' \"$MANIFEST_PATH\")\n      issue_logical=$(jq -r --arg id \"$logical\" '.jira.issues[] | select(any(.comments[]?; .id==$id)) | .id' \"$MANIFEST_PATH\")\n      issue_id=${CLEANUP_JIRA_COMMENT_ISSUE[$logical]-${JIRA_ISSUE_IDS[$issue_logical]-}}\n      [[ \"$issue_id\" =~ ^[0-9]+$ ]] || die \"state_missing_object logical=jira_comment\"\n      api_request provisioner GET \"/rest/api/3/issue/${issue_id}/comment/${sid}\" '' 200,404 cleanup_comment_get\n      [[ \"$RESPONSE_STATUS\" != 404 ]] || return 0\n      jq -e --arg id \"$sid\" --arg marker \"$marker\" '\n        (.id|tostring) == $id and\n        ([.body? | .. | objects | select(.type? == \"text\") | .text? | strings] | any(. == $marker))\n      ' \"$RESPONSE_FILE\" >/dev/null 2>&1 ||\n        :\n      CLEANUP_JIRA_COMMENT_ISSUE[$logical]=$issue_id\n      ;;\n    conf_space)\n      marker=$(jq -r --arg id \"$logical\" '.confluence.spaces[] | select(.id==$id) | .marker' \"$MANIFEST_PATH\")\n      api_request provisioner GET \"/wiki/api/v2/spaces/${sid}?description-format=plain\" '' 200,404 cleanup_space_get\n      [[ \"$RESPONSE_STATUS\" != 404 ]] || return 0\n      jq -e --arg id \"$sid\" --arg marker \"$marker\" '\n        (.id|tostring) == $id and\n        ((if (.description|type) == \"string\" then .description\n          elif (.description|type) == \"object\" and (.description.value?|type) == \"string\" then .description.value\n          elif (.description|type) == \"object\" and (.description.plain?|type) == \"object\"\n            and (.description.plain.value?|type) == \"string\" then .description.plain.value\n          else empty end) == $marker)\n      ' \"$RESPONSE_FILE\" >/dev/null 2>&1 ||\n        :\n      current=$(jq -er '.key | strings | select(test(\"^[A-Za-z0-9]+$\"))' \"$RESPONSE_FILE\" 2>/dev/null) ||\n        die \"invalid_response operation=cleanup_space_get\"\n      CONF_SPACE_KEYS[$logical]=$current\n      CLEANUP_CONF_SPACE_KEY[\"${logical}:${sid}\"]=$current\n      ;;\n    conf_page)\n      api_request provisioner GET \"/wiki/api/v2/pages/${sid}?body-format=storage\" '' 200,404 cleanup_page_get\n      [[ \"$RESPONSE_STATUS\" != 404 ]] || return 0\n      object_response=$RESPONSE_FILE\n      jq -e --arg id \"$sid\" '(.id|tostring) == $id' \"$object_response\" >/dev/null 2>&1 ||\n        :\n      CLEANUP_PAGE_STATUS=$(jq -er '.status | strings | select(. == \"current\" or . == \"trashed\")' \"$object_response\" 2>/dev/null) ||\n        die \"invalid_response operation=cleanup_page_get\"\n      (validate_cleanup_page_owner \"$sid\" \"$logical\") || :\n      current=$(jq -er '.spaceId | tostring | select(test(\"^[0-9]+$\"))' \"$object_response\" 2>/dev/null) ||\n        die \"invalid_response operation=cleanup_page_get\"\n      CONF_PAGE_SEARCH_SPACE[$logical]=$current\n      ;;\n    conf_comment)\n      marker=$(jq -r --arg id \"$logical\" '.confluence.comments[] | select(.id==$id) | .marker' \"$MANIFEST_PATH\")\n      api_request provisioner GET \"/wiki/api/v2/footer-comments/${sid}?body-format=storage\" '' 200,404 cleanup_comment_get\n      [[ \"$RESPONSE_STATUS\" != 404 ]] || return 0\n      object_response=$RESPONSE_FILE\n      jq -e --arg id \"$sid\" '(.id|tostring) == $id' \"$object_response\" >/dev/null 2>&1 ||\n        :\n      read_owner_property provisioner \"$sid\"\n      [[ \"$OWNER_PROPERTY_VALUE\" == \"$marker\" ]] ||\n        :\n      current=$(jq -er '.pageId | tostring | select(test(\"^[0-9]+$\"))' \"$object_response\" 2>/dev/null) ||\n        die \"invalid_response operation=cleanup_comment_get\"\n      CONF_COMMENT_SEARCH_PAGE[$logical]=$current\n      current=$(jq -r 'if (.parentCommentId|type) == \"number\" then (.parentCommentId|tostring) elif (.parentCommentId|type) == \"string\" then .parentCommentId else \"\" end' \"$object_response\")\n      CONF_COMMENT_SEARCH_PARENT[$logical]=$current\n      ;;\n    *) die \"invalid_response operation=cleanup_target\" ;;\n  esac\n  CLEANUP_TARGET_PRESENT=1\n}"
+      },
+      "mutant_sha256": "8e4ec82d704e962d3bc621fc829cdd0faf8754a9c43c1c625b74e2d4ba99c8e3",
+      "red_exit": 101,
+      "red_counts": {
+        "passed": 0,
+        "failed": 6,
+        "ignored": 0
+      },
+      "red_failed_cases": [
+        "cleanup_revalidates_each_destructive_target::case_2_page",
+        "cleanup_revalidates_each_destructive_target::case_6_project",
+        "cleanup_revalidates_each_destructive_target::case_1_confluence_comment",
+        "cleanup_revalidates_each_destructive_target::case_4_jira_comment",
+        "cleanup_revalidates_each_destructive_target::case_3_space",
+        "cleanup_revalidates_each_destructive_target::case_5_issue"
+      ],
+      "restored_exit": 0,
+      "restored_counts": {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      "restored_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+      "red_seconds": 15.77,
+      "green_seconds": 18.93
+    },
+    {
+      "claim": "C6",
+      "test_group": "cleanup_retains_receipt_until_all_targets_absent",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--all-features",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_retains_receipt_until_all_targets_absent::",
+        "--",
+        "--nocapture"
+      ],
+      "selected_count": 3,
+      "mutation": {
+        "from": "\n  cleanup_assert_absent\n",
+        "to": "\n  :\n"
+      },
+      "mutant_sha256": "e80bffbe1d1cb41d10b02b5469f6e7a7ba31ae9e258cdd06ff819084caefcc86",
+      "red_exit": 101,
+      "red_counts": {
+        "passed": 0,
+        "failed": 3,
+        "ignored": 0
+      },
+      "red_failed_cases": [
+        "cleanup_retains_receipt_until_all_targets_absent::case_2_space",
+        "cleanup_retains_receipt_until_all_targets_absent::case_1_page",
+        "cleanup_retains_receipt_until_all_targets_absent::case_3_project"
+      ],
+      "restored_exit": 0,
+      "restored_counts": {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      "restored_sha256": "dacb1c082993402d3f951c66ec99d1d6d2541e8d0bc82d819b6ee74260866479",
+      "red_seconds": 12.54,
+      "green_seconds": 17.81
+    }
+  ],
+  "review_reproductions": [
+    {
+      "finding": "F1",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_refuses_unproven_trashed_page_ownership",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "observation": "LF-suffixed foreign marker falsely authorized complete cleanup"
+    },
+    {
+      "finding": "F2",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_preserves_receipt_for_uncertain_space_task",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "observation": "LF-suffixed unknown status submitted second-space deletion"
+    }
+  ],
+  "original_source_regressions": {
+    "source_sha256": "05160d56fa9c2b0c6c76316b9e88a9e5b3c838d45bea536387509eac6442b77f",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "atlassian_fixture_operator_contract",
+      "cleanup_",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "passed": 3,
+    "failed": 12,
+    "corrected_absent_receipt": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "resourcefs-sources",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "cleanup_resumes_all_already_absent_receipt",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "observation": "page_list404 after preserving original receipt permissions"
+    }
+  },
+  "repository_gate": {
+    "command": [
+      "python",
+      "scripts/ci-gates.py"
+    ],
+    "exit": 0,
+    "result": "All repository gates passed.",
+    "wall_seconds": 1122.94,
+    "dependency_vetting": "advisories ok, bans ok, licenses ok, sources ok",
+    "environment_repair": "Task-owned target relocated from full /tmp tmpfs to NVMe, original Cargo path symlinked; test scratch remains /tmp."
+  },
+  "prior_proof_revision": "06de465",
+  "historical_scope": "review_reproductions and original_source_regressions record pre-rstest evidence; their former monolithic --exact selectors are historical, not current commands.",
+  "fixture_optimization": {
+    "matrix_rows": 52,
+    "other_tests": 26,
+    "generated_groups": {
+      "cleanup_refuses_unproven_trashed_page_ownership": 14,
+      "cleanup_resumes_trashed_pages_without_deleting_foreign_space": 2,
+      "cleanup_distinguishes_absent_parent_from_collection_failure": 6,
+      "cleanup_preserves_receipt_for_uncertain_space_task": 17,
+      "cleanup_revalidates_each_destructive_target": 6,
+      "cleanup_retains_receipt_until_all_targets_absent": 3,
+      "cleanup_refuses_unknown_page_status": 4
+    },
+    "immutable_once_seed_count": 2,
+    "prior_matrix_bootstrap_count": 52,
+    "normal_fake_clock": "no-op sleep; real bounded polling retained; credential audit replaces sleep with its real-helper wrapper",
+    "review": {
+      "reviewer": "RstestReview",
+      "findings": [],
+      "scope": "Source-only preservation/isolation/dependency audit versus06de465; runtime proof is recorded separately."
+    },
+    "dependency_packages_added": [
+      {
+        "name": "relative-path",
+        "version": "1.9.3"
+      },
+      {
+        "name": "rstest",
+        "version": "0.27.0"
+      },
+      {
+        "name": "rstest_macros",
+        "version": "0.27.0"
+      },
+      {
+        "name": "rustc_version",
+        "version": "0.4.1"
+      }
+    ],
+    "existing_dependency_versions_changed": false,
+    "baseline_serial_release_test_seconds": 1179.1,
+    "serial_release_acceptance": "At least30% less test execution time, same profile/config/features/thread count, compilation excluded.",
+    "mutation_refinement": "C5 preserves native reads and parsed state while ignoring foreign-ownership rejection; every late-fault row fails because uncertain cleanup falsely succeeds, not because the late-fault setup was missed.",
+    "serial_release": {
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--config",
+        "profile.release.debug-assertions=false",
+        "-p",
+        "resourcefs-sources",
+        "--all-features",
+        "--test",
+        "atlassian_fixture_operator_contract",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit": 0,
+      "passed": 78,
+      "baseline_test_seconds": 1179.1,
+      "test_seconds": 818.25,
+      "reduction_percent": 30.6,
+      "acceptance": "PASS: >=30% reduction, compilation excluded",
+      "environment_note": "Build cache moved to NVMe to recover from ENOSPC; original target path preserved and test scratch filesystem unchanged."
+    }
+  }
+}

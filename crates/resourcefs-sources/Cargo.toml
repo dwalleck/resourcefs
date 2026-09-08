@@ -52,6 +52,9 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tokio-rustls.workspace = true
 
+[target.'cfg(unix)'.dev-dependencies]
+rstest.workspace = true
+
 [[test]]
 name = "secret_contract"
 path = "tests/secret_contract.rs"

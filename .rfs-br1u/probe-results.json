@@ -1,0 +1,374 @@
+{
+  "source_revision": "7de8d14",
+  "bootstrap_exit": 0,
+  "verify_exit": 0,
+  "interrupted_cleanup_exit": 1,
+  "interrupted_cleanup_error": "error: transport_failure actor=provisioner operation=longtask_status",
+  "first_task": {
+    "ari": "<REDACTED>",
+    "id": "<REDACTED>",
+    "name": {
+      "key": "<REDACTED>",
+      "args": []
+    },
+    "elapsedTime": 170,
+    "percentageComplete": 0,
+    "successful": false,
+    "finished": false,
+    "messages": [
+      {
+        "translation": "<REDACTED>",
+        "args": []
+      }
+    ],
+    "status": "RUNNING",
+    "errors": [],
+    "additionalDetails": {},
+    "_links": {
+      "base": "<REDACTED>",
+      "context": "<REDACTED>"
+    }
+  },
+  "terminal_task": {
+    "ari": "<REDACTED>",
+    "id": "<REDACTED>",
+    "name": {
+      "key": "<REDACTED>",
+      "args": []
+    },
+    "elapsedTime": 542,
+    "percentageComplete": 100,
+    "successful": true,
+    "finished": true,
+    "messages": [
+      {
+        "translation": "<REDACTED>",
+        "args": []
+      }
+    ],
+    "status": "FINISH_SUCCESS",
+    "errors": [],
+    "additionalDetails": {},
+    "_links": {
+      "base": "<REDACTED>",
+      "context": "<REDACTED>"
+    }
+  },
+  "endpoint_rows": [
+    {
+      "logical": "public-space",
+      "kind": "space",
+      "id": "26574850",
+      "http": 404,
+      "status": null
+    },
+    {
+      "logical": "public-space",
+      "kind": "pages",
+      "id": "26574850",
+      "http": 404,
+      "status": null
+    },
+    {
+      "logical": "private-space",
+      "kind": "space",
+      "id": "26607618",
+      "http": 200,
+      "status": "current"
+    },
+    {
+      "logical": "private-space",
+      "kind": "pages",
+      "id": "26607618",
+      "http": 200,
+      "status": null
+    },
+    {
+      "logical": "public-root-page",
+      "kind": "page",
+      "id": "26575042",
+      "http": 404,
+      "status": null,
+      "spaceId": null,
+      "owner": null
+    },
+    {
+      "logical": "public-root-page",
+      "kind": "property",
+      "id": "26575042",
+      "http": 404,
+      "status": null,
+      "spaceId": null,
+      "owner": null
+    },
+    {
+      "logical": "public-root-page",
+      "kind": "property_trashed",
+      "id": "26575042",
+      "http": 404,
+      "status": null,
+      "spaceId": null,
+      "owner": null
+    },
+    {
+      "logical": "public-child-page",
+      "kind": "page",
+      "id": "26640385",
+      "http": 404,
+      "status": null,
+      "spaceId": null,
+      "owner": null
+    },
+    {
+      "logical": "public-child-page",
+      "kind": "property",
+      "id": "26640385",
+      "http": 404,
+      "status": null,
+      "spaceId": null,
+      "owner": null
+    },
+    {
+      "logical": "public-child-page",
+      "kind": "property_trashed",
+      "id": "26640385",
+      "http": 404,
+      "status": null,
+      "spaceId": null,
+      "owner": null
+    },
+    {
+      "logical": "private-root-page",
+      "kind": "page",
+      "id": "26673153",
+      "http": 200,
+      "status": "trashed",
+      "spaceId": "26607618",
+      "owner": null
+    },
+    {
+      "logical": "private-root-page",
+      "kind": "property",
+      "id": "26673153",
+      "http": 404,
+      "status": null,
+      "spaceId": null,
+      "owner": null
+    },
+    {
+      "logical": "private-root-page",
+      "kind": "property_trashed",
+      "id": "26673153",
+      "http": 404,
+      "status": null,
+      "spaceId": null,
+      "owner": null
+    }
+  ],
+  "v2_trashed_property": {
+    "http": 200,
+    "results": [
+      {
+        "id": "26476547",
+        "key": "rfs-owner",
+        "value": "<!--rfs-owner:rfs-bcym:confluence-page:private-root-->"
+      }
+    ]
+  },
+  "v1_trashed_property_list_count": 0,
+  "resume_exit": 1,
+  "resume_error": "error: foreign_collision logical=page",
+  "receipt_retained": true,
+  "rapid_task_reads": [
+    {
+      "http": 200,
+      "payload": {
+        "ari": "<REDACTED>",
+        "id": "<REDACTED>",
+        "name": {
+          "key": "<REDACTED>",
+          "args": []
+        },
+        "elapsedTime": 71,
+        "percentageComplete": 0,
+        "successful": false,
+        "finished": false,
+        "messages": [
+          {
+            "translation": "<REDACTED>",
+            "args": []
+          }
+        ],
+        "status": "RUNNING",
+        "errors": [],
+        "additionalDetails": {},
+        "_links": {
+          "base": "<REDACTED>",
+          "context": "<REDACTED>"
+        }
+      }
+    },
+    {
+      "http": 200,
+      "payload": {
+        "ari": "<REDACTED>",
+        "id": "<REDACTED>",
+        "name": {
+          "key": "<REDACTED>",
+          "args": []
+        },
+        "elapsedTime": 394,
+        "percentageComplete": 0,
+        "successful": false,
+        "finished": false,
+        "messages": [
+          {
+            "translation": "<REDACTED>",
+            "args": []
+          }
+        ],
+        "status": "RUNNING",
+        "errors": [],
+        "additionalDetails": {},
+        "_links": {
+          "base": "<REDACTED>",
+          "context": "<REDACTED>"
+        }
+      }
+    },
+    {
+      "http": 200,
+      "payload": {
+        "ari": "<REDACTED>",
+        "id": "<REDACTED>",
+        "name": {
+          "key": "<REDACTED>",
+          "args": []
+        },
+        "elapsedTime": 489,
+        "percentageComplete": 100,
+        "successful": true,
+        "finished": true,
+        "messages": [
+          {
+            "translation": "<REDACTED>",
+            "args": []
+          }
+        ],
+        "status": "FINISH_SUCCESS",
+        "errors": [],
+        "additionalDetails": {},
+        "_links": {
+          "base": "<REDACTED>",
+          "context": "<REDACTED>"
+        }
+      }
+    }
+  ],
+  "reconciliation": {
+    "private_space_id_key_marker_validated": true,
+    "private_space_delete_http": 202,
+    "jira_projects": [
+      {
+        "logical": "primary-project",
+        "validated_id_key_marker": true,
+        "delete_http": 204
+      },
+      {
+        "logical": "secondary-project",
+        "validated_id_key_marker": true,
+        "delete_http": 204
+      }
+    ],
+    "resource_absence": [
+      {
+        "logical": "primary-project",
+        "http": 404
+      },
+      {
+        "logical": "secondary-project",
+        "http": 404
+      },
+      {
+        "logical": "primary-root-issue",
+        "http": 404
+      },
+      {
+        "logical": "primary-child-issue",
+        "http": 404
+      },
+      {
+        "logical": "secondary-issue",
+        "http": 404
+      },
+      {
+        "logical": "public-space",
+        "http": 404
+      },
+      {
+        "logical": "private-space",
+        "http": 404
+      },
+      {
+        "logical": "public-root-page",
+        "http": 404
+      },
+      {
+        "logical": "public-child-page",
+        "http": 404
+      },
+      {
+        "logical": "private-root-page",
+        "http": 404
+      },
+      {
+        "logical": "public-page-comment",
+        "http": 404
+      },
+      {
+        "logical": "public-page-comment-second",
+        "http": 404
+      },
+      {
+        "logical": "primary-root-comment",
+        "http": 404
+      },
+      {
+        "logical": "primary-root-comment-second",
+        "http": 404
+      }
+    ],
+    "jira_trash": [
+      {
+        "logical": "primary-project",
+        "http": 200,
+        "empty": true,
+        "terminal": true
+      },
+      {
+        "logical": "secondary-project",
+        "http": 200,
+        "empty": true,
+        "terminal": true
+      }
+    ],
+    "receipt_retained_for_repair": true,
+    "pending_receipt_absent": true
+  },
+  "purge_probe": {
+    "bootstrap_exit": 0,
+    "probe_exit": 0,
+    "result": {
+      "page_id": "26738905",
+      "current_owned": true,
+      "trash_http": 204,
+      "trashed_owned": true,
+      "purge_http": 204,
+      "page_absent_http": 404,
+      "owner_space_still_current": true
+    },
+    "cleanup_exit": 0,
+    "receipt_absent": true,
+    "pending_absent": true
+  }
+}
