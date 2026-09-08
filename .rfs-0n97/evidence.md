@@ -201,3 +201,45 @@ Qualification isolated ordinary test children with their own retained temporary 
 | 9. Restoration | PASS — each actual process filter GREEN after restoration; assembled preparation suites GREEN. |
 
 Reuse/symmetry: profile/read share AcquisitionInput, all three existing error families share ErrorOutput, and ordinary launch retains system trust. Existing root/cancellation/read-engine mechanisms remain authoritative. S3 unused-private-control warnings still await S6's consumer; no standalone publication/full-CI claim. Default-remote fetch after S4 reported no upstream movement.
+
+## S6 checkpoint — complete PR Facts and assembled acceptance
+
+Completes C03,C05,C06,C07,C08,C10,C11,C12,C13,C14,C15,C16,C17,C19; assembled verification also covers the retained S0–S5 mechanisms. `pr://owner/repository/number/facts` now returns the complete versioned native observation through the real Source Adapter and MCP read/recovery path. Native identifiers, head/base/fork distinctions, missing/null/empty values, validated links, provenance and conditional body identity are preserved. Controls only lower ceilings; final acceptance covers synchronous projection/serialization; failed revalidation never serves stale Facts. Facts remain read-only even with write grants.
+
+| Gate | Result |
+|---|---|
+| 1. Affected unit tests | PASS — final debug and release runs each pass 20 Facts contracts, 43 actual stdio contracts and 7 GitHub reference contracts; private Facts serialization/cancellation/deadline contracts and the complete workspace also pass. Ignored rows are separately classified, not counted as functional passes. |
+| 2. Falsifiers | PASS — native identity/presence/schema, acquisition dimensions, provenance/304/failure, generation invalidation, final publication, read-only authority, safe errors and actual recovery/schema/catalog all exercise their observable refusals or exact results. |
+| 3. Stress fixture | PASS — distinct native identities, IDs above 2^53, Unicode/escaping, missing/null/empty and malformed neighbors, response/representation boundaries, cancellation/deadline barriers, in-flight generation change, stale-cache refusal and multipage recovery. |
+| 4. Implementation / independent oracle | PASS — real TLS request/credential logs, literal native JSON and decimal IDs, external Python consumer, independent output bytes/hash, actual stdio, and separately observed public `gh api` data. Budget heap and time are measured in separate cold real-adapter reads. |
+| 5. Approved module shape | PASS — final C02 Facts stage and inherited placement gates. Approved identity child is 250/350 lines; Facts owner 741/750. Exact identity-child negative predicates were qualified and restored. Blind source-first review found no ownership mismatch or shallow seam. |
+| 6. Budget | PASS — 8,388,608-byte native response produces 8,391,951 bytes; measured cold-loopback wall 24,393,897 ns versus 1 s and incremental live heap 32,784,123 bytes versus 96 MiB. Wall includes transport/cache/allocator and is a conservative local-processing upper bound, not a network latency promise. Heap includes 32 bytes per live allocation, excludes prepared fixture/post-read oracle and is not RSS. Final full gate reruns the registered release budget successfully. |
+| 7. Regression fence | PASS — `cargo fmt --all -- --check`, all-target/all-feature Clippy with warnings denied, and `python scripts/ci-gates.py`; final log ends `All repository gates passed.` / `FINAL_CI_EXIT=0`. Runner covers placement, formatting, lints, functional tests, release workspace, classified ignored production budgets and cargo-deny. |
+| 8. Named mutations | PASS — 23 S6 semantic groups independently produce RED. Two additional budget fault injections produce the intended wall/heap assertion failures: 1.1 s blocking projection delay and sixteen redundant native-body copies. The raw-secret leak group intentionally bypasses both sanitization layers; it is one compound group, not two independent proofs. |
+| 9. Restoration | PASS — all 25 semantic/budget groups pass after exact source restoration. Budget mutations ran in an isolated workspace whose production files matched final Main; recorded assembled production hashes remained unchanged through final CI. |
+
+### Qualification corrections
+
+- Derived all-optional native structs accepted arrays. Map-only decoders now reject arrays and duplicate fields while preserving the documented missing/null/empty distinctions.
+- Base repository identity binds the requested repository; head repository identity permits a genuine fork. Recognized contradictory links fail; native opaque/template/empty links are preserved rather than reinterpreted.
+- The unequal-limit oracle originally compared integer and floating JSON representations. It now compares the independent literal numerical minima, not production intersection code.
+- A purported legacy-cache fixture had warmed new metadata. It now replaces metadata through the real SessionCache API with historical etag/link-only data before an actual 304. Deadline expectations use the established source-unavailable/deadline-exceeded contract; cancellation remains cancelled.
+- The stale-fallback fixture originally removed its validator on an intervening 200. It now retains a new ETag and verifies the actual conditional request before 403; the real stale-fallback mutant then fails.
+- MCP catalog qualification initially queried `pr://` instead of the actual `rfs://` source catalog. Correcting the request and asserting tool success made the recovery/schema/catalog mutants decisive.
+- Added an unchanged-generation positive control and real namespace invalidation while a response is in flight. Added Facts to the existing writable-grant mutation refusal matrix.
+- The retained budget's release-mode constant assertion tripped Clippy. It now returns an explicit error outside release mode, without a lint suppression. Rust pre-commit checklist reviewed; final assembled code is warning-free, unlike the intentionally preparatory S3–S5 local checkpoints.
+- Both GitHub Source live rows now require `RFS_LIVE=1` and a nonempty GitHub token before any upstream operation. No production credential/trust selection changed.
+
+### Live proof and limitations
+
+`oracles/live-smoke.log` retains the refreshed run. With `RFS_LIVE=0` and unusable placeholder tokens, both Source rows explicitly skipped before using credentials. These are SKIPs, not live passes. With the enabled gate, both `live_github_facts_preserve_native_identity_and_links` and `live_stdio_github_facts_match_native_observation` passed against `rust-lang/rust` PR 159232 and independently invoked `gh api` with API version `2022-11-28`. Existing GitHub, HTTPS and full-stack stdio live rows also passed. Jira rows skipped for absent credentials and are not claimed as live passes.
+
+This is Linux runtime proof plus public GitHub live proof. It is not native Windows acceptance or a live corporate/GHE deployment claim. `oracles/final-review.json` records both reviews: the first conformance reviewer saw limited ledger snippets and is not represented as blind structural proof; the separate reviewer reconstructed ownership from source before receiving design/ledger material.
+
+### Artifacts, symmetry and delivery boundary
+
+`oracles/s6-results.json` indexes the semantic/budget mutation records, literal/native consumer, measured budget, live log, final CI log, source hashes and structural/review evidence. Runtime complexity is honestly bounded as O(n log(k+2)) for n input/output bytes and k native relation names because duplicate-safe relation storage is a BTreeMap. No second client, cache, clock, public provider facade, recovery engine or mutation authority was introduced; legacy reads retain their prior implicit-budget behavior.
+
+`DESIGN.md` and `docs/operating.md` document the completed contract. Root domain/agent documents and ADRs intentionally remain unchanged: this adds no bounded context or architectural decision beyond the approved design. There is no existing README or changelog to update. Temporary execution/probe drivers and generated Python caches were removed; retained oracle fixtures and evidence are intentional.
+
+All work remains on local checkpoints. No push, pull request, merge or tracker closure is authorized or performed.

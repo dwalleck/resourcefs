@@ -1,0 +1,46 @@
+[
+  [
+    {
+      "claim": "C16",
+      "name": "recovery_continuation_rereads_source",
+      "path": "crates/resourcefs-core/src/read.rs",
+      "old": "parts.content.truncate(page_end);",
+      "new": "let continuation_reference = parts.canonical_reference.clone();\n        parts.content.truncate(page_end);",
+      "test_command": "cargo test -p resourcefs-mcp --features test-support --test stdio_mcp_contract github_facts_stdio_reconstructs_native_json_without_reacquisition -- --exact",
+      "expected": "Large Facts first continuation becomes canonical pr://.../facts instead of artifact continuation, causing a second provider request. Independent request-count assertion fails before repeated pages can complete. Earlier shadowed continuation variable may produce a warning, not compilation failure."
+    }
+  ],
+  [
+    {
+      "claim": "C16",
+      "name": "recovery_drops_retained_tail",
+      "path": "crates/resourcefs-core/src/read.rs",
+      "old": "self.session.retain(&parts.content, operation).await?",
+      "new": "self.session.retain(&parts.content[..page_end], operation).await?",
+      "test_command": "cargo test -p resourcefs-mcp --features test-support --test stdio_mcp_contract github_facts_stdio_reconstructs_native_json_without_reacquisition -- --exact",
+      "expected": "Initial page remains intact but recovery artifact stores only first page. Later continuation cannot reconstruct JSON; tool-success or complete-JSON/body equality assertion fails, without new upstream requests."
+    }
+  ],
+  [
+    {
+      "claim": "C17",
+      "name": "tool_schema_omits_acquisition",
+      "path": "crates/resourcefs-mcp/src/server/read.rs",
+      "old": "#[schemars(with = \"AcquisitionInput\")]",
+      "new": "#[schemars(skip)]",
+      "test_command": "cargo test -p resourcefs-mcp --features test-support --test stdio_mcp_contract github_facts_stdio_reconstructs_native_json_without_reacquisition -- --exact",
+      "expected": "Serde input behavior remains intact, but actual tools/list lacks acquisition property; assertion on published schema fails."
+    }
+  ],
+  [
+    {
+      "claim": "C17",
+      "name": "catalog_omits_facts_grammar",
+      "path": "crates/resourcefs-sources/src/github/mod.rs",
+      "old": "\"pr://<owner>/<repository>[/<number>[/title|body|facts|comments|reviews|review-comments|diff]][:selector]\"",
+      "new": "\"pr://<owner>/<repository>[/<number>[/title|body|comments|reviews|review-comments|diff]][:selector]\"",
+      "test_command": "cargo test -p resourcefs-mcp --features test-support --test stdio_mcp_contract github_facts_stdio_reconstructs_native_json_without_reacquisition -- --exact",
+      "expected": "Actual pr:// catalog no longer contains facts; existing catalog assertion fails while real Facts read still succeeds."
+    }
+  ]
+]

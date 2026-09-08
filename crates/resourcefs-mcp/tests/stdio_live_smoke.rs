@@ -315,3 +315,52 @@ fn live_stdio_profile_probe_serve_and_tools_hold_up() {
         "the credential never reaches the diagnostics channel"
     );
 }
+
+#[test]
+#[ignore = "live full-stack smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
+fn live_stdio_github_facts_match_native_observation() {
+    let Some(token) = live_token() else { return };
+    let temporary = TempDir::new().expect("temporary directory");
+    let profile = write_profile(temporary.path());
+    let native = Command::new("gh")
+        .args([
+            "api",
+            "-H",
+            "X-GitHub-Api-Version: 2022-11-28",
+            "repos/rust-lang/rust/pulls/159232",
+        ])
+        .env("GH_TOKEN", &token)
+        .output()
+        .expect("native gh observation");
+    assert!(native.status.success(), "native observation failed");
+    let native: Value = serde_json::from_slice(&native.stdout).expect("native JSON");
+    let mut server = Server::start(&profile, &token);
+    server.initialize();
+    let mut result = server.call("rfs_read", json!({"path":format!("{SMALL_PR}/facts")}));
+    let mut bytes = String::new();
+    loop {
+        assert_eq!(result["isError"], false);
+        bytes.push_str(
+            result["structuredContent"]["content"]
+                .as_str()
+                .expect("facts page"),
+        );
+        let Some(next) = result["structuredContent"]["continuationReference"].as_str() else {
+            break;
+        };
+        result = server.call("rfs_read", json!({"path":next}));
+    }
+    let facts: Value = serde_json::from_str(&bytes).expect("complete facts");
+    assert_eq!(facts["schemaVersion"]["major"], 1);
+    assert_eq!(
+        facts["data"]["id"],
+        native["id"].as_u64().expect("native id").to_string()
+    );
+    for side in ["base", "head"] {
+        assert_eq!(facts["data"][side]["commitSha"], native[side]["sha"]);
+    }
+    assert_eq!(facts["data"]["links"]["apiUrl"], native["url"]);
+    assert_eq!(facts["data"]["links"]["htmlUrl"], native["html_url"]);
+    assert_eq!(facts["acquisition"]["restApiVersion"], "2022-11-28");
+    assert!(!bytes.contains(&token));
+}

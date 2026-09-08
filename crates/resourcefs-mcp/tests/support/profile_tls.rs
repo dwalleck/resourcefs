@@ -53,6 +53,11 @@ pub struct NativeResponse {
 enum Responses {
     Html(Arc<str>),
     Native(Vec<NativeResponse>),
+    BlockedNative {
+        body: String,
+        arrived: mpsc::Sender<()>,
+        release: Arc<tokio::sync::Notify>,
+    },
 }
 
 pub struct ProfileTlsServer {
@@ -71,6 +76,19 @@ impl ProfileTlsServer {
 
     pub fn start_native(responses: Vec<NativeResponse>) -> Self {
         Self::start_responses(Responses::Native(responses))
+    }
+
+    pub fn start_blocked_native(
+        body: String,
+    ) -> (Self, mpsc::Receiver<()>, Arc<tokio::sync::Notify>) {
+        let (arrived, receiver) = mpsc::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let server = Self::start_responses(Responses::BlockedNative {
+            body,
+            arrived,
+            release: Arc::clone(&release),
+        });
+        (server, receiver, release)
     }
 
     fn start_responses(responses: Responses) -> Self {
@@ -144,7 +162,10 @@ impl ProfileTlsServer {
     }
 
     pub fn requests(&self) -> Vec<String> {
-        self.recorded_requests().into_iter().map(|request| request.path).collect()
+        self.recorded_requests()
+            .into_iter()
+            .map(|request| request.path)
+            .collect()
     }
 
     pub fn recorded_requests(&self) -> Vec<RecordedRequest> {
@@ -222,30 +243,83 @@ where
     let mut lines = request.lines();
     let mut request_line = lines.next().unwrap_or("").split_whitespace();
     let method = request_line.next().unwrap_or("");
-    let target = request_line.next()
+    let target = request_line
+        .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing request target"))?;
-    let headers = lines.filter_map(|line| line.split_once(':'))
-        .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned())).collect();
+    let headers = lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
+        .collect();
     let sequence = {
         let mut log = requests.lock().expect("profile TLS request log");
         let sequence = log.len() + 1;
-        log.push(RecordedRequest { sequence, method: method.to_owned(), path: target.to_owned(), headers });
+        log.push(RecordedRequest {
+            sequence,
+            method: method.to_owned(),
+            path: target.to_owned(),
+            headers,
+        });
         sequence
     };
     let (status, content_type, body) = match responses {
         Responses::Html(body) => ("200 OK", "text/html; charset=utf-8", body.as_ref()),
         Responses::Native(responses) => match responses.get(sequence - 1) {
-            Some(response) if response.path == target && method == "GET" =>
-                ("200 OK", "application/json", response.body.as_str()),
-            _ => ("404 Not Found", "application/json", "{\"message\":\"unexpected fixture request\"}"),
+            Some(response) if response.path == target && method == "GET" => {
+                ("200 OK", "application/json", response.body.as_str())
+            }
+            _ => (
+                "404 Not Found",
+                "application/json",
+                "{\"message\":\"unexpected fixture request\"}",
+            ),
         },
+        Responses::BlockedNative {
+            body,
+            arrived,
+            release,
+        } => {
+            if sequence == 1 {
+                arrived
+                    .send(())
+                    .map_err(|_| io::Error::other("barrier observer closed"))?;
+                release.notified().await;
+            }
+            ("200 OK", "application/json", body.as_str())
+        }
     };
+    // Native identity operands name this actual listener, not a guessed API.
+    let host = request
+        .lines()
+        .find_map(|line| {
+            line.split_once(':')
+                .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
+                .map(|(_, value)| value.trim())
+        })
+        .unwrap_or("");
+    let body = body.replace("@API@", &format!("https://{host}/"));
 
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    tls.write_all(response.as_bytes()).await?;
-    tls.write_all(body.as_bytes()).await?;
-    tls.shutdown().await
+    let sent = async {
+        tls.write_all(response.as_bytes()).await?;
+        tls.write_all(body.as_bytes()).await?;
+        tls.shutdown().await
+    }
+    .await;
+    match sent {
+        Err(error)
+            if matches!(responses, Responses::BlockedNative { .. })
+                && matches!(
+                    error.kind(),
+                    io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::ConnectionAborted
+                ) =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
 }

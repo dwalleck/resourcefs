@@ -15,7 +15,8 @@ use crate::{BoundedHttpResponse, HttpRequest, http::HttpFetchFailure};
 
 use super::{
     GITHUB_API_VERSION, GITHUB_JSON, GithubSource, USER_AGENT, authoritative_body,
-    fetch::GITHUB_CACHE_NAMESPACE, malformed_upstream, render,
+    fetch::GITHUB_CACHE_NAMESPACE,
+    malformed_upstream, render,
     wire::{self, ConversationComment, Issue, PullRequest},
 };
 
@@ -100,6 +101,7 @@ impl GithubFieldTarget {
                     id: id.get(),
                 }),
                 PullRequestResource::Aggregate
+                | PullRequestResource::Facts
                 | PullRequestResource::Comments
                 | PullRequestResource::CommentsNew
                 | PullRequestResource::Reviews

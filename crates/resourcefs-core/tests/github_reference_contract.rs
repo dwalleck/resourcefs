@@ -351,3 +351,32 @@ fn reference_parse_budget() {
         "average maximum GitHub reference parse took {average:?}"
     );
 }
+
+#[test]
+fn facts_canonical_grammar_does_not_reinterpret_legacy_projections() {
+    for input in ["pr://Owner/Repo/7/facts", "pr://owner/repo/0007/facts"] {
+        assert_eq!(
+            PathReference::parse(input).expect("facts").requested(),
+            "pr://owner/repo/7/facts"
+        );
+    }
+    for input in [
+        "pr://owner/repo/0/facts",
+        "pr://owner/repo/18446744073709551616/facts",
+        "pr://owner/repo/7/facts/1",
+        "issue://owner/repo/7/facts",
+        "pr://owner/repo/new/facts",
+    ] {
+        assert!(PathReference::parse(input).is_err(), "{input}");
+    }
+    for input in [
+        "pr://owner/repo/7/diff",
+        "pr://owner/repo/7/diff/1",
+        "pr://owner/repo/7/body",
+    ] {
+        assert_eq!(
+            PathReference::parse(input).expect("legacy").requested(),
+            input
+        );
+    }
+}

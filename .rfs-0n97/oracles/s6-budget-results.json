@@ -1,0 +1,11 @@
+{
+  "native_bytes": 8388608,
+  "output_bytes": 8391951,
+  "cold_loopback_upper_bound_ns": 24393897,
+  "local_processing_limit_ns": 1000000000,
+  "incremental_heap_bytes": 32784123,
+  "per_allocation_overhead_bytes": 32,
+  "heap_limit_bytes": 100663296,
+  "command": "cargo test --release --config profile.release.debug-assertions=false -p resourcefs-sources --all-features --test github_facts_contract github_facts_production_budget -- --ignored --exact --test-threads=1 --nocapture",
+  "measurement": "Separate cold wall and heap trials. Prepared fixture and post-read oracle excluded; wall includes real loopback TLS/cache overhead as conservative upper bound. Not RSS and not a public peak-process-memory claim."
+}

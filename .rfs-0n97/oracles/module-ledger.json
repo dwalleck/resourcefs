@@ -1,162 +1,29 @@
 {
   "baseline": "7de8d1477af6be825bada9015a6996b3f2917c7d",
-  "stage": "mcp",
-  "stages": [
-    "baseline",
-    "core",
-    "configuration",
-    "transport",
-    "fetch",
-    "mcp",
-    "facts"
-  ],
+  "stage": "facts",
+  "stages": ["baseline", "core", "configuration", "transport", "fetch", "mcp", "facts"],
   "owners": {
-    "crates/resourcefs-core/src/acquisition.rs": {
-      "stage": "core",
-      "maximum": 300,
-      "symbols": [
-        "ReadAcquisitionLimits",
-        "intersect"
-      ],
-      "parent": "crates/resourcefs-core/src/lib.rs",
-      "module": "acquisition"
-    },
-    "crates/resourcefs-mcp/src/acquisition.rs": {
-      "stage": "configuration",
-      "maximum": 200,
-      "symbols": [
-        "AcquisitionInput",
-        "into_limits"
-      ],
-      "parent": "crates/resourcefs-mcp/src/lib.rs",
-      "module": "acquisition"
-    },
-    "crates/resourcefs-sources/src/github/fetch.rs": {
-      "stage": "fetch",
-      "maximum": 650,
-      "symbols": [
-        "CacheMetadata",
-        "FetchedResponse",
-        "fetch",
-        "cache_key",
-        "cache"
-      ],
-      "parent": "crates/resourcefs-sources/src/github/mod.rs",
-      "module": "fetch"
-    },
-    "crates/resourcefs-mcp/src/server/read.rs": {
-      "stage": "mcp",
-      "maximum": 400,
-      "symbols": [
-        "ReadInput",
-        "ReadLimitsInput",
-        "into_text_limits",
-        "execute_read",
-        "dispatch_read"
-      ],
-      "parent": "crates/resourcefs-mcp/src/server.rs",
-      "module": "read"
-    },
-    "crates/resourcefs-mcp/src/render/error.rs": {
-      "stage": "mcp",
-      "maximum": 300,
-      "symbols": [],
-      "parent": "crates/resourcefs-mcp/src/render.rs",
-      "module": "error"
-    },
-    "crates/resourcefs-sources/src/github/facts.rs": {
-      "stage": "facts",
-      "maximum": 750,
-      "symbols": [],
-      "parent": "crates/resourcefs-sources/src/github/mod.rs",
-      "module": "facts"
-    },
-    "crates/resourcefs-sources/src/github/facts/identity.rs": {
-      "stage": "facts",
-      "maximum": 350,
-      "symbols": [
-        "ValidatedIdentity",
-        "validate",
-        "required",
-        "sha",
-        "same_url",
-        "validate_observed_link",
-        "repository_link_identity",
-        "validate_repository"
-      ],
-      "parent": "crates/resourcefs-sources/src/github/facts.rs",
-      "module": "identity"
-    }
+    "crates/resourcefs-core/src/acquisition.rs": {"stage": "core", "maximum": 300, "symbols": ["ReadAcquisitionLimits", "intersect"], "parent": "crates/resourcefs-core/src/lib.rs", "module": "acquisition"},
+    "crates/resourcefs-mcp/src/acquisition.rs": {"stage": "configuration", "maximum": 200, "symbols": ["AcquisitionInput", "into_limits"], "parent": "crates/resourcefs-mcp/src/lib.rs", "module": "acquisition"},
+    "crates/resourcefs-sources/src/github/fetch.rs": {"stage": "fetch", "maximum": 650, "symbols": ["CacheMetadata", "FetchedResponse", "fetch", "cache_key", "cache"], "parent": "crates/resourcefs-sources/src/github/mod.rs", "module": "fetch"},
+    "crates/resourcefs-mcp/src/server/read.rs": {"stage": "mcp", "maximum": 400, "symbols": ["ReadInput", "ReadLimitsInput", "into_text_limits", "execute_read", "dispatch_read"], "parent": "crates/resourcefs-mcp/src/server.rs", "module": "read"},
+    "crates/resourcefs-mcp/src/render/error.rs": {"stage": "mcp", "maximum": 300, "symbols": [], "parent": "crates/resourcefs-mcp/src/render.rs", "module": "error"},
+    "crates/resourcefs-sources/src/github/facts.rs": {"stage": "facts", "maximum": 750, "symbols": [], "parent": "crates/resourcefs-sources/src/github/mod.rs", "module": "facts"},
+    "crates/resourcefs-sources/src/github/facts/identity.rs": {"stage": "facts", "maximum": 350, "symbols": ["ValidatedIdentity", "validate", "required", "sha", "same_url", "validate_observed_link", "repository_link_identity", "validate_repository"], "parent": "crates/resourcefs-sources/src/github/facts.rs", "module": "identity"}
   },
   "body_changes": {
-    "core": {
-      "crates/resourcefs-sources/src/atlassian/jira.rs": [
-        "read",
-        "search"
-      ]
-    },
-    "transport": {
-      "crates/resourcefs-sources/src/http/mod.rs": [
-        "begin_read",
-        "fetch_attempt",
-        "read_bounded",
-        "new#1",
-        "header_within_ceiling",
-        "cancelled_mid_request",
-        "policy_error_or"
-      ]
-    },
-    "facts": {
-      "crates/resourcefs-core/src/reference.rs": [
-        "canonical_reference#5",
-        "parse_pull_request_address"
-      ]
-    }
+    "core": {"crates/resourcefs-sources/src/atlassian/jira.rs": ["read", "search"]},
+    "transport": {"crates/resourcefs-sources/src/http/mod.rs": ["begin_read", "fetch_attempt", "read_bounded", "new#1", "header_within_ceiling", "cancelled_mid_request", "policy_error_or"]},
+    "facts": {"crates/resourcefs-core/src/reference.rs": ["canonical_reference#5", "parse_pull_request_address"]}
   },
   "added_functions": {
-    "transport": {
-      "crates/resourcefs-sources/src/http/mod.rs": [
-        "last_modified",
-        "date",
-        "selected_api_version",
-        "rate_limit_reset",
-        "retained_observation"
-      ]
-    }
+    "transport": {"crates/resourcefs-sources/src/http/mod.rs": ["last_modified", "date", "selected_api_version", "rate_limit_reset", "retained_observation"]}
   },
   "test_children": {
-    "crates/resourcefs-sources/src/http/read_acquisition_tests.rs": {
-      "stage": "transport",
-      "maximum": 650,
-      "parent": "crates/resourcefs-sources/src/http/read_tests.rs",
-      "module": "acquisition"
-    },
-    "crates/resourcefs-sources/src/github/facts_tests.rs": {
-      "stage": "facts",
-      "maximum": 650,
-      "parent": "crates/resourcefs-sources/src/github/facts.rs",
-      "module": "tests",
-      "cfg_test": true
-    }
+    "crates/resourcefs-sources/src/http/read_acquisition_tests.rs": {"stage": "transport", "maximum": 650, "parent": "crates/resourcefs-sources/src/http/read_tests.rs", "module": "acquisition"},
+    "crates/resourcefs-sources/src/github/facts_tests.rs": {"stage": "facts", "maximum": 650, "parent": "crates/resourcefs-sources/src/github/facts.rs", "module": "tests", "cfg_test": true}
   },
-  "github_moves": [
-    "CacheMetadata",
-    "FetchedResponse",
-    "body",
-    "request",
-    "cache_key",
-    "fetch",
-    "cache",
-    "classify_status",
-    "next_link",
-    "next_link_target",
-    "link_value_is_next",
-    "GITHUB_JSON",
-    "GITHUB_DIFF",
-    "GITHUB_API_VERSION",
-    "USER_AGENT",
-    "GITHUB_CACHE_NAMESPACE"
-  ],
+  "github_moves": ["CacheMetadata", "FetchedResponse", "body", "request", "cache_key", "fetch", "cache", "classify_status", "next_link", "next_link_target", "link_value_is_next", "GITHUB_JSON", "GITHUB_DIFF", "GITHUB_API_VERSION", "USER_AGENT", "GITHUB_CACHE_NAMESPACE"],
   "github_move_slots": {
     "MAX_PAGES_PER_OPERATION#1": "MAX_PAGES_PER_OPERATION#1",
     "collection#2": "collection#1",
@@ -167,38 +34,14 @@
     "split_first_outside_quotes#1": "split_first_outside_quotes#1"
   },
   "github_changes": {
-    "core": [
-      "read",
-      "search"
-    ],
-    "configuration": [
-      "new#2"
-    ],
-    "fetch": [
-      "json"
-    ],
-    "facts": [
-      "pull_request_resource",
-      "read",
-      "catalog_entries"
-    ]
+    "core": ["read", "search"],
+    "configuration": ["new#2"],
+    "fetch": ["json"],
+    "facts": ["pull_request_resource", "read", "catalog_entries"]
   },
-  "server_moves": [
-    "ReadLimitsInput",
-    "ReadInput",
-    "into_text_limits",
-    "execute_read",
-    "dispatch_read",
-    "cancelled_read_error"
-  ],
-  "server_imports": [
-    "ReadRequest",
-    "TextLimits"
-  ],
-  "protected_limits": {
-    "crates/resourcefs-sources/src/github/mod.rs": 1498,
-    "crates/resourcefs-mcp/src/server.rs": 1431
-  },
+  "server_moves": ["ReadLimitsInput", "ReadInput", "into_text_limits", "execute_read", "dispatch_read", "cancelled_read_error"],
+  "server_imports": ["ReadRequest", "TextLimits"],
+  "protected_limits": {"crates/resourcefs-sources/src/github/mod.rs": 1498, "crates/resourcefs-mcp/src/server.rs": 1431},
   "forbidden_dependencies": {
     "crates/resourcefs-core/src/acquisition.rs": "serde|serde_json|rmcp|reqwest|tokio|Github|Jira|HttpSubstrate|Instant",
     "crates/resourcefs-core/src/error.rs": "serde_json|rmcp|reqwest|tokio|GithubSource|AtlassianSource|HttpSubstrate|Deserialize|Serializer|Deserializer",

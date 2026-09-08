@@ -1,0 +1,2703 @@
+
+=== Module placement ===
++ /usr/bin/python .rfs-0n97/oracles/module_shape.py
+C1 crates/resourcefs-core/src/reference.rs: 2089 -> 1946, maximum 1989
+C1 crates/resourcefs-core/src/discovery.rs: 1342 -> 1341, maximum 1367
+C1 crates/resourcefs-sources/src/atlassian/jira.rs: 467 -> 302, maximum 317
+C1 crates/resourcefs-sources/src/atlassian/wire.rs: 571 -> 585, maximum 601
+C1 crates/resourcefs-sources/src/atlassian/render.rs: 480 -> 482, maximum 488
+C1 crates/resourcefs-sources/src/http/mod.rs: 1759 -> 1557, maximum 1679
+C12 baseline=fad4cf2c11ec27f4272355c9e741badc9be0920e upstream=refs/remotes/origin/main
+C12 crates/resourcefs-core/src/discovery.rs: lines=1341 maximum=1367
+C12 crates/resourcefs-core/src/reference.rs: lines=1946 maximum=1989
+C12 crates/resourcefs-core/src/reference/jira.rs: lines=454 maximum=650
+C12 crates/resourcefs-core/src/reference/source_page.rs: lines=97 maximum=160
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: lines=302 maximum=317
+C12 crates/resourcefs-sources/src/atlassian/jira/browse.rs: lines=334 maximum=600
+C12 crates/resourcefs-sources/src/atlassian/jira/cursor.rs: lines=157 maximum=250
+C12 crates/resourcefs-sources/src/atlassian/jira/query.rs: lines=104 maximum=400
+C12 crates/resourcefs-sources/src/atlassian/jira/transport.rs: lines=333 maximum=400
+C12 crates/resourcefs-sources/src/atlassian/render.rs: lines=482 maximum=488
+C12 crates/resourcefs-sources/src/atlassian/render/collections.rs: lines=173 maximum=350
+C12 crates/resourcefs-sources/src/atlassian/wire.rs: lines=585 maximum=601
+C12 crates/resourcefs-sources/src/atlassian/wire/collections.rs: lines=551 maximum=600
+C12 crates/resourcefs-sources/src/atlassian/wire/query.rs: lines=127 maximum=200
+C12 crates/resourcefs-sources/src/http/mod.rs: lines=1557 maximum=1679
+C12 crates/resourcefs-sources/src/http/read.rs: lines=348 maximum=350
+C12 crates/resourcefs-sources/src/http/request.rs: lines=228 maximum=280
+C12 crates/resourcefs-core/src/discovery.rs: baseline-delta=+0
+C12 crates/resourcefs-core/src/reference.rs: baseline-delta=+5
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta canonical_reference
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta parse_pull_request_address
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: baseline-delta=+17
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body read_resource changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: successor-owned body delta read
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body catalog_entries changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: successor-owned body delta search
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body unsupported_jira_projection changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/render.rs: baseline-delta=+0
+C12 crates/resourcefs-sources/src/atlassian/wire.rs: baseline-delta=+1
+C12 crates/resourcefs-sources/src/http/mod.rs: baseline-delta=-109
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta new
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta fetch_attempt
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta header_within_ceiling
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta read_bounded
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta cancelled_mid_request
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta policy_error_or
+C02 stage=facts baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main
+C02 PASS stage=facts baseline=7de8d1477af6be825bada9015a6996b3f2917c7d
+
+=== Formatting ===
++ cargo fmt --all -- --check
+
+=== Lints ===
++ cargo clippy --workspace --all-targets --all-features -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+
+=== Functional tests ===
++ cargo test --workspace --all-features --no-fail-fast
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.53s
+     Running unittests src/lib.rs (target/debug/deps/resourcefs_core-b0b3018083219634)
+
+running 4 tests
+test reference::tests::workspace_root_rejects_nonlocal_file_uri ... ok
+test reference::tests::duplicate_root_id_is_rejected ... ok
+test resource::tests::markdown_projection_accepts_empty_content ... ok
+test resource::tests::markdown_projection_preserves_media_type_and_version ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/acquisition_contract.rs (target/debug/deps/acquisition_contract-7f45ea1ff0e64efb)
+
+running 3 tests
+test intersection_lowers_unequal_dimensions_independently ... ok
+test bounded_details_reject_invalid_status_and_zero_limit ... ok
+test rejects_zero_and_above_hard_in_every_dimension ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/discovery_engine_contract.rs (target/debug/deps/discovery_engine_contract-a93623773007af3f)
+
+running 9 tests
+test catalog_targets_redirect_to_read_during_request_validation ... ok
+test request_validation_precedes_adapter ... ok
+test cancelled_operations_never_retain ... ok
+test server_discovery_ceilings_and_per_call_ceilings_compose_by_minimum ... ok
+test lower_only_limits_and_skip ... ok
+test catalog_target_validation_production_budget ... ok
+test source_continuations_survive_artifact_recovery ... ok
+test hundred_thousand_resources_remain_bounded_and_recoverable ... ok
+test bounded_pages_recover_the_complete_document ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.49s
+
+     Running tests/github_reference_contract.rs (target/debug/deps/github_reference_contract-c33da38803f6cbb0)
+
+running 8 tests
+test reference_parse_budget ... ignored, checkpointed-build production-scale budget
+test facts_canonical_grammar_does_not_reinterpret_legacy_projections ... ok
+test repository_identity_is_case_canonical_and_validated ... ok
+test github_addresses_are_typed_once ... ok
+test github_reference_errors_are_precise ... ok
+test typed_github_constructors_and_accessors_round_trip ... ok
+test canonical_github_reference_table ... ok
+test creation_targets_round_trip_and_are_write_only ... ok
+
+test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/hashline_patch_contract.rs (target/debug/deps/hashline_patch_contract-0b0c5d444943b34c)
+
+running 8 tests
+test line_types_reject_zero_and_descending_ranges ... ok
+test conflicting_original_coordinates_are_rejected ... ok
+test accepted_ranges_gaps_and_body_rows_parse_in_original_coordinates ... ok
+test reserved_block_and_register_forms_teach_the_accepted_grammar ... ok
+test version_prefixes_are_canonical_and_at_least_twelve_hex_characters ... ok
+test rem_and_mv_must_each_be_the_sole_operation ... ok
+test one_over_limit_fails_before_ast_growth ... ok
+test exact_limit_parser_budget ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+
+     Running tests/http_policy_budget.rs (target/debug/deps/http_policy_budget-030107ef67e64b7e)
+
+running 1 test
+test classification_and_allowlist_pass_fit_the_request_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/http_policy_contract.rs (target/debug/deps/http_policy_contract-665a0fc2dd8e453e)
+
+running 6 tests
+test ceilings_default_to_the_contract_values_and_lower_only ... ok
+test origin_rejects_a_base_url_that_is_not_https ... ok
+test allowlist_selects_the_matching_origin ... ok
+test base_url_scoping ... ok
+test whole_host_base_url_scopes_to_that_host ... ok
+test private_network_grant ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/jira_query_reference_contract.rs (target/debug/deps/jira_query_reference_contract-b1a36f41db9d1655)
+
+running 5 tests
+test query_debug_redacts_native_expression ... ok
+test canonical_query_corpus_preserves_exact_native_bytes ... ok
+test malformed_query_spellings_fail_without_key_language_restrictions ... ok
+test query_selectors_and_source_identity_remain_separate ... ok
+test query_reference_ceiling_accounts_for_encoding_and_selector_bytes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/jira_reference_contract.rs (target/debug/deps/jira_reference_contract-5bd3b5d42ed8a52c)
+
+running 15 tests
+test invalid_and_dormant_jira_references_are_rejected ... ok
+test identifier_constructors_enforce_domain_boundaries ... ok
+test canonical_jira_references_round_trip ... ok
+test issue_search_cursor_identity_is_not_a_resource_or_text_projection ... ok
+test jira_addresses_are_typed_once ... ok
+test project_search_pages_and_resource_identity_remain_distinct ... ok
+test rejects_noncanonical_segments ... ok
+test browse_reference_identity_and_selector_families ... ok
+test source_cursors_validate_encoding_without_interpreting_native_payloads ... ok
+test source_offsets_do_not_change_global_selector_markers ... ok
+test source_cursors_do_not_change_global_literal_paths ... ok
+test project_identifiers_and_offsets_keep_their_distinct_bounds ... ok
+test jira_reference_global_ceiling_remains_authoritative ... ok
+test issue_cursor_constructors_cannot_bypass_family_or_reference_bounds ... ok
+test maximum_jira_reference_parse_stays_within_budget ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/local_containment_contract.rs (target/debug/deps/local_containment_contract-946296f30bf3f794)
+
+running 2 tests
+test names_cannot_escape ... ok
+test scratch_names_are_sorted_and_session_scoped ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/local_quota_contract.rs (target/debug/deps/local_quota_contract-58183d9e230c8940)
+
+running 3 tests
+test replacing_scratch_releases_its_previous_bytes ... ok
+test scratch_name_enumeration_fits_its_budget ... ok
+test scratch_shares_and_never_evicts ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/mutation_engine_contract.rs (target/debug/deps/mutation_engine_contract-5983d11cf544d3eb)
+
+running 23 tests
+test operation_journal_budget ... ignored, checkpointed-build production-scale budget
+test mutation_operation_spellings_are_stable ... ok
+test mutation_identities_reject_empty_sources_and_relative_targets ... ok
+test operation_id_validation_matrix ... ok
+test engine_exposes_the_same_strict_parser_interface ... ok
+test operation_id_is_rejected_before_resolution ... ok
+test commit_masks_cancellation_after_transition ... ok
+test failed_commit_releases_seen_reservation ... ok
+test engine_drives_non_workspace_families ... ok
+test operation_journal_forced_fingerprint_collision_conflicts ... ok
+test empty_put_body_writes_a_blank_line_instead_of_deleting ... ok
+test rem_is_only_delete_form_and_returns_no_version_or_coverage ... ok
+test reverse_moves_do_not_deadlock ... ok
+test operation_journal_concurrent_repeat_coalesces ... ok
+test put_cut_use_original_coordinates_and_never_promote_unseen_content ... ok
+test seen_regions_never_cross_tags_and_prefixes_must_be_unique ... ok
+test tail_insert_requires_seen_eof ... ok
+test write_state_matrix_and_receipt_coverage ... ok
+test operation_journal_trace_matches_model ... ok
+test target_mode_outcome_matrix ... ok
+test same_resource_serializes_while_distinct_resources_progress ... ok
+test operation_journal_count_and_byte_ceilings ... ok
+test exact_limit_edit_budget ... ok
+
+test result: ok. 22 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.35s
+
+     Running tests/path_reference_contract.rs (target/debug/deps/path_reference_contract-8a6e425c83217d54)
+
+running 16 tests
+test catalog_root_lines_parse_and_teach ... ok
+test empty_root_sets_represent_scratch_only_authority ... ok
+test catalog_references_are_typed_with_one_alias ... ok
+test canonical_construction_percent_encodes_ambiguous_component_characters ... ok
+test local_references_render_canonically_and_round_trip ... ok
+test malformed_unicode_artifact_token_returns_error_instead_of_panicking ... ok
+test local_name_grammar ... ok
+test https_grammar ... ok
+test encoded_separator_guard_scope ... ok
+test root_sets_are_order_independent_and_primary_selection_is_exact ... ok
+test workspace_root_sentinel_is_not_general_empty_path_input ... ok
+test workspace_root_rejects_invalid_selector_name ... ok
+test parses_production_shaped_reference_within_budget ... ok
+test golden_workspace_references ... ok
+test reference_byte_limit_is_exact ... ok
+test maximum_reference_parses_within_boundary_budget ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/path_session_contract.rs (target/debug/deps/path_session_contract-7706e7a160eb4fb8)
+
+running 15 tests
+test configured_object_and_session_quotas_are_enforced_atomically ... ok
+test opaque_cache_obeys_session_limits_and_disconnect_isolation ... ok
+test opaque_cache_replacement_is_quota_charged_and_zero_copy ... ok
+test request_cancel_prevents_commit ... ok
+test session_tokens_and_artifact_ids_are_strict ... ok
+test operation_cancellation_wait_is_lossless ... ok
+test storage_failure_publishes_nothing ... ok
+test seen_regions_union_only_within_one_tag_and_session ... ok
+test snapshot_key_accepts_local_rejects_foreign ... ok
+test byte_identical_content_reuses_identity_and_collision_checks_bytes ... ok
+test foreign_unknown_and_inactive_artifacts_are_indistinguishable ... ok
+test opaque_cache_yields_to_authoritative_objects_least_recently_used_first ... ok
+test artifact_catalog_is_ordered_and_live ... ok
+test object_and_record_ceilings_fail_before_storage_io ... ok
+test concurrent_admission_is_linearizable_at_exact_session_quota ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.69s
+
+     Running tests/read_engine_contract.rs (target/debug/deps/read_engine_contract-3862ae8fed173f3b)
+
+running 14 tests
+test displayed_line_ranges_reject_zero_and_descending_bounds ... ok
+test read_forwards_the_callers_guard_to_the_source ... ok
+test server_text_ceiling_and_per_call_ceiling_compose_by_minimum ... ok
+test displayed_ranges_exclude_partial_lines ... ok
+test line_and_utf8_byte_continuations_are_stable_and_progressing ... ok
+test selected_workspace_ranges_keep_original_line_coordinates ... ok
+test snapshot_quota_failure_does_not_publish_recovery_artifact ... ok
+test repeated_identical_spill_reuses_one_root_and_one_charge ... ok
+test inline_artifact_production_budget ... ok
+test source_continuations_surface_unless_the_page_itself_overflows ... ok
+test bounded_pages_reconstruct_every_boundary_fixture ... ok
+test one_byte_over_object_ceiling_fails_without_artifact ... ok
+test workspace_snapshot_production_budget ... ok
+test artifact_page_production_budget ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.39s
+
+     Running tests/secret_opacity_contract.rs (target/debug/deps/secret_opacity_contract-6caa1c126037f5c1)
+
+running 5 tests
+test empty_redactor_preserves_text ... ok
+test secret_validation_is_value_free ... ok
+test redactor_deduplicates_and_prefers_longest_prefix_match ... ok
+test redactor_accepts_one_thousand_twenty_four_distinct_secrets ... ok
+    Checking resourcefs-core-tests v0.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/tests/trybuild/resourcefs-core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+
+
+test tests/ui/secret_display.rs ... ok
+test tests/ui/secret_debug.rs ... ok
+test tests/ui/secret_serialize.rs ... ok
+
+
+test secret_rejects_observable_traits_at_compile_time ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/selector_golden_contract.rs (target/debug/deps/selector_golden_contract-154a4625798f6e8b)
+
+running 9 tests
+test page_projection_is_not_a_text_selection ... ok
+test invalid_utf8_fails_even_when_the_selected_line_is_valid ... ok
+test artifact_reference_grammar_is_typed_and_canonical ... ok
+test selected_text_transfers_owned_projection_without_copying ... ok
+test workspace_page_syntax_remains_a_literal_first_candidate ... ok
+test malformed_selectors_are_rejected ... ok
+test selector_golden_contract ... ok
+test selected_projection_object_ceiling_is_exact ... ok
+test stress_selection_budget ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.88s
+
+     Running tests/server_limits_contract.rs (target/debug/deps/server_limits_contract-4189a58b35cec55d)
+
+running 3 tests
+test omitted_empty_and_exact_limits_match_literal_binary_ceilings ... ok
+test storage_object_ceiling_must_not_exceed_session_ceiling ... ok
+test zero_and_one_over_each_literal_ceiling_fail_without_clamping ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/source_resource_content_type_contract.rs (target/debug/deps/source_resource_content_type_contract-144046e02472d93d)
+
+running 3 tests
+test utf8_content_type_rejects_ambiguous_or_non_utf8_media ... ok
+test complete_utf8_resource_preserves_media_and_content_tag ... ok
+test selected_utf8_resource_retains_whole_resource_tag_and_media ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/text_limits_contract.rs (target/debug/deps/text_limits_contract-5d1b92f4930dbcce)
+
+running 2 tests
+test limits_presence_matrix_preserves_exact_values ... ok
+test zero_and_one_over_limits_fail_for_every_dimension ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/version_tag_contract.rs (target/debug/deps/version_tag_contract-d70f75a9453c231b)
+
+running 8 tests
+test changes_when_content_changes ... ok
+test backing_file_uri_is_absent_unless_explicitly_attached ... ok
+test exposes_stable_read_contract_fields ... ok
+test matches_published_sha256_vectors ... ok
+test ignores_path_and_metadata ... ok
+test selected_projection_preserves_authoritative_whole_resource_tag ... ok
+test parses_only_canonical_full_tags ... ok
+test hashes_maximum_sized_content_within_budget ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/resourcefs_mcp-a38f91e7b035837b)
+
+running 24 tests
+test profile::model::tests::github_profile_validation_budget ... ignored, checkpointed-build production-scale budget
+test render::tests::search_and_glob_failures_use_rfs_error_shape ... ok
+test render::tests::renders_backing_file_uri_only_when_present ... ok
+test profile::model::tests::logging_paths_resolve_from_the_profile_directory ... ok
+test server::jira_query_tests::jira_query_stdio_test_host ... ignored, reexecuted stdio helper; not a live or standalone contract
+test server::jira_query_tests::live_jira_query_stdio ... ignored, reader-only live Jira query MCP stdio; requires owned fixture receipt and RFS_LIVE=1
+test profile::model::tests::workspace_grants_reach_launch_roots ... ok
+test profile::model::tests::github_config_reaches_launch_components ... ok
+test render::tests::maximum_page_render_stays_within_budget ... ok
+test render::tests::creation_receipt_renders_nullable_tag_and_canonical_reference ... ok
+test profile::check::tests::an_unmountable_kind_is_refused_before_its_credential_resolves ... ok
+test render::tests::search_reports_pcre2_fallback_engine ... ok
+test render::tests::search_success_text_and_structured_agree ... ok
+test render::tests::search_reports_escaping_link_diagnostic ... ok
+test render::tests::glob_success_text_and_structured_agree_with_kinds ... ok
+test render::tests::search_no_match_returns_empty_structured_and_text ... ok
+test render::tests::glob_lists_session_artifacts_with_artifact_kind ... ok
+test render::tests::glob_recovery_reference_is_rendered ... ok
+test render::tests::search_recovery_and_continuation_references_are_rendered ... ok
+test render::tests::maximum_search_page_render_stays_within_budget ... ok
+test render::tests::source_continuation_references_are_rendered_only_when_hidden ... ok
+test render::tests::maximum_glob_page_render_stays_within_budget ... ok
+test server::jira_query_tests::c11_query_search_uses_rendered_regex_and_pcre2_and_glob_is_unsupported ... ok
+test server::jira_query_tests::c10_query_recovery_and_source_continuation_are_independent ... ok
+
+test result: ok. 21 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.47s
+
+     Running unittests src/main.rs (target/debug/deps/resourcefs-8dc0f155de758a55)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/architecture_contract.rs (target/debug/deps/architecture_contract-81399580a4195a49)
+
+running 7 tests
+test mutation_engine_dependency_direction ... ok
+test profile_capabilities_stay_in_owning_modules ... ok
+test profile_https_fixture_trust_is_test_harness_only ... ok
+test discovery_dependencies_stay_in_owning_modules ... ok
+test forbids_telemetry_dependencies ... ok
+test enforces_dependency_direction ... ok
+test single_http_client_module ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/cli_contract.rs (target/debug/deps/cli_contract-b8f8067443bd4d32)
+
+running 10 tests
+test check_probe_reports_reachability_without_mutating ... ok
+test required_https_fails_startup ... ok
+test exit_and_channel_matrix ... ok
+test profile_is_immutable_per_process ... ok
+test profile_workspace_authority ... ok
+test selects_exactly_one_launch_authority ... ok
+test profile_serve_matrix ... ok
+test static_check_is_offline_and_deterministic ... ok
+test secret_never_reaches_observable_channels ... ok
+test probing_is_bounded_and_does_not_starve_a_healthy_source ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.28s
+
+     Running tests/logging_contract.rs (target/debug/deps/logging_contract-3c8b88e2b58c93da)
+
+running 9 tests
+test configuration_defaults_and_signed_boundaries_are_exact ... ok
+test invalid_file_destination_fails_without_fallback ... ok
+test file_destination_permission_denial_is_reported ... ok
+test severity_floor_filters_before_writing ... ok
+test rotation_occurs_before_the_next_record_crosses_the_threshold ... ok
+test redaction_precedes_every_file_write_and_rotation_is_contained ... ok
+test concurrent_messages_are_serialized_without_loss_or_interleaving ... ok
+test exact_message_and_file_ceilings_succeed_and_one_over_fails ... ok
+test every_retention_count_keeps_exactly_its_configured_log_family ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/probe_contract.rs (target/debug/deps/probe_contract-8fdb2a06a50893e3)
+
+running 1 test
+test probe_state_and_exit_matrix ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/profile_contract.rs (target/debug/deps/profile_contract-a1c534b9aa23495f)
+
+running 19 tests
+test from_slice_in_rejects_missing_and_non_directory_bases ... ok
+test load_resolves_local_paths_beneath_the_profile_directory ... ok
+test session_configuration_resolves_paths_and_validates_the_signed_ttl_interval ... ok
+test logging_configuration_validates_the_signed_rotation_and_retention_intervals ... ok
+test local_source_symlink_aliases_and_escapes_are_rejected ... ok
+test local_source_configuration_matches_constructors ... ok
+test profile_byte_ceiling_is_exact_and_load_is_bounded ... ok
+test accepts_valid_profiles ... ok
+test rejects_invalid_profiles ... ok
+test command_cardinality_matches_typed_configuration ... ok
+test network_source_configuration_matches_constructors ... ok
+test github_profile_deployment_validation_is_shared ... ok
+test schema_matches_deserializer ... ok
+test source_catalog_matrix ... ok
+test nested_limits_map_to_the_core_aggregate_without_clamping ... ok
+test rejects_explicit_null_at_every_optional_profile_field ... ok
+test grant_matrix ... ok
+test github_profile_acquisition_presence_types_and_hard_boundaries ... ok
+test nested_allowlist_cardinality_matrix ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s
+
+     Running tests/schema_contract.rs (target/debug/deps/schema_contract-982778ce488a210e)
+
+running 4 tests
+test schema_has_stable_draft_identity_and_closed_object_root ... ok
+test schema_and_deserializer_publish_the_same_source_kinds ... ok
+test schema_rejects_extra_arguments_as_cli_usage ... ok
+test schema_command_is_deterministic_and_stdout_clean ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/stdio_live_smoke.rs (target/debug/deps/stdio_live_smoke-1c6855d4c85b69c1)
+
+running 2 tests
+test live_stdio_github_facts_match_native_observation ... ignored, live full-stack smoke; needs RFS_LIVE=1 and GITHUB_TOKEN
+test live_stdio_profile_probe_serve_and_tools_hold_up ... ignored, live full-stack smoke; needs RFS_LIVE=1 and GITHUB_TOKEN
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-c2e9d9f44994da18)
+
+running 44 tests
+test profile_https_test_server ... ignored, re-executed by profile HTTPS contract tests as the child MCP server
+test canonical_identity_stays_private ... ok
+test client_roots_work_under_legacy_protocol_revision ... ok
+test catalog_root_lines_parse_and_teach ... ok
+test rejects_invalid_root_configuration ... ok
+test catalogs_use_common_read_result_shape ... ok
+test catalog_search_and_glob_redirect_before_io ... ok
+test profile_limits_bound_live_mcp_reads_and_discovery ... ok
+test https_is_read_only ... ok
+test namespace_catalog_tracks_client_root_replacement ... ok
+test read_acquisition_validates_before_roots_and_reports_unsupported ... ok
+test invalid_operation_id_precedes_dispatch ... ok
+test catalog_reads_obey_common_limits_and_reconstruct ... ok
+test concurrent_requests_share_one_serialized_root_acquisition ... ok
+test lists_and_calls_discovery_tools ... ok
+test discovery_cancellation_preempts_client_root_acquisition ... ok
+test scratch_reads_report_mutability ... ok
+test stdio_disconnect_marker_failure_is_observable ... ok
+test client_roots_replace_refresh_and_restore_launch_roots ... ok
+test removed_inflight_result_fails_after_root_generation_changes ... ok
+test stdio_eof_disconnects_before_release_and_leaves_no_object ... ok
+test probing_happens_once_at_startup_not_per_read ... ok
+test stdio_bounded_read_reconstructs_fixture ... ok
+test github_non_target_mutation_is_refused ... ok
+test initialization_and_all_tool_descriptions_advertise_catalog ... ok
+test stdio_storage_write_failure_is_complete_source_unavailable ... ok
+test versioned_write_receipts_and_catalog_policy_work_over_stdio ... ok
+test https_profile_read_recovers_bounded_markdown ... ok
+test profile_launch_authority_reaches_stdio_and_scratch_profiles_have_no_cwd_root ... ok
+test negotiates_required_revisions ... ok
+test https_uses_common_read_shape ... ok
+test github_facts_stdio_cancelled_http_read_cannot_publish_and_session_recovers ... ok
+test renders_complete_success_and_errors ... ok
+test root_change_fences_discovery ... ok
+test launch_primary_selection_is_exact ... ok
+test stdio_request_cancel_keeps_session_active_without_artifact ... ok
+test stdio_rejects_non_lower_limits ... ok
+test github_mutation_schema_and_receipts_match ... ok
+test optional_https_degrades_while_other_sources_serve ... ok
+test github_profile_trust_reaches_real_stdio_reads_only_when_explicit ... ok
+test cancelled_discovery_returns_promptly_without_late_artifact ... ok
+test github_facts_stdio_reconstructs_native_json_without_reacquisition ... ok
+test discovery_argument_matrix_precedes_io ... ok
+test client_root_acquisition_times_out_fail_closed ... ok
+
+test result: ok. 43 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 5.03s
+
+     Running tests/supply_chain_contract.rs (target/debug/deps/supply_chain_contract-3811b0e2b4f5c47a)
+
+running 5 tests
+test deny_config_matches_signed_policy ... ok
+test advisory_policy_matches_signed_policy ... ok
+test source_gate_rejects_git ... ok
+test license_gate_rejects_copyleft ... ok
+test workspace_passes_the_gate ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s
+
+     Running unittests src/lib.rs (target/debug/deps/resourcefs_sources-c5dbd9e223775a0c)
+
+running 41 tests
+test catalog::tests::source_catalog_marks_degraded_and_omits_unmounted ... ok
+test catalog::tests::source_catalog_header_chains_and_teaches_selectors ... ok
+test catalog::tests::catalog_content_and_tags_are_snapshot_deterministic ... ok
+test filesystem::tests::retained_traversal_state_has_an_exact_ceiling ... ok
+test catalog::tests::catalog_metadata_rejects_duplicate_and_invalid_entries ... ok
+test http::read::tests::acquisition::legacy_ledger_does_not_acquire_a_cumulative_byte_policy ... ok
+test http::tests::logical_read_never_refreshes_its_deadline ... ok
+test http::tests::retry_after_delta_and_http_date_have_one_typed_delay ... ok
+test http::tests::retry_policy_budget ... ignored, checkpointed-build production-scale budget
+test http::tests::retry_after_equal_http_date_is_zero_delay ... ok
+test http::tests::retry_jitter_is_bounded_unbiased_and_deadline_checked ... ok
+test http::tests::unusable_retry_after_never_becomes_zero_delay ... ok
+test pattern::tests::pcre2_remains_interpreted ... ok
+test catalog::tests::catalog_metadata_accepts_exact_boundaries ... ok
+test http::read::tests::read_only_replay_shares_384kib_payload_across_10000_copies ... ok
+test catalog::tests::workspace_catalog_covers_empty_primary_and_max_root_sets ... ok
+test catalog::tests::workspace_document_reads_one_active_authority_snapshot ... ok
+test filesystem::tests::delivery_validation_rejects_removed_generation_only ... ok
+test compiled::tests::catalog_metadata_is_the_compiled_registry ... ok
+test github::facts::tests::final_facts_exact_pretty_bytes_and_hash_fit_cap_but_one_less_refuses ... ok
+test github::facts::tests::final_facts_cancellation_after_serialization_prevents_publication ... ok
+test compiled::tests::catalog_lists_https_once_configured ... ok
+test http::read::tests::read_only_post_requires_valid_retry_after_and_replays_transport_failure ... ok
+test http::read::tests::read_only_body_ceiling_is_independent_of_mutations_and_debug_is_redacted ... ok
+test http::read::tests::ordinary_mutations_never_replay_without_budget_on_retryable_status_or_disconnect ... ok
+test http::read::tests::retry_wait_cancellation_and_over_deadline_delay_send_no_followup ... ok
+test github::facts::tests::final_facts_deadline_advanced_after_serialization_prevents_publication ... ok
+test http::read::tests::get_replay_preserves_headers_and_shared_retry_is_spent_across_fetches ... ok
+test http::read::tests::read_only_post_wait_obeys_cancellation_and_remaining_deadline ... ok
+test http::read::tests::read_only_post_physical_ceiling_counts_retry ... ok
+test http::read::tests::acquisition::effective_response_cap_bounds_stream_and_reused_body_admission ... ok
+test http::read::tests::ordinary_post_and_patch_never_replay_and_preserve_encoded_body ... ok
+test http::read::tests::read_only_post_replays_exact_bytes_and_headers_once_across_pages ... ok
+test http::read::tests::physical_attempt_ceiling_counts_retry_and_refuses_eleventh_request ... ok
+test http::read::tests::acquisition::verified_http_bodies_share_cumulative_admission_without_reset ... ok
+test http::read::tests::acquisition::controlled_retry_uses_one_shared_physical_attempt_ledger ... ok
+test catalog::tests::catalog_production_budget ... ok
+test http::read::tests::acquisition::substrate_ceilings_lower_effective_limits_and_send_uses_that_deadline ... ok
+test http::read::tests::acquisition::controlled_deadline_spans_body_retry_wait_and_final_acceptance ... ok
+test http::read::tests::acquisition::controlled_deadline_interrupts_delayed_headers_with_reachable_control ... ok
+test http::read::tests::original_deadline_bounds_all_post_and_patch_before_and_during_egress ... ok
+
+test result: ok. 40 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.60s
+
+     Running tests/artifact_adapter_contract.rs (target/debug/deps/artifact_adapter_contract-3d7c0a8096d648ba)
+
+running 7 tests
+test disconnect_invalidates_all_artifact_projections ... ok
+test invalid_page_and_non_artifact_authority_fail_without_disclosure ... ok
+test artifact_root_raw_ranges_and_pages_match_immutable_bytes ... ok
+test searches_selected_artifact_text ... ok
+test glob_lists_session_artifacts ... ok
+test glob_snapshot_excludes_its_recovery_artifact ... ok
+test search_and_glob_are_session_isolated ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.09s
+
+     Running tests/atlassian_fixture_operator_contract.rs (target/debug/deps/atlassian_fixture_operator_contract-749a6be119a46fca)
+
+running 78 tests
+test bootstrap_refuses_changed_project_ownership ... ok
+test cleanup_recovers_known_owner_property_receipt_after_failed_bootstrap ... ok
+test cleanup_distinguishes_absent_parent_from_collection_failure::case_2_pages_parent_absent ... ok
+test cleanup_distinguishes_absent_parent_from_collection_failure::case_4_footer_comments_parent_absent ... ok
+test cleanup_distinguishes_absent_parent_from_collection_failure::case_6_children_parent_absent ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_01_foreign_newline ... ok
+test cleanup_refuses_unknown_page_status::case_1_archived ... ok
+test cleanup_refuses_unknown_page_status::case_3_numeric ... ok
+test cleanup_refuses_unknown_page_status::case_2_null ... ok
+test cleanup_refuses_unknown_page_status::case_4_object ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_02_foreign_nul ... ok
+test cleanup_distinguishes_absent_parent_from_collection_failure::case_1_pages_parent_present ... ok
+test cleanup_distinguishes_absent_parent_from_collection_failure::case_3_footer_comments_parent_present ... ok
+test cleanup_distinguishes_absent_parent_from_collection_failure::case_5_children_parent_present ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_08_conflicting_state ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_05_null_status ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_07_failed_status ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_01_success_newline ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_17_transport_failure ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_06_numeric_status ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_12_numeric_successful ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_03_missing_marker ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_14_object_errors ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_02_success_nul ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_13_reported_errors ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_03_unknown_status ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_11_string_finished ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_10_unsuccessful_success ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_04_missing_status ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_09_unfinished_success ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_15_running_but_finished ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_16_running_exhausts_budget ... ok
+test cleanup_purges_owned_tombstones_and_preserves_foreign_projects ... ok
+test empty_state_argument_fails_before_any_request_in_every_mode ... ok
+test failures_are_bounded_and_redacted ... ok
+test fake_rejects_non_https_example_origins_at_its_boundary ... ok
+test dangling_pending_receipt_symlink_is_rejected_before_egress ... ok
+test invalid_manifest_never_reaches_egress ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_04_foreign_marker ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_05_object_marker ... ok
+test operator_interface_is_strict_and_independent ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_06_malformed_response ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_07_scalar_response ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_08_duplicate_marker ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_11_property_not_found ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_10_wrong_property_key ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_09_duplicate_on_later_page ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_12_pagination_loop ... ok
+test bootstrap_is_idempotent_and_collision_safe ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_13_untrusted_pagination ... ok
+test unknown_page_create_preserves_null_receipt_and_blocks_new_creates ... ok
+test tampered_receipt_cannot_claim_foreign_content ... ok
+test cleanup_resumes_trashed_pages_without_deleting_foreign_space::case_2_trashed ... ok
+test cleanup_resumes_trashed_pages_without_deleting_foreign_space::case_1_current ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_14_pagination_limit ... ok
+test nonroot_reply_property_receipt_resumes_without_duplicate_comment ... ok
+test cleanup_revalidates_each_destructive_target::case_6_project ... ok
+test cleanup_revalidates_each_destructive_target::case_5_issue ... ok
+test cleanup_revalidates_each_destructive_target::case_4_jira_comment ... ok
+test cleanup_retains_receipt_until_all_targets_absent::case_3_project ... ok
+test cleanup_revalidates_each_destructive_target::case_3_space ... ok
+test cleanup_retains_receipt_until_all_targets_absent::case_1_page ... ok
+test cleanup_skips_absent_space_id_with_reused_key ... ok
+test cleanup_revalidates_each_destructive_target::case_2_page ... ok
+test cleanup_retains_receipt_until_all_targets_absent::case_2_space ... ok
+test state_commit_is_atomic_and_minimal ... ok
+test cleanup_revalidates_each_destructive_target::case_1_confluence_comment ... ok
+test cleanup_resumes_all_already_absent_receipt ... ok
+test cleanup_revalidates_saved_ids_before_deletion ... ok
+test cleanup_revalidates_trashed_marker_before_purge ... ok
+test verify_forces_each_pagination_family ... ok
+test cleanup_resumes_after_space_delete_interruption ... ok
+test verify_enforces_reader_visibility_boundary ... ok
+test footer_comment_replies_use_children_pagination_and_converge ... ok
+test cleanup_waits_for_owned_space_deletion ... ok
+test operator_contract_covers_lifecycle_matrix ... ok
+test owner_property_write_failures_recover_without_duplicate_objects ... ok
+test credentials_never_escape_execution_boundary has been running for over 60 seconds
+test credentials_never_escape_execution_boundary ... ok
+
+test result: ok. 78 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 94.30s
+
+     Running tests/atlassian_jira_adapter_contract.rs (target/debug/deps/atlassian_jira_adapter_contract-df83197155e99d8c)
+
+running 12 tests
+test mount_validation_maximum_stays_within_budget ... ok
+test mount_validation_and_site_routing ... ok
+test quoted_empty_etag_remains_a_usable_validator ... ok
+test aggregate_index_and_fields_preserve_media_and_tags ... ok
+test ordinary_field_read_ignores_unrelated_malformed_adf_projection ... ok
+test empty_etag_reads_refetch_without_poisoning_the_session ... ok
+test stable_and_alias_reads_share_canonical_identity ... ok
+test compiled_registry_routes_and_advertises_mounted_jira ... ok
+test unexpected_redirects_fail_without_url_disclosure ... ok
+test etag_revalidation_matrix ... ok
+test selector_media_contract_and_zero_egress_refusals ... ok
+test status_retry_bound_cancel_redaction_matrix ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.20s
+
+     Running tests/compiled_sources_contract.rs (target/debug/deps/compiled_sources_contract-aafb03fd750773a2)
+
+running 7 tests
+test catalogs_and_artifacts_are_immutable_mutation_targets ... ok
+test unmounted_jira_routes_fail_honestly_without_fallthrough ... ok
+test catalog_reads_route_by_typed_address_family ... ok
+test explicit_acquisition_controls_are_refused_by_dispatch_and_direct_filesystem ... ok
+test workspace_catalog_snapshot_never_mixes_root_generations ... ok
+test routes_every_reference_by_typed_address_family_only ... ok
+test routes_every_discovery_request_by_typed_family_only ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/configuration_contract.rs (target/debug/deps/configuration_contract-e563f2a4ab184440)
+
+running 33 tests
+test document_extensions_are_globally_unique ... ok
+test downstream_claims_are_case_insensitively_unique ... ok
+test downstream_mcp_matrix ... ok
+test github_policy_matrix ... ok
+test https_rejects_url_userinfo ... ok
+test github_deployment_pairing_and_custom_identity ... ok
+test https_policy_matrix ... ok
+test command_and_secret_shapes_are_validated ... ok
+test nested_grants_are_subsets ... ok
+test ssh_policy_matrix ... ok
+test configuration_directory_requires_an_existing_directory ... ok
+test configuration_errors_are_bounded_and_hide_paths ... ok
+test skill_roots_reject_canonical_aliases ... ok
+test rule_manifests_reject_escaping_links ... ok
+test document_converter_matrix ... ok
+test configuration_directory_resolves_contained_paths ... ok
+test skill_root_matrix ... ok
+test agent_export_path_matrix ... ok
+test rule_path_matrix ... ok
+test configuration_directory_follows_only_contained_links ... ok
+test agent_export_rejects_true_grants ... ok
+test memory_root_matrix ... ok
+test vault_matrix ... ok
+test memory_rejects_canonical_alias_targets ... ok
+test agent_export_symlink_manifests_stay_contained ... ok
+test memory_symlink_targets_stay_contained ... ok
+test vault_rejects_grants_broader_than_source ... ok
+test vault_symlink_directories_stay_contained ... ok
+test memory_roots_enforce_entry_ceiling ... ok
+test rule_manifests_enforce_entry_ceiling ... ok
+test agent_export_manifests_enforce_entry_ceiling ... ok
+test skill_roots_enforce_entry_ceiling ... ok
+test vaults_enforce_entry_ceiling ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
+
+     Running tests/filesystem_adapter_contract.rs (target/debug/deps/filesystem_adapter_contract-0b4e5bb0db26b00d)
+
+running 41 tests
+test global_gitignore_is_not_consulted_child ... ok
+test rejects_non_native_windows_absolute_spelling_before_ambient_mapping ... ok
+test absolute_and_file_references_map_through_declared_roots ... ok
+test failed_and_superseded_refreshes_fail_closed ... ok
+test expired_root_refresh_disables_authority_and_cannot_clobber_recovery ... ok
+test parked_root_refresh_does_not_expire_before_acquisition_starts ... ok
+test backing_uri_requires_visibility_policy ... ok
+test rejects_symlink_escape ... ok
+test absolute_symlink_non_directory_errors_retain_resource_identity ... ok
+test overlapping_absolute_inputs_are_ambiguous ... ok
+test literal_paths_precede_selectors ... ok
+test maps_missing_directory_and_binary_resources ... ok
+test invalid_client_display_name_fails_closed ... ok
+test mutable_matches_profile_and_exact_client_root_authority ... ok
+test reads_utf8_empty_and_unicode_resources ... ok
+test client_display_names_select_but_never_define_identity ... ok
+test reads_maximum_sized_file_within_budget ... ok
+test rejects_invalid_root_configuration ... ok
+test relative_reads_require_unique_primary ... ok
+test client_root_refresh_replaces_and_restores_launch_authority ... ok
+test absolute_symlink_target_aliases_preserve_containment ... ok
+test configured_root_symlink_accepts_declared_absolute_spelling ... ok
+test permits_contained_symlink ... ok
+test root_directory_references_are_valid_and_teach ... ok
+test cancellation_fences_workspace_discovery_delivery ... ok
+test stale_stream_delivery_is_rejected ... ok
+test dangling_absolute_symlinks_preserve_kernel_resolution_errors ... ok
+test absolute_symlinks_to_workspace_root_support_directory_discovery ... ok
+test returns_complete_projection_above_inline_page_limits ... ok
+test glob_language_kinds_and_order ... ok
+test root_refresh_fences_discovery_delivery ... ok
+test search_groups_lines_and_reports_partial_failures ... ok
+test retargeted_links_never_escape ... ok
+test discovery_filters_are_contained_and_explicit ... ok
+test refresh_cannot_race_held_mutation_authority ... ok
+test root_count_limit_is_exact ... ok
+test discovery_links_never_escape_or_duplicate ... ok
+test wide_directory_keeps_pending_handles_bounded ... ok
+test rejects_projection_one_byte_over_artifact_ceiling ... ok
+test workspace_discovery_scale_is_bounded_and_deterministic ... ok
+test filesystem_streams_narrow_large_range ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.02s
+
+     Running tests/filesystem_mutation_contract.rs (target/debug/deps/filesystem_mutation_contract-f34b03719db04468)
+
+running 10 tests
+test linked_and_binary_targets_fail_without_state_change ... ok
+test policy_precedes_state_and_creation_never_creates_parents ... ok
+test mv_can_cross_workspace_roots_with_exact_independent_grants ... ok
+test mv_is_atomic_no_clobber_and_preserves_both_entries_on_conflict ... ok
+test concurrent_replacements_serialize_and_reject_one_stale_contender ... ok
+test create_replace_state_matrix_preserves_bytes_and_permissions ... ok
+test mv_never_copies_across_filesystems ... ok
+test retargeted_links_never_mutate_outside ... ok
+test exact_limit_write_budget_and_one_over_rejection ... ok
+test replacement_has_no_missing_window ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.07s
+
+     Running tests/filesystem_resource_limits_contract.rs (target/debug/deps/filesystem_resource_limits_contract-5e6b33e2a8faf448)
+
+running 3 tests
+test source_result_budget_precedes_owned_record_exhaustion ... ok
+test cumulative_pcre2_work_has_an_exact_subject_ceiling ... ok
+test newline_free_files_are_rejected_before_unbounded_allocation ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.07s
+
+     Running tests/github_adapter_contract.rs (target/debug/deps/github_adapter_contract-c8b8d396007446bc)
+
+running 27 tests
+test github_pagination_cache_budget ... ignored, checkpointed-build production-scale budget
+test github_search_budget ... ignored, checkpointed-build production-scale budget
+test github_single_resource_render_budget ... ignored, checkpointed-build production-scale budget
+test retry_after_beyond_the_deadline_is_refused_without_waiting ... ok
+test an_all_pull_request_page_is_explicitly_empty ... ok
+test native_diff_refuses_invalid_utf8_instead_of_replacing_bytes ... ok
+test native_diff_refuses_truncation_after_accepting_exact_body_ceiling ... ok
+test compiled_registry_mounts_dispatches_and_requires_github_grant ... ok
+test native_diff_preserves_media_bytes_and_separate_conditional_entries ... ok
+test upstream_text_cannot_forge_or_break_a_continuation ... ok
+test search_and_line_selectors_use_the_rendered_resource ... ok
+test retry_is_single_and_machine_signaled ... ok
+test repository_policy_precedes_egress ... ok
+test etag_cache_revalidates_replaces_and_never_hides_requests ... ok
+test object_kinds_and_comment_parents_are_verified ... ok
+test issue_aggregate_and_fields_are_stable_and_read_only ... ok
+test typed_page_continuations_are_directly_readable ... ok
+test creation_target_reads_are_unsupported ... ok
+test cache_ceilings_never_fail_an_accepted_read ... ok
+test oversized_validators_are_dropped_not_fatal ... ok
+test diff_file_indices_resolve_on_their_listing_page ... ok
+test pr_projection_kinds_remain_distinct_and_patch_absence_is_explicit ... ok
+test repository_collections_are_bounded_filtered_and_continuable ... ok
+test errors_match_typed_status_header_matrix ... ok
+test pagination_links_are_confined_and_page_failures_are_atomic ... ok
+test link_headers_are_parsed_strictly_and_confined_by_family ... ok
+test pagination_retries_share_the_original_logical_deadline ... ok
+
+test result: ok. 24 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 1.34s
+
+     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-694f1e94aefdee84)
+
+running 21 tests
+test github_facts_production_budget ... ignored, checkpointed-build production-scale budget
+test facts_representation_includes_escaping_and_envelope ... ok
+test facts_denial_and_precancel_have_no_egress_with_positive_control ... ok
+test facts_cache_provenance_changed_body_and_failed_revalidation ... ok
+test facts_legacy_cache_does_not_fabricate_original_observation ... ok
+native facts comparison and additive compatibility passed
+test facts_native_identity_consumer_and_observed_request ... ok
+test facts_inflight_generation_change_refuses_publication ... ok
+test facts_operator_intersection_is_observed_for_each_independent_dimension ... ok
+test facts_duplicate_nested_identity_and_relation_keys_are_not_last_value_wins ... ok
+test facts_inflight_cancel_and_deadline_refuse_barrier_delayed_response ... ok
+test facts_fork_links_validate_own_identity_without_fetching_fork ... ok
+test facts_malformed_bodies_and_uncached_304_never_publish ... ok
+test facts_retry_attempts_and_redirects_are_observed_not_inferred ... ok
+test facts_errors_are_status_derived_and_sanitized ... ok
+test facts_body_and_cached_readmission_exact_plus_one ... ok
+test facts_native_objects_reject_empty_arrays ... ok
+test facts_repository_links_preserve_templates_opaque_and_empty_values ... ok
+test facts_recognized_optional_parent_links_reject_contradictions_but_opaque_links_survive ... ok
+test facts_required_identity_contradictions_and_duplicates_are_rejected ... ok
+test facts_independent_optional_presence_type_matrix ... ok
+test facts_link_and_nested_native_optional_matrix ... ok
+
+test result: ok. 20 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 5.89s
+
+     Running tests/github_live_smoke.rs (target/debug/deps/github_live_smoke-29d8a6ce00b1d33d)
+
+running 2 tests
+test live_github_facts_preserve_native_identity_and_links ... ignored, live GitHub smoke; needs RFS_LIVE=1 and GITHUB_TOKEN
+test live_github_reads_hold_up ... ignored, live GitHub smoke; needs RFS_LIVE=1 and GITHUB_TOKEN
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/github_mutation_contract.rs (target/debug/deps/github_mutation_contract-3fe6660cad2b4017)
+
+running 17 tests
+test creation_document_budget ... ignored, checkpointed-build production-scale budget
+test github_cache_namespace_removal_budget ... ignored, checkpointed-build production-scale budget
+test field_response_object_identity_is_stable ... ok
+test success_invalidates_github_cache_before_commit_returns ... ok
+test field_receipt_tags_response_without_seen_coverage ... ok
+test mutation_payloads_are_minimal_and_exact ... ok
+test concurrent_field_replacements_serialize_and_reject_stale ... ok
+test creation_document_strict_matrix ... ok
+test invalid_field_content_precedes_egress ... ok
+test metadata_grant_target_matrix_precedes_egress ... ok
+test unsupported_mutation_matrix_has_zero_egress ... ok
+test mutation_status_matrix_is_stable_and_redacted ... ok
+test mutation_never_retries_or_redirects ... ok
+test operation_recovery_state_matrix ... ok
+test creation_receipts_use_returned_identity_without_seen_coverage ... ok
+test field_replace_compares_uncached_authority ... ok
+test mutation_response_validation_matrix ... ok
+
+test result: ok. 15 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1.84s
+
+     Running tests/github_wire_contract.rs (target/debug/deps/github_wire_contract-387f6af5d102c3c2)
+
+running 4 tests
+test github_wire_decode_budget ... ignored, checkpointed-build production-scale budget
+test mutation_routes_match_empirical_contract ... ok
+test required_identity_and_types_fail_as_source_unavailable ... ok
+test official_nullable_and_distinct_shapes_decode ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/http_bounds_contract.rs (target/debug/deps/http_bounds_contract-e200f1d6355eb1a0)
+
+running 8 tests
+test odd_body_framings_stay_bounded ... ok
+test retained_body_never_exceeds_the_ceiling ... ok
+test cancellation_before_egress_opens_no_socket ... ok
+test reader_mode_refuses_non_html_inputs ... ok
+test fetch_ceiling_boundary ... ok
+test over_ceiling_never_extracts ... ok
+test timeout_returns_source_unavailable ... ok
+test cancelled_read_abandons_connection ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+
+     Running tests/http_extract_contract.rs (target/debug/deps/http_extract_contract-43e09bc2bf17dd31)
+
+running 6 tests
+test dropped_elements_never_reach_output ... ok
+test extraction_matches_golden ... ok
+test raw_text_bodies_do_not_truncate_the_document ... ok
+test storage_boundary_strings_render_as_plain_text ... ok
+test list_items_keep_their_marker_when_content_is_wrapped ... ok
+test extraction_is_deterministic ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/http_policy_contract.rs (target/debug/deps/http_policy_contract-9a3403f8ec84d0ad)
+
+running 11 tests
+test no_resolved_address_leak ... ok
+test https_reader_mode_reports_markdown_for_complete_and_selected ... ok
+test denied_address_opens_no_socket ... ok
+test redirect_to_denied_address_is_refused ... ok
+test encoded_url_reaches_wire_unchanged ... ok
+test offsite_redirect_never_requested ... ok
+test probe_egress_is_policed ... ok
+test redirect_depth_boundary ... ok
+test rebinding_never_reaches_denied_address ... ok
+test pooled_reuse_stays_authorized ... ok
+test ip_literal_origin_is_authorized_before_connect ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+
+     Running tests/http_substrate_contract.rs (target/debug/deps/http_substrate_contract-45bd52233f1aa849)
+
+running 14 tests
+test http_metadata_budget ... ignored, checkpointed-build production-scale budget
+test http_mutation_request_budget ... ignored, checkpointed-build production-scale budget
+test source_headers_cannot_override_authority_or_framing ... ok
+test source_header_count_bytes_and_duplicates_are_bounded ... ok
+test substrate_is_source_neutral ... ok
+test basic_credential_composition_is_exact_and_redacted ... ok
+test unreadable_metadata_headers_fail_only_the_callers_that_need_them ... ok
+test source_headers_and_response_metadata_are_typed_and_bounded ... ok
+test oversized_etag_degrades_but_link_metadata_ceiling_is_hard ... ok
+test basic_credential_maximum_stays_within_budget ... ok
+test mutation_request_is_bounded_and_non_redirecting ... ok
+test retry_wait_is_promptly_cancelled ... ok
+test retry_is_limited_to_idempotent_429_and_503_reads ... ok
+test idempotent_reads_honor_delta_and_http_date_once ... ok
+
+test result: ok. 12 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1.55s
+
+     Running tests/http_tls_contract.rs (target/debug/deps/http_tls_contract-69dcf1551f3f8e21)
+
+running 4 tests
+test malformed_additional_root_is_rejected_before_egress ... ok
+test system_lookup_substrate_accepts_valid_additional_root ... ok
+test tls_certificate_binds_hostname ... ok
+test tls_address_policy_matches_plain ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+     Running tests/https_credential_contract.rs (target/debug/deps/https_credential_contract-3f8e5c9f1de014f7)
+
+running 4 tests
+test credential_never_reaches_an_observable_channel ... ok
+test cancellation_survives_source_dispatch ... ok
+test credential_reaches_the_wire_only_when_configured ... ok
+test cancelled_read_abandons_the_request ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.04s
+
+     Running tests/https_live_smoke.rs (target/debug/deps/https_live_smoke-785c6954d83014d7)
+
+running 1 test
+test live_https_reads_hold_up ... ignored, live HTTPS smoke; needs RFS_LIVE=1
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/https_status_contract.rs (target/debug/deps/https_status_contract-6ca9c103159b0ff6)
+
+running 2 tests
+test upstream_statuses_map_to_stable_categories_before_any_body_is_content ... ok
+test unusable_retry_guidance_is_terminal_without_wait ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.03s
+
+     Running tests/jira_browse_budget_contract.rs (target/debug/deps/jira_browse_budget_contract-d2722fd1c08c2aa3)
+
+running 6 tests
+test logical_page_failure_never_becomes_partial_success ... ok
+test logical_budget_counts_attempts_and_one_retry ... ok
+test issue_logical_page_failure_never_becomes_partial_success ... ok
+test issue_logical_budget_counts_attempts_and_one_retry ... ok
+test browse_errors_are_typed_redacted_and_read_only ... ok
+test issue_browse_errors_are_typed_redacted_and_read_only ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.07s
+
+     Running tests/jira_browse_discovery_contract.rs (target/debug/deps/jira_browse_discovery_contract-d1a132229bdfd901)
+
+running 4 tests
+test search_keeps_selected_page_identity ... ok
+test issue_search_keeps_selected_page_identity ... ok
+test issue_artifact_recovery_and_source_pages_remain_independent ... ok
+test artifact_recovery_and_source_pages_remain_independent ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+     Running tests/jira_browse_wire_contract.rs (target/debug/deps/jira_browse_wire_contract-e04c46ac0cede97b)
+
+running 4 tests
+test project_resource_publishes_stable_issue_navigation ... ok
+test issue_pages_require_authoritative_token_state ... ok
+test project_pages_require_authoritative_advancing_offsets ... ok
+test compact_authority_and_presence_matrix ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/jira_issue_browse_contract.rs (target/debug/deps/jira_issue_browse_contract-5e2d3f19f39dda81)
+
+running 6 tests
+test selected_fields_enable_canonical_rows ... ok
+test cursor_replay_is_rejected_before_egress ... ok
+test opaque_pages_preserve_parent_membership ... ok
+test numeric_order_and_optional_metadata_survive_rendering ... ok
+test issue_terminal_state_is_authoritative ... ok
+test production_scale_issue_page ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.27s
+
+     Running tests/jira_live_smoke.rs (target/debug/deps/jira_live_smoke-d24e29e108a15865)
+
+running 4 tests
+test live_jira_browse ... ignored, reader-only live Jira browse; needs retained project and issue fixtures
+test live_jira_issue_read ... ignored, live Jira Cloud smoke; needs read-only ATLASSIAN_* fixture variables
+test live_jira_jql ... ignored, reader-only live Jira JQL; needs owned fixture receipt and ATLASSIAN_READER_* credentials
+test live_jira_project_browse ... ignored, reader-only live Jira projects; needs ATLASSIAN_PROJECT_ID and ATLASSIAN_PROJECT_KEY
+
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/jira_project_browse_contract.rs (target/debug/deps/jira_project_browse_contract-48aedaffe2745612)
+
+running 6 tests
+test duplicate_project_ids_across_pages_fail_atomically ... ok
+test project_aliases_never_own_cached_identity ... ok
+test project_cache_revalidates_without_stale_success ... ok
+test numeric_order_and_optional_metadata_survive_rendering ... ok
+test offset_pages_follow_authoritative_state ... ok
+test production_scale_project_page ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.33s
+
+     Running tests/jira_query_contract.rs (target/debug/deps/jira_query_contract-03cf1d68692a195e)
+
+running 13 tests
+test query_post_preserves_native_order_through_short_and_empty_pages ... ok
+test query_cursor_reference_boundary_round_trips_or_fails_atomically ... ok
+test query_changed_validator_rows_are_not_cached_and_shared_controls_apply ... ok
+test query_cursor_owner_cells_refuse_before_egress_and_valid_owner_advances ... ok
+test query_repeated_and_unrepresentable_tokens_fail_without_partial_rows ... ok
+test query_optional_status_and_required_identity_fields_keep_wire_contract ... ok
+test query_attempt_budget_counts_retry_once_across_native_pages ... ok
+test query_native_rejection_is_structural_redacted_and_uncached ... ok
+test query_production_scale_thousand_rows_preserves_order_and_wall_bound ... ok
+test query_lower_row_limit_partitions_without_loss_or_over_return ... ok
+test query_transport_status_and_retry_deadline_keep_shared_categories ... ok
+test query_stable_authority_and_later_corruption_are_atomic ... ok
+test query_terminal_metadata_and_effective_page_size_are_authoritative ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.49s
+
+     Running tests/jira_render_contract.rs (target/debug/deps/jira_render_contract-69df555fb33f84e7)
+
+running 6 tests
+test empty_field_set_renders_complete_empty_documents ... ok
+test aggregate_orders_and_links_all_visible_fields ... ok
+test malformed_adf_fails_atomically ... ok
+test field_index_uses_present_values_only ... ok
+test unsupported_adf_nodes_are_visible_and_lossless ... ok
+test adf_maximum_fixture ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+     Running tests/jira_wire_contract.rs (target/debug/deps/jira_wire_contract-d3949aec79938488)
+
+running 10 tests
+test authority_presence_and_type_matrix_fails_atomically ... ok
+test moved_issue_key_alias_publishes_returned_stable_identity ... ok
+test valid_issue_authority_is_typed_and_field_sorted ... ok
+test excessive_json_depth_fails_without_stack_overflow ... ok
+test canonical_json_is_order_and_whitespace_independent ... ok
+test duplicate_members_are_rejected_at_every_depth ... ok
+test canonical_json_keeps_native_value_kinds_distinct ... ok
+test canonical_json_preserves_arbitrary_precision_numbers ... ok
+test stable_identity_and_self_url_confusion_are_rejected ... ok
+test canonical_json_maximum_fixture ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+     Running tests/local_concurrency_contract.rs (target/debug/deps/local_concurrency_contract-5ef37fb02d11a4a5)
+
+running 1 test
+test same_name_serializes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/local_dispatch_contract.rs (target/debug/deps/local_dispatch_contract-31a715f202338865)
+
+running 4 tests
+test direct_local_read_refuses_explicit_acquisition_controls ... ok
+test artifact_and_catalog_immutable ... ok
+test local_never_touches_filesystem ... ok
+test workspace_never_touches_local ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/local_isolation_contract.rs (target/debug/deps/local_isolation_contract-262fe19086ffc615)
+
+running 2 tests
+test disconnect_invalidates ... ok
+test sessions_never_cross ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/local_mutation_contract.rs (target/debug/deps/local_mutation_contract-07cfce3e7eba198a)
+
+running 2 tests
+test cross_source_mv_rejected ... ok
+test scratch_needs_no_grant ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/local_root_contract.rs (target/debug/deps/local_root_contract-25c1462eeabb5ff9)
+
+running 2 tests
+test root_is_immutable ... ok
+test root_lists_all_scratch_sorted ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/local_selector_contract.rs (target/debug/deps/local_selector_contract-997de68db57c267a)
+
+running 1 test
+test literal_scratch_name_wins ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/pattern_contract.rs (target/debug/deps/pattern_contract-cb9bb6284980d449)
+
+running 4 tests
+test pattern::tests::pcre2_remains_interpreted ... ok
+test glob_language_table ... ok
+test rust_first_pcre2_fallback_and_limits ... ok
+test matcher_selection_unicode_and_work_limits ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/probe_runner_contract.rs (target/debug/deps/probe_runner_contract-38bcd1c60fffe746)
+
+running 4 tests
+test probe_diagnostic_boundaries_are_exact ... ok
+test network_probe_requires_bounded_valid_endpoints ... ok
+test network_probe_observes_connectivity_and_cancellation ... ok
+test probe_state_and_exit_matrix ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/process_contract.rs (target/debug/deps/process_contract-178922adc45939fc)
+
+running 8 tests
+test fixture_process_child ... ok
+test declared_relative_path_resolves_against_the_command_base ... ok
+test declared_relative_path_resolves_a_bare_program ... ok
+test inherited_relative_path_resolves_against_the_command_base ... ok
+test direct_argv_and_environment ... ok
+test stream_boundaries ... ok
+test process_admission ... ok
+test unix_tree_cleanup ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.66s
+
+     Running tests/secret_contract.rs (target/debug/deps/secret_contract-788e1fd19c18c7f0)
+     Running tests/session_storage_contract.rs (target/debug/deps/session_storage_contract-d859983e569f12cb)
+
+running 11 tests
+test storage_configuration_ttl_boundaries_are_exact ... ok
+test namespace_creation_propagates_permission_denial ... ok
+test relative_and_absolute_cache_bases_use_one_owned_namespace ... ok
+test cleanup_never_traverses_the_operator_cache_base ... ok
+test cleanup_ignores_symlinked_and_malformed_session_entries ... ok
+test heartbeat_updates_persisted_liveness_within_budget ... ok
+test remove_failure_keeps_the_published_object_unchanged ... ok
+test zero_ttl_deletes_at_disconnect_after_releasing_the_lease ... ok
+test session_cleanup_respects_lease_and_ttl ... ok
+test artifact_storage_failure_is_atomic ... ok
+test durable_write_at_object_ceiling_within_budget ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+
+   Doc-tests resourcefs_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests resourcefs_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests resourcefs_sources
+
+running 1 test
+test crates/resourcefs-sources/src/artifact.rs - artifact::ArtifactSource (line 19) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+
+=== Release workspace ===
++ cargo test --release --config profile.release.debug-assertions=false --workspace --all-features --no-fail-fast -- --test-threads=1
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)
+    Finished `release` profile [optimized] target(s) in 7.03s
+     Running unittests src/lib.rs (target/release/deps/resourcefs_core-d5ed456cbf313e4b)
+
+running 4 tests
+test reference::tests::duplicate_root_id_is_rejected ... ok
+test reference::tests::workspace_root_rejects_nonlocal_file_uri ... ok
+test resource::tests::markdown_projection_accepts_empty_content ... ok
+test resource::tests::markdown_projection_preserves_media_type_and_version ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/acquisition_contract.rs (target/release/deps/acquisition_contract-8c3b652c04332b47)
+
+running 3 tests
+test bounded_details_reject_invalid_status_and_zero_limit ... ok
+test intersection_lowers_unequal_dimensions_independently ... ok
+test rejects_zero_and_above_hard_in_every_dimension ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/discovery_engine_contract.rs (target/release/deps/discovery_engine_contract-da56e17aa277a5f4)
+
+running 9 tests
+test bounded_pages_recover_the_complete_document ... ok
+test cancelled_operations_never_retain ... ok
+test catalog_target_validation_production_budget ... ok
+test catalog_targets_redirect_to_read_during_request_validation ... ok
+test hundred_thousand_resources_remain_bounded_and_recoverable ... ok
+test lower_only_limits_and_skip ... ok
+test request_validation_precedes_adapter ... ok
+test server_discovery_ceilings_and_per_call_ceilings_compose_by_minimum ... ok
+test source_continuations_survive_artifact_recovery ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests/github_reference_contract.rs (target/release/deps/github_reference_contract-13cfe517e89457e1)
+
+running 8 tests
+test canonical_github_reference_table ... ok
+test creation_targets_round_trip_and_are_write_only ... ok
+test facts_canonical_grammar_does_not_reinterpret_legacy_projections ... ok
+test github_addresses_are_typed_once ... ok
+test github_reference_errors_are_precise ... ok
+test reference_parse_budget ... ignored, checkpointed-build production-scale budget
+test repository_identity_is_case_canonical_and_validated ... ok
+test typed_github_constructors_and_accessors_round_trip ... ok
+
+test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/hashline_patch_contract.rs (target/release/deps/hashline_patch_contract-fb291a96db18bbc8)
+
+running 8 tests
+test accepted_ranges_gaps_and_body_rows_parse_in_original_coordinates ... ok
+test conflicting_original_coordinates_are_rejected ... ok
+test exact_limit_parser_budget ... ok
+test line_types_reject_zero_and_descending_ranges ... ok
+test one_over_limit_fails_before_ast_growth ... ok
+test rem_and_mv_must_each_be_the_sole_operation ... ok
+test reserved_block_and_register_forms_teach_the_accepted_grammar ... ok
+test version_prefixes_are_canonical_and_at_least_twelve_hex_characters ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/http_policy_budget.rs (target/release/deps/http_policy_budget-7f0df15f5fa975d2)
+
+running 1 test
+test classification_and_allowlist_pass_fit_the_request_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/http_policy_contract.rs (target/release/deps/http_policy_contract-840c5d462a8d84a0)
+
+running 6 tests
+test allowlist_selects_the_matching_origin ... ok
+test base_url_scoping ... ok
+test ceilings_default_to_the_contract_values_and_lower_only ... ok
+test origin_rejects_a_base_url_that_is_not_https ... ok
+test private_network_grant ... ok
+test whole_host_base_url_scopes_to_that_host ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/jira_query_reference_contract.rs (target/release/deps/jira_query_reference_contract-113b07cc9153c631)
+
+running 5 tests
+test canonical_query_corpus_preserves_exact_native_bytes ... ok
+test malformed_query_spellings_fail_without_key_language_restrictions ... ok
+test query_debug_redacts_native_expression ... ok
+test query_reference_ceiling_accounts_for_encoding_and_selector_bytes ... ok
+test query_selectors_and_source_identity_remain_separate ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/jira_reference_contract.rs (target/release/deps/jira_reference_contract-1e2b3c993a294eef)
+
+running 15 tests
+test browse_reference_identity_and_selector_families ... ok
+test canonical_jira_references_round_trip ... ok
+test identifier_constructors_enforce_domain_boundaries ... ok
+test invalid_and_dormant_jira_references_are_rejected ... ok
+test issue_cursor_constructors_cannot_bypass_family_or_reference_bounds ... ok
+test issue_search_cursor_identity_is_not_a_resource_or_text_projection ... ok
+test jira_addresses_are_typed_once ... ok
+test jira_reference_global_ceiling_remains_authoritative ... ok
+test maximum_jira_reference_parse_stays_within_budget ... ok
+test project_identifiers_and_offsets_keep_their_distinct_bounds ... ok
+test project_search_pages_and_resource_identity_remain_distinct ... ok
+test rejects_noncanonical_segments ... ok
+test source_cursors_do_not_change_global_literal_paths ... ok
+test source_cursors_validate_encoding_without_interpreting_native_payloads ... ok
+test source_offsets_do_not_change_global_selector_markers ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/local_containment_contract.rs (target/release/deps/local_containment_contract-9aa18886585f2ab1)
+
+running 2 tests
+test names_cannot_escape ... ok
+test scratch_names_are_sorted_and_session_scoped ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/local_quota_contract.rs (target/release/deps/local_quota_contract-c469730ba2a00d84)
+
+running 3 tests
+test replacing_scratch_releases_its_previous_bytes ... ok
+test scratch_name_enumeration_fits_its_budget ... ok
+test scratch_shares_and_never_evicts ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/mutation_engine_contract.rs (target/release/deps/mutation_engine_contract-93929d56a6917ae6)
+
+running 23 tests
+test commit_masks_cancellation_after_transition ... ok
+test empty_put_body_writes_a_blank_line_instead_of_deleting ... ok
+test engine_drives_non_workspace_families ... ok
+test engine_exposes_the_same_strict_parser_interface ... ok
+test exact_limit_edit_budget ... ok
+test failed_commit_releases_seen_reservation ... ok
+test mutation_identities_reject_empty_sources_and_relative_targets ... ok
+test mutation_operation_spellings_are_stable ... ok
+test operation_id_is_rejected_before_resolution ... ok
+test operation_id_validation_matrix ... ok
+test operation_journal_budget ... ignored, checkpointed-build production-scale budget
+test operation_journal_concurrent_repeat_coalesces ... ok
+test operation_journal_count_and_byte_ceilings ... ok
+test operation_journal_forced_fingerprint_collision_conflicts ... ok
+test operation_journal_trace_matches_model ... ok
+test put_cut_use_original_coordinates_and_never_promote_unseen_content ... ok
+test rem_is_only_delete_form_and_returns_no_version_or_coverage ... ok
+test reverse_moves_do_not_deadlock ... ok
+test same_resource_serializes_while_distinct_resources_progress ... ok
+test seen_regions_never_cross_tags_and_prefixes_must_be_unique ... ok
+test tail_insert_requires_seen_eof ... ok
+test target_mode_outcome_matrix ... ok
+test write_state_matrix_and_receipt_coverage ... ok
+
+test result: ok. 22 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/path_reference_contract.rs (target/release/deps/path_reference_contract-b8b9e569129151ce)
+
+running 16 tests
+test canonical_construction_percent_encodes_ambiguous_component_characters ... ok
+test catalog_references_are_typed_with_one_alias ... ok
+test catalog_root_lines_parse_and_teach ... ok
+test empty_root_sets_represent_scratch_only_authority ... ok
+test encoded_separator_guard_scope ... ok
+test golden_workspace_references ... ok
+test https_grammar ... ok
+test local_name_grammar ... ok
+test local_references_render_canonically_and_round_trip ... ok
+test malformed_unicode_artifact_token_returns_error_instead_of_panicking ... ok
+test maximum_reference_parses_within_boundary_budget ... ok
+test parses_production_shaped_reference_within_budget ... ok
+test reference_byte_limit_is_exact ... ok
+test root_sets_are_order_independent_and_primary_selection_is_exact ... ok
+test workspace_root_rejects_invalid_selector_name ... ok
+test workspace_root_sentinel_is_not_general_empty_path_input ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/path_session_contract.rs (target/release/deps/path_session_contract-25fe020e32ce10c2)
+
+running 15 tests
+test artifact_catalog_is_ordered_and_live ... ok
+test byte_identical_content_reuses_identity_and_collision_checks_bytes ... ok
+test concurrent_admission_is_linearizable_at_exact_session_quota ... ok
+test configured_object_and_session_quotas_are_enforced_atomically ... ok
+test foreign_unknown_and_inactive_artifacts_are_indistinguishable ... ok
+test object_and_record_ceilings_fail_before_storage_io ... ok
+test opaque_cache_obeys_session_limits_and_disconnect_isolation ... ok
+test opaque_cache_replacement_is_quota_charged_and_zero_copy ... ok
+test opaque_cache_yields_to_authoritative_objects_least_recently_used_first ... ok
+test operation_cancellation_wait_is_lossless ... ok
+test request_cancel_prevents_commit ... ok
+test seen_regions_union_only_within_one_tag_and_session ... ok
+test session_tokens_and_artifact_ids_are_strict ... ok
+test snapshot_key_accepts_local_rejects_foreign ... ok
+test storage_failure_publishes_nothing ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.35s
+
+     Running tests/read_engine_contract.rs (target/release/deps/read_engine_contract-db05513016c7ac2b)
+
+running 14 tests
+test artifact_page_production_budget ... ok
+test bounded_pages_reconstruct_every_boundary_fixture ... ok
+test displayed_line_ranges_reject_zero_and_descending_bounds ... ok
+test displayed_ranges_exclude_partial_lines ... ok
+test inline_artifact_production_budget ... ok
+test line_and_utf8_byte_continuations_are_stable_and_progressing ... ok
+test one_byte_over_object_ceiling_fails_without_artifact ... ok
+test read_forwards_the_callers_guard_to_the_source ... ok
+test repeated_identical_spill_reuses_one_root_and_one_charge ... ok
+test selected_workspace_ranges_keep_original_line_coordinates ... ok
+test server_text_ceiling_and_per_call_ceiling_compose_by_minimum ... ok
+test snapshot_quota_failure_does_not_publish_recovery_artifact ... ok
+test source_continuations_surface_unless_the_page_itself_overflows ... ok
+test workspace_snapshot_production_budget ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+     Running tests/secret_opacity_contract.rs (target/release/deps/secret_opacity_contract-3c28737ae837714a)
+
+running 5 tests
+test empty_redactor_preserves_text ... ok
+test redactor_accepts_one_thousand_twenty_four_distinct_secrets ... ok
+test redactor_deduplicates_and_prefers_longest_prefix_match ... ok
+test secret_rejects_observable_traits_at_compile_time ...     Checking resourcefs-core-tests v0.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/tests/trybuild/resourcefs-core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+
+
+test tests/ui/secret_display.rs ... ok
+test tests/ui/secret_debug.rs ... ok
+test tests/ui/secret_serialize.rs ... ok
+
+
+ok
+test secret_validation_is_value_free ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests/selector_golden_contract.rs (target/release/deps/selector_golden_contract-443bd5e28e93c012)
+
+running 9 tests
+test artifact_reference_grammar_is_typed_and_canonical ... ok
+test invalid_utf8_fails_even_when_the_selected_line_is_valid ... ok
+test malformed_selectors_are_rejected ... ok
+test page_projection_is_not_a_text_selection ... ok
+test selected_projection_object_ceiling_is_exact ... ok
+test selected_text_transfers_owned_projection_without_copying ... ok
+test selector_golden_contract ... ok
+test stress_selection_budget ... ok
+test workspace_page_syntax_remains_a_literal_first_candidate ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.16s
+
+     Running tests/server_limits_contract.rs (target/release/deps/server_limits_contract-0d6d05428a3dd704)
+
+running 3 tests
+test omitted_empty_and_exact_limits_match_literal_binary_ceilings ... ok
+test storage_object_ceiling_must_not_exceed_session_ceiling ... ok
+test zero_and_one_over_each_literal_ceiling_fail_without_clamping ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/source_resource_content_type_contract.rs (target/release/deps/source_resource_content_type_contract-700fc1beb5ec2d3f)
+
+running 3 tests
+test complete_utf8_resource_preserves_media_and_content_tag ... ok
+test selected_utf8_resource_retains_whole_resource_tag_and_media ... ok
+test utf8_content_type_rejects_ambiguous_or_non_utf8_media ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/text_limits_contract.rs (target/release/deps/text_limits_contract-4142b7fc6569d3ac)
+
+running 2 tests
+test limits_presence_matrix_preserves_exact_values ... ok
+test zero_and_one_over_limits_fail_for_every_dimension ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/version_tag_contract.rs (target/release/deps/version_tag_contract-4c237422b2ed6941)
+
+running 8 tests
+test backing_file_uri_is_absent_unless_explicitly_attached ... ok
+test changes_when_content_changes ... ok
+test exposes_stable_read_contract_fields ... ok
+test hashes_maximum_sized_content_within_budget ... ok
+test ignores_path_and_metadata ... ok
+test matches_published_sha256_vectors ... ok
+test parses_only_canonical_full_tags ... ok
+test selected_projection_preserves_authoritative_whole_resource_tag ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/release/deps/resourcefs_mcp-331f1aa21dcb1473)
+
+running 24 tests
+test profile::check::tests::an_unmountable_kind_is_refused_before_its_credential_resolves ... ok
+test profile::model::tests::github_config_reaches_launch_components ... ok
+test profile::model::tests::github_profile_validation_budget ... ignored, checkpointed-build production-scale budget
+test profile::model::tests::logging_paths_resolve_from_the_profile_directory ... ok
+test profile::model::tests::workspace_grants_reach_launch_roots ... ok
+test render::tests::creation_receipt_renders_nullable_tag_and_canonical_reference ... ok
+test render::tests::glob_lists_session_artifacts_with_artifact_kind ... ok
+test render::tests::glob_recovery_reference_is_rendered ... ok
+test render::tests::glob_success_text_and_structured_agree_with_kinds ... ok
+test render::tests::maximum_glob_page_render_stays_within_budget ... ok
+test render::tests::maximum_page_render_stays_within_budget ... ok
+test render::tests::maximum_search_page_render_stays_within_budget ... ok
+test render::tests::renders_backing_file_uri_only_when_present ... ok
+test render::tests::search_and_glob_failures_use_rfs_error_shape ... ok
+test render::tests::search_no_match_returns_empty_structured_and_text ... ok
+test render::tests::search_recovery_and_continuation_references_are_rendered ... ok
+test render::tests::search_reports_escaping_link_diagnostic ... ok
+test render::tests::search_reports_pcre2_fallback_engine ... ok
+test render::tests::search_success_text_and_structured_agree ... ok
+test render::tests::source_continuation_references_are_rendered_only_when_hidden ... ok
+test server::jira_query_tests::c10_query_recovery_and_source_continuation_are_independent ... ok
+test server::jira_query_tests::c11_query_search_uses_rendered_regex_and_pcre2_and_glob_is_unsupported ... ok
+test server::jira_query_tests::jira_query_stdio_test_host ... ignored, reexecuted stdio helper; not a live or standalone contract
+test server::jira_query_tests::live_jira_query_stdio ... ignored, reader-only live Jira query MCP stdio; requires owned fixture receipt and RFS_LIVE=1
+
+test result: ok. 21 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+     Running unittests src/main.rs (target/release/deps/resourcefs-1285ba3560f3f953)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/architecture_contract.rs (target/release/deps/architecture_contract-ed8b5403535f1e0a)
+
+running 7 tests
+test discovery_dependencies_stay_in_owning_modules ... ok
+test enforces_dependency_direction ... ok
+test forbids_telemetry_dependencies ... ok
+test mutation_engine_dependency_direction ... ok
+test profile_capabilities_stay_in_owning_modules ... ok
+test profile_https_fixture_trust_is_test_harness_only ... ok
+test single_http_client_module ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/cli_contract.rs (target/release/deps/cli_contract-ef5460b90a704810)
+
+running 10 tests
+test check_probe_reports_reachability_without_mutating ... ok
+test exit_and_channel_matrix ... ok
+test probing_is_bounded_and_does_not_starve_a_healthy_source ... ok
+test profile_is_immutable_per_process ... ok
+test profile_serve_matrix ... ok
+test profile_workspace_authority ... ok
+test required_https_fails_startup ... ok
+test secret_never_reaches_observable_channels ... ok
+test selects_exactly_one_launch_authority ... ok
+test static_check_is_offline_and_deterministic ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.50s
+
+     Running tests/logging_contract.rs (target/release/deps/logging_contract-c6147fd95345ebf4)
+
+running 9 tests
+test concurrent_messages_are_serialized_without_loss_or_interleaving ... ok
+test configuration_defaults_and_signed_boundaries_are_exact ... ok
+test every_retention_count_keeps_exactly_its_configured_log_family ... ok
+test exact_message_and_file_ceilings_succeed_and_one_over_fails ... ok
+test file_destination_permission_denial_is_reported ... ok
+test invalid_file_destination_fails_without_fallback ... ok
+test redaction_precedes_every_file_write_and_rotation_is_contained ... ok
+test rotation_occurs_before_the_next_record_crosses_the_threshold ... ok
+test severity_floor_filters_before_writing ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/probe_contract.rs (target/release/deps/probe_contract-35d9f972a52847e7)
+
+running 1 test
+test probe_state_and_exit_matrix ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/profile_contract.rs (target/release/deps/profile_contract-5222a6646f8b0c03)
+
+running 19 tests
+test accepts_valid_profiles ... ok
+test command_cardinality_matches_typed_configuration ... ok
+test from_slice_in_rejects_missing_and_non_directory_bases ... ok
+test github_profile_acquisition_presence_types_and_hard_boundaries ... ok
+test github_profile_deployment_validation_is_shared ... ok
+test grant_matrix ... ok
+test load_resolves_local_paths_beneath_the_profile_directory ... ok
+test local_source_configuration_matches_constructors ... ok
+test local_source_symlink_aliases_and_escapes_are_rejected ... ok
+test logging_configuration_validates_the_signed_rotation_and_retention_intervals ... ok
+test nested_allowlist_cardinality_matrix ... ok
+test nested_limits_map_to_the_core_aggregate_without_clamping ... ok
+test network_source_configuration_matches_constructors ... ok
+test profile_byte_ceiling_is_exact_and_load_is_bounded ... ok
+test rejects_explicit_null_at_every_optional_profile_field ... ok
+test rejects_invalid_profiles ... ok
+test schema_matches_deserializer ... ok
+test session_configuration_resolves_paths_and_validates_the_signed_ttl_interval ... ok
+test source_catalog_matrix ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.19s
+
+     Running tests/schema_contract.rs (target/release/deps/schema_contract-e35e66ea9bdad5d4)
+
+running 4 tests
+test schema_and_deserializer_publish_the_same_source_kinds ... ok
+test schema_command_is_deterministic_and_stdout_clean ... ok
+test schema_has_stable_draft_identity_and_closed_object_root ... ok
+test schema_rejects_extra_arguments_as_cli_usage ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/stdio_live_smoke.rs (target/release/deps/stdio_live_smoke-d47144261e7e3201)
+
+running 2 tests
+test live_stdio_github_facts_match_native_observation ... ignored, live full-stack smoke; needs RFS_LIVE=1 and GITHUB_TOKEN
+test live_stdio_profile_probe_serve_and_tools_hold_up ... ignored, live full-stack smoke; needs RFS_LIVE=1 and GITHUB_TOKEN
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/stdio_mcp_contract.rs (target/release/deps/stdio_mcp_contract-88c172c3b33ec252)
+
+running 44 tests
+test cancelled_discovery_returns_promptly_without_late_artifact ... ok
+test canonical_identity_stays_private ... ok
+test catalog_reads_obey_common_limits_and_reconstruct ... ok
+test catalog_root_lines_parse_and_teach ... ok
+test catalog_search_and_glob_redirect_before_io ... ok
+test catalogs_use_common_read_result_shape ... ok
+test client_root_acquisition_times_out_fail_closed ... ok
+test client_roots_replace_refresh_and_restore_launch_roots ... ok
+test client_roots_work_under_legacy_protocol_revision ... ok
+test concurrent_requests_share_one_serialized_root_acquisition ... ok
+test discovery_argument_matrix_precedes_io ... ok
+test discovery_cancellation_preempts_client_root_acquisition ... ok
+test github_facts_stdio_cancelled_http_read_cannot_publish_and_session_recovers ... ok
+test github_facts_stdio_reconstructs_native_json_without_reacquisition ... ok
+test github_mutation_schema_and_receipts_match ... ok
+test github_non_target_mutation_is_refused ... ok
+test github_profile_trust_reaches_real_stdio_reads_only_when_explicit ... ok
+test https_is_read_only ... ok
+test https_profile_read_recovers_bounded_markdown ... ok
+test https_uses_common_read_shape ... ok
+test initialization_and_all_tool_descriptions_advertise_catalog ... ok
+test invalid_operation_id_precedes_dispatch ... ok
+test launch_primary_selection_is_exact ... ok
+test lists_and_calls_discovery_tools ... ok
+test namespace_catalog_tracks_client_root_replacement ... ok
+test negotiates_required_revisions ... ok
+test optional_https_degrades_while_other_sources_serve ... ok
+test probing_happens_once_at_startup_not_per_read ... ok
+test profile_https_test_server ... ignored, re-executed by profile HTTPS contract tests as the child MCP server
+test profile_launch_authority_reaches_stdio_and_scratch_profiles_have_no_cwd_root ... ok
+test profile_limits_bound_live_mcp_reads_and_discovery ... ok
+test read_acquisition_validates_before_roots_and_reports_unsupported ... ok
+test rejects_invalid_root_configuration ... ok
+test removed_inflight_result_fails_after_root_generation_changes ... ok
+test renders_complete_success_and_errors ... ok
+test root_change_fences_discovery ... ok
+test scratch_reads_report_mutability ... ok
+test stdio_bounded_read_reconstructs_fixture ... ok
+test stdio_disconnect_marker_failure_is_observable ... ok
+test stdio_eof_disconnects_before_release_and_leaves_no_object ... ok
+test stdio_rejects_non_lower_limits ... ok
+test stdio_request_cancel_keeps_session_active_without_artifact ... ok
+test stdio_storage_write_failure_is_complete_source_unavailable ... ok
+test versioned_write_receipts_and_catalog_policy_work_over_stdio ... ok
+
+test result: ok. 43 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 7.85s
+
+     Running tests/supply_chain_contract.rs (target/release/deps/supply_chain_contract-b0226503d83e47be)
+
+running 5 tests
+test advisory_policy_matches_signed_policy ... ok
+test deny_config_matches_signed_policy ... ok
+test license_gate_rejects_copyleft ... ok
+test source_gate_rejects_git ... ok
+test workspace_passes_the_gate ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+     Running unittests src/lib.rs (target/release/deps/resourcefs_sources-e0ccb775aff6eaa9)
+
+running 41 tests
+test catalog::tests::catalog_content_and_tags_are_snapshot_deterministic ... ok
+test catalog::tests::catalog_metadata_accepts_exact_boundaries ... ok
+test catalog::tests::catalog_metadata_rejects_duplicate_and_invalid_entries ... ok
+test catalog::tests::catalog_production_budget ... ok
+test catalog::tests::source_catalog_header_chains_and_teaches_selectors ... ok
+test catalog::tests::source_catalog_marks_degraded_and_omits_unmounted ... ok
+test catalog::tests::workspace_catalog_covers_empty_primary_and_max_root_sets ... ok
+test catalog::tests::workspace_document_reads_one_active_authority_snapshot ... ok
+test compiled::tests::catalog_lists_https_once_configured ... ok
+test compiled::tests::catalog_metadata_is_the_compiled_registry ... ok
+test filesystem::tests::delivery_validation_rejects_removed_generation_only ... ok
+test filesystem::tests::retained_traversal_state_has_an_exact_ceiling ... ok
+test github::facts::tests::final_facts_cancellation_after_serialization_prevents_publication ... ok
+test github::facts::tests::final_facts_deadline_advanced_after_serialization_prevents_publication ... ok
+test github::facts::tests::final_facts_exact_pretty_bytes_and_hash_fit_cap_but_one_less_refuses ... ok
+test http::read::tests::acquisition::controlled_deadline_interrupts_delayed_headers_with_reachable_control ... ok
+test http::read::tests::acquisition::controlled_deadline_spans_body_retry_wait_and_final_acceptance ... ok
+test http::read::tests::acquisition::controlled_retry_uses_one_shared_physical_attempt_ledger ... ok
+test http::read::tests::acquisition::effective_response_cap_bounds_stream_and_reused_body_admission ... ok
+test http::read::tests::acquisition::legacy_ledger_does_not_acquire_a_cumulative_byte_policy ... ok
+test http::read::tests::acquisition::substrate_ceilings_lower_effective_limits_and_send_uses_that_deadline ... ok
+test http::read::tests::acquisition::verified_http_bodies_share_cumulative_admission_without_reset ... ok
+test http::read::tests::get_replay_preserves_headers_and_shared_retry_is_spent_across_fetches ... ok
+test http::read::tests::ordinary_mutations_never_replay_without_budget_on_retryable_status_or_disconnect ... ok
+test http::read::tests::ordinary_post_and_patch_never_replay_and_preserve_encoded_body ... ok
+test http::read::tests::original_deadline_bounds_all_post_and_patch_before_and_during_egress ... ok
+test http::read::tests::physical_attempt_ceiling_counts_retry_and_refuses_eleventh_request ... ok
+test http::read::tests::read_only_body_ceiling_is_independent_of_mutations_and_debug_is_redacted ... ok
+test http::read::tests::read_only_post_physical_ceiling_counts_retry ... ok
+test http::read::tests::read_only_post_replays_exact_bytes_and_headers_once_across_pages ... ok
+test http::read::tests::read_only_post_requires_valid_retry_after_and_replays_transport_failure ... ok
+test http::read::tests::read_only_post_wait_obeys_cancellation_and_remaining_deadline ... ok
+test http::read::tests::read_only_replay_shares_384kib_payload_across_10000_copies ... ok
+test http::read::tests::retry_wait_cancellation_and_over_deadline_delay_send_no_followup ... ok
+test http::tests::logical_read_never_refreshes_its_deadline ... ok
+test http::tests::retry_after_delta_and_http_date_have_one_typed_delay ... ok
+test http::tests::retry_after_equal_http_date_is_zero_delay ... ok
+test http::tests::retry_jitter_is_bounded_unbiased_and_deadline_checked ... ok
+test http::tests::retry_policy_budget ... ignored, checkpointed-build production-scale budget
+test http::tests::unusable_retry_after_never_becomes_zero_delay ... ok
+test pattern::tests::pcre2_remains_interpreted ... ok
+
+test result: ok. 40 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.09s
+
+     Running tests/artifact_adapter_contract.rs (target/release/deps/artifact_adapter_contract-830e0d1d231d84ea)
+
+running 7 tests
+test artifact_root_raw_ranges_and_pages_match_immutable_bytes ... ok
+test disconnect_invalidates_all_artifact_projections ... ok
+test glob_lists_session_artifacts ... ok
+test glob_snapshot_excludes_its_recovery_artifact ... ok
+test invalid_page_and_non_artifact_authority_fail_without_disclosure ... ok
+test search_and_glob_are_session_isolated ... ok
+test searches_selected_artifact_text ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s
+
+     Running tests/atlassian_fixture_operator_contract.rs (target/release/deps/atlassian_fixture_operator_contract-a73d2f6925b91add)
+
+running 78 tests
+test bootstrap_is_idempotent_and_collision_safe ... ok
+test bootstrap_refuses_changed_project_ownership ... ok
+test cleanup_distinguishes_absent_parent_from_collection_failure::case_1_pages_parent_present ... ok
+test cleanup_distinguishes_absent_parent_from_collection_failure::case_2_pages_parent_absent ... ok
+test cleanup_distinguishes_absent_parent_from_collection_failure::case_3_footer_comments_parent_present ... ok
+test cleanup_distinguishes_absent_parent_from_collection_failure::case_4_footer_comments_parent_absent ... ok
+test cleanup_distinguishes_absent_parent_from_collection_failure::case_5_children_parent_present ... ok
+test cleanup_distinguishes_absent_parent_from_collection_failure::case_6_children_parent_absent ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_01_success_newline ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_02_success_nul ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_03_unknown_status ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_04_missing_status ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_05_null_status ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_06_numeric_status ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_07_failed_status ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_08_conflicting_state ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_09_unfinished_success ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_10_unsuccessful_success ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_11_string_finished ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_12_numeric_successful ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_13_reported_errors ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_14_object_errors ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_15_running_but_finished ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_16_running_exhausts_budget ... ok
+test cleanup_preserves_receipt_for_uncertain_space_task::case_17_transport_failure ... ok
+test cleanup_purges_owned_tombstones_and_preserves_foreign_projects ... ok
+test cleanup_recovers_known_owner_property_receipt_after_failed_bootstrap ... ok
+test cleanup_refuses_unknown_page_status::case_1_archived ... ok
+test cleanup_refuses_unknown_page_status::case_2_null ... ok
+test cleanup_refuses_unknown_page_status::case_3_numeric ... ok
+test cleanup_refuses_unknown_page_status::case_4_object ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_01_foreign_newline ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_02_foreign_nul ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_03_missing_marker ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_04_foreign_marker ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_05_object_marker ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_06_malformed_response ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_07_scalar_response ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_08_duplicate_marker ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_09_duplicate_on_later_page ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_10_wrong_property_key ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_11_property_not_found ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_12_pagination_loop ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_13_untrusted_pagination ... ok
+test cleanup_refuses_unproven_trashed_page_ownership::case_14_pagination_limit ... ok
+test cleanup_resumes_after_space_delete_interruption ... ok
+test cleanup_resumes_all_already_absent_receipt ... ok
+test cleanup_resumes_trashed_pages_without_deleting_foreign_space::case_1_current ... ok
+test cleanup_resumes_trashed_pages_without_deleting_foreign_space::case_2_trashed ... ok
+test cleanup_retains_receipt_until_all_targets_absent::case_1_page ... ok
+test cleanup_retains_receipt_until_all_targets_absent::case_2_space ... ok
+test cleanup_retains_receipt_until_all_targets_absent::case_3_project ... ok
+test cleanup_revalidates_each_destructive_target::case_1_confluence_comment ... ok
+test cleanup_revalidates_each_destructive_target::case_2_page ... ok
+test cleanup_revalidates_each_destructive_target::case_3_space ... ok
+test cleanup_revalidates_each_destructive_target::case_4_jira_comment ... ok
+test cleanup_revalidates_each_destructive_target::case_5_issue ... ok
+test cleanup_revalidates_each_destructive_target::case_6_project ... ok
+test cleanup_revalidates_saved_ids_before_deletion ... ok
+test cleanup_revalidates_trashed_marker_before_purge ... ok
+test cleanup_skips_absent_space_id_with_reused_key ... ok
+test cleanup_waits_for_owned_space_deletion ... ok
+test credentials_never_escape_execution_boundary ... ok
+test dangling_pending_receipt_symlink_is_rejected_before_egress ... ok
+test empty_state_argument_fails_before_any_request_in_every_mode ... ok
+test failures_are_bounded_and_redacted ... ok
+test fake_rejects_non_https_example_origins_at_its_boundary ... ok
+test footer_comment_replies_use_children_pagination_and_converge ... ok
+test invalid_manifest_never_reaches_egress ... ok
+test nonroot_reply_property_receipt_resumes_without_duplicate_comment ... ok
+test operator_contract_covers_lifecycle_matrix ... ok
+test operator_interface_is_strict_and_independent ... ok
+test owner_property_write_failures_recover_without_duplicate_objects ... ok
+test state_commit_is_atomic_and_minimal ... ok
+test tampered_receipt_cannot_claim_foreign_content ... ok
+test unknown_page_create_preserves_null_receipt_and_blocks_new_creates ... ok
+test verify_enforces_reader_visibility_boundary ... ok
+test verify_forces_each_pagination_family ... ok
+
+test result: ok. 78 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 760.23s
+
+     Running tests/atlassian_jira_adapter_contract.rs (target/release/deps/atlassian_jira_adapter_contract-572617363d734062)
+
+running 12 tests
+test aggregate_index_and_fields_preserve_media_and_tags ... ok
+test compiled_registry_routes_and_advertises_mounted_jira ... ok
+test empty_etag_reads_refetch_without_poisoning_the_session ... ok
+test etag_revalidation_matrix ... ok
+test mount_validation_and_site_routing ... ok
+test mount_validation_maximum_stays_within_budget ... ok
+test ordinary_field_read_ignores_unrelated_malformed_adf_projection ... ok
+test quoted_empty_etag_remains_a_usable_validator ... ok
+test selector_media_contract_and_zero_egress_refusals ... ok
+test stable_and_alias_reads_share_canonical_identity ... ok
+test status_retry_bound_cancel_redaction_matrix ... ok
+test unexpected_redirects_fail_without_url_disclosure ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+     Running tests/compiled_sources_contract.rs (target/release/deps/compiled_sources_contract-dd25b339a68e8169)
+
+running 7 tests
+test catalog_reads_route_by_typed_address_family ... ok
+test catalogs_and_artifacts_are_immutable_mutation_targets ... ok
+test explicit_acquisition_controls_are_refused_by_dispatch_and_direct_filesystem ... ok
+test routes_every_discovery_request_by_typed_family_only ... ok
+test routes_every_reference_by_typed_address_family_only ... ok
+test unmounted_jira_routes_fail_honestly_without_fallthrough ... ok
+test workspace_catalog_snapshot_never_mixes_root_generations ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/configuration_contract.rs (target/release/deps/configuration_contract-7c0c7b94cd885235)
+
+running 33 tests
+test agent_export_manifests_enforce_entry_ceiling ... ok
+test agent_export_path_matrix ... ok
+test agent_export_rejects_true_grants ... ok
+test agent_export_symlink_manifests_stay_contained ... ok
+test command_and_secret_shapes_are_validated ... ok
+test configuration_directory_follows_only_contained_links ... ok
+test configuration_directory_requires_an_existing_directory ... ok
+test configuration_directory_resolves_contained_paths ... ok
+test configuration_errors_are_bounded_and_hide_paths ... ok
+test document_converter_matrix ... ok
+test document_extensions_are_globally_unique ... ok
+test downstream_claims_are_case_insensitively_unique ... ok
+test downstream_mcp_matrix ... ok
+test github_deployment_pairing_and_custom_identity ... ok
+test github_policy_matrix ... ok
+test https_policy_matrix ... ok
+test https_rejects_url_userinfo ... ok
+test memory_rejects_canonical_alias_targets ... ok
+test memory_root_matrix ... ok
+test memory_roots_enforce_entry_ceiling ... ok
+test memory_symlink_targets_stay_contained ... ok
+test nested_grants_are_subsets ... ok
+test rule_manifests_enforce_entry_ceiling ... ok
+test rule_manifests_reject_escaping_links ... ok
+test rule_path_matrix ... ok
+test skill_root_matrix ... ok
+test skill_roots_enforce_entry_ceiling ... ok
+test skill_roots_reject_canonical_aliases ... ok
+test ssh_policy_matrix ... ok
+test vault_matrix ... ok
+test vault_rejects_grants_broader_than_source ... ok
+test vault_symlink_directories_stay_contained ... ok
+test vaults_enforce_entry_ceiling ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s
+
+     Running tests/filesystem_adapter_contract.rs (target/release/deps/filesystem_adapter_contract-f7e0409147d6e241)
+
+running 41 tests
+test absolute_and_file_references_map_through_declared_roots ... ok
+test absolute_symlink_non_directory_errors_retain_resource_identity ... ok
+test absolute_symlink_target_aliases_preserve_containment ... ok
+test absolute_symlinks_to_workspace_root_support_directory_discovery ... ok
+test backing_uri_requires_visibility_policy ... ok
+test cancellation_fences_workspace_discovery_delivery ... ok
+test client_display_names_select_but_never_define_identity ... ok
+test client_root_refresh_replaces_and_restores_launch_authority ... ok
+test configured_root_symlink_accepts_declared_absolute_spelling ... ok
+test dangling_absolute_symlinks_preserve_kernel_resolution_errors ... ok
+test discovery_filters_are_contained_and_explicit ... ok
+test discovery_links_never_escape_or_duplicate ... ok
+test expired_root_refresh_disables_authority_and_cannot_clobber_recovery ... ok
+test failed_and_superseded_refreshes_fail_closed ... ok
+test filesystem_streams_narrow_large_range ... ok
+test glob_language_kinds_and_order ... ok
+test global_gitignore_is_not_consulted_child ... ok
+test invalid_client_display_name_fails_closed ... ok
+test literal_paths_precede_selectors ... ok
+test maps_missing_directory_and_binary_resources ... ok
+test mutable_matches_profile_and_exact_client_root_authority ... ok
+test overlapping_absolute_inputs_are_ambiguous ... ok
+test parked_root_refresh_does_not_expire_before_acquisition_starts ... ok
+test permits_contained_symlink ... ok
+test reads_maximum_sized_file_within_budget ... ok
+test reads_utf8_empty_and_unicode_resources ... ok
+test refresh_cannot_race_held_mutation_authority ... ok
+test rejects_invalid_root_configuration ... ok
+test rejects_non_native_windows_absolute_spelling_before_ambient_mapping ... ok
+test rejects_projection_one_byte_over_artifact_ceiling ... ok
+test rejects_symlink_escape ... ok
+test relative_reads_require_unique_primary ... ok
+test retargeted_links_never_escape ... ok
+test returns_complete_projection_above_inline_page_limits ... ok
+test root_count_limit_is_exact ... ok
+test root_directory_references_are_valid_and_teach ... ok
+test root_refresh_fences_discovery_delivery ... ok
+test search_groups_lines_and_reports_partial_failures ... ok
+test stale_stream_delivery_is_rejected ... ok
+test wide_directory_keeps_pending_handles_bounded ... ok
+test workspace_discovery_scale_is_bounded_and_deterministic ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.08s
+
+     Running tests/filesystem_mutation_contract.rs (target/release/deps/filesystem_mutation_contract-f36903ff0eef96f9)
+
+running 10 tests
+test concurrent_replacements_serialize_and_reject_one_stale_contender ... ok
+test create_replace_state_matrix_preserves_bytes_and_permissions ... ok
+test exact_limit_write_budget_and_one_over_rejection ... ok
+test linked_and_binary_targets_fail_without_state_change ... ok
+test mv_can_cross_workspace_roots_with_exact_independent_grants ... ok
+test mv_is_atomic_no_clobber_and_preserves_both_entries_on_conflict ... ok
+test mv_never_copies_across_filesystems ... ok
+test policy_precedes_state_and_creation_never_creates_parents ... ok
+test replacement_has_no_missing_window ... ok
+test retargeted_links_never_mutate_outside ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+
+     Running tests/filesystem_resource_limits_contract.rs (target/release/deps/filesystem_resource_limits_contract-acb3764495ee88b6)
+
+running 3 tests
+test cumulative_pcre2_work_has_an_exact_subject_ceiling ... ok
+test newline_free_files_are_rejected_before_unbounded_allocation ... ok
+test source_result_budget_precedes_owned_record_exhaustion ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/github_adapter_contract.rs (target/release/deps/github_adapter_contract-96393b47388e4301)
+
+running 27 tests
+test an_all_pull_request_page_is_explicitly_empty ... ok
+test cache_ceilings_never_fail_an_accepted_read ... ok
+test compiled_registry_mounts_dispatches_and_requires_github_grant ... ok
+test creation_target_reads_are_unsupported ... ok
+test diff_file_indices_resolve_on_their_listing_page ... ok
+test errors_match_typed_status_header_matrix ... ok
+test etag_cache_revalidates_replaces_and_never_hides_requests ... ok
+test github_pagination_cache_budget ... ignored, checkpointed-build production-scale budget
+test github_search_budget ... ignored, checkpointed-build production-scale budget
+test github_single_resource_render_budget ... ignored, checkpointed-build production-scale budget
+test issue_aggregate_and_fields_are_stable_and_read_only ... ok
+test link_headers_are_parsed_strictly_and_confined_by_family ... ok
+test native_diff_preserves_media_bytes_and_separate_conditional_entries ... ok
+test native_diff_refuses_invalid_utf8_instead_of_replacing_bytes ... ok
+test native_diff_refuses_truncation_after_accepting_exact_body_ceiling ... ok
+test object_kinds_and_comment_parents_are_verified ... ok
+test oversized_validators_are_dropped_not_fatal ... ok
+test pagination_links_are_confined_and_page_failures_are_atomic ... ok
+test pagination_retries_share_the_original_logical_deadline ... ok
+test pr_projection_kinds_remain_distinct_and_patch_absence_is_explicit ... ok
+test repository_collections_are_bounded_filtered_and_continuable ... ok
+test repository_policy_precedes_egress ... ok
+test retry_after_beyond_the_deadline_is_refused_without_waiting ... ok
+test retry_is_single_and_machine_signaled ... ok
+test search_and_line_selectors_use_the_rendered_resource ... ok
+test typed_page_continuations_are_directly_readable ... ok
+test upstream_text_cannot_forge_or_break_a_continuation ... ok
+
+test result: ok. 24 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 5.16s
+
+     Running tests/github_facts_contract.rs (target/release/deps/github_facts_contract-1ee847f863696bf6)
+
+running 21 tests
+test facts_body_and_cached_readmission_exact_plus_one ... ok
+test facts_cache_provenance_changed_body_and_failed_revalidation ... ok
+test facts_denial_and_precancel_have_no_egress_with_positive_control ... ok
+test facts_duplicate_nested_identity_and_relation_keys_are_not_last_value_wins ... ok
+test facts_errors_are_status_derived_and_sanitized ... ok
+test facts_fork_links_validate_own_identity_without_fetching_fork ... ok
+test facts_independent_optional_presence_type_matrix ... ok
+test facts_inflight_cancel_and_deadline_refuse_barrier_delayed_response ... ok
+test facts_inflight_generation_change_refuses_publication ... ok
+test facts_legacy_cache_does_not_fabricate_original_observation ... ok
+test facts_link_and_nested_native_optional_matrix ... ok
+test facts_malformed_bodies_and_uncached_304_never_publish ... ok
+test facts_native_identity_consumer_and_observed_request ... native facts comparison and additive compatibility passed
+ok
+test facts_native_objects_reject_empty_arrays ... ok
+test facts_operator_intersection_is_observed_for_each_independent_dimension ... ok
+test facts_recognized_optional_parent_links_reject_contradictions_but_opaque_links_survive ... ok
+test facts_repository_links_preserve_templates_opaque_and_empty_values ... ok
+test facts_representation_includes_escaping_and_envelope ... ok
+test facts_required_identity_contradictions_and_duplicates_are_rejected ... ok
+test facts_retry_attempts_and_redirects_are_observed_not_inferred ... ok
+test github_facts_production_budget ... ignored, checkpointed-build production-scale budget
+
+test result: ok. 20 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.21s
+
+     Running tests/github_live_smoke.rs (target/release/deps/github_live_smoke-cae3c8f7cb0d1230)
+
+running 2 tests
+test live_github_facts_preserve_native_identity_and_links ... ignored, live GitHub smoke; needs RFS_LIVE=1 and GITHUB_TOKEN
+test live_github_reads_hold_up ... ignored, live GitHub smoke; needs RFS_LIVE=1 and GITHUB_TOKEN
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/github_mutation_contract.rs (target/release/deps/github_mutation_contract-c0999d8a398284e2)
+
+running 17 tests
+test concurrent_field_replacements_serialize_and_reject_stale ... ok
+test creation_document_budget ... ignored, checkpointed-build production-scale budget
+test creation_document_strict_matrix ... ok
+test creation_receipts_use_returned_identity_without_seen_coverage ... ok
+test field_receipt_tags_response_without_seen_coverage ... ok
+test field_replace_compares_uncached_authority ... ok
+test field_response_object_identity_is_stable ... ok
+test github_cache_namespace_removal_budget ... ignored, checkpointed-build production-scale budget
+test invalid_field_content_precedes_egress ... ok
+test metadata_grant_target_matrix_precedes_egress ... ok
+test mutation_never_retries_or_redirects ... ok
+test mutation_payloads_are_minimal_and_exact ... ok
+test mutation_response_validation_matrix ... ok
+test mutation_status_matrix_is_stable_and_redacted ... ok
+test operation_recovery_state_matrix ... ok
+test success_invalidates_github_cache_before_commit_returns ... ok
+test unsupported_mutation_matrix_has_zero_egress ... ok
+
+test result: ok. 15 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 7.23s
+
+     Running tests/github_wire_contract.rs (target/release/deps/github_wire_contract-bfa09ce5ef5628e0)
+
+running 4 tests
+test github_wire_decode_budget ... ignored, checkpointed-build production-scale budget
+test mutation_routes_match_empirical_contract ... ok
+test official_nullable_and_distinct_shapes_decode ... ok
+test required_identity_and_types_fail_as_source_unavailable ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/http_bounds_contract.rs (target/release/deps/http_bounds_contract-0ac8c497572da071)
+
+running 8 tests
+test cancellation_before_egress_opens_no_socket ... ok
+test cancelled_read_abandons_connection ... ok
+test fetch_ceiling_boundary ... ok
+test odd_body_framings_stay_bounded ... ok
+test over_ceiling_never_extracts ... ok
+test reader_mode_refuses_non_html_inputs ... ok
+test retained_body_never_exceeds_the_ceiling ... ok
+test timeout_returns_source_unavailable ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.82s
+
+     Running tests/http_extract_contract.rs (target/release/deps/http_extract_contract-9cabac64de547f66)
+
+running 6 tests
+test dropped_elements_never_reach_output ... ok
+test extraction_is_deterministic ... ok
+test extraction_matches_golden ... ok
+test list_items_keep_their_marker_when_content_is_wrapped ... ok
+test raw_text_bodies_do_not_truncate_the_document ... ok
+test storage_boundary_strings_render_as_plain_text ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/http_policy_contract.rs (target/release/deps/http_policy_contract-44efe9374cc3d97a)
+
+running 11 tests
+test denied_address_opens_no_socket ... ok
+test encoded_url_reaches_wire_unchanged ... ok
+test https_reader_mode_reports_markdown_for_complete_and_selected ... ok
+test ip_literal_origin_is_authorized_before_connect ... ok
+test no_resolved_address_leak ... ok
+test offsite_redirect_never_requested ... ok
+test pooled_reuse_stays_authorized ... ok
+test probe_egress_is_policed ... ok
+test rebinding_never_reaches_denied_address ... ok
+test redirect_depth_boundary ... ok
+test redirect_to_denied_address_is_refused ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.37s
+
+     Running tests/http_substrate_contract.rs (target/release/deps/http_substrate_contract-eec6f811f5321f09)
+
+running 14 tests
+test basic_credential_composition_is_exact_and_redacted ... ok
+test basic_credential_maximum_stays_within_budget ... ok
+test http_metadata_budget ... ignored, checkpointed-build production-scale budget
+test http_mutation_request_budget ... ignored, checkpointed-build production-scale budget
+test idempotent_reads_honor_delta_and_http_date_once ... ok
+test mutation_request_is_bounded_and_non_redirecting ... ok
+test oversized_etag_degrades_but_link_metadata_ceiling_is_hard ... ok
+test retry_is_limited_to_idempotent_429_and_503_reads ... ok
+test retry_wait_is_promptly_cancelled ... ok
+test source_header_count_bytes_and_duplicates_are_bounded ... ok
+test source_headers_and_response_metadata_are_typed_and_bounded ... ok
+test source_headers_cannot_override_authority_or_framing ... ok
+test substrate_is_source_neutral ... ok
+test unreadable_metadata_headers_fail_only_the_callers_that_need_them ... ok
+
+test result: ok. 12 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 2.34s
+
+     Running tests/http_tls_contract.rs (target/release/deps/http_tls_contract-8ef99286cc464cdf)
+
+running 4 tests
+test malformed_additional_root_is_rejected_before_egress ... ok
+test system_lookup_substrate_accepts_valid_additional_root ... ok
+test tls_address_policy_matches_plain ... ok
+test tls_certificate_binds_hostname ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.27s
+
+     Running tests/https_credential_contract.rs (target/release/deps/https_credential_contract-c06e617b39fd212b)
+
+running 4 tests
+test cancellation_survives_source_dispatch ... ok
+test cancelled_read_abandons_the_request ... ok
+test credential_never_reaches_an_observable_channel ... ok
+test credential_reaches_the_wire_only_when_configured ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.89s
+
+     Running tests/https_live_smoke.rs (target/release/deps/https_live_smoke-b8abe63af33f8ad9)
+
+running 1 test
+test live_https_reads_hold_up ... ignored, live HTTPS smoke; needs RFS_LIVE=1
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/https_status_contract.rs (target/release/deps/https_status_contract-11dd2436165a7eea)
+
+running 2 tests
+test unusable_retry_guidance_is_terminal_without_wait ... ok
+test upstream_statuses_map_to_stable_categories_before_any_body_is_content ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.76s
+
+     Running tests/jira_browse_budget_contract.rs (target/release/deps/jira_browse_budget_contract-93b10cfb2d54c427)
+
+running 6 tests
+test browse_errors_are_typed_redacted_and_read_only ... ok
+test issue_browse_errors_are_typed_redacted_and_read_only ... ok
+test issue_logical_budget_counts_attempts_and_one_retry ... ok
+test issue_logical_page_failure_never_becomes_partial_success ... ok
+test logical_budget_counts_attempts_and_one_retry ... ok
+test logical_page_failure_never_becomes_partial_success ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.20s
+
+     Running tests/jira_browse_discovery_contract.rs (target/release/deps/jira_browse_discovery_contract-4ef07cd5b23464b7)
+
+running 4 tests
+test artifact_recovery_and_source_pages_remain_independent ... ok
+test issue_artifact_recovery_and_source_pages_remain_independent ... ok
+test issue_search_keeps_selected_page_identity ... ok
+test search_keeps_selected_page_identity ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/jira_browse_wire_contract.rs (target/release/deps/jira_browse_wire_contract-bfa7dab55ce83a9b)
+
+running 4 tests
+test compact_authority_and_presence_matrix ... ok
+test issue_pages_require_authoritative_token_state ... ok
+test project_pages_require_authoritative_advancing_offsets ... ok
+test project_resource_publishes_stable_issue_navigation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/jira_issue_browse_contract.rs (target/release/deps/jira_issue_browse_contract-800d199dd0042ff4)
+
+running 6 tests
+test cursor_replay_is_rejected_before_egress ... ok
+test issue_terminal_state_is_authoritative ... ok
+test numeric_order_and_optional_metadata_survive_rendering ... ok
+test opaque_pages_preserve_parent_membership ... ok
+test production_scale_issue_page ... ok
+test selected_fields_enable_canonical_rows ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.11s
+
+     Running tests/jira_live_smoke.rs (target/release/deps/jira_live_smoke-a15e6e79eb96b7b5)
+
+running 4 tests
+test live_jira_browse ... ignored, reader-only live Jira browse; needs retained project and issue fixtures
+test live_jira_issue_read ... ignored, live Jira Cloud smoke; needs read-only ATLASSIAN_* fixture variables
+test live_jira_jql ... ignored, reader-only live Jira JQL; needs owned fixture receipt and ATLASSIAN_READER_* credentials
+test live_jira_project_browse ... ignored, reader-only live Jira projects; needs ATLASSIAN_PROJECT_ID and ATLASSIAN_PROJECT_KEY
+
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/jira_project_browse_contract.rs (target/release/deps/jira_project_browse_contract-1cd0ac92ab794b88)
+
+running 6 tests
+test duplicate_project_ids_across_pages_fail_atomically ... ok
+test numeric_order_and_optional_metadata_survive_rendering ... ok
+test offset_pages_follow_authoritative_state ... ok
+test production_scale_project_page ... ok
+test project_aliases_never_own_cached_identity ... ok
+test project_cache_revalidates_without_stale_success ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.98s
+
+     Running tests/jira_query_contract.rs (target/release/deps/jira_query_contract-c396b8b1bb9ec8fe)
+
+running 13 tests
+test query_attempt_budget_counts_retry_once_across_native_pages ... ok
+test query_changed_validator_rows_are_not_cached_and_shared_controls_apply ... ok
+test query_cursor_owner_cells_refuse_before_egress_and_valid_owner_advances ... ok
+test query_cursor_reference_boundary_round_trips_or_fails_atomically ... ok
+test query_lower_row_limit_partitions_without_loss_or_over_return ... ok
+test query_native_rejection_is_structural_redacted_and_uncached ... ok
+test query_optional_status_and_required_identity_fields_keep_wire_contract ... ok
+test query_post_preserves_native_order_through_short_and_empty_pages ... ok
+test query_production_scale_thousand_rows_preserves_order_and_wall_bound ... ok
+test query_repeated_and_unrepresentable_tokens_fail_without_partial_rows ... ok
+test query_stable_authority_and_later_corruption_are_atomic ... ok
+test query_terminal_metadata_and_effective_page_size_are_authoritative ... ok
+test query_transport_status_and_retry_deadline_keep_shared_categories ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s
+
+     Running tests/jira_render_contract.rs (target/release/deps/jira_render_contract-060a55e7fd831e37)
+
+running 6 tests
+test adf_maximum_fixture ... ok
+test aggregate_orders_and_links_all_visible_fields ... ok
+test empty_field_set_renders_complete_empty_documents ... ok
+test field_index_uses_present_values_only ... ok
+test malformed_adf_fails_atomically ... ok
+test unsupported_adf_nodes_are_visible_and_lossless ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/jira_wire_contract.rs (target/release/deps/jira_wire_contract-f487485f05c5a80e)
+
+running 10 tests
+test authority_presence_and_type_matrix_fails_atomically ... ok
+test canonical_json_is_order_and_whitespace_independent ... ok
+test canonical_json_keeps_native_value_kinds_distinct ... ok
+test canonical_json_maximum_fixture ... ok
+test canonical_json_preserves_arbitrary_precision_numbers ... ok
+test duplicate_members_are_rejected_at_every_depth ... ok
+test excessive_json_depth_fails_without_stack_overflow ... ok
+test moved_issue_key_alias_publishes_returned_stable_identity ... ok
+test stable_identity_and_self_url_confusion_are_rejected ... ok
+test valid_issue_authority_is_typed_and_field_sorted ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/local_concurrency_contract.rs (target/release/deps/local_concurrency_contract-8f67ecbf2065097a)
+
+running 1 test
+test same_name_serializes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/local_dispatch_contract.rs (target/release/deps/local_dispatch_contract-6b277a7492466b41)
+
+running 4 tests
+test artifact_and_catalog_immutable ... ok
+test direct_local_read_refuses_explicit_acquisition_controls ... ok
+test local_never_touches_filesystem ... ok
+test workspace_never_touches_local ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/local_isolation_contract.rs (target/release/deps/local_isolation_contract-ad64027ff63f879a)
+
+running 2 tests
+test disconnect_invalidates ... ok
+test sessions_never_cross ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/local_mutation_contract.rs (target/release/deps/local_mutation_contract-ffc3055663d9a47f)
+
+running 2 tests
+test cross_source_mv_rejected ... ok
+test scratch_needs_no_grant ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/local_root_contract.rs (target/release/deps/local_root_contract-c37f11c47da47567)
+
+running 2 tests
+test root_is_immutable ... ok
+test root_lists_all_scratch_sorted ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/local_selector_contract.rs (target/release/deps/local_selector_contract-a5f4b455678b47d1)
+
+running 1 test
+test literal_scratch_name_wins ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/pattern_contract.rs (target/release/deps/pattern_contract-587958af30a88912)
+
+running 4 tests
+test glob_language_table ... ok
+test matcher_selection_unicode_and_work_limits ... ok
+test pattern::tests::pcre2_remains_interpreted ... ok
+test rust_first_pcre2_fallback_and_limits ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/probe_runner_contract.rs (target/release/deps/probe_runner_contract-f6710d99dcf24b2e)
+
+running 4 tests
+test network_probe_observes_connectivity_and_cancellation ... ok
+test network_probe_requires_bounded_valid_endpoints ... ok
+test probe_diagnostic_boundaries_are_exact ... ok
+test probe_state_and_exit_matrix ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/process_contract.rs (target/release/deps/process_contract-f8ce5e5d7ffd78ac)
+
+running 8 tests
+test declared_relative_path_resolves_a_bare_program ... ok
+test declared_relative_path_resolves_against_the_command_base ... ok
+test direct_argv_and_environment ... ok
+test fixture_process_child ... ok
+test inherited_relative_path_resolves_against_the_command_base ... ok
+test process_admission ... ok
+test stream_boundaries ... ok
+test unix_tree_cleanup ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.09s
+
+     Running tests/secret_contract.rs (target/release/deps/secret_contract-b9dff749f93610ad)
+     Running tests/session_storage_contract.rs (target/release/deps/session_storage_contract-d358b242a1f2ac61)
+
+running 11 tests
+test artifact_storage_failure_is_atomic ... ok
+test cleanup_ignores_symlinked_and_malformed_session_entries ... ok
+test cleanup_never_traverses_the_operator_cache_base ... ok
+test durable_write_at_object_ceiling_within_budget ... ok
+test heartbeat_updates_persisted_liveness_within_budget ... ok
+test namespace_creation_propagates_permission_denial ... ok
+test relative_and_absolute_cache_bases_use_one_owned_namespace ... ok
+test remove_failure_keeps_the_published_object_unchanged ... ok
+test session_cleanup_respects_lease_and_ttl ... ok
+test storage_configuration_ttl_boundaries_are_exact ... ok
+test zero_ttl_deletes_at_disconnect_after_releasing_the_lease ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+   Doc-tests resourcefs_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests resourcefs_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests resourcefs_sources
+
+running 1 test
+test crates/resourcefs-sources/src/artifact.rs - artifact::ArtifactSource (line 19) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+=== Ignored production budgets ===
++ cargo test --release --config profile.release.debug-assertions=false --workspace --all-features --no-run --message-format=json
+    Finished `release` profile [optimized] target(s) in 0.10s
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/local_quota_contract-c469730ba2a00d84 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/discovery_engine_contract-da56e17aa277a5f4 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/github_reference_contract-13cfe517e89457e1 --ignored --list --format=terse
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core#1.0.0 --all-features --test github_reference_contract -- --ignored --exact reference_parse_budget --test-threads=1
+   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)
+    Finished `release` profile [optimized] target(s) in 2.33s
+     Running tests/github_reference_contract.rs (target/release/deps/github_reference_contract-3a21a1c3fa219fb7)
+
+running 1 test
+test reference_parse_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.01s
+
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/text_limits_contract-4142b7fc6569d3ac --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/path_session_contract-25fe020e32ce10c2 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/read_engine_contract-db05513016c7ac2b --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/jira_reference_contract-1e2b3c993a294eef --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/http_policy_budget-7f0df15f5fa975d2 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/secret_opacity_contract-3c28737ae837714a --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/jira_query_reference_contract-113b07cc9153c631 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/local_containment_contract-9aa18886585f2ab1 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/hashline_patch_contract-fb291a96db18bbc8 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/source_resource_content_type_contract-700fc1beb5ec2d3f --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/http_policy_contract-840c5d462a8d84a0 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/acquisition_contract-8c3b652c04332b47 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/resourcefs_core-d5ed456cbf313e4b --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/version_tag_contract-4c237422b2ed6941 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/selector_golden_contract-443bd5e28e93c012 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/server_limits_contract-0d6d05428a3dd704 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/mutation_engine_contract-93929d56a6917ae6 --ignored --list --format=terse
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core#1.0.0 --all-features --test mutation_engine_contract -- --ignored --exact operation_journal_budget --test-threads=1
+   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)
+    Finished `release` profile [optimized] target(s) in 2.34s
+     Running tests/mutation_engine_contract.rs (target/release/deps/mutation_engine_contract-2fefac4350f4540e)
+
+running 1 test
+test operation_journal_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.08s
+
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/path_reference_contract-b8b9e569129151ce --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/https_live_smoke-b8abe63af33f8ad9 --ignored --list --format=terse
+Excluded live_https_reads_hold_up: live HTTPS smoke
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/local_dispatch_contract-6b277a7492466b41 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/atlassian_fixture_operator_contract-a73d2f6925b91add --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/session_storage_contract-d358b242a1f2ac61 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/local_concurrency_contract-8f67ecbf2065097a --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/jira_browse_wire_contract-bfa7dab55ce83a9b --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/http_substrate_contract-eec6f811f5321f09 --ignored --list --format=terse
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources#1.0.0 --all-features --test http_substrate_contract -- --ignored --exact http_metadata_budget --test-threads=1
+   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)
+    Finished `release` profile [optimized] target(s) in 9.44s
+     Running tests/http_substrate_contract.rs (target/release/deps/http_substrate_contract-0185474be562f624)
+
+running 1 test
+test http_metadata_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources#1.0.0 --all-features --test http_substrate_contract -- --ignored --exact http_mutation_request_budget --test-threads=1
+    Finished `release` profile [optimized] target(s) in 0.08s
+     Running tests/http_substrate_contract.rs (target/release/deps/http_substrate_contract-0185474be562f624)
+
+running 1 test
+test http_mutation_request_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.07s
+
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/github_facts_contract-1ee847f863696bf6 --ignored --list --format=terse
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources#1.0.0 --all-features --test github_facts_contract -- --ignored --exact github_facts_production_budget --test-threads=1
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)
+    Finished `release` profile [optimized] target(s) in 7.72s
+     Running tests/github_facts_contract.rs (target/release/deps/github_facts_contract-3ae18641f3a4bf5d)
+
+running 1 test
+test github_facts_production_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.13s
+
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/jira_project_browse_contract-1cd0ac92ab794b88 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/filesystem_mutation_contract-f36903ff0eef96f9 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/compiled_sources_contract-dd25b339a68e8169 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/jira_browse_budget_contract-93b10cfb2d54c427 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/https_status_contract-11dd2436165a7eea --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/jira_render_contract-060a55e7fd831e37 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/https_credential_contract-c06e617b39fd212b --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/configuration_contract-7c0c7b94cd885235 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/jira_query_contract-c396b8b1bb9ec8fe --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/local_root_contract-c37f11c47da47567 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/pattern_contract-587958af30a88912 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/local_mutation_contract-ffc3055663d9a47f --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/process_contract-f8ce5e5d7ffd78ac --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/jira_wire_contract-f487485f05c5a80e --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/local_selector_contract-a5f4b455678b47d1 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/probe_runner_contract-f6710d99dcf24b2e --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/local_isolation_contract-ad64027ff63f879a --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/artifact_adapter_contract-830e0d1d231d84ea --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/http_bounds_contract-0ac8c497572da071 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/filesystem_adapter_contract-f7e0409147d6e241 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/jira_issue_browse_contract-800d199dd0042ff4 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/jira_live_smoke-a15e6e79eb96b7b5 --ignored --list --format=terse
+Excluded live_jira_browse: live Jira project and issue browse smoke
+Excluded live_jira_issue_read: live Jira smoke
+Excluded live_jira_jql: live Jira native JQL smoke
+Excluded live_jira_project_browse: live Jira project smoke
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/resourcefs-1285ba3560f3f953 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/architecture_contract-ed8b5403535f1e0a --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/stdio_live_smoke-d47144261e7e3201 --ignored --list --format=terse
+Excluded live_stdio_github_facts_match_native_observation: live GitHub Facts stdio smoke
+Excluded live_stdio_profile_probe_serve_and_tools_hold_up: live GitHub/stdio smoke
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/schema_contract-e35e66ea9bdad5d4 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/cli_contract-ef5460b90a704810 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/probe_contract-35d9f972a52847e7 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/logging_contract-c6147fd95345ebf4 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/supply_chain_contract-b0226503d83e47be --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/stdio_mcp_contract-88c172c3b33ec252 --ignored --list --format=terse
+Excluded profile_https_test_server: child server, invoked by functional tests
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/resourcefs_mcp-331f1aa21dcb1473 --ignored --list --format=terse
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-mcp#1.0.0 --all-features --lib -- --ignored --exact profile::model::tests::github_profile_validation_budget --test-threads=1
+   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)
+   Compiling resourcefs-mcp v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-mcp)
+    Finished `release` profile [optimized] target(s) in 19.49s
+     Running unittests src/lib.rs (target/release/deps/resourcefs_mcp-9a2a4cedf7e0512b)
+
+running 1 test
+test profile::model::tests::github_profile_validation_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.01s
+
+Excluded server::jira_query_tests::jira_query_stdio_test_host: child server, invoked by functional tests
+Excluded server::jira_query_tests::live_jira_query_stdio: live Jira native JQL stdio smoke
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/profile_contract-5222a6646f8b0c03 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/jira_browse_discovery_contract-4ef07cd5b23464b7 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/github_adapter_contract-96393b47388e4301 --ignored --list --format=terse
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources#1.0.0 --all-features --test github_adapter_contract -- --ignored --exact github_pagination_cache_budget --test-threads=1
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)
+    Finished `release` profile [optimized] target(s) in 6.76s
+     Running tests/github_adapter_contract.rs (target/release/deps/github_adapter_contract-73e7a4bc42237509)
+
+running 1 test
+test github_pagination_cache_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.23s
+
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources#1.0.0 --all-features --test github_adapter_contract -- --ignored --exact github_search_budget --test-threads=1
+    Finished `release` profile [optimized] target(s) in 0.06s
+     Running tests/github_adapter_contract.rs (target/release/deps/github_adapter_contract-73e7a4bc42237509)
+
+running 1 test
+test github_search_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.05s
+
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources#1.0.0 --all-features --test github_adapter_contract -- --ignored --exact github_single_resource_render_budget --test-threads=1
+    Finished `release` profile [optimized] target(s) in 0.06s
+     Running tests/github_adapter_contract.rs (target/release/deps/github_adapter_contract-73e7a4bc42237509)
+
+running 1 test
+test github_single_resource_render_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/http_tls_contract-8ef99286cc464cdf --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/github_wire_contract-bfa09ce5ef5628e0 --ignored --list --format=terse
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources#1.0.0 --all-features --test github_wire_contract -- --ignored --exact github_wire_decode_budget --test-threads=1
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)
+    Finished `release` profile [optimized] target(s) in 0.28s
+     Running tests/github_wire_contract.rs (target/release/deps/github_wire_contract-f77de7802a080208)
+
+running 1 test
+test github_wire_decode_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/http_policy_contract-44efe9374cc3d97a --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/filesystem_resource_limits_contract-acb3764495ee88b6 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/secret_contract-b9dff749f93610ad --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/github_mutation_contract-c0999d8a398284e2 --ignored --list --format=terse
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources#1.0.0 --all-features --test github_mutation_contract -- --ignored --exact creation_document_budget --test-threads=1
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)
+    Finished `release` profile [optimized] target(s) in 2.99s
+     Running tests/github_mutation_contract.rs (target/release/deps/github_mutation_contract-a68b8d698d4a0dd5)
+
+running 1 test
+test creation_document_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.04s
+
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources#1.0.0 --all-features --test github_mutation_contract -- --ignored --exact github_cache_namespace_removal_budget --test-threads=1
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running tests/github_mutation_contract.rs (target/release/deps/github_mutation_contract-a68b8d698d4a0dd5)
+
+running 1 test
+test github_cache_namespace_removal_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.03s
+
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/http_extract_contract-9cabac64de547f66 --ignored --list --format=terse
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/resourcefs_sources-e0ccb775aff6eaa9 --ignored --list --format=terse
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources#1.0.0 --all-features --lib -- --ignored --exact http::tests::retry_policy_budget --test-threads=1
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)
+    Finished `release` profile [optimized] target(s) in 6.91s
+     Running unittests src/lib.rs (target/release/deps/resourcefs_sources-11ef04bd921f84ee)
+
+running 1 test
+test http::tests::retry_policy_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.01s
+
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/github_live_smoke-cae3c8f7cb0d1230 --ignored --list --format=terse
+Excluded live_github_facts_preserve_native_identity_and_links: live GitHub Facts smoke
+Excluded live_github_reads_hold_up: live GitHub smoke
++ /home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/target/release/deps/atlassian_jira_adapter_contract-572617363d734062 --ignored --list --format=terse
+
+=== Dependency vetting ===
++ cargo deny check
+advisories ok, bans ok, licenses ok, sources ok
+All repository gates passed.
+FINAL_CI_EXIT=0

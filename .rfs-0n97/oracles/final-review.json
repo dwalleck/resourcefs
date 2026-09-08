@@ -1,0 +1,30 @@
+{
+  "source_only_reconstruction_before_design": true,
+  "comparison_authorized_after_receipt": true,
+  "structural_review": {
+    "overall_correctness": "correct",
+    "explanation": "Source-only ownership reconstruction was delivered to Main before reading comparison artifacts. The implementation matches the subsequently authorized design, plan and module ledger, including the approved private identity-validation child; no substantive ownership/interface mismatch or shallow split was found. This conclusion is limited to static structural conformance: no edits, diffs, builds, tests or validation commands were performed.",
+    "confidence": 0.94,
+    "findings": []
+  },
+  "additional_code_review": {
+    "overall_correctness": "correct",
+    "explanation": "Independent production reconstruction assigns pure limits/error/reference/read contracts to core, deployment authority to configuration, physical acquisition to HTTP, conditional caching/provenance to GitHub fetch, presence-aware bounded representation to facts with its private borrowed identity validator, and protocol admission/error/trust wiring to the existing MCP children and launch owners; this map was recorded before intentional design review. Comparison with the approved design, plan and module ledger\u2014including the identity child\u2014found no actionable correctness, security, or module-depth defects after tracing Facts dispatch, unsupported-control consumers, identity/null handling, cache generations/304 admission, final deadline/cancellation acceptance, representation bounds, and production trust selection. This was read-only static review with no validation commands or invented runtime/performance results; the initial whole-patch preview incidentally included ledger snippets, as disclosed to Main.",
+    "confidence": 0.88,
+    "findings": []
+  },
+  "additional_review_limit": "The additional code reviewer disclosed an incidental ledger preview; only FactsBlindStructure supplies the blind conformance gate.",
+  "owners": {
+    "core/acquisition.rs": "validated source-neutral ceilings and intersection",
+    "core/read.rs": "source forwarding and immutable output recovery",
+    "sources/configuration/github.rs": "deployment and repository authority",
+    "sources/http/read.rs": "one physical-attempt/admission ledger and logical deadline",
+    "sources/github/fetch.rs": "conditional media-keyed cache and original/revalidation observations",
+    "sources/github/facts.rs": "native presence decoding, owned schema and bounded publication",
+    "sources/github/facts/identity.rs": "one substantive validator returning six borrowed operands",
+    "mcp/acquisition.rs": "shared closed input syntax",
+    "mcp/server/read.rs": "actual dispatch admission and forwarding",
+    "mcp/render/error.rs": "common bounded protocol error details"
+  },
+  "runtime_claims": "None from static review; actual measurements and executed gates are recorded separately."
+}

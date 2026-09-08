@@ -3,12 +3,16 @@
 use std::sync::Arc;
 
 use resourcefs_core::{
-    ErrorCategory, GithubRepositoryIdentity, ResourceError, SessionCacheEntry, SessionCacheKey,
+    ErrorCategory, ErrorReason, GithubRepositoryIdentity, ResourceError, ResourceErrorDetails,
+    SessionCacheEntry, SessionCacheKey,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
-use crate::{HttpRequest, http::BoundedRead};
+use crate::{
+    HttpRequest,
+    http::{BoundedRead, HttpReadBudget},
+};
 
 use super::{
     GITHUB_API_VERSION, GITHUB_JSON, GithubSource, PAGE_SIZE, USER_AGENT, github_error,
@@ -22,16 +26,124 @@ const MAX_PAGES_PER_OPERATION: u64 = 10;
 struct CacheMetadata {
     etag: String,
     link: Option<String>,
+    #[serde(default)]
+    observation: Option<BodyObservation>,
 }
 
 pub(super) struct FetchedResponse {
     body: Arc<[u8]>,
     link: Option<String>,
+    pub(super) observation: BodyObservation,
+    pub(super) revalidation: Option<BodyObservation>,
+    pub(super) cache_generation: u64,
 }
 
 impl FetchedResponse {
     pub(super) fn body(&self) -> &[u8] {
         &self.body
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BodyObservation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    etag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_modified: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_api_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observed_at_unix_ms: Option<u64>,
+}
+
+impl BodyObservation {
+    fn from_response(response: &crate::BoundedHttpResponse) -> Result<Self, ResourceError> {
+        Ok(Self {
+            status: Some(response.status()),
+            etag: response.etag().map(str::to_owned),
+            last_modified: response.last_modified().map(str::to_owned),
+            date: response.date().map(str::to_owned),
+            selected_api_version: response.selected_api_version().map(str::to_owned),
+            observed_at_unix_ms: Some(unix_ms()?),
+        })
+    }
+
+    fn legacy(etag: &str) -> Self {
+        Self {
+            status: None,
+            etag: Some(etag.to_owned()),
+            last_modified: None,
+            date: None,
+            selected_api_version: None,
+            observed_at_unix_ms: None,
+        }
+    }
+}
+
+pub(super) fn unix_ms() -> Result<u64, ResourceError> {
+    let duration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| {
+            github_error(
+                ErrorCategory::SourceUnavailable,
+                "Observation clock is unavailable",
+            )
+        })?;
+    u64::try_from(duration.as_millis()).map_err(|_| {
+        github_error(
+            ErrorCategory::SourceUnavailable,
+            "Observation clock is out of range",
+        )
+    })
+}
+
+fn classify_facts_status(response: &crate::BoundedHttpResponse) -> Result<(), ResourceError> {
+    use resourcefs_core::{
+        AccessAmbiguity, ErrorReason, HttpStatus, ResourceErrorDetails, RetryGuidance,
+    };
+    let (category, reason) = match response.status() {
+        200 => return Ok(()),
+        401 => (ErrorCategory::PermissionDenied, ErrorReason::UpstreamDenied),
+        403 if response.rate_limit_remaining() != Some(0) && response.retry_after().is_none() => {
+            (ErrorCategory::PermissionDenied, ErrorReason::UpstreamDenied)
+        }
+        403 | 429 => (
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamRateLimited,
+        ),
+        404 => (
+            ErrorCategory::NotFound,
+            ErrorReason::UpstreamNotFoundOrHidden,
+        ),
+        _ => (
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamUnavailable,
+        ),
+    };
+    let mut details =
+        ResourceErrorDetails::new(reason).with_http_status(HttpStatus::new(response.status())?);
+    if response.status() == 404 {
+        details = details.with_access_ambiguity(AccessAmbiguity::MissingOrAccessHidden);
+    }
+    if let Some(delay) = response.retry_after() {
+        details = details.with_retry_guidance(RetryGuidance::DelaySeconds(delay.as_secs()));
+    }
+    if let Some(reset) = response.rate_limit_reset() {
+        details = details.with_rate_limit_reset(reset);
+    }
+    Err(ResourceError::new(category, "GitHub facts acquisition failed").with_details(details))
+}
+
+fn observation_error(error: ResourceError, controlled: bool, reason: ErrorReason) -> ResourceError {
+    if controlled {
+        error.with_details(ResourceErrorDetails::new(reason))
+    } else {
+        error
     }
 }
 
@@ -77,6 +189,17 @@ impl GithubSource {
         accept: &str,
         operation: BoundedRead<'_>,
     ) -> Result<FetchedResponse, ResourceError> {
+        self.fetch_controlled(url, accept, operation, None).await
+    }
+
+    pub(super) async fn fetch_controlled(
+        &self,
+        url: Url,
+        accept: &str,
+        operation: BoundedRead<'_>,
+        mut budget: Option<&mut HttpReadBudget>,
+    ) -> Result<FetchedResponse, ResourceError> {
+        let controlled = budget.is_some();
         let key = Self::cache_key(&url, accept)?;
         let cache_generation = self
             .session
@@ -87,7 +210,13 @@ impl GithubSource {
             .as_ref()
             .map(|entry| serde_json::from_slice::<CacheMetadata>(entry.metadata()))
             .transpose()
-            .map_err(|_| malformed_upstream("GitHub session cache metadata is corrupt"))?;
+            .map_err(|_| {
+                observation_error(
+                    malformed_upstream("GitHub session cache metadata is corrupt"),
+                    controlled,
+                    ErrorReason::UpstreamMalformed,
+                )
+            })?;
         // A validator the request header ceiling cannot carry is no validator:
         // drop the entry and fetch unconditionally rather than leave a URL
         // unreadable for the rest of the session behind a retained ETag.
@@ -107,7 +236,11 @@ impl GithubSource {
             .as_ref()
             .map(|metadata| metadata.etag.as_str());
         let request = Self::request(url, accept, validator)?;
-        let response = operation.fetch(request).await?;
+        let response = match budget.as_deref_mut() {
+            Some(budget) => operation.fetch_with_budget(request, budget).await?,
+            None => operation.fetch(request).await?,
+        };
+        let observation = BodyObservation::from_response(&response)?;
         if response.status() == 304 {
             if self
                 .session
@@ -115,23 +248,45 @@ impl GithubSource {
                 .await?
                 != cache_generation
             {
-                return Err(github_error(
-                    ErrorCategory::SourceUnavailable,
-                    "GitHub read was invalidated by a concurrent mutation; retry the read",
+                return Err(observation_error(
+                    github_error(
+                        ErrorCategory::SourceUnavailable,
+                        "GitHub read was invalidated by a concurrent mutation; retry the read",
+                    ),
+                    controlled,
+                    ErrorReason::UpstreamUnavailable,
                 ));
             }
             let (Some(entry), Some(metadata)) = (cached.as_ref(), cached_metadata.as_ref()) else {
-                return Err(malformed_upstream(
-                    "GitHub returned 304 without a session cache entry",
+                return Err(observation_error(
+                    malformed_upstream("GitHub returned 304 without a session cache entry"),
+                    controlled,
+                    ErrorReason::UpstreamMalformed,
                 ));
             };
+            if let Some(budget) = budget {
+                budget.admit_body(entry.content_arc().len())?;
+            }
             return Ok(FetchedResponse {
                 body: Arc::clone(entry.content_arc()),
                 link: metadata.link.clone(),
+                observation: metadata
+                    .observation
+                    .clone()
+                    .unwrap_or_else(|| BodyObservation::legacy(&metadata.etag)),
+                revalidation: Some(observation),
+                cache_generation,
             });
         }
-        self.classify_status(&response)?;
+        if budget.is_some() {
+            classify_facts_status(&response)?;
+        } else {
+            self.classify_status(&response)?;
+        }
         if response.truncated() {
+            if let Some(budget) = budget.as_deref_mut() {
+                budget.admit_body(response.body().len().saturating_add(1))?;
+            }
             return Err(ResourceError::new(
                 ErrorCategory::LimitExceeded,
                 "GitHub response exceeds the bounded HTTP body ceiling",
@@ -139,13 +294,20 @@ impl GithubSource {
         }
         let etag = response.etag().map(str::to_owned);
         // An unreadable Link is a corrupt continuation, not the last page.
-        let link = response.link()?.map(str::to_owned);
+        let link = response
+            .link()
+            .map_err(|error| observation_error(error, controlled, ErrorReason::UpstreamMalformed))?
+            .map(str::to_owned);
+        if let Some(budget) = budget {
+            budget.admit_body(response.body().len())?;
+        }
         let body = response.into_body();
         let entry = SessionCacheEntry::new(
             etag.as_ref().map_or_else(Vec::new, |etag| {
                 serde_json::to_vec(&CacheMetadata {
                     etag: etag.clone(),
                     link: link.clone(),
+                    observation: Some(observation.clone()),
                 })
                 .expect("CacheMetadata serialization cannot fail")
             }),
@@ -161,6 +323,9 @@ impl GithubSource {
         Ok(FetchedResponse {
             body: Arc::clone(entry.content_arc()),
             link,
+            observation,
+            revalidation: None,
+            cache_generation,
         })
     }
 

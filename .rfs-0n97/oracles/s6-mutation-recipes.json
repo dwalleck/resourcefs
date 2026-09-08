@@ -1,0 +1,220 @@
+[
+  [
+    {
+      "claim": "C03",
+      "name": "facts_route_becomes_aggregate",
+      "path": "crates/resourcefs-core/src/reference.rs",
+      "old": "\"facts\" => PullRequestResource::Facts,",
+      "new": "\"facts\" => PullRequestResource::Aggregate,",
+      "test_command": "cargo test -p resourcefs-core --test github_reference_contract facts_canonical_grammar_does_not_reinterpret_legacy_projections -- --exact",
+      "expected": "Canonical /facts spelling becomes aggregate spelling; existing grammar assertion fails. A public-consumer follow-up is facts_native_identity_consumer_and_observed_request."
+    }
+  ],
+  [
+    {
+      "claim": "C05,C19",
+      "name": "actual_head_sha_replaced_with_base",
+      "path": "crates/resourcefs-sources/src/github/facts/identity.rs",
+      "old": "let head_sha = sha(head)?;",
+      "new": "let head_sha = sha(base)?;",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_native_identity_consumer_and_observed_request -- --exact",
+      "expected": "Python consumer observes head commit 111... instead of native 222... in data/observed and fails. This also supplies C19's explicitly reusable deterministic synthetic/base-identity falsifier, not live acceptance."
+    }
+  ],
+  [
+    {
+      "claim": "C05",
+      "name": "requested_parent_url_equality_removed",
+      "path": "crates/resourcefs-sources/src/github/facts/identity.rs",
+      "old": "same_url(required(&pull.url)?, endpoint)?;",
+      "new": "let _ = (required(&pull.url)?, endpoint);",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_required_identity_contradictions_and_duplicates_are_rejected -- --exact",
+      "expected": "The foreign-origin required /url fixture is accepted because other supplied links remain valid; expect_err for /url fails. Unused same_url is a warning, not a compile error under ordinary cargo test."
+    }
+  ],
+  [
+    {
+      "claim": "C06",
+      "name": "nullable_body_defaults_to_empty",
+      "path": "crates/resourcefs-sources/src/github/facts.rs",
+      "old": "let pull: NativePull = serde_json::from_slice(response.body())\n            .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;",
+      "new": "let mut pull: NativePull = serde_json::from_slice(response.body())\n            .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;\n        if !matches!(pull.body, Presence::Present(_)) {\n            pull.body = Presence::Present(String::new());\n        }",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_independent_optional_presence_type_matrix -- --exact",
+      "expected": "Omitted body is now present and null body becomes empty string; presence/null/unavailable knowledge assertions fail."
+    }
+  ],
+  [
+    {
+      "claim": "C06",
+      "name": "native_id_roundtrip_through_float",
+      "path": "crates/resourcefs-sources/src/github/facts.rs",
+      "old": "serializer.collect_str(&self.0)",
+      "new": "serializer.collect_str(&((self.0 as f64) as u64))",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_native_identity_consumer_and_observed_request -- --exact",
+      "expected": "9007199254740993 rounds to 9007199254740992 while still serialized as a string; independent exact identity comparison fails, isolating precision rather than JSON type."
+    }
+  ],
+  [
+    {
+      "claim": "C06",
+      "name": "unknown_state_coerced_to_open",
+      "path": "crates/resourcefs-sources/src/github/facts.rs",
+      "old": "let pull: NativePull = serde_json::from_slice(response.body())\n            .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;",
+      "new": "let mut pull: NativePull = serde_json::from_slice(response.body())\n            .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;\n        if let Presence::Present(state) = &mut pull.state {\n            if !matches!(state.as_str(), \"open\" | \"closed\") {\n                *state = \"open\".to_owned();\n            }\n        }",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_native_identity_consumer_and_observed_request -- --exact",
+      "expected": "Native future_native_state becomes open; external consumer exact state comparison fails."
+    }
+  ],
+  [
+    {
+      "claim": "C06",
+      "name": "production_emits_schema_major_two",
+      "path": "crates/resourcefs-sources/src/github/facts.rs",
+      "old": "schema_version: SchemaVersion { major: 1, minor: 0 },",
+      "new": "schema_version: SchemaVersion { major: 2, minor: 0 },",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_native_identity_consumer_and_observed_request -- --exact",
+      "expected": "Actual Python consumer raises ValueError('unsupported schema major'); test rejects production output. Consumer remains unchanged and its additive-field positive control remains authoritative."
+    }
+  ],
+  [
+    {
+      "claim": "C07",
+      "name": "304_overwrites_original_body_observation",
+      "path": "crates/resourcefs-sources/src/github/fetch.rs",
+      "old": "observation: metadata\n                    .observation\n                    .clone()\n                    .unwrap_or_else(|| BodyObservation::legacy(&metadata.etag)),",
+      "new": "observation: observation.clone(),",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_cache_provenance_changed_body_and_failed_revalidation -- --exact",
+      "expected": "Second read body provenance becomes 304/2020 rather than retained 200/2019; equality of first and second upstream.body fails."
+    }
+  ],
+  [
+    {
+      "claim": "C07,C15",
+      "name": "failed_revalidation_returns_stale_body",
+      "path": "crates/resourcefs-sources/src/github/fetch.rs",
+      "old": "if budget.is_some() {\n            classify_facts_status(&response)?;\n        } else {",
+      "new": "if budget.is_some() {\n            if let Err(error) = classify_facts_status(&response) {\n                if let Some(entry) = cached.as_ref() {\n                    return Ok(FetchedResponse {\n                        body: Arc::clone(entry.content_arc()),\n                        link: cached_metadata.as_ref().and_then(|metadata| metadata.link.clone()),\n                        observation,\n                        revalidation: None,\n                        cache_generation,\n                    });\n                }\n                return Err(error);\n            }\n        } else {",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_cache_provenance_changed_body_and_failed_revalidation -- --exact",
+      "expected": "IMPORTANT EXISTING-FENCE GAP: current test's changed 200 has no ETag, so it removes the cache before the final 403. This realistic fallback mutation may survive this test. Do not report RED without execution. A retained-validator 200 followed immediately by 403 is needed to make stale fallback reachable; inspect other existing cache contracts before adding any fence."
+    }
+  ],
+  [
+    {
+      "claim": "C08",
+      "name": "max_for_min_in_attempt_dimension",
+      "path": "crates/resourcefs-core/src/acquisition.rs",
+      "old": "max_attempts: self.max_attempts.min(other.max_attempts),",
+      "new": "max_attempts: self.max_attempts.max(other.max_attempts),",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_operator_intersection_is_observed_for_each_independent_dimension -- --exact",
+      "expected": "Actual emitted effective maxAttempts differs from explicit minimum. S1 already has all-five min-to-max RED/restored evidence; this recipe is only needed if Main wants composite source-consumer mutation evidence rather than reusing that scalar-mechanism evidence."
+    }
+  ],
+  [
+    {
+      "claim": "C12",
+      "name": "cached_body_admission_skipped",
+      "path": "crates/resourcefs-sources/src/github/fetch.rs",
+      "old": "if let Some(budget) = budget {\n                budget.admit_body(entry.content_arc().len())?;\n            }",
+      "new": "if let Some(budget) = budget {\n                let _ = budget;\n            }",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_body_and_cached_readmission_exact_plus_one -- --exact",
+      "expected": "Cached exact read reports acceptedBodyBytes zero instead of cached native length, and cached plus-one cases can wrongly succeed. Both response and cumulative lower-limit branches are present."
+    }
+  ],
+  [
+    {
+      "claim": "C13",
+      "name": "representation_envelope_gets_unmetered_allowance",
+      "path": "crates/resourcefs-sources/src/github/facts.rs",
+      "old": "let mut writer = CappedWriter {\n        bytes: Vec::new(),\n        cap,\n        exceeded: false,\n    };",
+      "new": "let mut writer = CappedWriter {\n        bytes: Vec::new(),\n        cap: cap.saturating_add(4096),\n        exceeded: false,\n    };",
+      "test_command": "cargo test -p resourcefs-sources --lib github::facts::tests::final_facts_exact_pretty_bytes_and_hash_fit_cap_but_one_less_refuses -- --exact",
+      "expected": "Treating envelope/metadata as an extra unmetered allowance admits EXPECTED.len() bytes under EXPECTED.len()-1 cap. The private behavioral exact-byte fixture fails expect_err; this is not a source-text or compile-error fence. The public escaping test may still reject because its expansion exceeds the allowance, hence use exact private fence."
+    }
+  ],
+  [
+    {
+      "claim": "C14",
+      "name": "follow_authorized_pr_head_repository_link",
+      "path": "crates/resourcefs-sources/src/github/facts.rs",
+      "old": "let mut unavailable_facts = Vec::new();",
+      "new": "if let Some(link) = head.repo.value().and_then(|repository| repository.url.value()) {\n            let linked = Url::parse(link).map_err(|_| failure(ErrorReason::UpstreamMalformed))?;\n            self.fetch_controlled(linked, GITHUB_JSON, read, Some(&mut budget)).await?;\n        }\n        let mut unavailable_facts = Vec::new();",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_fork_links_validate_own_identity_without_fetching_fork -- --exact",
+      "expected": "Valid distinct Other/Fork metadata triggers a second credentialed GET /repos/Other/Fork without repository authorization. Positive-control assertion requires exactly one request and fails. Wrong-link cases still fail validation first, so the decisive failure is the valid fork case."
+    }
+  ],
+  [
+    {
+      "claim": "C15",
+      "name": "status_policy_infers_rate_limit_from_prose",
+      "path": "crates/resourcefs-sources/src/github/fetch.rs",
+      "old": "403 if response.rate_limit_remaining() != Some(0) && response.retry_after().is_none() => {",
+      "new": "403 if response.rate_limit_remaining() != Some(0) && response.retry_after().is_none() && !String::from_utf8_lossy(response.body()).contains(\"rate limit\") => {",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_errors_are_status_derived_and_sanitized -- --exact",
+      "expected": "Plain 403 fixture contains misleading 'expired rate limit not found' prose; mutant calls it SourceUnavailable/UpstreamRateLimited instead of PermissionDenied/UpstreamDenied."
+    }
+  ],
+  [
+    {
+      "claim": "C15",
+      "name": "raw_leak_compound_1_status_body_becomes_message",
+      "path": "crates/resourcefs-sources/src/github/fetch.rs",
+      "old": "Err(ResourceError::new(category, \"GitHub facts acquisition failed\").with_details(details))",
+      "new": "Err(ResourceError::new(category, String::from_utf8_lossy(response.body())).with_details(details))",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_errors_are_status_derived_and_sanitized -- --exact",
+      "expected": "Apply together with raw_leak_compound_2. Alone this should be masked by the independent public sanitizer and is not evidence of a missing fence."
+    },
+    {
+      "claim": "C15",
+      "name": "raw_leak_compound_2_public_sanitizer_removed",
+      "path": "crates/resourcefs-sources/src/github/facts.rs",
+      "old": "self.facts_resource(reference, operation, acquisition)\n            .await\n            .map_err(sanitize)",
+      "new": "self.facts_resource(reference, operation, acquisition)\n            .await",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_errors_are_status_derived_and_sanitized -- --exact",
+      "expected": "Apply together with raw_leak_compound_1. Returned error Debug contains actual token-secret provider body, so sentinel assertion fails while category/details remain intact. Unused sanitize is only a warning under ordinary cargo test. This compound mutation represents bypass of two independent sanitization layers, not a single-layer sensitivity claim."
+    }
+  ],
+  [
+    {
+      "claim": "C16",
+      "name": "recovery_continuation_rereads_source",
+      "path": "crates/resourcefs-core/src/read.rs",
+      "old": "parts.content.truncate(page_end);",
+      "new": "let continuation_reference = parts.canonical_reference.clone();\n        parts.content.truncate(page_end);",
+      "test_command": "cargo test -p resourcefs-mcp --features test-support --test stdio_mcp_contract github_facts_stdio_reconstructs_native_json_without_reacquisition -- --exact",
+      "expected": "Large Facts first continuation becomes canonical pr://.../facts instead of artifact continuation, causing a second provider request. Independent request-count assertion fails before repeated pages can complete. Earlier shadowed continuation variable may produce a warning, not compilation failure."
+    }
+  ],
+  [
+    {
+      "claim": "C16",
+      "name": "recovery_drops_retained_tail",
+      "path": "crates/resourcefs-core/src/read.rs",
+      "old": "self.session.retain(&parts.content, operation).await?",
+      "new": "self.session.retain(&parts.content[..page_end], operation).await?",
+      "test_command": "cargo test -p resourcefs-mcp --features test-support --test stdio_mcp_contract github_facts_stdio_reconstructs_native_json_without_reacquisition -- --exact",
+      "expected": "Initial page remains intact but recovery artifact stores only first page. Later continuation cannot reconstruct JSON; tool-success or complete-JSON/body equality assertion fails, without new upstream requests."
+    }
+  ],
+  [
+    {
+      "claim": "C17",
+      "name": "tool_schema_omits_acquisition",
+      "path": "crates/resourcefs-mcp/src/server/read.rs",
+      "old": "#[schemars(with = \"AcquisitionInput\")]",
+      "new": "#[schemars(skip)]",
+      "test_command": "cargo test -p resourcefs-mcp --features test-support --test stdio_mcp_contract github_facts_stdio_reconstructs_native_json_without_reacquisition -- --exact",
+      "expected": "Serde input behavior remains intact, but actual tools/list lacks acquisition property; assertion on published schema fails."
+    }
+  ],
+  [
+    {
+      "claim": "C17",
+      "name": "catalog_omits_facts_grammar",
+      "path": "crates/resourcefs-sources/src/github/mod.rs",
+      "old": "\"pr://<owner>/<repository>[/<number>[/title|body|facts|comments|reviews|review-comments|diff]][:selector]\"",
+      "new": "\"pr://<owner>/<repository>[/<number>[/title|body|comments|reviews|review-comments|diff]][:selector]\"",
+      "test_command": "cargo test -p resourcefs-mcp --features test-support --test stdio_mcp_contract github_facts_stdio_reconstructs_native_json_without_reacquisition -- --exact",
+      "expected": "Actual pr:// catalog no longer contains facts; existing catalog assertion fails while real Facts read still succeeds."
+    }
+  ]
+]

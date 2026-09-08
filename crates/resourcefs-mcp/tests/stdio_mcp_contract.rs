@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const VERSION_2026: &str = "2026-07-28";
@@ -18,7 +18,7 @@ mod profile_tls;
 
 #[path = "support/stdio.rs"]
 mod stdio;
-use stdio::{finish_process, read_message_from, write_message_to, McpProcessPermit};
+use stdio::{McpProcessPermit, finish_process, read_message_from, write_message_to};
 
 const VERSION_2025: &str = "2025-11-25";
 const SOURCE_CATALOG_TEXT: &str = concat!(
@@ -1022,10 +1022,12 @@ fn lists_and_calls_discovery_tools() {
         search_result["structuredContent"]["groups"][0]["lines"][0],
         json!({"line": 1, "text": "fixture text"})
     );
-    assert!(search_result["content"][0]["text"]
-        .as_str()
-        .expect("search TextContent")
-        .contains("fixture text"));
+    assert!(
+        search_result["content"][0]["text"]
+            .as_str()
+            .expect("search TextContent")
+            .contains("fixture text")
+    );
 
     let glob_response = process.request(
         "tools/call",
@@ -1042,10 +1044,12 @@ fn lists_and_calls_discovery_tools() {
             "kind": "file"
         })
     );
-    assert!(glob_result["content"][0]["text"]
-        .as_str()
-        .expect("glob TextContent")
-        .contains("rfs://workspace/workspace/fixture.txt"));
+    assert!(
+        glob_result["content"][0]["text"]
+            .as_str()
+            .expect("glob TextContent")
+            .contains("rfs://workspace/workspace/fixture.txt")
+    );
 
     let unknown = process.request(
         "tools/call",
@@ -1196,12 +1200,16 @@ fn versioned_write_receipts_and_catalog_policy_work_over_stdio() {
     assert!(rem.get("error").is_none(), "{rem}");
     assert_eq!(rem["result"]["isError"], false);
     assert_eq!(rem["result"]["structuredContent"]["operation"], "deleted");
-    assert!(rem["result"]["structuredContent"]
-        .get("versionTag")
-        .is_none());
-    assert!(rem["result"]["structuredContent"]
-        .get("displayedRanges")
-        .is_none());
+    assert!(
+        rem["result"]["structuredContent"]
+            .get("versionTag")
+            .is_none()
+    );
+    assert!(
+        rem["result"]["structuredContent"]
+            .get("displayedRanges")
+            .is_none()
+    );
     assert_tool_error(&process.call_read("created.txt"), "not_found");
 
     let move_source = process.request(
@@ -1342,6 +1350,10 @@ fn github_non_target_mutation_is_refused() {
     );
     assert!(aggregate.get("error").is_none(), "[C14] {aggregate}");
     assert_tool_error(&aggregate["result"], "unsupported_mutation");
+    let facts = process.request("tools/call", json!({
+        "name":"rfs_write","arguments":{"path":"pr://owner/repo/7/facts","content":"forbidden","ifVersion":tag}
+    }));
+    assert_tool_error(&facts["result"], "unsupported_mutation");
 
     let edit = process.request(
         "tools/call",
@@ -1671,9 +1683,11 @@ fn renders_complete_success_and_errors() {
             json!([{"startLine": 1, "endLine": 1}])
         );
         assert_eq!(structured["displayedEof"], true);
-        assert!(structured["versionTag"]
-            .as_str()
-            .is_some_and(|tag| tag.starts_with("sha256:") && tag.len() == 71));
+        assert!(
+            structured["versionTag"]
+                .as_str()
+                .is_some_and(|tag| tag.starts_with("sha256:") && tag.len() == 71)
+        );
         assert!(structured.get("recoveryReference").is_none());
         assert_eq!(
             text,
@@ -1730,10 +1744,12 @@ fn renders_complete_success_and_errors() {
 
         let empty = process.call_read("empty.txt");
         assert_eq!(empty["structuredContent"]["content"], "");
-        assert!(!empty["content"][0]["text"]
-            .as_str()
-            .expect("empty TextContent")
-            .is_empty());
+        assert!(
+            !empty["content"][0]["text"]
+                .as_str()
+                .expect("empty TextContent")
+                .is_empty()
+        );
 
         let started = Instant::now();
         let maximum = process.call_read("maximum.txt");
@@ -1849,9 +1865,11 @@ fn renders_complete_success_and_errors() {
 
         let malformed = process.request("tools/call", json!({"name": "rfs_read", "arguments": {}}));
         assert_eq!(malformed["error"]["code"], -32602);
-        assert!(malformed["error"]["message"]
-            .as_str()
-            .is_some_and(|text| text.contains("missing field `path`")));
+        assert!(
+            malformed["error"]["message"]
+                .as_str()
+                .is_some_and(|text| text.contains("missing field `path`"))
+        );
         assert!(malformed.get("result").is_none());
 
         let extra_argument = process.request(
@@ -1862,9 +1880,11 @@ fn renders_complete_success_and_errors() {
             }),
         );
         assert_eq!(extra_argument["error"]["code"], -32602);
-        assert!(extra_argument["error"]["message"]
-            .as_str()
-            .is_some_and(|text| text.contains("unknown field `extra`")));
+        assert!(
+            extra_argument["error"]["message"]
+                .as_str()
+                .is_some_and(|text| text.contains("unknown field `extra`"))
+        );
         assert!(extra_argument.get("result").is_none());
 
         let unknown = process.request(
@@ -1984,10 +2004,12 @@ fn namespace_catalog_tracks_client_root_replacement() {
         replacement_catalog["structuredContent"]["content"],
         format!("{beta_root} (primary)\n")
     );
-    assert!(!replacement_catalog["structuredContent"]["content"]
-        .as_str()
-        .expect("replacement content")
-        .contains(alpha_root));
+    assert!(
+        !replacement_catalog["structuredContent"]["content"]
+            .as_str()
+            .expect("replacement content")
+            .contains(alpha_root)
+    );
     assert_ne!(
         replacement_catalog["structuredContent"]["versionTag"],
         initial_tag
@@ -2798,10 +2820,12 @@ fn stdio_rejects_non_lower_limits() {
         .as_str()
         .expect("bounded continuation")
         .to_owned();
-    assert!(bounded["content"][0]["text"]
-        .as_str()
-        .expect("bounded TextContent")
-        .contains(&continuation));
+    assert!(
+        bounded["content"][0]["text"]
+            .as_str()
+            .expect("bounded TextContent")
+            .contains(&continuation)
+    );
     let middle = process.call_read_arguments(json!({
         "path": continuation,
         "limits": {"bytes": 5},
@@ -3199,9 +3223,11 @@ fn canonical_identity_stays_private() {
         "rfs://workspace/workspace/fixture.txt"
     );
     assert!(structured.get("backingFileUri").is_none());
-    assert!(!serde_json::to_string(&result)
-        .expect("serialize result")
-        .contains(&fixture.root.to_string_lossy() as &str));
+    assert!(
+        !serde_json::to_string(&result)
+            .expect("serialize result")
+            .contains(&fixture.root.to_string_lossy() as &str)
+    );
     process.finish();
 }
 
@@ -3655,14 +3681,18 @@ fn github_profile_trust_reaches_real_stdio_reads_only_when_explicit() {
         assert_eq!(request.sequence, index + 1);
         assert_eq!(request.method, "GET");
         assert_eq!(request.path, "/repos/owner/repo/pulls/7");
-        assert!(request
-            .headers
-            .iter()
-            .any(|(name, value)| name == "authorization" && value == "Bearer fixture-token"));
-        assert!(request
-            .headers
-            .iter()
-            .any(|(name, value)| name == "accept" && value == "application/vnd.github+json"));
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|(name, value)| name == "authorization" && value == "Bearer fixture-token")
+        );
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|(name, value)| name == "accept" && value == "application/vnd.github+json")
+        );
     }
     // Even injecting the helper's environment cannot select trust in the shipped CLI.
     let root_path = fixture.root.join("profile-https-ca.der");
@@ -3854,4 +3884,194 @@ fn https_profile_read_recovers_bounded_markdown() {
         server.requests().iter().any(|target| target == "/large"),
         "the bounded read must fetch the real TLS document"
     );
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn github_facts_stdio_reconstructs_native_json_without_reacquisition() {
+    for large in [false, true] {
+        let fixture = WorkspaceFixture::new();
+        let mut native: Value =
+            serde_json::from_str(include_str!("../../../.rfs-0n97/oracles/pr-native.json"))
+                .expect("native fixture");
+        if large {
+            native["body"] = json!("雪 \"escaped\"\n".repeat(1500));
+        }
+        let server =
+            profile_tls::ProfileTlsServer::start_native(vec![profile_tls::NativeResponse {
+                path: "/repos/owner/repo/pulls/7".into(),
+                body: native.to_string(),
+            }]);
+        let profile = fixture.root.join("github-facts.json");
+        fs::write(
+            &profile,
+            json!({"schemaVersion":1,"sources":[{
+                "kind":"github","id":"github","required":true,"apiBaseUrl":server.base_url(),
+                "webOrigin":"https://github.example","allowPrivateNetwork":true,
+                "credential":{"kind":"environment","name":"RFS_GITHUB_TEST_TOKEN"},
+                "repositories":[{"name":"owner/repo"}],"acquisition":{"maxAttempts":1}
+            }]})
+            .to_string(),
+        )
+        .expect("profile");
+        let mut process = McpProcess::start_profile_with_https_root_and_env(
+            &profile,
+            &fixture.root,
+            &[("RFS_GITHUB_TEST_TOKEN", "facts-stdio-secret")],
+        );
+        process.initialize(VERSION_2026);
+        let mut result = process.call_read_arguments(json!({"path":"pr://owner/repo/7/facts","limits":{"bytes": if large { 1024 } else { 49152 }}}));
+        let mut bytes = String::new();
+        let mut pages = 0;
+        let mut root = None;
+        loop {
+            assert_eq!(result["isError"], false, "{result}");
+            let output = &result["structuredContent"];
+            bytes.push_str(output["content"].as_str().expect("JSON page"));
+            pages += 1;
+            assert!(pages < 1000, "recovery must progress");
+            if root.is_none() {
+                root = output["recoveryReference"].as_str().map(str::to_owned);
+            }
+            let Some(next) = output["continuationReference"].as_str() else {
+                break;
+            };
+            assert_eq!(server.recorded_requests().len(), 1);
+            result = process.call_read_arguments(json!({"path":next,"limits":{"bytes":1024}}));
+        }
+        assert_eq!(
+            pages > 1,
+            large,
+            "small facts inline; large facts recovered"
+        );
+        let facts: Value = serde_json::from_str(&bytes).expect("reconstructed full JSON");
+        assert_eq!(facts["schemaVersion"]["major"], 1);
+        assert_eq!(facts["data"]["body"], native["body"]);
+        assert_eq!(facts["data"]["id"], "9007199254740993");
+        assert_eq!(facts["data"]["head"]["commitSha"], native["head"]["sha"]);
+        assert_eq!(facts["acquisition"]["limits"]["maxAttempts"], 1);
+        if let Some(root) = root {
+            reconstruct_with_limits(&mut process, &root, json!({"bytes":1024}), &bytes);
+        }
+        assert_eq!(
+            server.recorded_requests().len(),
+            1,
+            "recovery cannot acquire again"
+        );
+        let denied = process.call_read("pr://other/repo/7/facts");
+        assert_tool_error(&denied, "permission_denied");
+        assert_eq!(server.recorded_requests().len(), 1);
+        assert!(!bytes.contains("facts-stdio-secret"));
+        for (field, hard) in [
+            ("maxAttempts", 10_u64),
+            ("timeoutMs", 30000),
+            ("maxResponseBytes", 8388608),
+            ("maxAcceptedBodyBytes", 16777216),
+            ("maxRepresentationBytes", 16777216),
+        ] {
+            for invalid in [
+                Value::Null,
+                json!(0),
+                json!(-1),
+                json!(1.5),
+                json!("1"),
+                json!(hard + 1),
+                json!(u64::MAX),
+            ] {
+                let mut acquisition = json!({});
+                acquisition[field] = invalid;
+                let rejected = process.request("tools/call", json!({"name":"rfs_read","arguments":{"path":"pr://owner/repo/7/facts","acquisition":acquisition}}));
+                assert_eq!(rejected["error"]["code"], -32602);
+                assert_eq!(
+                    server.recorded_requests().len(),
+                    1,
+                    "invalid controls cannot reach provider"
+                );
+            }
+        }
+        let tools = process.request("tools/list", json!({}));
+        let read_tool = tools["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["name"] == "rfs_read")
+            .expect("read tool");
+        assert!(
+            read_tool["inputSchema"]["properties"]
+                .get("acquisition")
+                .is_some()
+        );
+        let catalog = process.call_read("rfs://");
+        assert_tool_success(&catalog);
+        assert!(
+            catalog["structuredContent"]["content"]
+                .as_str()
+                .expect("source catalog content")
+                .contains("facts")
+        );
+        process.finish();
+        let requests = server.recorded_requests();
+        assert_eq!(requests[0].method, "GET");
+        assert_eq!(requests[0].path, "/repos/owner/repo/pulls/7");
+        for (key, value) in [
+            ("authorization", "Bearer facts-stdio-secret"),
+            ("accept", "application/vnd.github+json"),
+            ("x-github-api-version", "2022-11-28"),
+        ] {
+            assert!(
+                requests[0]
+                    .headers
+                    .iter()
+                    .any(|(name, actual)| name == key && actual == value)
+            );
+        }
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn github_facts_stdio_cancelled_http_read_cannot_publish_and_session_recovers() {
+    let fixture = WorkspaceFixture::new();
+    let (server, arrived, release) = profile_tls::ProfileTlsServer::start_blocked_native(
+        include_str!("../../../.rfs-0n97/oracles/pr-native.json").to_owned(),
+    );
+    let profile = fixture.root.join("cancel-facts.json");
+    fs::write(&profile, json!({"schemaVersion":1,"sources":[{
+        "kind":"github","id":"github","required":true,"apiBaseUrl":server.base_url(),
+        "webOrigin":"https://github.example","allowPrivateNetwork":true,
+        "credential":{"kind":"environment","name":"RFS_GITHUB_TEST_TOKEN"},"repositories":[{"name":"owner/repo"}]
+    }]}).to_string()).expect("profile");
+    let mut process = McpProcess::start_profile_with_https_root_and_env(
+        &profile,
+        &fixture.root,
+        &[("RFS_GITHUB_TEST_TOKEN", "cancel-test-secret")],
+    );
+    process.initialize(VERSION_2026);
+    let cancelled = process.send_request(
+        "tools/call",
+        json!({"name":"rfs_read","arguments":{"path":"pr://owner/repo/7/facts"}}),
+    );
+    arrived
+        .recv_timeout(Duration::from_secs(5))
+        .expect("real GitHub HTTP request entered barrier");
+    process.notify_cancelled(cancelled);
+    // A subsequent serialized protocol response is the ordering barrier, not a sleep.
+    let barrier = process.send_request("tools/list", json!({}));
+    process.receive_response_until(barrier, cancelled, Duration::from_secs(5));
+    release.notify_one();
+    let next = process.send_request(
+        "tools/call",
+        json!({"name":"rfs_read","arguments":{"path":"pr://owner/repo/7/facts"}}),
+    );
+    let recovered = process.receive_response_until(next, cancelled, Duration::from_secs(10));
+    assert_eq!(recovered["result"]["isError"], false, "{recovered}");
+    let facts: Value = serde_json::from_str(
+        recovered["result"]["structuredContent"]["content"]
+            .as_str()
+            .expect("small full facts"),
+    )
+    .expect("JSON");
+    assert_eq!(facts["data"]["id"], "9007199254740993");
+    assert_eq!(server.recorded_requests().len(), 2);
+    process.finish();
 }

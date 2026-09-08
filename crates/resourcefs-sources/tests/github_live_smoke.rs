@@ -7,8 +7,8 @@
 //! catch that class of drift: every row targets a shape the fake cannot be
 //! trusted to imitate, against public `rust-lang/rust` data, GET only.
 //!
-//! Ignored by default and skipped without a token; run explicitly with
-//! `GITHUB_TOKEN="$(gh auth token)" cargo test -p resourcefs-sources --test
+//! Ignored by default and skipped without explicit opt-in and a token; run with
+//! `RFS_LIVE=1 GITHUB_TOKEN="$(gh auth token)" cargo test -p resourcefs-sources --test
 //! github_live_smoke -- --ignored --nocapture`.
 #[path = "support/mod.rs"]
 mod session_support;
@@ -30,6 +30,20 @@ const REPOSITORY: &str = "rust-lang/rust";
 const SMALL_PR: u64 = 159_232;
 /// 56 changed files at the time of writing — past the endpoint's 30-row default.
 const WIDE_PR: u64 = 161_878;
+
+fn live_token() -> Option<String> {
+    if std::env::var("RFS_LIVE").as_deref() != Ok("1") {
+        eprintln!("RFS_LIVE is not 1; skipping live GitHub smoke");
+        return None;
+    }
+    match std::env::var("GITHUB_TOKEN") {
+        Ok(token) if !token.is_empty() => Some(token),
+        _ => {
+            eprintln!("GITHUB_TOKEN is absent or empty; skipping live GitHub smoke");
+            None
+        }
+    }
+}
 
 async fn live_source(token: String) -> Option<GithubSource> {
     let origin = AllowedOrigin::new("https://api.github.com/", false).expect("origin");
@@ -100,12 +114,9 @@ fn first_reference_id(listing: &str, prefix: &str) -> u64 {
 }
 
 #[tokio::test]
-#[ignore = "live GitHub smoke; needs GITHUB_TOKEN"]
+#[ignore = "live GitHub smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
 async fn live_github_reads_hold_up() {
-    let Ok(token) = std::env::var("GITHUB_TOKEN") else {
-        eprintln!("GITHUB_TOKEN is not set; skipping the live smoke");
-        return;
-    };
+    let Some(token) = live_token() else { return };
     let source = live_source(token).await.expect("live source");
 
     // L1 — a >1,000-issue collection paginates through GitHub's real
@@ -245,4 +256,37 @@ async fn live_github_reads_hold_up() {
     assert_eq!(search.groups()[0].reference(), base);
     assert_eq!(search.groups()[0].lines()[0].line(), 3);
     eprintln!("L6 search: {:?}", search.groups()[0].lines()[0].text());
+}
+
+#[tokio::test]
+#[ignore = "live GitHub smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
+async fn live_github_facts_preserve_native_identity_and_links() {
+    let Some(token) = live_token() else { return };
+    let native = std::process::Command::new("gh")
+        .args([
+            "api",
+            "-H",
+            "X-GitHub-Api-Version: 2022-11-28",
+            &format!("repos/{REPOSITORY}/pulls/{SMALL_PR}"),
+        ])
+        .env("GH_TOKEN", &token)
+        .output()
+        .expect("independent native gh read");
+    assert!(native.status.success(), "native read failed");
+    let native: serde_json::Value = serde_json::from_slice(&native.stdout).expect("native JSON");
+    let source = live_source(token).await.expect("live source");
+    let resource = read(&source, &format!("pr://{REPOSITORY}/{SMALL_PR}/facts")).await;
+    let facts: serde_json::Value = serde_json::from_str(resource.content()).expect("facts JSON");
+    assert_eq!(facts["schemaVersion"]["major"], 1);
+    assert_eq!(
+        facts["data"]["id"],
+        native["id"].as_u64().expect("native id").to_string()
+    );
+    for side in ["base", "head"] {
+        assert_eq!(facts["data"][side]["commitSha"], native[side]["sha"]);
+    }
+    assert_eq!(facts["data"]["links"]["apiUrl"], native["url"]);
+    assert_eq!(facts["data"]["links"]["htmlUrl"], native["html_url"]);
+    assert_eq!(facts["acquisition"]["restApiVersion"], "2022-11-28");
+    assert!(resource.continuation().is_none());
 }

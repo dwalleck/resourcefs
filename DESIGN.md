@@ -23,7 +23,7 @@ The official Rust `rmcp` SDK is the runtime. The server advertises MCP `2026-07-
 Model-controlled tools are canonical:
 
 1. `rfs_read`
-   - Input: `path`; optional lower-only `limits` (`maxBytes`, `maxLines`, `maxColumns`).
+   - Input: `path`; optional lower-only output `limits` (`maxBytes`, `maxLines`, `maxColumns`), `numbered`, and lower-only source `acquisition` controls (currently PR Facts only).
    - Reads a Resource or projection, directory, archive member, SQLite row, document, image, notebook, web URL, or internal Path Reference.
    - Parseable code with no selector returns a Structural Summary; selectors recover exact omitted ranges.
 2. `rfs_search`
@@ -50,6 +50,10 @@ Every tool result has:
 - stable semantic fields for contract version, canonical reference, content type, Version Tag, mutability, boundedness, and Recovery Reference where applicable; a bounded read or search whose continuation walks an artifact chain also names the paginated source's next upstream page as a source continuation (ADR-0006).
 
 Operational failures are tool errors with stable categories: invalid reference, invalid pattern, invalid patch, not found, permission denied, version conflict, limit exceeded, source unavailable, unsupported projection, unsupported mutation, ambiguous reference, and cancelled. Protocol/schema failures remain MCP errors.
+
+Operational errors retain `category` and `message` and may add bounded `details`: a machine-readable `reason`, optional `httpStatus`, `accessAmbiguity`, `retryGuidance`, `rateLimitReset`, and `limit` (`kind`, positive `bound`, optional `observed`). Absent details are omitted, not filled with nulls. Retry guidance is an object such as `{"delaySeconds": 5}` or `{"atUnixSeconds": 1800000000}`; rate-limit reset is Unix seconds. Limit kinds are `attempts`, `elapsed_nanoseconds`, `response_body_bytes`, `accepted_body_bytes`, and `representation_bytes`. Details carry no provider body, arbitrary headers, URLs, or credentials.
+
+PR Facts failures distinguish unauthorized repositories (`permission_denied` / `repository_not_authorized`), denied upstream access (`permission_denied` / `upstream_denied`), and an upstream 404 (`not_found` / `upstream_not_found_or_hidden`, with `accessAmbiguity: "missing_or_access_hidden"`). Rate limiting is `source_unavailable` / `upstream_rate_limited`; malformed data and contradictory identity use `source_unavailable` / `upstream_malformed` or `upstream_identity_mismatch`. Acquisition/deadline exhaustion uses `limit_exceeded` with the effective bound where available; cancellation remains `cancelled`. Reasons and numeric guidance are actionable observations, not permission to retry indefinitely.
 
 MCP Resources and templates mirror every resolvable Path Reference when negotiated. They are additive application/UI affordances, not a second behavior model and not required for the tool workflow. Resource listing is bounded and paginated. Completion is fast and local; network-backed enumeration never runs on every keystroke. Only local/workspace and Path Session resources publish subscription changes initially.
 
@@ -97,6 +101,7 @@ Examples:
 - `skill://code-review/references/checklist.md`
 - `issue://owner/repo/123/body`
 - `pr://owner/repo/123/diff/1`
+- `pr://owner/repo/123/facts`
 - `agent://Reviewer/findings.0.path`
 - `artifact://7:100-200`
 - `local://review-context.md`
@@ -166,6 +171,29 @@ Existing issue/PR field paths include `title`, `body`, and stable conversation `
 Every remote Creation Target requires `operationId`. Within one live Path Session, the journal returns the previous canonical reference when the same operation ID and content repeat, and rejects reuse with different content. Operation IDs never deduplicate across Path Sessions. ResourceFS never automatically retries an upstream outcome that became unknown after transmission; after any unknown outcome or disconnect, the caller must reconcile upstream state before repeating the creation.
 
 Existing remote replacement fetches and compares the authoritative Version Tag immediately before mutation.
+
+#### PR Facts version 1
+
+`pr://owner/repo/<positive-number>/facts` is a read-only JSON Resource, not the PR's human-readable Aggregate and not raw provider JSON. It accepts no projection selector, including `:raw`. Facts are not available for issues, PR collections, reviews, comments, or diffs. Existing PR Aggregate, field, diff and mutation behavior is unchanged.
+
+The JSON representation uses `schemaVersion: {"major": 1, "minor": 0}` and `kind: "github.pull_request"`. Its top-level fields are:
+
+- `resource`: the canonical PR Facts Path Reference.
+- `source`: configured `sourceId` and `deployment` with `webOrigin` and `apiOrigin` (the API origin is not the API base path).
+- `repository`: requested `owner` and `name`, plus presence-aware `observed` base repository metadata; `request` separately records the repository and PR `number`.
+- `observed`: required PR `id` and `number`, optional `nodeId`, and `base`/`head` observations containing required `commitSha`, presence-aware `repository`, and `repositoryAvailability` (`present`, `null`, or `omitted`).
+- `acquisition`: `startedAtUnixMs`, `completedAtUnixMs`, `elapsedMs`, requested `restApiVersion`, effective `limits`, and `usage` (`attemptedRequests`, `acceptedBodyBytes`).
+- `upstream`: `body` observation, plus `revalidation` only when a cached body was conditionally revalidated. Observations may include `status`, `etag`, `lastModified`, `date`, `selectedApiVersion`, and `observedAtUnixMs`. A 304 observation does not replace the original body's provenance.
+- `data`: required `id`, `number`, `base`, `head`, and a `links` object; presence-aware `nodeId`, `title`, `body`, `state`, `author`, `createdAt`, `updatedAt`, `closedAt`, `mergedAt`, `draft`, and `merged`. Branches add presence-aware `refName`. Links use `apiUrl`, `htmlUrl`, `diffUrl`, `patchUrl`, `issueUrl`, and `relations`; relation entries retain native names and presence-aware `href`. Actors expose `id`, `nodeId`, `login`, and `links`; repositories expose `id`, `nodeId`, `name`, `fullName`, `owner`, and `links`, all presence-aware.
+- `unavailableFacts`: entries with `field` and `reason` (`null` or `omitted`) for selected optional PR, link, and branch facts, not an exhaustive recursive inventory.
+
+Native numeric IDs and PR numbers are positive unsigned 64-bit values serialized as canonical decimal **strings**, including nested actor/repository IDs; node IDs stay strings. Timestamps and counters retain their schema-specific types. Optional native nulls remain JSON null, missing fields remain omitted, and empty strings or `false` remain real values. Unknown native fields are not copied into the owned schema.
+
+Acceptance requires a matching PR number/API identity and both 40-character lowercase hexadecimal base/head commit SHAs. Available repository identity evidence must agree internally; base repository evidence must agree with the requested repository. A head repository may identify a fork outside the readable allowlist without granting access to it. Missing or null repository metadata remains unavailable, never guessed. Recognizable contradictory object links fail identity validation; opaque links and URI templates remain observations, not trusted destinations.
+
+One native PR-detail acquisition supplies Facts. ResourceFS does not automatically follow links, fetch the head repository, resolve refs, compare commits, or acquire comments, reviews, diffs, or patches to enrich the result. Facts remain read-only even where mutation grants exist. Their Version Tag names the exact JSON representation, including acquisition observations, not a stable PR revision or a base/head comparison result.
+
+Public GitHub derives `webOrigin` as `https://github.com`; `https://api.<tenant>.ghe.com` derives `https://<tenant>.ghe.com`. A configured explicit origin must agree with those documented deployments. A custom `apiBaseUrl` requires explicit HTTPS `webOrigin` to serve Facts; without it, existing reads remain available but Facts return `unsupported_projection` / `deployment_identity_unavailable`. See [operating guidance](docs/operating.md#github-pr-facts) for profile and call examples.
 
 ### Jira
 
@@ -285,6 +313,20 @@ The built-in Kiro-safe hard preset is:
 - 1,000 entries per listing page.
 
 A Server Profile and per-call `limits` may lower these values, never raise them above the binary’s hard ceiling.
+
+PR Facts acquisition is independent of output `limits`. A GitHub source profile and `rfs_read` may each supply an `acquisition` object with these positive integer, lower-only dimensions:
+
+| Field | Default and hard ceiling | Meaning |
+| --- | ---: | --- |
+| `maxAttempts` | 10 | Physical request attempts, including retry |
+| `timeoutMs` | 30000 | One logical acquisition deadline, including waits and acceptance |
+| `maxResponseBytes` | 8388608 | Bytes in one response body |
+| `maxAcceptedBodyBytes` | 16777216 | Cumulative bodies admitted for use, including a reused cached body |
+| `maxRepresentationBytes` | 16777216 | Complete serialized Facts JSON bytes |
+
+Effective values are the minimum of the hard default, source policy, per-call policy, and applicable HTTP substrate ceilings. An omitted object or field uses defaults before intersection; `{}` is a valid explicit object, not a request to ignore controls. Nulls, unknown or duplicate fields, arrays, zero, and above-ceiling values are rejected. Explicit acquisition controls on a Resource without support fail with `unsupported_projection` / `acquisition_controls_unsupported` rather than being silently ignored.
+
+Facts allow at most one retry under the original deadline and remaining attempt budget; the attempt ceiling is not a promised request count. Response/admission/representation overflow fails without publishing partial Facts JSON. Cancellation and deadline checks also guard final publication. Output limits apply afterward: a successfully acquired complete representation may spill losslessly to an artifact, but that does not raise acquisition ceilings.
 
 Content omitted from an otherwise successful bounded operation is preserved losslessly as an immutable `artifact://` Recovery Reference and the result names exact selectors/pages. If a lossless spill would exceed object/session quota, the operation fails with a bounded limit error and narrowing instructions. ResourceFS never evicts a reference already returned by a live Path Session and never labels unrecoverable discarded content as a Recovery Reference.
 

@@ -135,6 +135,64 @@ or a direct-argument helper command:
 
 ResourceFS does not invoke commands through a shell. Child environments are cleared and rebuilt from the command's explicit `environment` map. Helper execution has bounded time, output, arguments, environment size, and global concurrency. Resolved credentials are redacted before any diagnostic or log write.
 
+## GitHub PR Facts
+
+Add a GitHub source to the profile's `sources` array. For example, this source entry grants read access to one repository on a custom deployment; it grants no mutations:
+
+```json
+{
+  "kind": "github",
+  "id": "enterprise",
+  "required": true,
+  "apiBaseUrl": "https://git.example.com/api/v3/",
+  "webOrigin": "https://git.example.com",
+  "allowPrivateNetwork": false,
+  "credential": {
+    "kind": "environment",
+    "name": "RESOURCEFS_GITHUB_TOKEN"
+  },
+  "repositories": [
+    { "name": "owner/repo" }
+  ],
+  "acquisition": {
+    "maxAttempts": 2,
+    "timeoutMs": 10000,
+    "maxResponseBytes": 1048576,
+    "maxAcceptedBodyBytes": 2097152,
+    "maxRepresentationBytes": 4194304
+  }
+}
+```
+
+Replace the example hosts/repository and provide the referenced credential. A private-address deployment additionally needs `allowPrivateNetwork: true`; `webOrigin` is identity configuration, not a network grant. It must be an HTTPS origin without a path, query, fragment, or credentials; an optional trailing slash is accepted and normalized away. Custom API bases may retain their API path and port.
+
+For public GitHub, omit `apiBaseUrl` and `webOrigin`: they default to `https://api.github.com/` and `https://github.com`. For Enterprise Cloud, `apiBaseUrl: "https://api.<tenant>.ghe.com/"` derives `https://<tenant>.ghe.com`. Those documented API bases accept no custom path or explicit port, and any explicit `webOrigin` must match the derived deployment. Custom API bases without `webOrigin` still support existing GitHub reads, but PR Facts fail with `unsupported_projection` and reason `deployment_identity_unavailable`; ResourceFS never guesses the web origin.
+
+Call `rfs_read` with a PR Facts path and optional per-call lower acquisition limits:
+
+```json
+{
+  "path": "pr://owner/repo/123/facts",
+  "acquisition": {
+    "maxAttempts": 1,
+    "timeoutMs": 5000
+  },
+  "limits": {
+    "maxBytes": 16384
+  }
+}
+```
+
+The example is a tool input, not a profile fragment. Output `limits` control the rendered result, not upstream acquisition. Source and per-call acquisition policies intersect dimension by dimension; a call cannot raise the source policy. Omitted dimensions use the hard defaults before intersection: 10 attempts, 30000 ms, 8388608 response bytes, 16777216 accepted body bytes, and 16777216 representation bytes. Applicable HTTP substrate ceilings may lower them further. Every supplied value must be a positive integer at or below its hard ceiling. Unknown/duplicate keys, nulls and non-object controls are rejected. An empty `acquisition: {}` still explicitly requests support; only PR Facts currently support these controls, and other Resources reject them rather than ignoring them.
+
+Facts return `application/json; charset=utf-8` in the normal read-result envelope. The inner JSON schema is `{"major": 1, "minor": 0}` under `schemaVersion`, with `kind: "github.pull_request"`. Native numeric IDs and PR numbers are decimal strings, not JSON numbers. Optional nulls, omitted fields, empty strings and false values remain distinct. Both branches have validated commit SHAs; missing or null repository metadata is reported via `repositoryAvailability`, not filled with a guessed repository. See the [complete Facts contract](../DESIGN.md#pr-facts-version-1) for fields and provenance.
+
+Read Facts without a selector (`:raw` is also unsupported). This is not an issue Facts, collection, review, or diff API. It performs no mutation, automatic link follow, head-repository fetch, ref resolution, or commit comparison. Returned URLs and fork metadata do not grant authority to fetch those destinations.
+
+One logical deadline covers the acquisition, retry waits, and final acceptance, with at most one retry within the attempt budget. Cache revalidation retains original body provenance separately from the 304 observation, and reused body bytes still count toward admission limits. Acquisition overflow or cancellation never returns partial Facts JSON. A complete representation that exceeds the separate text output limit uses normal lossless artifact recovery; follow the returned artifact selectors rather than appending a selector to `/facts`.
+
+Failures retain the ordinary error category and may include bounded structured `details`. In particular, a 404 has reason `upstream_not_found_or_hidden` and `accessAmbiguity: "missing_or_access_hidden"`: it is not proof that a private PR does not exist. Rate-limit errors may carry numeric retry guidance/reset time; limit errors may name the effective bound and observed value. Provider error prose, response bodies and arbitrary headers are not exposed in these details. Inspect the category/reason rather than matching human-readable messages.
+
 ## Logging
 
 The default sink is `info` level on standard error. Configure bounded rotating files when stderr belongs to an MCP supervisor:

@@ -557,6 +557,8 @@ pub enum PullRequestResource {
     Aggregate,
     Title,
     Body,
+    /// Immutable, complete machine-readable pull-request facts.
+    Facts,
     Comments,
     /// Write-only issue-style conversation-comment Creation Target.
     CommentsNew,
@@ -634,6 +636,7 @@ impl PullRequestAddress {
                     PullRequestResource::Aggregate => base,
                     PullRequestResource::Title => format!("{base}/title"),
                     PullRequestResource::Body => format!("{base}/body"),
+                    PullRequestResource::Facts => format!("{base}/facts"),
                     PullRequestResource::Comments => format!("{base}/comments"),
                     PullRequestResource::CommentsNew => format!("{base}/comments/new"),
                     PullRequestResource::Comment(id) => {
@@ -1324,6 +1327,7 @@ fn parse_pull_request_address(input: &str) -> Result<PullRequestAddress, Resourc
             let resource = match *resource {
                 "title" => PullRequestResource::Title,
                 "body" => PullRequestResource::Body,
+                "facts" => PullRequestResource::Facts,
                 "comments" => PullRequestResource::Comments,
                 "reviews" => PullRequestResource::Reviews,
                 "review-comments" => PullRequestResource::ReviewComments,

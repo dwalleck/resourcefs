@@ -912,6 +912,7 @@ async fn unsupported_mutation_matrix_has_zero_egress() {
         "pr://owner/repo/7/reviews/1",
         "pr://owner/repo/7/review-comments/1",
         "pr://owner/repo/7/diff",
+        "pr://owner/repo/7/facts",
     ] {
         let error = MutationAdapter::resolve(
             &source,

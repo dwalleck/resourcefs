@@ -1,3 +1,4 @@
+mod facts;
 mod fetch;
 mod mutation;
 pub(crate) use mutation::GITHUB_MUTATION_SOURCE_KEY;
@@ -13,8 +14,7 @@ use resourcefs_core::{
     DiscoveryAdapter, ErrorCategory, GithubRepositoryIdentity, GlobOptions, GlobTarget,
     IssueAddress, IssueResource, OperationGuard, PathReference, PathSession, ProjectionSelector,
     PullRequestAddress, PullRequestResource, ResourceAddress, ResourceError, SearchOptions,
-    SearchSourceResult, SearchTarget, SourceAdapter,
-    SourceGlobResult, SourceResource, select_utf8,
+    SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult, SourceResource, select_utf8,
 };
 use url::Url;
 
@@ -503,6 +503,7 @@ impl GithubSource {
         let number = number.get();
         let base = format!("pr://{}/{number}", repository.as_str());
         match resource {
+            PullRequestResource::Facts => Err(unsupported_github_projection()),
             PullRequestResource::Aggregate => {
                 let pull = self.pull(repository, number, operation).await?;
                 let (mut comments, comment_next): (Vec<ConversationComment>, Option<u64>) = self
@@ -814,6 +815,15 @@ impl SourceAdapter for GithubSource {
         operation: &OperationGuard,
         acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
+        if matches!(
+            reference.address(),
+            ResourceAddress::PullRequest(PullRequestAddress::Item {
+                resource: PullRequestResource::Facts,
+                ..
+            })
+        ) {
+            return self.read_facts(reference, operation, acquisition).await;
+        }
         if acquisition.is_some() {
             return Err(ResourceError::new(
                 ErrorCategory::UnsupportedProjection,
@@ -847,7 +857,7 @@ impl SourceCatalogMetadata for GithubSource {
             )?,
             SourceCatalogEntry::new(
                 "pr://",
-                "pr://<owner>/<repository>[/<number>[/title|body|comments|reviews|review-comments|diff]][:selector]",
+                "pr://<owner>/<repository>[/<number>[/title|body|facts|comments|reviews|review-comments|diff]][:selector]",
                 "pr://owner/repository/42",
                 None,
             )?,

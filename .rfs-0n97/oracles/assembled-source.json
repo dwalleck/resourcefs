@@ -1,0 +1,32 @@
+{
+  "source_sha256": {
+    "Cargo.lock": "4d6e03bd358c594ab00ba2720f43586ecb472712756ff46b631dd4bf13409f07",
+    "crates/resourcefs-core/src/reference.rs": "c15353e131bdc26512229ed96cec8ba1a1af80bcff2e9a3b07d6c878fa9b1f0d",
+    "crates/resourcefs-core/src/acquisition.rs": "941a2d7109e76652df8afc4636c2aabda988a35d3f15e5076f246765c727e2ba",
+    "crates/resourcefs-core/src/error.rs": "5a37cbf0ea627f334c7a02554e7f71f9620bee41a1287d1d63108e4c0f2ac49c",
+    "crates/resourcefs-core/src/read.rs": "3fb5ac65e91524bb467d5deab52ebdb8e2e308f10ff54a258afe04fa719f04fe",
+    "crates/resourcefs-sources/src/github/facts.rs": "19908d15de2143d40b404225dc78cea00a6e6ee4ab2bd17d82bb10dc198e4a63",
+    "crates/resourcefs-sources/src/github/facts/identity.rs": "f591ba82909686a4d5d2bd56bdf5c9a4532729b4efffd92b8e784addabb98c71",
+    "crates/resourcefs-sources/src/github/fetch.rs": "eaee8186a4535f0c18aea84b8938892e3cfeae9fc7e80d701abfabab1b1a3f85",
+    "crates/resourcefs-sources/src/github/mod.rs": "3b91f2a16b7dcac9cc18150bea2ac643b735791c7217329d95c65302be859b2f",
+    "crates/resourcefs-sources/src/github/mutation.rs": "18166f261cd8be08c3a4b80c35199b81645f09815c80ef918422f5b0d34c1d5f",
+    "crates/resourcefs-sources/src/http/mod.rs": "28b82f7011cab2cce5e758bf0639bd91eb4be3a49b9b2f3db95a2076b30d5b07",
+    "crates/resourcefs-sources/src/http/read.rs": "626649c311f6be487c0cfb7bb9c56d639566b710bf9f0e76840db557f36f53cd",
+    "crates/resourcefs-mcp/src/launch.rs": "5c6a3d97824602cabf0954501b5e6068706003a2f1192a5b5d918b4a48ccc538",
+    "crates/resourcefs-mcp/src/profile/mod.rs": "8081c059610d3e29de78b970a8a155a255a56bf695433aa196945a838939fd34",
+    "crates/resourcefs-mcp/src/render.rs": "2836b6b6c4ae7233360302bd189f68b1030f4e1914c0c44bd3bff246122851a2",
+    "crates/resourcefs-mcp/src/render/error.rs": "103260abdca7328be012a3ce4bd813aa0b6e345783e682c969328225c970882f",
+    "crates/resourcefs-mcp/src/server.rs": "9934facb0f5603b8f611a9dfd57b526ffe738becaf29575cddec56c8fc6a239f",
+    "crates/resourcefs-mcp/src/server/read.rs": "6668fa9af6e83d7ccf447d5ffdc7afa92ef97609c10e0397a214ba77d968ae42",
+    "crates/resourcefs-mcp/src/test_support.rs": "749cc1f3252bc6b578a22ba67a6c28f432a9a97764728428d7be4df9969942ba"
+  },
+  "mutation_group_counts": {
+    "s3-mutation-results.json": 4,
+    "s4-mutation-results.json": 3,
+    "s6-mutation-results.json": 15,
+    "s6-mcp-mutation-results.json": 4,
+    "s6-lifecycle-mutation-results.json": 2,
+    "s6-final-publication-mutations.json": 2
+  },
+  "other_mutations": "S3 resolved HTTP2 feature mutation and four S5 real-MCP mutation records are retained separately."
+}
