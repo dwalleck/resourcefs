@@ -162,7 +162,7 @@ async fn query_cursor_owner_cells_refuse_before_egress_and_valid_owner_advances(
         let error = match PathReference::parse(&bad) {
             Err(error) => error,
             Ok(parsed) => source
-                .read(&parsed, &OperationGuard::new())
+                .read(&parsed, &OperationGuard::new(), None)
                 .await
                 .expect_err("C3 malformed envelope"),
         };
@@ -622,7 +622,8 @@ async fn query_changed_validator_rows_are_not_cached_and_shared_controls_apply()
         source
             .read(
                 &PathReference::parse(reference(JQL)).expect("reference"),
-                &guard
+                &guard,
+                None
             )
             .await
             .expect_err("C9 cancellation")

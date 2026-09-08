@@ -1,0 +1,45 @@
+{
+  "command": "resourcefs check --config PATH (no --probe)",
+  "records": [
+    {
+      "case": "public-default",
+      "exit": 0,
+      "seconds": 0.009866,
+      "stdout": "{\"ok\":true,\"schemaVersion\":1,\"probe\":false,\"sources\":[{\"id\":\"github-source\",\"kind\":\"github\",\"required\":false,\"state\":\"notProbed\"}]}\n",
+      "stderr": "",
+      "repository_count": 1
+    },
+    {
+      "case": "corporate-pair",
+      "exit": 0,
+      "seconds": 0.006819,
+      "stdout": "{\"ok\":true,\"schemaVersion\":1,\"probe\":false,\"sources\":[{\"id\":\"github-source\",\"kind\":\"github\",\"required\":false,\"state\":\"notProbed\"}]}\n",
+      "stderr": "",
+      "repository_count": 1
+    },
+    {
+      "case": "corporate-mismatch",
+      "exit": 2,
+      "seconds": 0.005676,
+      "stdout": "",
+      "stderr": "resourcefs: sources[0] is invalid: source configuration: GitHub web and API origins do not identify the same deployment\n",
+      "repository_count": 1
+    },
+    {
+      "case": "acquisition-array",
+      "exit": 2,
+      "seconds": 0.00591,
+      "stdout": "",
+      "stderr": "resourcefs: invalid Server Profile field sources[0]: invalid type: sequence, expected an acquisition object at line 1 column 264\n",
+      "repository_count": 1
+    },
+    {
+      "case": "repository-boundary-4096",
+      "exit": 0,
+      "seconds": 0.023139,
+      "stdout": "{\"ok\":true,\"schemaVersion\":1,\"probe\":false,\"sources\":[{\"id\":\"github-source\",\"kind\":\"github\",\"required\":false,\"state\":\"notProbed\"}]}\n",
+      "stderr": "",
+      "repository_count": 4096
+    }
+  ]
+}

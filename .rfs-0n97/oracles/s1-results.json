@@ -1,0 +1,88 @@
+{
+  "slice": "S1",
+  "source_base": "7de8d1477af6be825bada9015a6996b3f2917c7d",
+  "positive_checks": [
+    {
+      "command": "cargo test -p resourcefs-core --test acquisition_contract --test read_engine_contract",
+      "passed": 17,
+      "failed": 0
+    },
+    {
+      "command": "cargo test -p resourcefs-sources --test compiled_sources_contract --test local_dispatch_contract --test artifact_adapter_contract",
+      "passed": 18,
+      "failed": 0
+    },
+    {
+      "command": "cargo test -p resourcefs-mcp --test architecture_contract enforces_dependency_direction -- --exact",
+      "passed": 1,
+      "failed": 0,
+      "restoration_test_seconds": 0.17
+    },
+    {
+      "command": "cargo check --workspace --all-targets --all-features",
+      "exit": 0,
+      "seconds": 7.31
+    },
+    {
+      "command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+      "exit": 0,
+      "seconds": 8.73
+    },
+    {
+      "command": "python .rfs-0n97/oracles/module_shape.py --stage core",
+      "exit": 0
+    }
+  ],
+  "mutations": [
+    {
+      "change": "All five acquisition intersection min operations become max",
+      "test": "intersection_lowers_unequal_dimensions_independently",
+      "red_exit": 101,
+      "observed": [
+        8,
+        20,
+        300,
+        400,
+        500
+      ],
+      "expected": [
+        2,
+        3,
+        30,
+        40,
+        50
+      ],
+      "restored_exit": 0
+    },
+    {
+      "change": "Integer constructor clamps zero to one",
+      "test": "rejects_zero_and_above_hard_in_every_dimension",
+      "red_exit": 101,
+      "diagnostic": "invalid dimension must not be clamped or defaulted; max_attempts:1 returned successfully",
+      "restored_exit": 0
+    },
+    {
+      "change": "Direct LocalSource explicit-acquisition rejection disabled",
+      "test": "direct_local_read_refuses_explicit_acquisition_controls",
+      "red_exit": 101,
+      "diagnostic": "read incorrectly returned successful Session Scratch listing",
+      "restored_exit": 0
+    },
+    {
+      "change": "Actual serde_json decoder in ResourceError::new plus matching production dependency",
+      "test": "enforces_dependency_direction",
+      "red_exit": 101,
+      "diagnostic": "source-neutral core production code must not decode source-native JSON",
+      "restored_exit": 0
+    }
+  ],
+  "scalar_probe": {
+    "operations": 100000,
+    "checksum": 490000,
+    "elapsed_ns": 1363632,
+    "maximum_ns": 100000000,
+    "profile": "release; standalone rustc -O -C panic=abort linked to freshly built core rlib",
+    "source": "use resourcefs_core::ReadAcquisitionLimits;\nuse std::{\n    hint::black_box,\n    time::{Duration, Instant},\n};\n\nfn main() {\n    let operator = ReadAcquisitionLimits::new(\n        Some(7),\n        Some(Duration::from_secs(12)),\n        Some(4096),\n        Some(8192),\n        Some(8192),\n    )\n    .expect(\"valid operator\");\n    let start = Instant::now();\n    let mut checksum = 0usize;\n    for index in 0..100_000usize {\n        let candidate = ReadAcquisitionLimits::new(\n            Some(black_box(index % 10 + 1)),\n            Some(Duration::from_nanos(black_box(index as u64 + 1))),\n            Some(black_box(index % 8192 + 1)),\n            Some(black_box(index % 16384 + 1)),\n            Some(black_box(index % 16384 + 1)),\n        )\n        .expect(\"valid independently bounded inputs\");\n        let effective = black_box(candidate.intersect(operator));\n        checksum = checksum.wrapping_add(effective.max_attempts());\n    }\n    let elapsed = start.elapsed();\n    println!(\n        \"operations=100000 checksum={} elapsed_ns={} budget_ns=100000000\",\n        black_box(checksum),\n        elapsed.as_nanos()\n    );\n    assert!(\n        elapsed <= Duration::from_millis(100),\n        \"scalar policy exceeded the approved budget\"\n    );\n}\n"
+  },
+  "qualification_repair": "Clippy rejected a manual Result-to-Option match. Audited .ok() retains only an optional unrepresentable numeric observation; invalid Duration still returns typed Err. No failure is converted to success."
+}

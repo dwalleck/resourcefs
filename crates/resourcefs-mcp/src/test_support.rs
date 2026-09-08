@@ -7,6 +7,8 @@ use crate::{BoxError, launch::LaunchPlan, server};
 pub use resourcefs_sources::TestRootCertificate;
 
 /// Runs the normal profile-launched server over stdio with one fixture CA.
+/// The same CA reaches both HTTPS and GitHub mounts through their shared
+/// substrate; it does not change origin or repository authorization.
 ///
 /// The production CLI has no call to this interface. Integration tests invoke
 /// it from their own re-executed test harness, so fixture trust is never

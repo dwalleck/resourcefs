@@ -89,6 +89,8 @@ pub const FIXTURE_HOST: &str = "tls.invalid";
 pub enum FixtureResponse {
     /// `200 OK` carrying `body`.
     Body(String),
+    /// `200 OK` whose entire response waits asynchronously before the headers.
+    DelayedBody { delay: Duration, body: String },
     /// `302 Found` pointing at `location`, absolute or origin-relative.
     Redirect(String),
     /// `200 OK` carrying `body` under an explicit `Content-Type`.
@@ -174,7 +176,7 @@ impl FixtureResponse {
     /// [`write_response`] so each write can be counted and paced.
     fn render_head(&self) -> String {
         match self {
-            Self::Body(body) => format!(
+            Self::Body(body) | Self::DelayedBody { body, .. } => format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             ),
@@ -319,6 +321,9 @@ async fn write_response<W>(stream: &mut W, response: &FixtureResponse, flushed: 
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
+    if let FixtureResponse::DelayedBody { delay, .. } = response {
+        tokio::time::sleep(*delay).await;
+    }
     if stream
         .write_all(response.render_head().as_bytes())
         .await
@@ -492,7 +497,19 @@ impl TlsListener {
                             .lock()
                             .expect("request body log is uncontended")
                             .push(body);
-                        write_response(&mut tls, &router(&request), &flushed).await;
+                        // The router is a synchronous closure, and fixtures use
+                        // it to hold a response open on a blocking barrier. Run
+                        // it on a blocking thread: called inline it occupies a
+                        // runtime worker, and a worker parked on a blocking
+                        // call cannot service the timer that the read under
+                        // test relies on to enforce its own deadline.
+                        let response = {
+                            let router = Arc::clone(&router);
+                            tokio::task::spawn_blocking(move || router(&request))
+                                .await
+                                .expect("fixture router")
+                        };
+                        write_response(&mut tls, &response, &flushed).await;
                     }
                     let _ = tls.shutdown().await;
                 });

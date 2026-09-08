@@ -110,7 +110,7 @@ impl LaunchPlan {
         )
         .await
         .map_err(LaunchError::configuration)?;
-        let https = match trust {
+        let https = match &trust {
             HttpsTrust::System => {
                 profile::mount_https(checked.https, &checked.configuration_base, &degraded).await
             }
@@ -120,15 +120,28 @@ impl LaunchPlan {
                     checked.https,
                     &checked.configuration_base,
                     &degraded,
+                    root.clone(),
+                )
+                .await
+            }
+        }
+        .map_err(LaunchError::configuration)?;
+        let github = match trust {
+            HttpsTrust::System => {
+                profile::mount_github(checked.github, &checked.configuration_base, &degraded).await
+            }
+            #[cfg(feature = "test-support")]
+            HttpsTrust::Fixture(root) => {
+                profile::mount_github_with_root(
+                    checked.github,
+                    &checked.configuration_base,
+                    &degraded,
                     root,
                 )
                 .await
             }
         }
         .map_err(LaunchError::configuration)?;
-        let github = profile::mount_github(checked.github, &checked.configuration_base, &degraded)
-            .await
-            .map_err(LaunchError::configuration)?;
         Ok(Self {
             source,
             https,

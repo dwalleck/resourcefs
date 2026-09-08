@@ -94,9 +94,11 @@ impl SourceAdapter for CompiledSources {
         &self,
         reference: &PathReference,
         operation: &OperationGuard,
+        acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
         match reference.address() {
             ResourceAddress::Catalog(address) => {
+                resourcefs_core::reject_acquisition(acquisition)?;
                 let document = match address {
                     CatalogAddress::Sources => {
                         NamespaceCatalog::source_document(self.catalog_entries()?)?
@@ -108,13 +110,29 @@ impl SourceAdapter for CompiledSources {
                 let (content, version_tag) = document.into_parts();
                 SourceResource::text_projection(reference.clone(), content, version_tag)
             }
-            ResourceAddress::Workspace(_) => self.filesystem.read(reference, operation).await,
-            ResourceAddress::Artifact(_) => self.artifacts.read(reference, operation).await,
-            ResourceAddress::Local(_) => self.local.read(reference, operation).await,
-            ResourceAddress::Https(_) => self.https_source()?.read(reference, operation).await,
-            ResourceAddress::Jira(_) => self.atlassian_source()?.read(reference, operation).await,
+            ResourceAddress::Workspace(_) => {
+                self.filesystem
+                    .read(reference, operation, acquisition)
+                    .await
+            }
+            ResourceAddress::Artifact(_) => {
+                self.artifacts.read(reference, operation, acquisition).await
+            }
+            ResourceAddress::Local(_) => self.local.read(reference, operation, acquisition).await,
+            ResourceAddress::Https(_) => {
+                self.https_source()?
+                    .read(reference, operation, acquisition)
+                    .await
+            }
+            ResourceAddress::Jira(_) => {
+                self.atlassian_source()?
+                    .read(reference, operation, acquisition)
+                    .await
+            }
             ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
-                self.github_source()?.read(reference, operation).await
+                self.github_source()?
+                    .read(reference, operation, acquisition)
+                    .await
             }
         }
     }

@@ -49,6 +49,7 @@ async fn read(source: &HttpsSource, reference: &str) -> SourceResource {
         .read(
             &PathReference::parse(reference).expect("reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .unwrap_or_else(|error| panic!("{reference}: {:?} {}", error.category(), error.message()))
@@ -59,6 +60,7 @@ async fn read_err(source: &HttpsSource, reference: &str) -> ErrorCategory {
         .read(
             &PathReference::parse(reference).expect("reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .map(|resource| {

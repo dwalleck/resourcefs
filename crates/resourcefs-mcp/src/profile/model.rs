@@ -6,6 +6,7 @@
     )
 )]
 
+use crate::acquisition::AcquisitionInput;
 use crate::logging::{
     DEFAULT_RETAINED_FILES, LogConfig, LogError, LogErrorKind, LogLevel, MAX_ROTATION_BYTES,
 };
@@ -923,6 +924,12 @@ pub(super) struct GithubSourceProfile {
     #[serde(default, deserialize_with = "deserialize_optional_non_null")]
     #[schemars(with = "String")]
     api_base_url: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    #[schemars(with = "String")]
+    web_origin: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_non_null")]
+    #[schemars(with = "AcquisitionInput")]
+    acquisition: Option<AcquisitionInput>,
     allow_private_network: bool,
     credential: SecretReferenceProfile,
     #[serde(deserialize_with = "deserialize_bounded_vec")]
@@ -1193,27 +1200,37 @@ impl CredentialHeaderProfile {
     }
 }
 
+/// The profile's GitHub fields, released for conversion.
+///
+/// Named rather than positional: `api_base_url` and `web_origin` are both
+/// `Option<String>` and `required` and `allow_private_network` are both
+/// `bool`, so a transposition in a nine-slot tuple type-checks and reaches
+/// `GithubDeployment::new` as a silently different deployment.
+pub(super) struct GithubSourceParts {
+    pub(super) id: String,
+    pub(super) required: bool,
+    pub(super) grants: MutationGrants,
+    pub(super) api_base_url: Option<String>,
+    pub(super) web_origin: Option<String>,
+    pub(super) acquisition: Option<AcquisitionInput>,
+    pub(super) allow_private_network: bool,
+    pub(super) credential: SecretReferenceProfile,
+    pub(super) repositories: Vec<GithubRepositoryProfile>,
+}
+
 impl GithubSourceProfile {
-    pub(super) fn into_parts(
-        self,
-    ) -> (
-        String,
-        bool,
-        MutationGrants,
-        Option<String>,
-        bool,
-        SecretReferenceProfile,
-        Vec<GithubRepositoryProfile>,
-    ) {
-        (
-            self.id,
-            self.required,
-            grants_or_default(self.grants),
-            self.api_base_url,
-            self.allow_private_network,
-            self.credential,
-            self.repositories,
-        )
+    pub(super) fn into_parts(self) -> GithubSourceParts {
+        GithubSourceParts {
+            id: self.id,
+            required: self.required,
+            grants: grants_or_default(self.grants),
+            api_base_url: self.api_base_url,
+            web_origin: self.web_origin,
+            acquisition: self.acquisition,
+            allow_private_network: self.allow_private_network,
+            credential: self.credential,
+            repositories: self.repositories,
+        }
     }
 }
 

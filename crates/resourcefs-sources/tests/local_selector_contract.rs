@@ -36,7 +36,7 @@ async fn literal_scratch_name_wins() {
     let selector_reference = PathReference::parse("local://plan.md:1-2".to_owned())
         .expect("a colon-bearing scratch reference parses");
     let projected = local
-        .read(&selector_reference, &OperationGuard::new())
+        .read(&selector_reference, &OperationGuard::new(), None)
         .await
         .expect("selector reading when no literal Resource exists");
     assert_eq!(
@@ -60,7 +60,7 @@ async fn literal_scratch_name_wins() {
         .expect("literal colon-bearing scratch");
 
     let literal = local
-        .read(&selector_reference, &OperationGuard::new())
+        .read(&selector_reference, &OperationGuard::new(), None)
         .await
         .expect("literal reading once the Resource exists");
     assert_eq!(

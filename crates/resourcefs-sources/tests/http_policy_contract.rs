@@ -711,6 +711,7 @@ async fn https_reader_mode_reports_markdown_for_complete_and_selected() {
         .read(
             &PathReference::parse(base.clone()).expect("complete reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("complete read");
@@ -723,6 +724,7 @@ async fn https_reader_mode_reports_markdown_for_complete_and_selected() {
         .read(
             &PathReference::parse(format!("{base}:1")).expect("selected reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("selected read");
@@ -734,6 +736,7 @@ async fn https_reader_mode_reports_markdown_for_complete_and_selected() {
         .read(
             &PathReference::parse(format!("{base}:raw")).expect("raw reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("raw read");

@@ -44,7 +44,7 @@ async fn reads_utf8_empty_and_unicode_resources() {
     let source = single_source(&root).await.expect("filesystem source");
 
     let unicode = source
-        .read(&reference(unicode_path), &OperationGuard::new())
+        .read(&reference(unicode_path), &OperationGuard::new(), None)
         .await
         .expect("unicode read");
     assert_eq!(unicode.content(), "héllo\n");
@@ -54,7 +54,7 @@ async fn reads_utf8_empty_and_unicode_resources() {
     );
 
     let empty = source
-        .read(&reference("empty.txt"), &OperationGuard::new())
+        .read(&reference("empty.txt"), &OperationGuard::new(), None)
         .await
         .expect("empty read");
     assert_eq!(empty.content(), "");
@@ -68,19 +68,19 @@ async fn maps_missing_directory_and_binary_resources() {
     let source = single_source(&root).await.expect("filesystem source");
 
     let missing = source
-        .read(&reference("missing.txt"), &OperationGuard::new())
+        .read(&reference("missing.txt"), &OperationGuard::new(), None)
         .await
         .expect_err("missing should fail");
     assert_eq!(missing.category(), ErrorCategory::NotFound);
 
     let directory = source
-        .read(&reference("directory"), &OperationGuard::new())
+        .read(&reference("directory"), &OperationGuard::new(), None)
         .await
         .expect_err("directory should fail");
     assert_eq!(directory.category(), ErrorCategory::UnsupportedProjection);
 
     let binary = source
-        .read(&reference("binary.bin"), &OperationGuard::new())
+        .read(&reference("binary.bin"), &OperationGuard::new(), None)
         .await
         .expect_err("binary should fail");
     assert_eq!(binary.category(), ErrorCategory::UnsupportedProjection);
@@ -113,7 +113,7 @@ async fn root_directory_references_are_valid_and_teach() {
         "rfs://workspace/root.with-dots",
     ] {
         let error = source
-            .read(&reference(spelling), &OperationGuard::new())
+            .read(&reference(spelling), &OperationGuard::new(), None)
             .await
             .expect_err("root directory read must teach");
         assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
@@ -131,7 +131,7 @@ async fn root_directory_references_are_valid_and_teach() {
     ));
     assert_eq!(
         source
-            .read(&file_reference, &OperationGuard::new())
+            .read(&file_reference, &OperationGuard::new(), None)
             .await
             .expect_err("file URI root is still a directory")
             .category(),
@@ -234,7 +234,7 @@ async fn mutable_matches_profile_and_exact_client_root_authority() {
 
     assert!(
         source
-            .read(&reference("fixture.txt"), &OperationGuard::new())
+            .read(&reference("fixture.txt"), &OperationGuard::new(), None)
             .await
             .expect("granted profile read")
             .is_mutable()
@@ -250,7 +250,7 @@ async fn mutable_matches_profile_and_exact_client_root_authority() {
         .expect("exact client refresh");
     assert!(
         source
-            .read(&reference("fixture.txt"), &OperationGuard::new())
+            .read(&reference("fixture.txt"), &OperationGuard::new(), None)
             .await
             .expect("exact client read")
             .is_mutable(),
@@ -267,7 +267,7 @@ async fn mutable_matches_profile_and_exact_client_root_authority() {
         .expect("nested client refresh");
     assert!(
         !source
-            .read(&reference("fixture.txt"), &OperationGuard::new())
+            .read(&reference("fixture.txt"), &OperationGuard::new(), None)
             .await
             .expect("nested client read")
             .is_mutable(),
@@ -286,7 +286,7 @@ async fn mutable_matches_profile_and_exact_client_root_authority() {
     .await
     .expect("CLI source");
     assert!(
-        !cli.read(&reference("fixture.txt"), &OperationGuard::new())
+        !cli.read(&reference("fixture.txt"), &OperationGuard::new(), None)
             .await
             .expect("CLI read")
             .is_mutable(),
@@ -345,7 +345,7 @@ async fn permits_contained_symlink() {
     .expect("granted filesystem source");
     assert!(
         source
-            .read(&reference("target.txt"), &OperationGuard::new())
+            .read(&reference("target.txt"), &OperationGuard::new(), None)
             .await
             .expect("direct target read")
             .is_mutable()
@@ -353,7 +353,7 @@ async fn permits_contained_symlink() {
 
     for link in ["link.txt", "normalized-link.txt"] {
         let resource = source
-            .read(&reference(link), &OperationGuard::new())
+            .read(&reference(link), &OperationGuard::new(), None)
             .await
             .expect("contained link read");
         assert_eq!(resource.content(), "inside");
@@ -393,7 +393,7 @@ async fn absolute_symlink_target_aliases_preserve_containment() {
     .expect("granted filesystem source");
 
     let resource = source
-        .read(&reference("link.txt"), &OperationGuard::new())
+        .read(&reference("link.txt"), &OperationGuard::new(), None)
         .await
         .expect("contained aliased target");
     assert_eq!(resource.content(), "inside");
@@ -402,7 +402,7 @@ async fn absolute_symlink_target_aliases_preserve_containment() {
     fs::remove_file(&alias).expect("remove root alias");
     symlink(&outside, &alias).expect("retarget alias outside workspace");
     let error = source
-        .read(&reference("link.txt"), &OperationGuard::new())
+        .read(&reference("link.txt"), &OperationGuard::new(), None)
         .await
         .expect_err("retargeted alias must not escape");
     assert_eq!(error.category(), ErrorCategory::PermissionDenied);
@@ -433,7 +433,7 @@ async fn dangling_absolute_symlinks_preserve_kernel_resolution_errors() {
             std::io::ErrorKind::NotFound,
         );
         let error = source
-            .read(&reference(name), &OperationGuard::new())
+            .read(&reference(name), &OperationGuard::new(), None)
             .await
             .expect_err("dangling Resource must not read sibling content");
         assert_eq!(error.category(), ErrorCategory::NotFound);
@@ -481,7 +481,7 @@ async fn absolute_symlink_non_directory_errors_retain_resource_identity() {
     );
     let source = single_source(&root).await.expect("filesystem source");
     let error = source
-        .read(&reference("broken-link"), &OperationGuard::new())
+        .read(&reference("broken-link"), &OperationGuard::new(), None)
         .await
         .expect_err("non-directory path must fail");
     assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
@@ -506,12 +506,16 @@ async fn absolute_symlinks_to_workspace_root_support_directory_discovery() {
     let source = single_source(&root).await.expect("filesystem source");
     for name in ["direct", "aliased"] {
         let error = source
-            .read(&reference(name), &OperationGuard::new())
+            .read(&reference(name), &OperationGuard::new(), None)
             .await
             .expect_err("root alias is a directory, not text");
         assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
         let resource = source
-            .read(&reference(&format!("{name}/a.txt")), &OperationGuard::new())
+            .read(
+                &reference(&format!("{name}/a.txt")),
+                &OperationGuard::new(),
+                None,
+            )
             .await
             .expect("read through root alias");
         assert_eq!(resource.content(), "root content");
@@ -586,7 +590,7 @@ async fn rejects_symlink_escape() {
     let source = single_source(&root).await.expect("filesystem source");
 
     let error = source
-        .read(&reference("escape.txt"), &OperationGuard::new())
+        .read(&reference("escape.txt"), &OperationGuard::new(), None)
         .await
         .expect_err("escaping link should fail");
     assert_eq!(error.category(), ErrorCategory::PermissionDenied);
@@ -625,7 +629,7 @@ async fn returns_complete_projection_above_inline_page_limits() {
         ("columns-over.txt", columns_over.as_bytes()),
     ] {
         let resource = source
-            .read(&reference(path), &OperationGuard::new())
+            .read(&reference(path), &OperationGuard::new(), None)
             .await
             .expect("Source Adapter returns complete projection");
         assert_eq!(resource.content().as_bytes(), expected);
@@ -643,7 +647,7 @@ async fn rejects_projection_one_byte_over_artifact_ceiling() {
 
     let source = single_source(&root).await.expect("filesystem source");
     let error = source
-        .read(&reference("object-over.txt"), &OperationGuard::new())
+        .read(&reference("object-over.txt"), &OperationGuard::new(), None)
         .await
         .expect_err("one byte over object ceiling");
     assert_eq!(error.category(), ErrorCategory::LimitExceeded);
@@ -658,7 +662,7 @@ async fn reads_maximum_sized_file_within_budget() {
 
     let started = Instant::now();
     let resource = source
-        .read(&reference("maximum.txt"), &OperationGuard::new())
+        .read(&reference("maximum.txt"), &OperationGuard::new(), None)
         .await
         .expect("maximum read");
     let elapsed = started.elapsed();
@@ -697,14 +701,14 @@ async fn filesystem_streams_narrow_large_range() {
     let source = single_source(&root).await.expect("filesystem source");
 
     let full_error = source
-        .read(&reference("large.txt"), &OperationGuard::new())
+        .read(&reference("large.txt"), &OperationGuard::new(), None)
         .await
         .expect_err("complete large source exceeds the inline source limit");
     assert_eq!(full_error.category(), ErrorCategory::LimitExceeded);
 
     let started = Instant::now();
     let selected = source
-        .read(&reference("large.txt:2"), &OperationGuard::new())
+        .read(&reference("large.txt:2"), &OperationGuard::new(), None)
         .await
         .expect("narrow selection from large source");
     let elapsed = started.elapsed();
@@ -745,6 +749,7 @@ async fn stale_stream_delivery_is_rejected() {
             .read(
                 &reference("stale-stream-delivery.txt:2"),
                 &OperationGuard::new(),
+                None,
             )
             .await
     });
@@ -838,7 +843,7 @@ async fn relative_reads_require_unique_primary() {
         .await
         .expect("multi-root source");
     let ambiguous = no_primary
-        .read(&reference("shared.txt"), &OperationGuard::new())
+        .read(&reference("shared.txt"), &OperationGuard::new(), None)
         .await
         .expect_err("relative read without a primary must fail");
     assert_eq!(ambiguous.category(), ErrorCategory::AmbiguousReference);
@@ -846,7 +851,7 @@ async fn relative_reads_require_unique_primary() {
     for (id, content) in [("alpha", "alpha"), ("beta", "beta")] {
         let canonical = format!("rfs://workspace/{id}/shared.txt");
         let resource = no_primary
-            .read(&reference(&canonical), &OperationGuard::new())
+            .read(&reference(&canonical), &OperationGuard::new(), None)
             .await
             .expect("canonical read");
         assert_eq!(resource.content(), content);
@@ -858,7 +863,7 @@ async fn relative_reads_require_unique_primary() {
         .expect("selected source");
     assert_eq!(
         selected
-            .read(&reference("shared.txt"), &OperationGuard::new())
+            .read(&reference("shared.txt"), &OperationGuard::new(), None)
             .await
             .expect("selected relative read")
             .content(),
@@ -869,7 +874,7 @@ async fn relative_reads_require_unique_primary() {
         .await
         .expect("unmatched primary disables relative reads");
     let error = unmatched
-        .read(&reference("shared.txt"), &OperationGuard::new())
+        .read(&reference("shared.txt"), &OperationGuard::new(), None)
         .await
         .expect_err("unmatched primary must fail");
     assert_eq!(error.category(), ErrorCategory::AmbiguousReference);
@@ -878,6 +883,7 @@ async fn relative_reads_require_unique_primary() {
         .read(
             &reference("rfs://workspace/missing/shared.txt"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("unknown canonical root must fail");
@@ -916,7 +922,7 @@ async fn client_root_refresh_replaces_and_restores_launch_authority() {
 
     let refresh = source.begin_client_root_refresh().await;
     let suspended = source
-        .read(&reference("shared.txt"), &OperationGuard::new())
+        .read(&reference("shared.txt"), &OperationGuard::new(), None)
         .await
         .expect_err("reads must suspend during refresh");
     assert_eq!(suspended.category(), ErrorCategory::SourceUnavailable);
@@ -937,7 +943,7 @@ async fn client_root_refresh_replaces_and_restores_launch_authority() {
             && active.len() == 2
     ));
     let selected = source
-        .read(&reference("shared.txt"), &OperationGuard::new())
+        .read(&reference("shared.txt"), &OperationGuard::new(), None)
         .await
         .expect("selected client root");
     assert_eq!(selected.content(), "beta");
@@ -961,7 +967,7 @@ async fn client_root_refresh_replaces_and_restores_launch_authority() {
     );
     assert_eq!(
         source
-            .read(&reference("shared.txt"), &OperationGuard::new())
+            .read(&reference("shared.txt"), &OperationGuard::new(), None)
             .await
             .expect("stable selected client root")
             .canonical_reference(),
@@ -983,7 +989,7 @@ async fn client_root_refresh_replaces_and_restores_launch_authority() {
     ));
     assert_eq!(
         source
-            .read(&reference("shared.txt"), &OperationGuard::new())
+            .read(&reference("shared.txt"), &OperationGuard::new(), None)
             .await
             .expect("restored launch root")
             .content(),
@@ -1017,7 +1023,7 @@ async fn expired_root_refresh_disables_authority_and_cannot_clobber_recovery() {
     tokio::time::advance(Duration::from_secs(5)).await;
     tokio::task::yield_now().await;
     let disabled = source
-        .read(&reference("fixture.txt"), &OperationGuard::new())
+        .read(&reference("fixture.txt"), &OperationGuard::new(), None)
         .await
         .expect_err("expired acquisition must disable authority");
     assert_eq!(disabled.category(), ErrorCategory::SourceUnavailable);
@@ -1044,7 +1050,7 @@ async fn expired_root_refresh_disables_authority_and_cannot_clobber_recovery() {
     );
     assert_eq!(
         source
-            .read(&reference("fixture.txt"), &OperationGuard::new())
+            .read(&reference("fixture.txt"), &OperationGuard::new(), None)
             .await
             .expect("recovered authority")
             .content(),
@@ -1081,7 +1087,7 @@ async fn client_display_names_select_but_never_define_identity() {
         .expect("valid client roots");
     assert_eq!(
         source
-            .read(&reference("shared.txt"), &OperationGuard::new())
+            .read(&reference("shared.txt"), &OperationGuard::new(), None)
             .await
             .expect("unique valid display-name match")
             .content(),
@@ -1089,7 +1095,7 @@ async fn client_display_names_select_but_never_define_identity() {
     );
     let alpha_absolute = alpha.join("shared.txt").to_string_lossy().into_owned();
     let alpha_identity = source
-        .read(&reference(&alpha_absolute), &OperationGuard::new())
+        .read(&reference(&alpha_absolute), &OperationGuard::new(), None)
         .await
         .expect("alpha absolute read")
         .canonical_reference()
@@ -1108,7 +1114,7 @@ async fn client_display_names_select_but_never_define_identity() {
         .expect("duplicate display names remain valid");
     assert_eq!(
         source
-            .read(&reference("shared.txt"), &OperationGuard::new())
+            .read(&reference("shared.txt"), &OperationGuard::new(), None)
             .await
             .expect_err("duplicate primary names are ambiguous")
             .category(),
@@ -1116,7 +1122,7 @@ async fn client_display_names_select_but_never_define_identity() {
     );
     assert_eq!(
         source
-            .read(&reference(&alpha_absolute), &OperationGuard::new())
+            .read(&reference(&alpha_absolute), &OperationGuard::new(), None)
             .await
             .expect("alpha identity after display-name change")
             .canonical_reference(),
@@ -1150,7 +1156,7 @@ async fn invalid_client_display_name_fails_closed() {
         .expect_err("invalid client display name must reject the root set");
     assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
     let disabled = source
-        .read(&reference("fixture.txt"), &OperationGuard::new())
+        .read(&reference("fixture.txt"), &OperationGuard::new(), None)
         .await
         .expect_err("invalid root set must fail closed");
     assert_eq!(disabled.category(), ErrorCategory::SourceUnavailable);
@@ -1173,7 +1179,7 @@ async fn failed_and_superseded_refreshes_fail_closed() {
     );
     assert_eq!(
         source
-            .read(&reference("fixture.txt"), &OperationGuard::new())
+            .read(&reference("fixture.txt"), &OperationGuard::new(), None)
             .await
             .expect_err("newer refresh still suspends authority")
             .category(),
@@ -1201,7 +1207,7 @@ async fn failed_and_superseded_refreshes_fail_closed() {
     assert_eq!(error.category(), ErrorCategory::InvalidReference);
     assert_eq!(
         source
-            .read(&reference("fixture.txt"), &OperationGuard::new())
+            .read(&reference("fixture.txt"), &OperationGuard::new(), None)
             .await
             .expect_err("failed refresh disables authority")
             .category(),
@@ -1228,7 +1234,7 @@ async fn failed_and_superseded_refreshes_fail_closed() {
         .await;
     assert_eq!(
         source
-            .read(&reference("fixture.txt"), &OperationGuard::new())
+            .read(&reference("fixture.txt"), &OperationGuard::new(), None)
             .await
             .expect_err("explicit acquisition failure disables authority")
             .category(),
@@ -1251,7 +1257,7 @@ async fn literal_paths_precede_selectors() {
     .expect("filesystem source");
 
     let literal = source
-        .read(&reference("notes:2"), &OperationGuard::new())
+        .read(&reference("notes:2"), &OperationGuard::new(), None)
         .await
         .expect("literal selector-shaped filename");
     assert_eq!(literal.content(), "literal");
@@ -1261,14 +1267,14 @@ async fn literal_paths_precede_selectors() {
     );
 
     let single_pass = source
-        .read(&reference("notes%253A2"), &OperationGuard::new())
+        .read(&reference("notes%253A2"), &OperationGuard::new(), None)
         .await
         .expect("single-pass percent filename");
     assert_eq!(single_pass.content(), "single pass");
 
     fs::remove_file(root.join("notes:2")).expect("remove literal fixture");
     let projection = source
-        .read(&reference("notes:2"), &OperationGuard::new())
+        .read(&reference("notes:2"), &OperationGuard::new(), None)
         .await
         .expect("selector executes after the literal candidate is absent");
     assert_eq!(projection.content(), "second\n");
@@ -1302,7 +1308,7 @@ async fn absolute_and_file_references_map_through_declared_roots() {
         url::Url::from_file_path(&file).expect("file URI").into(),
     ] {
         let resource = source
-            .read(&reference(&spelling), &OperationGuard::new())
+            .read(&reference(&spelling), &OperationGuard::new(), None)
             .await
             .expect("declared absolute reference");
         assert_eq!(resource.content(), "fixture");
@@ -1319,7 +1325,7 @@ async fn absolute_and_file_references_map_through_declared_roots() {
             .into(),
     ] {
         let error = source
-            .read(&reference(&spelling), &OperationGuard::new())
+            .read(&reference(&spelling), &OperationGuard::new(), None)
             .await
             .expect_err("outside absolute reference must fail");
         assert_eq!(error.category(), ErrorCategory::PermissionDenied);
@@ -1348,7 +1354,7 @@ async fn rejects_non_native_windows_absolute_spelling_before_ambient_mapping() {
             .into_owned();
 
         let error = source
-            .read(&reference(&spelling), &OperationGuard::new())
+            .read(&reference(&spelling), &OperationGuard::new(), None)
             .await
             .expect_err("non-native absolute spelling must not use ambient cwd");
         assert_eq!(error.category(), ErrorCategory::InvalidReference);
@@ -1374,7 +1380,7 @@ async fn configured_root_symlink_accepts_declared_absolute_spelling() {
             .into(),
     ] {
         let resource = source
-            .read(&reference(&spelling), &OperationGuard::new())
+            .read(&reference(&spelling), &OperationGuard::new(), None)
             .await
             .expect("declared absolute spelling");
         assert_eq!(resource.content(), "fixture");
@@ -1416,7 +1422,7 @@ async fn overlapping_absolute_inputs_are_ambiguous() {
         parent.join("alias.txt").to_string_lossy().into_owned(),
     ] {
         let error = source
-            .read(&reference(&spelling), &OperationGuard::new())
+            .read(&reference(&spelling), &OperationGuard::new(), None)
             .await
             .expect_err("overlapping absolute input must fail");
         assert_eq!(error.category(), ErrorCategory::AmbiguousReference);
@@ -1429,7 +1435,7 @@ async fn overlapping_absolute_inputs_are_ambiguous() {
             .into(),
     ] {
         let error = source
-            .read(&reference(&spelling), &OperationGuard::new())
+            .read(&reference(&spelling), &OperationGuard::new(), None)
             .await
             .expect_err("overlapping root directory input must stay ambiguous");
         assert_eq!(error.category(), ErrorCategory::AmbiguousReference);
@@ -1446,7 +1452,7 @@ async fn backing_uri_requires_visibility_policy() {
     let hidden = launch_source(roots(), None, BackingPathVisibility::Hidden)
         .await
         .expect("hidden source")
-        .read(&reference("fixture.txt"), &OperationGuard::new())
+        .read(&reference("fixture.txt"), &OperationGuard::new(), None)
         .await
         .expect("hidden read");
     assert_eq!(hidden.backing_file_uri(), None);
@@ -1454,7 +1460,7 @@ async fn backing_uri_requires_visibility_policy() {
     let visible = launch_source(roots(), None, BackingPathVisibility::Visible)
         .await
         .expect("visible source")
-        .read(&reference("fixture.txt"), &OperationGuard::new())
+        .read(&reference("fixture.txt"), &OperationGuard::new(), None)
         .await
         .expect("visible read");
     let expected =
@@ -1486,7 +1492,7 @@ async fn root_count_limit_is_exact() {
     .await
     .expect("256 roots must pass");
     let missing = accepted
-        .read(&reference("missing.txt"), &OperationGuard::new())
+        .read(&reference("missing.txt"), &OperationGuard::new(), None)
         .await
         .expect_err("missing fixture");
     assert_eq!(missing.category(), ErrorCategory::NotFound);
@@ -1541,7 +1547,7 @@ async fn retargeted_links_never_escape() {
 
     for _ in 0..500 {
         match source
-            .read(&reference("alias/value.txt"), &OperationGuard::new())
+            .read(&reference("alias/value.txt"), &OperationGuard::new(), None)
             .await
         {
             Ok(resource) => assert_eq!(resource.content(), "inside"),

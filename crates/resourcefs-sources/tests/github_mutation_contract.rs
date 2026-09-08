@@ -338,10 +338,15 @@ async fn fixture_with_grants(
         "github",
         false,
         grants,
-        Some(format!("https://{FIXTURE_HOST}:{port}/")),
+        resourcefs_sources::GithubDeployment::new(
+            Some(format!("https://{FIXTURE_HOST}:{port}/")),
+            None,
+        )
+        .expect("fixture deployment"),
         true,
         SecretReference::environment("GITHUB_TOKEN").expect("[C8] secret reference"),
         vec![GithubRepository::new("owner/repo", grants).expect("[C8] repository")],
+        resourcefs_core::ReadAcquisitionLimits::default(),
     )
     .expect("[C8] config");
     let substrate = HttpSubstrate::with_host_lookup_and_roots(
@@ -363,6 +368,7 @@ async fn read_tag(source: &GithubSource, path: &str) -> VersionTag {
         .read(
             &PathReference::parse(path).expect("[C8] read reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("[C8] Field read");
@@ -906,6 +912,7 @@ async fn unsupported_mutation_matrix_has_zero_egress() {
         "pr://owner/repo/7/reviews/1",
         "pr://owner/repo/7/review-comments/1",
         "pr://owner/repo/7/diff",
+        "pr://owner/repo/7/facts",
     ] {
         let error = MutationAdapter::resolve(
             &source,

@@ -8,15 +8,17 @@ use std::collections::BTreeMap;
 use resourcefs_sources::{
     AgentExportConfig, ChildEnvironment, CommandSpec, ConfigurationDirectory, ConverterInput,
     CredentialHeader, DocumentConverter, DocumentsConfig, DownstreamMcpConfig, DownstreamServer,
-    DownstreamTransport, EnvironmentValue, GithubConfig, GithubRepository, HttpsConfig,
-    HttpsOrigin, MemoryConfig, MemoryRoot, RulesConfig, SchemeClaim, SecretReference, SkillsConfig,
-    SshConfig, SshHost, VaultConfig, VaultRoot,
+    DownstreamTransport, EnvironmentValue, GithubConfig, GithubDeployment, GithubRepository,
+    HttpsConfig, HttpsOrigin, MemoryConfig, MemoryRoot, RulesConfig, SchemeClaim, SecretReference,
+    SkillsConfig, SshConfig, SshHost, VaultConfig, VaultRoot,
 };
+
+use crate::acquisition::describe_limit_rejection;
 
 use super::ProfileError;
 use super::model::{
     CommandProfile, ConverterInputProfile, CredentialHeaderProfile, DownstreamTransportProfile,
-    EnvironmentValueProfile, SecretReferenceProfile, SourceProfile,
+    EnvironmentValueProfile, GithubSourceParts, SecretReferenceProfile, SourceProfile,
 };
 
 #[derive(Debug, Clone)]
@@ -71,15 +73,28 @@ fn convert_source(
                 .map_err(source_configuration_error)
         }
         SourceProfile::Github(source) => {
-            let (
+            let GithubSourceParts {
                 id,
                 required,
                 grants,
                 api_base_url,
+                web_origin,
+                acquisition,
                 allow_private_network,
                 credential,
                 repositories,
-            ) = source.into_parts();
+            } = source.into_parts();
+            let deployment = GithubDeployment::new(api_base_url, web_origin)
+                .map_err(source_configuration_error)?;
+            let acquisition = acquisition
+                .unwrap_or_default()
+                .into_limits()
+                .map_err(|error| {
+                    ProfileError::invalid(format!(
+                        "source acquisition: {}",
+                        describe_limit_rejection(&error)
+                    ))
+                })?;
             let repositories = repositories
                 .into_iter()
                 .map(|repository| {
@@ -92,10 +107,11 @@ fn convert_source(
                 id,
                 required,
                 grants,
-                api_base_url,
+                deployment,
                 allow_private_network,
                 convert_secret(credential)?,
                 repositories,
+                acquisition,
             )
             .map(ConfiguredSource::Github)
             .map_err(source_configuration_error)

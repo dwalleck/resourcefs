@@ -1,0 +1,32 @@
+[
+  [
+    {
+      "name": "native_accept_changed_to_json",
+      "claim": "C18",
+      "path": "crates/resourcefs-sources/src/github/mod.rs",
+      "old": "                            GITHUB_DIFF,",
+      "new": "                            GITHUB_JSON,",
+      "test_command": "cargo test -p resourcefs-sources --test github_adapter_contract native_diff_preserves_media_bytes_and_separate_conditional_entries"
+    }
+  ],
+  [
+    {
+      "name": "native_diff_rebuilt_from_files",
+      "claim": "C18",
+      "path": "crates/resourcefs-sources/src/github/mod.rs",
+      "old": "                    let response = self\n                        .fetch(\n                            self.endpoint(repository, &format!(\"pulls/{number}\"))?,\n                            GITHUB_DIFF,\n                            operation,\n                        )\n                        .await?;\n                    let diff = String::from_utf8(response.body().to_vec()).map_err(|_| {\n                        malformed_upstream(\"GitHub unified diff is not valid UTF-8\")\n                    })?;\n",
+      "new": "                    let (files, _): (Vec<DiffFile>, Option<u64>) = self\n                        .collection(repository, &format!(\"pulls/{number}/files\"), &[], 1, operation)\n                        .await?;\n                    let diff = files.iter().map(render::diff_file).collect::<Vec<_>>().join(\"\\n\");\n",
+      "test_command": "cargo test -p resourcefs-sources --test github_adapter_contract native_diff_preserves_media_bytes_and_separate_conditional_entries"
+    }
+  ],
+  [
+    {
+      "name": "native_truncation_accepted",
+      "claim": "C18",
+      "path": "crates/resourcefs-sources/src/github/fetch.rs",
+      "old": "        if response.truncated() {",
+      "new": "        if false && response.truncated() {",
+      "test_command": "cargo test -p resourcefs-sources --test github_adapter_contract native_diff_refuses_truncation_after_accepting_exact_body_ceiling"
+    }
+  ]
+]

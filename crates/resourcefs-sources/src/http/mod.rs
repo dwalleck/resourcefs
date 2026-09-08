@@ -60,8 +60,8 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use resourcefs_core::{
-    AddressPolicy, AllowedOrigin, ErrorCategory, HttpCeilings, OperationGuard, OriginAllowlist,
-    ResourceError, Secret,
+    AddressPolicy, AllowedOrigin, ErrorCategory, ErrorReason, HttpCeilings, OperationGuard,
+    OriginAllowlist, ResourceError, ResourceErrorDetails, Secret,
 };
 use url::Url;
 
@@ -153,6 +153,7 @@ impl LogicalDeadline {
                 ErrorCategory::LimitExceeded,
                 "HTTP logical read deadline is not representable",
             )
+            .with_details(ResourceErrorDetails::new(ErrorReason::LimitExceeded))
         })
     }
 
@@ -299,6 +300,10 @@ pub struct BoundedHttpResponse {
     link: Option<Result<String, ResourceError>>,
     retry_after: RetryAfter,
     rate_limit_remaining: Option<u64>,
+    last_modified: Option<String>,
+    date: Option<String>,
+    selected_api_version: Option<String>,
+    rate_limit_reset: Option<u64>,
     body: Vec<u8>,
     truncated: bool,
 }
@@ -357,6 +362,30 @@ impl BoundedHttpResponse {
     #[must_use]
     pub const fn rate_limit_remaining(&self) -> Option<u64> {
         self.rate_limit_remaining
+    }
+
+    /// Returns a syntactically valid, bounded HTTP Last-Modified observation.
+    #[must_use]
+    pub fn last_modified(&self) -> Option<&str> {
+        self.last_modified.as_deref()
+    }
+
+    /// Returns a syntactically valid, bounded HTTP Date observation.
+    #[must_use]
+    pub fn date(&self) -> Option<&str> {
+        self.date.as_deref()
+    }
+
+    /// Returns bounded opaque selected-version metadata, without classification.
+    #[must_use]
+    pub fn selected_api_version(&self) -> Option<&str> {
+        self.selected_api_version.as_deref()
+    }
+
+    /// Returns a numeric upstream rate-limit reset in Unix seconds.
+    #[must_use]
+    pub const fn rate_limit_reset(&self) -> Option<u64> {
+        self.rate_limit_reset
     }
 
     /// Returns the accepted body bytes.
@@ -467,6 +496,7 @@ fn authorize_literal_host(
 /// Validation happens at construction so malformed certificate bytes cannot
 /// reach either substrate client or any network operation.
 #[cfg(feature = "test-support")]
+#[derive(Clone)]
 pub struct TestRootCertificate {
     der: Box<[u8]>,
 }
@@ -922,18 +952,6 @@ impl HttpSubstrate {
         self.ceilings
     }
 
-    /// Starts one bounded logical read using this substrate's configured timeout.
-    pub(crate) fn begin_read<'a>(
-        &'a self,
-        operation: &'a OperationGuard,
-    ) -> Result<BoundedRead<'a>, ResourceError> {
-        Ok(BoundedRead {
-            substrate: self,
-            operation,
-            deadline: LogicalDeadline::new(tokio::time::Instant::now(), self.ceilings.timeout())?,
-        })
-    }
-
     /// Performs one bounded logical fetch.
     ///
     /// A GET may make exactly one follow-up for a conclusively retryable
@@ -951,12 +969,16 @@ impl HttpSubstrate {
         &self,
         request: HttpRequest,
         operation: &OperationGuard,
+        response_ceiling: usize,
     ) -> Result<BoundedHttpResponse, HttpFetchFailure> {
         if !operation.is_active() && !operation.is_committing() {
-            return Err(HttpFetchFailure::terminal(ResourceError::new(
-                ErrorCategory::Cancelled,
-                "request was cancelled before egress",
-            )));
+            return Err(HttpFetchFailure::terminal(
+                ResourceError::new(
+                    ErrorCategory::Cancelled,
+                    "request was cancelled before egress",
+                )
+                .with_details(ResourceErrorDetails::new(ErrorReason::Cancelled)),
+            ));
         }
         let request_url = request.url().clone();
         self.refuse_degraded(&request_url)
@@ -1020,9 +1042,23 @@ impl HttpSubstrate {
             ))
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u64>().ok());
+        let last_modified =
+            Self::retained_observation(response.headers(), &header::LAST_MODIFIED, true);
+        let date = Self::retained_observation(response.headers(), &header::DATE, true);
+        let selected_api_version = Self::retained_observation(
+            response.headers(),
+            &header::HeaderName::from_static("x-github-api-version-selected"),
+            false,
+        );
+        let rate_limit_reset = Self::retained_observation(
+            response.headers(),
+            &header::HeaderName::from_static("x-ratelimit-reset"),
+            false,
+        )
+        .and_then(|value| value.parse::<u64>().ok());
 
         let (body, truncated) = self
-            .read_bounded(response, operation)
+            .read_bounded(response, operation, response_ceiling)
             .await
             .map_err(HttpFetchFailure::unknown)?;
         Ok(BoundedHttpResponse {
@@ -1033,6 +1069,10 @@ impl HttpSubstrate {
             link,
             retry_after,
             rate_limit_remaining,
+            last_modified,
+            date,
+            selected_api_version,
+            rate_limit_reset,
             body,
             truncated,
         })
@@ -1053,7 +1093,7 @@ impl HttpSubstrate {
                 format!(
                     "HTTP response header '{name}' exceeds the {MAX_SOURCE_REQUEST_HEADER_BYTES}-byte retained metadata ceiling"
                 ),
-            ));
+            ).with_details(ResourceErrorDetails::new(ErrorReason::LimitExceeded)));
         }
         Ok(Some(value))
     }
@@ -1092,6 +1132,37 @@ impl HttpSubstrate {
         })
     }
 
+    /// Optional observations are retained only as bounded printable ASCII.
+    /// Dates additionally require valid HTTP date syntax, but keep their wire spelling.
+    fn retained_observation(
+        headers: &reqwest::header::HeaderMap,
+        name: &reqwest::header::HeaderName,
+        date: bool,
+    ) -> Option<String> {
+        let value = match Self::header_within_ceiling(headers, name) {
+            Ok(Some(value)) => value,
+            // The upstream sent nothing to observe.
+            Ok(None) => return None,
+            // The upstream sent something this adapter will not retain. That
+            // is a different cause from absence and is named separately here
+            // rather than folded into a catch-all, but it reaches provenance
+            // the same way: a published observation asserts what was observed
+            // AND kept, and a value refused at the ceiling is one this adapter
+            // cannot attest to. It is not a failed read — an oversized `Date`
+            // must not cost the caller the body.
+            Err(_) => return None,
+        };
+        let Ok(text) = value.to_str() else {
+            return None;
+        };
+        if text.is_empty()
+            || !text.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+            || (date && httpdate::parse_http_date(text).is_err())
+        {
+            return None;
+        }
+        Some(text.to_owned())
+    }
     /// Reads a response body, stopping once the accept ceiling is reached or
     /// the operation is cancelled.
     ///
@@ -1114,8 +1185,8 @@ impl HttpSubstrate {
         &self,
         mut response: reqwest::Response,
         operation: &OperationGuard,
+        ceiling: usize,
     ) -> Result<(Vec<u8>, bool), ResourceError> {
-        let ceiling = self.ceilings.fetch_bytes();
         let mut body = Vec::new();
         let mut truncated = false;
         loop {
@@ -1129,7 +1200,7 @@ impl HttpSubstrate {
             // fully accepted and is not truncated. Treating it as truncated
             // would refuse a document the signed spec says must succeed, and
             // the ceiling/ceiling+1 boundary is precisely what C8 fences.
-            if body.len() + chunk.len() > ceiling {
+            if chunk.len() > ceiling.saturating_sub(body.len()) {
                 let remaining = ceiling.saturating_sub(body.len());
                 body.extend_from_slice(&chunk[..remaining]);
                 truncated = true;
@@ -1298,6 +1369,7 @@ fn cancelled_mid_request() -> ResourceError {
         ErrorCategory::Cancelled,
         "request was cancelled before its response was accepted",
     )
+    .with_details(ResourceErrorDetails::new(ErrorReason::Cancelled))
 }
 
 fn classify_reqwest_failure(error: reqwest::Error) -> HttpFetchFailure {
@@ -1323,12 +1395,14 @@ fn policy_error_or(error: reqwest::Error) -> ResourceError {
         return ResourceError::new(
             ErrorCategory::SourceUnavailable,
             "request exceeded the configured timeout",
-        );
+        )
+        .with_details(ResourceErrorDetails::new(ErrorReason::DeadlineExceeded));
     }
     ResourceError::new(
         ErrorCategory::SourceUnavailable,
         format!("request failed: {error}"),
     )
+    .with_details(ResourceErrorDetails::new(ErrorReason::TransportFailure))
 }
 
 /// Collapses the allowlist into one address policy per host.

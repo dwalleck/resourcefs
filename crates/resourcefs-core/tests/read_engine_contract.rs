@@ -74,6 +74,7 @@ impl SourceAdapter for SessionBackedSource {
         &self,
         reference: &PathReference,
         _operation: &OperationGuard,
+        _acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
         match reference.address() {
             ResourceAddress::Catalog(_) => Err(ResourceError::new(
@@ -206,6 +207,7 @@ impl Harness {
                     reference,
                     limits,
                     numbered: false,
+                    acquisition: None,
                 },
                 &OperationGuard::new(),
             )
@@ -226,6 +228,7 @@ impl SourceAdapter for GuardObservingSource {
         &self,
         _reference: &PathReference,
         operation: &OperationGuard,
+        _acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
         self.entered.notify_one();
         // A guard the engine forwarded resolves here the moment the caller
@@ -277,6 +280,7 @@ async fn read_forwards_the_callers_guard_to_the_source() {
                 reference: workspace_reference(),
                 limits: TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &guard,
         )
@@ -313,6 +317,7 @@ impl SourceAdapter for ContinuingSource {
         &self,
         _reference: &PathReference,
         _operation: &OperationGuard,
+        _acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
         let next = PathReference::parse("issue://owner/repo:page:2".to_owned())?;
         Ok(
@@ -342,6 +347,7 @@ async fn source_continuations_surface_unless_the_page_itself_overflows() {
                     reference: workspace_reference(),
                     limits: TextLimits::default(),
                     numbered: false,
+                    acquisition: None,
                 },
                 &OperationGuard::new(),
             )
@@ -721,6 +727,7 @@ async fn snapshot_quota_failure_does_not_publish_recovery_artifact() {
                 reference: workspace_reference(),
                 limits: TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )
@@ -743,6 +750,7 @@ async fn one_byte_over_object_ceiling_fails_without_artifact() {
                 reference: workspace_reference(),
                 limits: TextLimits::default(),
                 numbered: false,
+                acquisition: None,
             },
             &OperationGuard::new(),
         )

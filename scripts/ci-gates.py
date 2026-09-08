@@ -22,6 +22,7 @@ BUDGETS = {
     "github_search_budget",
     "github_single_resource_render_budget",
     "github_cache_namespace_removal_budget",
+    "github_facts_production_budget",
     "creation_document_budget",
     "github_wire_decode_budget",
     "http_mutation_request_budget",
@@ -29,7 +30,9 @@ BUDGETS = {
 }
 EXCLUDED = {
     "live_stdio_profile_probe_serve_and_tools_hold_up": "live GitHub/stdio smoke",
+    "live_stdio_github_facts_match_native_observation": "live GitHub Facts stdio smoke",
     "live_github_reads_hold_up": "live GitHub smoke",
+    "live_github_facts_preserve_native_identity_and_links": "live GitHub Facts smoke",
     "live_https_reads_hold_up": "live HTTPS smoke",
     "live_jira_issue_read": "live Jira smoke",
     "live_jira_project_browse": "live Jira project smoke",
@@ -129,7 +132,7 @@ def main():
     if sys.platform == "linux":
         gates.insert(0, (
             "Module placement",
-            [sys.executable, ".rfs-nae2/oracles/module_shape.py", "--stage", "query"],
+            [sys.executable, "scripts/module_shape.py"],
         ))
     failed = []
     for name, command in gates:

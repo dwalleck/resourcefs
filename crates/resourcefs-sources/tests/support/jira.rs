@@ -151,6 +151,7 @@ pub async fn read(
         .read(
             &PathReference::parse(reference).expect("fixture reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
 }

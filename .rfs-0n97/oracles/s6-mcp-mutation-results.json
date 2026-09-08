@@ -1,0 +1,102 @@
+[
+  {
+    "name": "recovery_continuation_rereads_source",
+    "claims": [
+      "C16"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-mcp",
+      "--features",
+      "test-support",
+      "--test",
+      "stdio_mcp_contract",
+      "github_facts_stdio_reconstructs_native_json_without_reacquisition",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest github_facts_stdio_reconstructs_native_json_without_reacquisition ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.42s\n\n   Compiling resourcefs-mcp v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-mcp)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.39s\n     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-855acf3125976038)\n",
+    "red_output": "\nrunning 1 test\ntest github_facts_stdio_reconstructs_native_json_without_reacquisition ... FAILED\n\nfailures:\n\n---- github_facts_stdio_reconstructs_native_json_without_reacquisition stdout ----\n\nthread 'github_facts_stdio_reconstructs_native_json_without_reacquisition' (2218784) panicked at crates/resourcefs-mcp/tests/stdio_mcp_contract.rs:3902:13:\nassertion `left == right` failed: {\"content\":[{\"text\":\"[rfs_error]\\ncategory: not_found\\npath: pr://owner/repo/7/facts\\nmessage: GitHub facts read failed\",\"type\":\"text\"}],\"isError\":true,\"resultType\":\"complete\",\"structuredContent\":{\"contractVersion\":\"1.1.0\",\"error\":{\"category\":\"not_found\",\"details\":{\"accessAmbiguity\":\"missing_or_access_hidden\",\"httpStatus\":404,\"reason\":\"upstream_not_found_or_hidden\"},\"message\":\"GitHub facts read failed\"},\"ok\":false,\"requestedPath\":\"pr://owner/repo/7/facts\"}}\n  left: Bool(true)\n right: false\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    github_facts_stdio_reconstructs_native_json_without_reacquisition\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.25s\n\n   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)\nwarning: unused variable: `continuation_reference`\n   --> crates/resourcefs-core/src/read.rs:212:13\n    |\n212 |         let continuation_reference = if parts.content[..page_end].ends_with('\\n') {\n    |             ^^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_continuation_reference`\n    |\n    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\nwarning: `resourcefs-core` (lib) generated 1 warning (run `cargo fix --lib -p resourcefs-core` to apply 1 suggestion)\n   Compiling resourcefs-mcp v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-mcp)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.22s\n     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-855acf3125976038)\nresourcefs child status before cleanup: Ok(None)\nresourcefs child stderr after failure:\n\nerror: test failed, to rerun pass `-p resourcefs-mcp --test stdio_mcp_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest github_facts_stdio_reconstructs_native_json_without_reacquisition ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.37s\n\n   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n   Compiling resourcefs-mcp v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-mcp)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.13s\n     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-855acf3125976038)\n"
+  },
+  {
+    "name": "recovery_drops_retained_tail",
+    "claims": [
+      "C16"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-mcp",
+      "--features",
+      "test-support",
+      "--test",
+      "stdio_mcp_contract",
+      "github_facts_stdio_reconstructs_native_json_without_reacquisition",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest github_facts_stdio_reconstructs_native_json_without_reacquisition ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.35s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s\n     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-855acf3125976038)\n",
+    "red_output": "\nrunning 1 test\ntest github_facts_stdio_reconstructs_native_json_without_reacquisition ... FAILED\n\nfailures:\n\n---- github_facts_stdio_reconstructs_native_json_without_reacquisition stdout ----\n\nthread 'github_facts_stdio_reconstructs_native_json_without_reacquisition' (2221091) panicked at crates/resourcefs-mcp/tests/stdio_mcp_contract.rs:3902:13:\nassertion `left == right` failed: {\"content\":[{\"text\":\"[rfs_error]\\ncategory: invalid_reference\\npath: artifact://b269b758f96f2cb06f111cc89082a4f2-1:page:1024\\nmessage: artifact page offset must name a UTF-8 boundary before end of content\",\"type\":\"text\"}],\"isError\":true,\"resultType\":\"complete\",\"structuredContent\":{\"contractVersion\":\"1.1.0\",\"error\":{\"category\":\"invalid_reference\",\"message\":\"artifact page offset must name a UTF-8 boundary before end of content\"},\"ok\":false,\"requestedPath\":\"artifact://b269b758f96f2cb06f111cc89082a4f2-1:page:1024\"}}\n  left: Bool(true)\n right: false\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    github_facts_stdio_reconstructs_native_json_without_reacquisition\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.25s\n\n   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n   Compiling resourcefs-mcp v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-mcp)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.20s\n     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-855acf3125976038)\nresourcefs child status before cleanup: Ok(None)\nresourcefs child stderr after failure:\n\nerror: test failed, to rerun pass `-p resourcefs-mcp --test stdio_mcp_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest github_facts_stdio_reconstructs_native_json_without_reacquisition ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.37s\n\n   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n   Compiling resourcefs-mcp v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-mcp)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.24s\n     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-855acf3125976038)\n"
+  },
+  {
+    "name": "tool_schema_omits_acquisition",
+    "claims": [
+      "C17"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-mcp",
+      "--features",
+      "test-support",
+      "--test",
+      "stdio_mcp_contract",
+      "github_facts_stdio_reconstructs_native_json_without_reacquisition",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest github_facts_stdio_reconstructs_native_json_without_reacquisition ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.40s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s\n     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-855acf3125976038)\n",
+    "red_output": "\nrunning 1 test\ntest github_facts_stdio_reconstructs_native_json_without_reacquisition ... FAILED\n\nfailures:\n\n---- github_facts_stdio_reconstructs_native_json_without_reacquisition stdout ----\n\nthread 'github_facts_stdio_reconstructs_native_json_without_reacquisition' (2222932) panicked at crates/resourcefs-mcp/tests/stdio_mcp_contract.rs:3973:9:\nassertion failed: read_tool[\"inputSchema\"][\"properties\"].get(\"acquisition\").is_some()\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    github_facts_stdio_reconstructs_native_json_without_reacquisition\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.13s\n\n   Compiling resourcefs-mcp v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-mcp)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.81s\n     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-855acf3125976038)\nresourcefs child status before cleanup: Ok(None)\nresourcefs child stderr after failure:\n\nerror: test failed, to rerun pass `-p resourcefs-mcp --test stdio_mcp_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest github_facts_stdio_reconstructs_native_json_without_reacquisition ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.38s\n\n   Compiling resourcefs-mcp v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-mcp)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.83s\n     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-855acf3125976038)\n"
+  },
+  {
+    "name": "catalog_omits_facts_grammar",
+    "claims": [
+      "C17"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-mcp",
+      "--features",
+      "test-support",
+      "--test",
+      "stdio_mcp_contract",
+      "github_facts_stdio_reconstructs_native_json_without_reacquisition",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest github_facts_stdio_reconstructs_native_json_without_reacquisition ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.36s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s\n     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-855acf3125976038)\n",
+    "red_output": "\nrunning 1 test\ntest github_facts_stdio_reconstructs_native_json_without_reacquisition ... FAILED\n\nfailures:\n\n---- github_facts_stdio_reconstructs_native_json_without_reacquisition stdout ----\n\nthread 'github_facts_stdio_reconstructs_native_json_without_reacquisition' (2224452) panicked at crates/resourcefs-mcp/tests/stdio_mcp_contract.rs:3978:9:\nassertion failed: catalog[\"structuredContent\"][\"content\"].as_str().expect(\"source catalog content\").contains(\"facts\")\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    github_facts_stdio_reconstructs_native_json_without_reacquisition\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.32s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n   Compiling resourcefs-mcp v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-mcp)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.13s\n     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-855acf3125976038)\nresourcefs child status before cleanup: Ok(None)\nresourcefs child stderr after failure:\n\nerror: test failed, to rerun pass `-p resourcefs-mcp --test stdio_mcp_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest github_facts_stdio_reconstructs_native_json_without_reacquisition ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.36s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n   Compiling resourcefs-mcp v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-mcp)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.22s\n     Running tests/stdio_mcp_contract.rs (target/debug/deps/stdio_mcp_contract-855acf3125976038)\n"
+  }
+]

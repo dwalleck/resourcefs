@@ -146,7 +146,9 @@ impl SourceAdapter for HttpsSource {
         &self,
         reference: &PathReference,
         operation: &OperationGuard,
+        acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
+        resourcefs_core::reject_acquisition(acquisition)?;
         let ResourceAddress::Https(address) = reference.address() else {
             return Err(unsupported_https_target());
         };

@@ -349,10 +349,15 @@ async fn heartbeat_updates_persisted_liveness_within_budget() {
     .and_then(|metadata| metadata.modified())
     .expect("heartbeat timestamp");
     assert!(modified > old);
+    // The release budget bounds a filesystem mtime write, so it is dominated
+    // by the host rather than by this crate. A loaded Windows CI runner took
+    // 505 ms against the previous 100 ms; 1000 ms keeps a real bound on a
+    // heartbeat that should be near-instant while leaving headroom for a
+    // shared runner. See rfs-1e6h.
     let budget = if cfg!(debug_assertions) {
         Duration::from_millis(2000)
     } else {
-        Duration::from_millis(100)
+        Duration::from_millis(1000)
     };
     assert!(elapsed <= budget, "heartbeat took {elapsed:?}");
 }

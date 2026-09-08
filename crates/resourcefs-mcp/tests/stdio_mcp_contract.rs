@@ -95,6 +95,8 @@ struct McpProcess {
     cancelled_root_requests: usize,
     allow_harness_output: bool,
     _process_permit: McpProcessPermit,
+    // Drop runs child shutdown before fields (including this directory) are released.
+    _session_directory: Option<TempDir>,
 }
 
 impl McpProcess {
@@ -143,11 +145,21 @@ impl McpProcess {
 
     #[cfg(feature = "test-support")]
     fn start_profile_with_https_root(profile: &Path, current_directory: &Path) -> Self {
+        Self::start_profile_with_https_root_and_env(profile, current_directory, &[])
+    }
+
+    #[cfg(feature = "test-support")]
+    fn start_profile_with_https_root_and_env(
+        profile: &Path,
+        current_directory: &Path,
+        environment: &[(&str, &str)],
+    ) -> Self {
         let root_path = current_directory.join("profile-https-ca.der");
         fs::write(&root_path, profile_tls::root_certificate()).expect("write profile fixture CA");
         let executable = std::env::current_exe().expect("stdio contract test executable");
         let mut command = Command::new(executable);
         command
+            .envs(environment.iter().copied())
             .args([
                 "--ignored",
                 "--exact",
@@ -259,12 +271,27 @@ impl McpProcess {
         current_directory: Option<&Path>,
         environment: &[(&str, &str)],
     ) -> Self {
+        // Ordinary CLI fixtures must not sweep the user's shared session cache.
+        // Profile storage and explicit per-test overrides remain authoritative.
+        let session_directory = if session_root.is_none()
+            && !arguments.iter().any(|argument| argument == "--config")
+            && !environment
+                .iter()
+                .any(|(name, _)| *name == "RESOURCEFS_TEST_SESSION_ROOT")
+        {
+            Some(TempDir::new().expect("isolated child session directory"))
+        } else {
+            None
+        };
         let mut command = Command::new(binary());
         command
             .args(arguments)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(directory) = &session_directory {
+            command.env("RESOURCEFS_TEST_SESSION_ROOT", directory.path());
+        }
         if let Some(current_directory) = current_directory {
             command.current_dir(current_directory);
         }
@@ -284,7 +311,10 @@ impl McpProcess {
             command.env(name, value);
         }
         let permit = McpProcessPermit::acquire();
-        Self::from_child(command.spawn().expect("start resourcefs"), false, permit)
+        let mut process =
+            Self::from_child(command.spawn().expect("start resourcefs"), false, permit);
+        process._session_directory = session_directory;
+        process
     }
 
     fn from_child(
@@ -304,6 +334,7 @@ impl McpProcess {
             cancelled_root_requests: 0,
             allow_harness_output,
             _process_permit: process_permit,
+            _session_directory: None,
         }
     }
 
@@ -1319,6 +1350,10 @@ fn github_non_target_mutation_is_refused() {
     );
     assert!(aggregate.get("error").is_none(), "[C14] {aggregate}");
     assert_tool_error(&aggregate["result"], "unsupported_mutation");
+    let facts = process.request("tools/call", json!({
+        "name":"rfs_write","arguments":{"path":"pr://owner/repo/7/facts","content":"forbidden","ifVersion":tag}
+    }));
+    assert_tool_error(&facts["result"], "unsupported_mutation");
 
     let edit = process.request(
         "tools/call",
@@ -3547,6 +3582,156 @@ fn profile_https_test_server() {
         .expect("profile HTTPS test server");
 }
 
+#[test]
+fn read_acquisition_validates_before_roots_and_reports_unsupported() {
+    let fixture = WorkspaceFixture::new();
+    let mut process = McpProcess::start(&fixture.root);
+    process.initialize_with_roots(VERSION_2026, vec![mcp_root(&fixture.root, "workspace")]);
+    for acquisition in [
+        json!(null),
+        json!([]),
+        json!({"unknown": 1}),
+        json!({"maxAttempts": null}),
+        json!({"maxAttempts": 0}),
+        json!({"maxAttempts": -1}),
+        json!({"maxAttempts": 1.5}),
+        json!({"maxAttempts": 11}),
+    ] {
+        let response = process.request(
+            "tools/call",
+            json!({
+                "name": "rfs_read", "arguments": {"path": "fixture.txt", "acquisition": acquisition}
+            }),
+        );
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+        assert_eq!(
+            process.root_list_calls, 0,
+            "malformed acquisition refreshed roots"
+        );
+    }
+    let rejected = process.call_read_arguments(json!({
+        "path": "fixture.txt", "acquisition": {"maxAttempts": 1}
+    }));
+    assert_eq!(rejected["isError"], true, "{rejected}");
+    assert_eq!(
+        rejected["structuredContent"]["error"]["category"],
+        "unsupported_projection"
+    );
+    assert_eq!(
+        rejected["structuredContent"]["error"]["details"]["reason"],
+        "acquisition_controls_unsupported"
+    );
+    let unchanged = process.call_read("fixture.txt");
+    assert_eq!(unchanged["structuredContent"]["content"], "fixture text\n");
+    process.finish();
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn github_profile_trust_reaches_real_stdio_reads_only_when_explicit() {
+    let fixture = WorkspaceFixture::new();
+    let body = json!({
+        "id": 8001, "number": 7, "state": "open", "title": "Native fixture title",
+        "body": "Native fixture body", "user": {"login": "author", "id": 2},
+        "html_url": "https://github.example/owner/repo/pull/7",
+        "created_at": "2026-08-20T01:02:03Z", "updated_at": "2026-08-21T02:03:04Z",
+        "draft": false, "merged": false, "head": {"ref": "feature"}, "base": {"ref": "main"}
+    })
+    .to_string();
+    let server = profile_tls::ProfileTlsServer::start_native(vec![
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body: body.clone(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body,
+        },
+    ]);
+    let profile = fixture.root.join("github-trust.json");
+    fs::write(
+        &profile,
+        serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "sources": [{
+                "kind": "github", "id": "github", "required": true,
+                "apiBaseUrl": server.base_url(), "allowPrivateNetwork": true,
+                "credential": {"kind": "environment", "name": "RFS_GITHUB_TEST_TOKEN"},
+                "repositories": [{"name": "owner/repo"}]
+            }]
+        }))
+        .expect("GitHub profile JSON"),
+    )
+    .expect("GitHub profile");
+    let environment = [("RFS_GITHUB_TEST_TOKEN", "fixture-token")];
+    let mut trusted =
+        McpProcess::start_profile_with_https_root_and_env(&profile, &fixture.root, &environment);
+    trusted.initialize(VERSION_2026);
+    let title = trusted.call_read("pr://owner/repo/7/title");
+    assert_eq!(
+        title["structuredContent"]["content"],
+        "Native fixture title"
+    );
+    let body = trusted.call_read("pr://owner/repo/7/body");
+    assert_eq!(body["structuredContent"]["content"], "Native fixture body");
+    trusted.finish();
+    let requests = server.recorded_requests();
+    assert_eq!(requests.len(), 2);
+    for (index, request) in requests.iter().enumerate() {
+        assert_eq!(request.sequence, index + 1);
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/repos/owner/repo/pulls/7");
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|(name, value)| name == "authorization" && value == "Bearer fixture-token")
+        );
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|(name, value)| name == "accept" && value == "application/vnd.github+json")
+        );
+    }
+    // Even injecting the helper's environment cannot select trust in the shipped CLI.
+    let root_path = fixture.root.join("profile-https-ca.der");
+    let root_text = root_path.to_str().expect("fixture CA path");
+    let mut ordinary = McpProcess::start_profile_with_env(
+        &profile,
+        &fixture.root,
+        &[
+            environment[0],
+            (PROFILE_HTTPS_HELPER, "1"),
+            (PROFILE_HTTPS_ROOT, root_text),
+        ],
+    );
+    ordinary.initialize(VERSION_2026);
+    let refused = ordinary.call_read("pr://owner/repo/7/title");
+    assert_eq!(refused["isError"], true, "{refused}");
+    ordinary.finish();
+    assert_eq!(
+        server.recorded_requests().len(),
+        2,
+        "system trust must refuse before HTTP"
+    );
+    let mut invalid_profile: Value =
+        serde_json::from_slice(&fs::read(&profile).expect("profile bytes"))
+            .expect("profile document");
+    invalid_profile["sources"][0]["httpsRoot"] = json!(root_text);
+    fs::write(
+        &profile,
+        serde_json::to_vec(&invalid_profile).expect("invalid profile JSON"),
+    )
+    .expect("invalid profile");
+    let profile_text = profile.to_str().expect("profile path");
+    let rejected_profile = run_invalid(&["check", "--config", profile_text]);
+    assert!(
+        !rejected_profile.status.success(),
+        "profile cannot select fixture trust"
+    );
+}
+
 #[cfg(feature = "test-support")]
 #[test]
 fn https_uses_common_read_shape() {
@@ -3699,4 +3884,194 @@ fn https_profile_read_recovers_bounded_markdown() {
         server.requests().iter().any(|target| target == "/large"),
         "the bounded read must fetch the real TLS document"
     );
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn github_facts_stdio_reconstructs_native_json_without_reacquisition() {
+    for large in [false, true] {
+        let fixture = WorkspaceFixture::new();
+        let mut native: Value =
+            serde_json::from_str(include_str!("../../../.rfs-0n97/oracles/pr-native.json"))
+                .expect("native fixture");
+        if large {
+            native["body"] = json!("雪 \"escaped\"\n".repeat(1500));
+        }
+        let server =
+            profile_tls::ProfileTlsServer::start_native(vec![profile_tls::NativeResponse {
+                path: "/repos/owner/repo/pulls/7".into(),
+                body: native.to_string(),
+            }]);
+        let profile = fixture.root.join("github-facts.json");
+        fs::write(
+            &profile,
+            json!({"schemaVersion":1,"sources":[{
+                "kind":"github","id":"github","required":true,"apiBaseUrl":server.base_url(),
+                "webOrigin":"https://github.example","allowPrivateNetwork":true,
+                "credential":{"kind":"environment","name":"RFS_GITHUB_TEST_TOKEN"},
+                "repositories":[{"name":"owner/repo"}],"acquisition":{"maxAttempts":1}
+            }]})
+            .to_string(),
+        )
+        .expect("profile");
+        let mut process = McpProcess::start_profile_with_https_root_and_env(
+            &profile,
+            &fixture.root,
+            &[("RFS_GITHUB_TEST_TOKEN", "facts-stdio-secret")],
+        );
+        process.initialize(VERSION_2026);
+        let mut result = process.call_read_arguments(json!({"path":"pr://owner/repo/7/facts","limits":{"bytes": if large { 1024 } else { 49152 }}}));
+        let mut bytes = String::new();
+        let mut pages = 0;
+        let mut root = None;
+        loop {
+            assert_eq!(result["isError"], false, "{result}");
+            let output = &result["structuredContent"];
+            bytes.push_str(output["content"].as_str().expect("JSON page"));
+            pages += 1;
+            assert!(pages < 1000, "recovery must progress");
+            if root.is_none() {
+                root = output["recoveryReference"].as_str().map(str::to_owned);
+            }
+            let Some(next) = output["continuationReference"].as_str() else {
+                break;
+            };
+            assert_eq!(server.recorded_requests().len(), 1);
+            result = process.call_read_arguments(json!({"path":next,"limits":{"bytes":1024}}));
+        }
+        assert_eq!(
+            pages > 1,
+            large,
+            "small facts inline; large facts recovered"
+        );
+        let facts: Value = serde_json::from_str(&bytes).expect("reconstructed full JSON");
+        assert_eq!(facts["schemaVersion"]["major"], 1);
+        assert_eq!(facts["data"]["body"], native["body"]);
+        assert_eq!(facts["data"]["id"], "9007199254740993");
+        assert_eq!(facts["data"]["head"]["commitSha"], native["head"]["sha"]);
+        assert_eq!(facts["acquisition"]["limits"]["maxAttempts"], 1);
+        if let Some(root) = root {
+            reconstruct_with_limits(&mut process, &root, json!({"bytes":1024}), &bytes);
+        }
+        assert_eq!(
+            server.recorded_requests().len(),
+            1,
+            "recovery cannot acquire again"
+        );
+        let denied = process.call_read("pr://other/repo/7/facts");
+        assert_tool_error(&denied, "permission_denied");
+        assert_eq!(server.recorded_requests().len(), 1);
+        assert!(!bytes.contains("facts-stdio-secret"));
+        for (field, hard) in [
+            ("maxAttempts", 10_u64),
+            ("timeoutMs", 30000),
+            ("maxResponseBytes", 8388608),
+            ("maxAcceptedBodyBytes", 16777216),
+            ("maxRepresentationBytes", 16777216),
+        ] {
+            for invalid in [
+                Value::Null,
+                json!(0),
+                json!(-1),
+                json!(1.5),
+                json!("1"),
+                json!(hard + 1),
+                json!(u64::MAX),
+            ] {
+                let mut acquisition = json!({});
+                acquisition[field] = invalid;
+                let rejected = process.request("tools/call", json!({"name":"rfs_read","arguments":{"path":"pr://owner/repo/7/facts","acquisition":acquisition}}));
+                assert_eq!(rejected["error"]["code"], -32602);
+                assert_eq!(
+                    server.recorded_requests().len(),
+                    1,
+                    "invalid controls cannot reach provider"
+                );
+            }
+        }
+        let tools = process.request("tools/list", json!({}));
+        let read_tool = tools["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["name"] == "rfs_read")
+            .expect("read tool");
+        assert!(
+            read_tool["inputSchema"]["properties"]
+                .get("acquisition")
+                .is_some()
+        );
+        let catalog = process.call_read("rfs://");
+        assert_tool_success(&catalog);
+        assert!(
+            catalog["structuredContent"]["content"]
+                .as_str()
+                .expect("source catalog content")
+                .contains("facts")
+        );
+        process.finish();
+        let requests = server.recorded_requests();
+        assert_eq!(requests[0].method, "GET");
+        assert_eq!(requests[0].path, "/repos/owner/repo/pulls/7");
+        for (key, value) in [
+            ("authorization", "Bearer facts-stdio-secret"),
+            ("accept", "application/vnd.github+json"),
+            ("x-github-api-version", "2022-11-28"),
+        ] {
+            assert!(
+                requests[0]
+                    .headers
+                    .iter()
+                    .any(|(name, actual)| name == key && actual == value)
+            );
+        }
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn github_facts_stdio_cancelled_http_read_cannot_publish_and_session_recovers() {
+    let fixture = WorkspaceFixture::new();
+    let (server, arrived, release) = profile_tls::ProfileTlsServer::start_blocked_native(
+        include_str!("../../../.rfs-0n97/oracles/pr-native.json").to_owned(),
+    );
+    let profile = fixture.root.join("cancel-facts.json");
+    fs::write(&profile, json!({"schemaVersion":1,"sources":[{
+        "kind":"github","id":"github","required":true,"apiBaseUrl":server.base_url(),
+        "webOrigin":"https://github.example","allowPrivateNetwork":true,
+        "credential":{"kind":"environment","name":"RFS_GITHUB_TEST_TOKEN"},"repositories":[{"name":"owner/repo"}]
+    }]}).to_string()).expect("profile");
+    let mut process = McpProcess::start_profile_with_https_root_and_env(
+        &profile,
+        &fixture.root,
+        &[("RFS_GITHUB_TEST_TOKEN", "cancel-test-secret")],
+    );
+    process.initialize(VERSION_2026);
+    let cancelled = process.send_request(
+        "tools/call",
+        json!({"name":"rfs_read","arguments":{"path":"pr://owner/repo/7/facts"}}),
+    );
+    arrived
+        .recv_timeout(Duration::from_secs(5))
+        .expect("real GitHub HTTP request entered barrier");
+    process.notify_cancelled(cancelled);
+    // A subsequent serialized protocol response is the ordering barrier, not a sleep.
+    let barrier = process.send_request("tools/list", json!({}));
+    process.receive_response_until(barrier, cancelled, Duration::from_secs(5));
+    release.notify_one();
+    let next = process.send_request(
+        "tools/call",
+        json!({"name":"rfs_read","arguments":{"path":"pr://owner/repo/7/facts"}}),
+    );
+    let recovered = process.receive_response_until(next, cancelled, Duration::from_secs(10));
+    assert_eq!(recovered["result"]["isError"], false, "{recovered}");
+    let facts: Value = serde_json::from_str(
+        recovered["result"]["structuredContent"]["content"]
+            .as_str()
+            .expect("small full facts"),
+    )
+    .expect("JSON");
+    assert_eq!(facts["data"]["id"], "9007199254740993");
+    assert_eq!(server.recorded_requests().len(), 2);
+    process.finish();
 }

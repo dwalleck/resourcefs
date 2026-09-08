@@ -54,11 +54,26 @@ async fn stable_and_alias_reads_share_canonical_identity() {
         protocol_response("200 OK", [("ETag", "\"alias-v1\"".to_owned())], ISSUE)
     })
     .await;
+    let controls = resourcefs_core::ReadAcquisitionLimits::default();
+    let error = source
+        .read(
+            &PathReference::parse("jira://acme/issues/10001").expect("reference"),
+            &OperationGuard::new(),
+            Some(&controls),
+        )
+        .await
+        .expect_err("explicit acquisition controls must be refused before fetch");
+    assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(
+        error.details().expect("typed refusal").reason(),
+        resourcefs_core::ErrorReason::AcquisitionControlsUnsupported
+    );
 
     let stable = source
         .read(
             &PathReference::parse("jira://acme/issues/10001").expect("stable reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("stable read");
@@ -66,6 +81,7 @@ async fn stable_and_alias_reads_share_canonical_identity() {
         .read(
             &PathReference::parse("jira://acme/issue-keys/OLD-1").expect("alias reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("alias read");
@@ -73,6 +89,7 @@ async fn stable_and_alias_reads_share_canonical_identity() {
         .read(
             &PathReference::parse("jira://acme/issue-keys/OLD-1").expect("alias reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("repeated alias read");
@@ -103,6 +120,7 @@ async fn aggregate_index_and_fields_preserve_media_and_tags() {
         .read(
             &PathReference::parse("jira://acme/issues/10001").expect("Aggregate"),
             &operation,
+            None,
         )
         .await
         .expect("Aggregate read");
@@ -118,6 +136,7 @@ async fn aggregate_index_and_fields_preserve_media_and_tags() {
         .read(
             &PathReference::parse("jira://acme/issues/10001/fields").expect("index"),
             &operation,
+            None,
         )
         .await
         .expect("index read");
@@ -129,6 +148,7 @@ async fn aggregate_index_and_fields_preserve_media_and_tags() {
             &PathReference::parse("jira://acme/issues/10001/fields/summary")
                 .expect("summary Field"),
             &operation,
+            None,
         )
         .await
         .expect("summary read");
@@ -144,6 +164,7 @@ async fn aggregate_index_and_fields_preserve_media_and_tags() {
             &PathReference::parse("jira://acme/issues/10001/fields/description")
                 .expect("description Field"),
             &operation,
+            None,
         )
         .await
         .expect("description read");
@@ -170,6 +191,7 @@ async fn ordinary_field_read_ignores_unrelated_malformed_adf_projection() {
             &PathReference::parse("jira://acme/issues/10001/fields/summary")
                 .expect("summary Field"),
             &operation,
+            None,
         )
         .await
         .expect("ordinary Field authority is independent");
@@ -180,6 +202,7 @@ async fn ordinary_field_read_ignores_unrelated_malformed_adf_projection() {
         .read(
             &PathReference::parse("jira://acme/issues/10001/fields").expect("Field index"),
             &operation,
+            None,
         )
         .await
         .expect("Field index depends on metadata, not unrelated value projections");
@@ -190,6 +213,7 @@ async fn ordinary_field_read_ignores_unrelated_malformed_adf_projection() {
         .read(
             &PathReference::parse("jira://acme/issues/10001").expect("Aggregate"),
             &operation,
+            None,
         )
         .await
         .expect_err("Aggregate projection validates every ADF value atomically");
@@ -204,6 +228,7 @@ async fn selector_media_contract_and_zero_egress_refusals() {
         .read(
             &PathReference::parse("jira://acme/issues/10001:8-8").expect("selection"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("selected Aggregate");
@@ -218,6 +243,7 @@ async fn selector_media_contract_and_zero_egress_refusals() {
             .read(
                 &PathReference::parse(reference).expect("syntactically valid refusal"),
                 &OperationGuard::new(),
+                None,
             )
             .await
             .expect_err("local refusal");
@@ -251,6 +277,7 @@ async fn compiled_registry_routes_and_advertises_mounted_jira() {
         .read(
             &PathReference::parse("rfs://").expect("catalog"),
             &operation,
+            None,
         )
         .await
         .expect("catalog read");
@@ -258,7 +285,7 @@ async fn compiled_registry_routes_and_advertises_mounted_jira() {
 
     let issue_reference = PathReference::parse("jira://acme/issues/10001").expect("Jira reference");
     let issue = compiled
-        .read(&issue_reference, &operation)
+        .read(&issue_reference, &operation, None)
         .await
         .expect("compiled Jira read");
     assert_eq!(issue.canonical_reference(), "jira://acme/issues/10001");
@@ -324,11 +351,11 @@ async fn etag_revalidation_matrix() {
     .await;
     let reference = PathReference::parse("jira://acme/issues/10001").expect("reference");
     let first = source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect("first read");
     let second = source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect("304 revalidation");
     assert_eq!(first, second);
@@ -349,11 +376,11 @@ async fn etag_revalidation_matrix() {
     })
     .await;
     unconditional_source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect("first unconditional read");
     unconditional_source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect("second unconditional read");
     assert_eq!(unconditional_count.load(Ordering::SeqCst), 2);
@@ -377,11 +404,11 @@ async fn etag_revalidation_matrix() {
     })
     .await;
     oversized_source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect("oversized validator first read");
     oversized_source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect("oversized validator degrades to unconditional fetch");
     assert_eq!(oversized_attempts.load(Ordering::SeqCst), 2);
@@ -394,7 +421,7 @@ async fn etag_revalidation_matrix() {
     let (orphan_listener, orphan_source) =
         fixture_source(|_path| protocol_response("304 Not Modified", [], ISSUE)).await;
     let error = orphan_source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect_err("orphan 304");
     assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
@@ -427,7 +454,7 @@ async fn empty_etag_reads_refetch_without_poisoning_the_session() {
     let reference = PathReference::parse("jira://acme/issues/10001").expect("reference");
     for attempt in 0..3 {
         let resource = source
-            .read(&reference, &OperationGuard::new())
+            .read(&reference, &OperationGuard::new(), None)
             .await
             .expect("an empty upstream ETag must not poison later reads");
         assert!(resource.content().contains(&format!("Revision {attempt}")));
@@ -454,11 +481,11 @@ async fn quoted_empty_etag_remains_a_usable_validator() {
     .await;
     let reference = PathReference::parse("jira://acme/issues/10001").expect("reference");
     let first = source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect("first read");
     let second = source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect("quoted empty ETag revalidation");
     assert_eq!(first, second);
@@ -484,7 +511,7 @@ async fn unexpected_redirects_fail_without_url_disclosure() {
     .await;
     let reference = PathReference::parse("jira://acme/issues/10001").expect("reference");
     let error = source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect_err("documented direct issue endpoint must not redirect");
     assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
@@ -494,7 +521,7 @@ async fn unexpected_redirects_fail_without_url_disclosure() {
     })
     .await;
     let error = source
-        .read(&reference, &OperationGuard::new())
+        .read(&reference, &OperationGuard::new(), None)
         .await
         .expect_err("out-of-origin redirect");
     assert_eq!(error.category(), ErrorCategory::PermissionDenied);
@@ -527,6 +554,7 @@ async fn status_retry_bound_cancel_redaction_matrix() {
             .read(
                 &PathReference::parse("jira://acme/issues/10001").expect("reference"),
                 &OperationGuard::new(),
+                None,
             )
             .await
             .expect_err("status failure");
@@ -547,6 +575,7 @@ async fn status_retry_bound_cancel_redaction_matrix() {
             .read(
                 &PathReference::parse("jira://acme/issues/10001").expect("reference"),
                 &OperationGuard::new(),
+                None,
             )
             .await
             .expect_err("rate refusal");
@@ -572,6 +601,7 @@ async fn status_retry_bound_cancel_redaction_matrix() {
         .read(
             &PathReference::parse("jira://acme/issues/10001").expect("reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("bounded retry");
@@ -588,6 +618,7 @@ async fn status_retry_bound_cancel_redaction_matrix() {
         .read(
             &PathReference::parse("jira://acme/issues/10001").expect("reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("body ceiling");
@@ -601,6 +632,7 @@ async fn status_retry_bound_cancel_redaction_matrix() {
         .read(
             &PathReference::parse("jira://acme/issues/10001").expect("reference"),
             &operation,
+            None,
         )
         .await
         .expect_err("cancelled before send");
@@ -624,6 +656,7 @@ async fn status_retry_bound_cancel_redaction_matrix() {
             .read(
                 &PathReference::parse("jira://acme/issues/10001").expect("reference"),
                 &task_operation,
+                None,
             )
             .await
     });
@@ -641,6 +674,7 @@ async fn status_retry_bound_cancel_redaction_matrix() {
         .read(
             &PathReference::parse("jira://acme/issue-keys/CANARY-SECRET").expect("canary alias"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("aborted transport");

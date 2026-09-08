@@ -1,5 +1,42 @@
 {
   "$defs": {
+    "AcquisitionInput": {
+      "additionalProperties": false,
+      "description": "Shared, closed read/profile syntax; core owns the numerical policy.",
+      "properties": {
+        "maxAcceptedBodyBytes": {
+          "format": "uint",
+          "maximum": 16777216,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maxAttempts": {
+          "format": "uint",
+          "maximum": 10,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maxRepresentationBytes": {
+          "format": "uint",
+          "maximum": 16777216,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maxResponseBytes": {
+          "format": "uint",
+          "maximum": 8388608,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "timeoutMs": {
+          "format": "uint64",
+          "maximum": 30000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "BackingPathVisibilityProfile": {
       "description": "Backing-path disclosure policy.",
       "oneOf": [
@@ -549,6 +586,9 @@
           "additionalProperties": false,
           "description": "GitHub repository source.",
           "properties": {
+            "acquisition": {
+              "$ref": "#/$defs/AcquisitionInput"
+            },
             "allowPrivateNetwork": {
               "type": "boolean"
             },
@@ -597,6 +637,9 @@
             },
             "required": {
               "type": "boolean"
+            },
+            "webOrigin": {
+              "type": "string"
             }
           },
           "required": [

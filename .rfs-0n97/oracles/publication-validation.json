@@ -1,0 +1,69 @@
+{
+  "authorization": "One draft PR; requester explicitly replaced partition plan. No merge or tracker closure.",
+  "baseline_full_gate": {
+    "revision": "f5e3b34",
+    "command": "python scripts/ci-gates.py",
+    "exit": 0,
+    "evidence": "final-ci.log",
+    "applicability": "All production code, manifests, functional fixtures and CI runner remain byte-identical; only three private representation/lifecycle tests changed."
+  },
+  "fresh_checks": {
+    "source_file_parity_count": 198,
+    "source_fingerprint_sha256": "ff408911852d20089724f4877aa350a99c09de7700d83ef547c2b00b8e04a363",
+    "compared_workspace": "/home/dwalleck/repos/resourcefs-wt-rfs-0n97-stack-c2",
+    "formatting": "PASS",
+    "clippy_all_targets_all_features": "PASS",
+    "debug_workspace": "PASS",
+    "release_private_facts_tests": {
+      "command": "cargo test --release --config profile.release.debug-assertions=false -p resourcefs-sources --all-features --lib github::facts::tests::final_facts -- --nocapture",
+      "exit": 0,
+      "output": "   Compiling serde_core v1.0.229\n   Compiling futures-task v0.3.34\n   Compiling slab v0.4.12\n   Compiling futures-channel v0.3.34\n   Compiling tracing v0.1.44\n   Compiling serde v1.0.229\n   Compiling serde_json v1.0.151\n   Compiling tokio-util v0.7.19\n   Compiling futures-util v0.3.34\n   Compiling hyper v1.11.0\n   Compiling tower v0.5.3\n   Compiling hyper-util v0.1.20\n   Compiling serde_path_to_error v0.1.20\n   Compiling tower-http v0.6.11\n   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-stack-c2/crates/resourcefs-core)\n   Compiling hyper-rustls v0.27.9\n   Compiling reqwest v0.13.2\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-stack-c2/crates/resourcefs-sources)\n    Finished `release` profile [optimized] target(s) in 17.38s\n     Running unittests src/lib.rs (target-publication/release/deps/resourcefs_sources-11ef04bd921f84ee)\n\nrunning 3 tests\ntest github::facts::tests::final_facts_cancellation_after_serialization_prevents_publication ... ok\ntest github::facts::tests::final_facts_measured_bytes_and_hash_fit_cap_but_one_less_refuses ... ok\ntest github::facts::tests::final_facts_deadline_advanced_after_serialization_prevents_publication ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 38 filtered out; finished in 0.01s\n\n"
+    },
+    "main_placement": {
+      "command": "python .rfs-0n97/oracles/module_shape.py",
+      "exit": 0,
+      "stage": "facts",
+      "note": "Original transport-stage ledger retained; separately rerun on the actual publication branch."
+    }
+  },
+  "superseded_stack_rerun": {
+    "status": "Cancelled during unchanged release Atlassian fixture suite after single-PR authorization; not claimed as a completed full rerun.",
+    "log": "publication-validation.log.gz",
+    "uncompressed_lines": 2583,
+    "uncompressed_sha256": "3364f4e7b0303da42b0467578e8fe5c80110add0f9ebb6eb6e90e7ef1e19a039"
+  },
+  "requalified_mutations": [
+    "publication-fence-repair.json",
+    "publication-envelope-repair.json"
+  ],
+  "live_evidence": {
+    "file": "live-smoke.log",
+    "repair": "Recovered all 507 original output lines, replacing a 300-line display excerpt. Skip/pass distinctions remain explicit."
+  },
+  "review_decisions": [
+    {
+      "id": "F1",
+      "reviewer": "FactsGoldenReview",
+      "state": "Verified",
+      "decision": "Accept",
+      "finding": "Fixed JSON whitespace/order was not a promised contract; retain measured exact-cap/off-by-one/hash and lifecycle coverage.",
+      "proof": "Code at original facts_tests.rs:12-21,75-97 compared fixed pretty bytes; approved C13 requires bounded complete representation, not fixed layout. Four actual production mutations red/restored green."
+    },
+    {
+      "id": "F2",
+      "reviewer": "ProofSizeScout",
+      "state": "Verified",
+      "decision": "Accept",
+      "finding": "Retained live log ended with tool display truncation footer.",
+      "proof": "Recovered raw artifact lines 1-507; checked required Source and stdio Facts pass rows and explicit skipped gates."
+    },
+    {
+      "id": "F3",
+      "reviewer": "Main",
+      "state": "Verified",
+      "decision": "Accept",
+      "finding": "DESIGN.md incorrectly grouped deadline expiry under limit_exceeded.",
+      "proof": "Existing real deadline contracts assert source_unavailable/deadline_exceeded; docs corrected without runtime change."
+    }
+  ]
+}

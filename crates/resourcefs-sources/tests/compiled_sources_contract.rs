@@ -104,6 +104,47 @@ fn artifact_projection(root: &str, selector: &str) -> PathReference {
 }
 
 #[tokio::test]
+async fn explicit_acquisition_controls_are_refused_by_dispatch_and_direct_filesystem() {
+    let fixture = fixture().await;
+    let controls = resourcefs_core::ReadAcquisitionLimits::default();
+    for spelling in [
+        "plain.txt",
+        fixture.artifact_root.as_str(),
+        "local://",
+        "rfs://",
+        "rfs://workspace",
+    ] {
+        let reference = PathReference::parse(spelling).expect("supported reference");
+        fixture
+            .compiled
+            .read(&reference, &OperationGuard::new(), None)
+            .await
+            .expect("absent controls retain supported reads");
+        let error = fixture
+            .compiled
+            .read(&reference, &OperationGuard::new(), Some(&controls))
+            .await
+            .expect_err("explicit controls cannot disappear in dispatch");
+        assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
+        assert_eq!(
+            error.details().expect("typed refusal").reason(),
+            resourcefs_core::ErrorReason::AcquisitionControlsUnsupported
+        );
+    }
+    let reference = PathReference::parse("plain.txt").expect("workspace reference");
+    let error = fixture
+        .filesystem
+        .read(&reference, &OperationGuard::new(), Some(&controls))
+        .await
+        .expect_err("direct filesystem controls");
+    assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(
+        error.details().expect("typed refusal").reason(),
+        resourcefs_core::ErrorReason::AcquisitionControlsUnsupported
+    );
+}
+
+#[tokio::test]
 async fn catalogs_and_artifacts_are_immutable_mutation_targets() {
     let fixture = fixture().await;
     for spelling in ["rfs://", "rfs://workspace", fixture.artifact_root.as_str()] {
@@ -135,7 +176,7 @@ async fn routes_every_reference_by_typed_address_family_only() {
     for reference in [relative_raw, canonical_raw, canonical_root] {
         let resource = fixture
             .compiled
-            .read(&reference, &OperationGuard::new())
+            .read(&reference, &OperationGuard::new(), None)
             .await
             .expect("workspace route");
         assert_eq!(resource.content(), "workspace bytes\n");
@@ -154,7 +195,7 @@ async fn routes_every_reference_by_typed_address_family_only() {
     ] {
         let resource = fixture
             .compiled
-            .read(&reference, &OperationGuard::new())
+            .read(&reference, &OperationGuard::new(), None)
             .await
             .expect("artifact route");
         assert!(resource.canonical_reference().starts_with("artifact://"));
@@ -176,7 +217,7 @@ async fn unmounted_jira_routes_fail_honestly_without_fallthrough() {
 
     let read = fixture
         .compiled
-        .read(&reference, &operation)
+        .read(&reference, &operation, None)
         .await
         .expect_err("no Atlassian source is mounted");
     assert_eq!(read.category(), ErrorCategory::SourceUnavailable);
@@ -209,6 +250,7 @@ async fn catalog_reads_route_by_typed_address_family() {
         .read(
             &PathReference::parse("rfs://").expect("source catalog"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("source catalog read");
@@ -230,6 +272,7 @@ async fn catalog_reads_route_by_typed_address_family() {
         .read(
             &PathReference::parse("rfs://workspace").expect("workspace catalog"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("workspace catalog read");
@@ -238,6 +281,7 @@ async fn catalog_reads_route_by_typed_address_family() {
         .read(
             &PathReference::parse("rfs://workspace/").expect("workspace alias"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("workspace alias read");
@@ -265,6 +309,7 @@ async fn workspace_catalog_snapshot_never_mixes_root_generations() {
         .read(
             &PathReference::parse("rfs://workspace").expect("workspace catalog"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect_err("refreshing authority must not deliver a mixed catalog");
@@ -291,6 +336,7 @@ async fn workspace_catalog_snapshot_never_mixes_root_generations() {
         .read(
             &PathReference::parse(file_uri).expect("client file reference"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("client file read");
@@ -303,6 +349,7 @@ async fn workspace_catalog_snapshot_never_mixes_root_generations() {
         .read(
             &PathReference::parse("rfs://workspace").expect("workspace catalog"),
             &OperationGuard::new(),
+            None,
         )
         .await
         .expect("replacement catalog");

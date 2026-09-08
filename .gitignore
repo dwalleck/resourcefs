@@ -10,3 +10,6 @@
 /.resourcefs/atlassian-fixture-state.json.lock/
 /.env.atlassian.local
 /.resourcefs/atlassian-fixture-state.json.tmp.*/
+
+# Python bytecode from scripts/module_shape.py and the oracle chain.
+__pycache__/

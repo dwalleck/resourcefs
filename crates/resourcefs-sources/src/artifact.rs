@@ -116,7 +116,9 @@ impl SourceAdapter for ArtifactSource {
         &self,
         reference: &PathReference,
         _operation: &OperationGuard,
+        acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
+        resourcefs_core::reject_acquisition(acquisition)?;
         let selected = self.select(reference).await?;
         let resource = SourceResource::text_projection(
             selected.canonical,

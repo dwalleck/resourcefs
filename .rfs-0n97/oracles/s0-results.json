@@ -1,0 +1,90 @@
+{
+  "source_base": "7de8d1477af6be825bada9015a6996b3f2917c7d",
+  "stage": "baseline",
+  "records": [
+    {
+      "case": "baseline-positive-control",
+      "exit": 0,
+      "seconds": 4.056,
+      "observations": [
+        "C02 stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main",
+        "C02 PASS stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d"
+      ]
+    },
+    {
+      "case": "new-parent-body",
+      "exit": 1,
+      "seconds": 4.065,
+      "unchanged_physical_lines": 1498,
+      "observations": [
+        "C02 stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main",
+        "C02 FAIL crates/resourcefs-sources/src/github/mod.rs: new parent responsibility declaration misplaced_facts_serializer#1"
+      ]
+    },
+    {
+      "case": "new-parent-body-restored",
+      "exit": 0,
+      "seconds": 3.972,
+      "observations": [
+        "C02 stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main",
+        "C02 PASS stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d"
+      ]
+    },
+    {
+      "case": "forbidden-core-decoder",
+      "exit": 1,
+      "seconds": 3.969,
+      "observations": [
+        "C02 stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main",
+        "C02 FAIL crates/resourcefs-core/src/error.rs: forbidden dependency/responsibility serde_json"
+      ]
+    },
+    {
+      "case": "forbidden-core-decoder-restored",
+      "exit": 0,
+      "seconds": 4.075,
+      "observations": [
+        "C02 stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main",
+        "C02 PASS stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d"
+      ]
+    },
+    {
+      "case": "unrelated-server-body",
+      "exit": 1,
+      "seconds": 3.917,
+      "unchanged_physical_lines": 1431,
+      "observations": [
+        "C02 stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main",
+        "C02 inherited C12 FAIL crates/resourcefs-mcp/src/server.rs: MCP query proof permits only a cfg(test) child declaration, not new production constructors/visibility/profile wiring",
+        "C02 FAIL crates/resourcefs-mcp/src/server.rs: unrelated frozen production token/literal delta: get_info#1"
+      ]
+    },
+    {
+      "case": "unrelated-server-body-restored",
+      "exit": 0,
+      "seconds": 4.363,
+      "observations": [
+        "C02 stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main",
+        "C02 PASS stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d"
+      ]
+    },
+    {
+      "case": "unlisted-production-module",
+      "exit": 1,
+      "seconds": 3.927,
+      "observations": [
+        "C02 stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main",
+        "C02 inherited C12 FAIL crates/resourcefs-core/src/unlisted_facts_owner.rs: new production owner is outside approved ledger"
+      ]
+    },
+    {
+      "case": "unlisted-production-module-restored",
+      "exit": 0,
+      "seconds": 3.994,
+      "observations": [
+        "C02 stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main",
+        "C02 PASS stage=baseline baseline=7de8d1477af6be825bada9015a6996b3f2917c7d"
+      ]
+    }
+  ]
+}

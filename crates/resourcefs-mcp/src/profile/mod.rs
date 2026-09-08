@@ -214,9 +214,28 @@ async fn mount_https_with_trust(
 }
 
 pub(crate) async fn mount_github(
+    configs: Vec<GithubConfig>,
+    base: &std::path::Path,
+    degraded_ids: &std::collections::HashSet<String>,
+) -> Result<Option<GithubSourceMount>, ProfileError> {
+    mount_github_with_trust(configs, base, degraded_ids, HttpsTrust::System).await
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) async fn mount_github_with_root(
+    configs: Vec<GithubConfig>,
+    base: &std::path::Path,
+    degraded_ids: &std::collections::HashSet<String>,
+    root: TestRootCertificate,
+) -> Result<Option<GithubSourceMount>, ProfileError> {
+    mount_github_with_trust(configs, base, degraded_ids, HttpsTrust::Fixture(root)).await
+}
+
+async fn mount_github_with_trust(
     mut configs: Vec<GithubConfig>,
     base: &std::path::Path,
     degraded_ids: &std::collections::HashSet<String>,
+    trust: HttpsTrust,
 ) -> Result<Option<GithubSourceMount>, ProfileError> {
     if configs.is_empty() {
         return Ok(None);
@@ -255,11 +274,17 @@ pub(crate) async fn mount_github(
         );
         origins.push(allowed);
     }
-    let substrate = HttpSubstrate::new(
-        OriginAllowlist::new(origins),
-        HttpCeilings::default(),
-        credentials,
-    )
+    let allowlist = OriginAllowlist::new(origins);
+    let substrate = match trust {
+        HttpsTrust::System => HttpSubstrate::new(allowlist, HttpCeilings::default(), credentials),
+        #[cfg(feature = "test-support")]
+        HttpsTrust::Fixture(root) => HttpSubstrate::with_system_lookup_and_root(
+            allowlist,
+            HttpCeilings::default(),
+            root,
+            credentials,
+        ),
+    }
     .map_err(|error| ProfileError::invalid(format!("{error}")))?
     .with_degraded_origins(degraded);
     Ok(Some(GithubSourceMount::new(config, Arc::new(substrate))))

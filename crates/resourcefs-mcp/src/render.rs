@@ -8,6 +8,9 @@ use rmcp::model::{CallToolResult, ContentBlock};
 use schemars::JsonSchema;
 use serde::Serialize;
 
+mod error;
+use error::ErrorOutput;
+
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct ReadToolOutput {
@@ -41,14 +44,7 @@ pub(crate) struct ReadToolOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<ReadErrorOutput>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct ReadErrorOutput {
-    category: String,
-    message: String,
+    error: Option<ErrorOutput>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -85,14 +81,7 @@ pub(crate) struct MutationToolOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     displayed_eof: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<MutationErrorOutput>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct MutationErrorOutput {
-    category: String,
-    message: String,
+    error: Option<ErrorOutput>,
 }
 
 pub(crate) fn success(
@@ -238,10 +227,7 @@ pub(crate) fn failure(
         continuation_reference: None,
         source_continuation_reference: None,
         content: None,
-        error: Some(ReadErrorOutput {
-            category: error.category().as_str().to_owned(),
-            message: error.message().to_owned(),
-        }),
+        error: Some(ErrorOutput::from(error)),
     };
     let structured = serde_json::to_value(output).map_err(|serialization_error| {
         format!("failed to serialize rfs_read error: {serialization_error}")
@@ -329,10 +315,7 @@ pub(crate) fn mutation_failure(
         version_tag: None,
         displayed_ranges: None,
         displayed_eof: None,
-        error: Some(MutationErrorOutput {
-            category: error.category().as_str().to_owned(),
-            message: error.message().to_owned(),
-        }),
+        error: Some(ErrorOutput::from(error)),
     };
     let structured = serde_json::to_value(output).map_err(|serialization_error| {
         format!("failed to serialize mutation error: {serialization_error}")
@@ -367,7 +350,7 @@ pub(crate) struct SearchToolOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     source_continuation_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<DiscoveryErrorOutput>,
+    error: Option<ErrorOutput>,
 }
 
 /// Object-rooted structured content for `rfs_glob` results and errors.
@@ -389,7 +372,7 @@ pub(crate) struct GlobToolOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     continuation_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<DiscoveryErrorOutput>,
+    error: Option<ErrorOutput>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -454,13 +437,6 @@ struct GlobEntryOutput {
 struct DiscoveryDiagnosticOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     reference: Option<String>,
-    category: String,
-    message: String,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct DiscoveryErrorOutput {
     category: String,
     message: String,
 }
@@ -617,10 +593,7 @@ pub(crate) fn search_failure(
         recovery_reference: None,
         continuation_reference: None,
         source_continuation_reference: None,
-        error: Some(DiscoveryErrorOutput {
-            category: error.category().as_str().to_owned(),
-            message: error.message().to_owned(),
-        }),
+        error: Some(ErrorOutput::from(error)),
     };
     let structured = serde_json::to_value(output)
         .map_err(|error| format!("failed to serialize rfs_search error: {error}"))?;
@@ -652,10 +625,7 @@ pub(crate) fn glob_failure(
         total_records: None,
         recovery_reference: None,
         continuation_reference: None,
-        error: Some(DiscoveryErrorOutput {
-            category: error.category().as_str().to_owned(),
-            message: error.message().to_owned(),
-        }),
+        error: Some(ErrorOutput::from(error)),
     };
     let structured = serde_json::to_value(output)
         .map_err(|error| format!("failed to serialize rfs_glob error: {error}"))?;
@@ -1352,6 +1322,7 @@ mod tests {
             &self,
             _reference: &PathReference,
             _operation: &OperationGuard,
+            _acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
         ) -> Result<resourcefs_core::SourceResource, ResourceError> {
             let next = PathReference::parse("issue://owner/repo:page:2".to_owned())?;
             Ok(resourcefs_core::SourceResource::text(
@@ -1435,6 +1406,7 @@ mod tests {
                             .expect("relative reference"),
                         limits: resourcefs_core::TextLimits::default(),
                         numbered: false,
+                        acquisition: None,
                     },
                     &OperationGuard::new(),
                 )

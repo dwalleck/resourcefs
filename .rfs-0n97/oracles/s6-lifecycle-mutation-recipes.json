@@ -1,0 +1,22 @@
+[
+  [
+    {
+      "name": "inflight_generation_change_accepted",
+      "claim": "C07",
+      "path": "crates/resourcefs-sources/src/github/facts.rs",
+      "old": "            != response.cache_generation",
+      "new": "            != response.cache_generation && false",
+      "test_command": "cargo test -p resourcefs-sources --test github_facts_contract facts_inflight_generation_change_refuses_publication -- --exact"
+    }
+  ],
+  [
+    {
+      "name": "facts_mapped_to_mutable_title",
+      "claim": "C14",
+      "path": "crates/resourcefs-sources/src/github/mutation.rs",
+      "old": "                PullRequestResource::Title => Ok(Self::PullTitle {\n                    repository: repository.clone(),\n                    number: number.get(),\n                }),\n                PullRequestResource::Body => Ok(Self::PullBody {\n                    repository: repository.clone(),\n                    number: number.get(),\n                }),\n                PullRequestResource::Comment(id) => Ok(Self::PullComment {\n                    repository: repository.clone(),\n                    number: number.get(),\n                    id: id.get(),\n                }),\n                PullRequestResource::Aggregate\n                | PullRequestResource::Facts\n                | PullRequestResource::Comments\n                | PullRequestResource::CommentsNew\n                | PullRequestResource::Reviews\n                | PullRequestResource::Review(_)\n                | PullRequestResource::ReviewComments\n                | PullRequestResource::ReviewComment(_)\n                | PullRequestResource::Diff\n                | PullRequestResource::DiffFile(_) => Err(unsupported_field_mutation()),",
+      "new": "                PullRequestResource::Title | PullRequestResource::Facts => Ok(Self::PullTitle {\n                    repository: repository.clone(),\n                    number: number.get(),\n                }),\n                PullRequestResource::Body => Ok(Self::PullBody {\n                    repository: repository.clone(),\n                    number: number.get(),\n                }),\n                PullRequestResource::Comment(id) => Ok(Self::PullComment {\n                    repository: repository.clone(),\n                    number: number.get(),\n                    id: id.get(),\n                }),\n                PullRequestResource::Aggregate\n                | PullRequestResource::Comments\n                | PullRequestResource::CommentsNew\n                | PullRequestResource::Reviews\n                | PullRequestResource::Review(_)\n                | PullRequestResource::ReviewComments\n                | PullRequestResource::ReviewComment(_)\n                | PullRequestResource::Diff\n                | PullRequestResource::DiffFile(_) => Err(unsupported_field_mutation()),",
+      "test_command": "cargo test -p resourcefs-sources --test github_mutation_contract unsupported_mutation_matrix_has_zero_egress -- --exact"
+    }
+  ]
+]

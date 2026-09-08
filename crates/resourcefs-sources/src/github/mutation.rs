@@ -14,8 +14,9 @@ use resourcefs_core::{
 use crate::{BoundedHttpResponse, HttpRequest, http::HttpFetchFailure};
 
 use super::{
-    GITHUB_API_VERSION, GITHUB_CACHE_NAMESPACE, GITHUB_JSON, GithubSource, USER_AGENT,
-    authoritative_body, malformed_upstream, render,
+    GITHUB_API_VERSION, GITHUB_JSON, GithubSource, USER_AGENT, authoritative_body,
+    fetch::GITHUB_CACHE_NAMESPACE,
+    malformed_upstream, render,
     wire::{self, ConversationComment, Issue, PullRequest},
 };
 
@@ -100,6 +101,7 @@ impl GithubFieldTarget {
                     id: id.get(),
                 }),
                 PullRequestResource::Aggregate
+                | PullRequestResource::Facts
                 | PullRequestResource::Comments
                 | PullRequestResource::CommentsNew
                 | PullRequestResource::Reviews
@@ -503,7 +505,7 @@ impl GithubSource {
         let request = Self::request_with_github_headers(HttpRequest::patch_json(url, body)?)?;
         let response = self
             .substrate
-            .fetch_attempt(request, operation)
+            .fetch_attempt(request, operation, self.substrate.ceilings().fetch_bytes())
             .await
             .map_err(map_http_mutation_failure)?;
         classify_mutation_response(&response, 200, true)?;
@@ -668,7 +670,7 @@ impl GithubSource {
         let request = Self::request_with_github_headers(HttpRequest::post_json(url, encoded)?)?;
         let response = self
             .substrate
-            .fetch_attempt(request, operation)
+            .fetch_attempt(request, operation, self.substrate.ceilings().fetch_bytes())
             .await
             .map_err(map_http_mutation_failure)?;
         classify_mutation_response(&response, 201, true)?;

@@ -1,0 +1,55 @@
+{
+  "claims": [
+    "C03",
+    "C05",
+    "C06",
+    "C07",
+    "C08",
+    "C10",
+    "C11",
+    "C12",
+    "C13",
+    "C14",
+    "C15",
+    "C16",
+    "C17",
+    "C19"
+  ],
+  "full_gate": {
+    "command": "python scripts/ci-gates.py",
+    "exit": 0,
+    "log": "final-ci.log",
+    "platform": "Linux"
+  },
+  "functional_results_per_debug_and_release": {
+    "github_facts_contract": 20,
+    "stdio_mcp_contract": 43,
+    "github_reference_contract": 7
+  },
+  "semantic_mutation_groups": 23,
+  "budget_sensitivity_groups": 2,
+  "artifacts": [
+    "s6-mutation-recipes.json",
+    "s6-mutation-results.json",
+    "s6-mcp-mutation-recipes.json",
+    "s6-mcp-mutation-results.json",
+    "s6-lifecycle-mutation-recipes.json",
+    "s6-lifecycle-mutation-results.json",
+    "s6-final-publication-mutations.json",
+    "s6-budget-mutations.json",
+    "s6-budget-results.json",
+    "facts_consumer.py",
+    "pr-native.json",
+    "live-smoke.log",
+    "final-ci.log",
+    "assembled-source.json",
+    "identity-shape-results.json",
+    "final-review.json",
+    "publication-validation.json",
+    "publication-validation.log.gz",
+    "publication-fence-repair.json",
+    "publication-envelope-repair.json"
+  ],
+  "authorization": "One draft PR authorized; no merge or tracker closure.",
+  "publication_qualification": "publication-validation.json"
+}

@@ -1,0 +1,347 @@
+[
+  {
+    "name": "facts_route_becomes_aggregate",
+    "claims": [
+      "C03"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-core",
+      "--test",
+      "github_reference_contract",
+      "facts_canonical_grammar_does_not_reinterpret_legacy_projections",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest facts_canonical_grammar_does_not_reinterpret_legacy_projections ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s\n     Running tests/github_reference_contract.rs (target/debug/deps/github_reference_contract-e4510a0db9fee099)\n",
+    "red_output": "\nrunning 1 test\ntest facts_canonical_grammar_does_not_reinterpret_legacy_projections ... FAILED\n\nfailures:\n\n---- facts_canonical_grammar_does_not_reinterpret_legacy_projections stdout ----\n\nthread 'facts_canonical_grammar_does_not_reinterpret_legacy_projections' (2190795) panicked at crates/resourcefs-core/tests/github_reference_contract.rs:358:9:\nassertion `left == right` failed\n  left: \"pr://owner/repo/7\"\n right: \"pr://owner/repo/7/facts\"\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_canonical_grammar_does_not_reinterpret_legacy_projections\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s\n\n   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.71s\n     Running tests/github_reference_contract.rs (target/debug/deps/github_reference_contract-e4510a0db9fee099)\nerror: test failed, to rerun pass `-p resourcefs-core --test github_reference_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest facts_canonical_grammar_does_not_reinterpret_legacy_projections ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s\n\n   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.56s\n     Running tests/github_reference_contract.rs (target/debug/deps/github_reference_contract-e4510a0db9fee099)\n"
+  },
+  {
+    "name": "actual_head_sha_replaced_with_base",
+    "claims": [
+      "C05,C19"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_native_identity_consumer_and_observed_request",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\nnative facts comparison and additive compatibility passed\ntest facts_native_identity_consumer_and_observed_request ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.08s\n\n   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.67s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_native_identity_consumer_and_observed_request ... FAILED\n\nfailures:\n\n---- facts_native_identity_consumer_and_observed_request stdout ----\n\nthread 'facts_native_identity_consumer_and_observed_request' (2192488) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:221:5:\nC05/C06 production consumer rejected output\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_native_identity_consumer_and_observed_request\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.10s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.39s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nTraceback (most recent call last):\n  File \"/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources/../../.rfs-0n97/oracles/facts_consumer.py\", line 63, in <module>\n    compare(production, native, observations)\n    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources/../../.rfs-0n97/oracles/facts_consumer.py\", line 29, in compare\n    assert dst['commitSha'] == src['sha'] == facts['observed'][side]['commitSha']\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\nnative facts comparison and additive compatibility passed\ntest facts_native_identity_consumer_and_observed_request ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.09s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.35s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  },
+  {
+    "name": "requested_parent_url_equality_removed",
+    "claims": [
+      "C05"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_required_identity_contradictions_and_duplicates_are_rejected",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest facts_required_identity_contradictions_and_duplicates_are_rejected ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 1.06s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_required_identity_contradictions_and_duplicates_are_rejected ... FAILED\n\nfailures:\n\n---- facts_required_identity_contradictions_and_duplicates_are_rejected stdout ----\n\nthread 'facts_required_identity_contradictions_and_duplicates_are_rejected' (2193667) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:275:47:\n/url: SourceResource { canonical_reference: \"pr://owner/repo/7/facts\", content_type: \"application/json; charset=utf-8\", version_tag: VersionTag(\"sha256:f25649537a67370849e8ec5c3e69b059cea5e376f6cc4a92cde992452457a9f7\"), mutable: false, backing_file_uri: None, artifact_identity: false, artifact_origin: None, content: \"{\\n  \\\"schemaVersion\\\": {\\n    \\\"major\\\": 1,\\n    \\\"minor\\\": 0\\n  },\\n  \\\"kind\\\": \\\"github.pull_request\\\",\\n  \\\"resource\\\": \\\"pr://owner/repo/7/facts\\\",\\n  \\\"source\\\": {\\n    \\\"sourceId\\\": \\\"github-facts\\\",\\n    \\\"deployment\\\": {\\n      \\\"webOrigin\\\": \\\"https://github.example\\\",\\n      \\\"apiOrigin\\\": \\\"https://tls.invalid:40079\\\"\\n    }\\n  },\\n  \\\"repository\\\": {\\n    \\\"owner\\\": \\\"owner\\\",\\n    \\\"name\\\": \\\"repo\\\",\\n    \\\"observed\\\": {\\n      \\\"id\\\": \\\"9007199254740997\\\",\\n      \\\"nodeId\\\": \\\"R_base\\\",\\n      \\\"name\\\": \\\"Repo\\\",\\n      \\\"fullName\\\": \\\"Owner/Repo\\\",\\n      \\\"owner\\\": {\\n        \\\"id\\\": \\\"101\\\",\\n        \\\"login\\\": \\\"Owner\\\"\\n      },\\n      \\\"links\\\": {\\n        \\\"apiUrl\\\": \\\"https://tls.invalid:40079/repos/owner/repo\\\",\\n        \\\"htmlUrl\\\": \\\"https://github.example/Owner/Repo\\\"\\n      }\\n    }\\n  },\\n  \\\"request\\\": {\\n    \\\"repository\\\": {\\n      \\\"owner\\\": \\\"owner\\\",\\n      \\\"name\\\": \\\"repo\\\"\\n    },\\n    \\\"number\\\": \\\"7\\\"\\n  },\\n  \\\"observed\\\": {\\n    \\\"id\\\": \\\"9007199254740993\\\",\\n    \\\"number\\\": \\\"7\\\",\\n    \\\"nodeId\\\": \\\"PR_native\\\",\\n    \\\"base\\\": {\\n      \\\"commitSha\\\": \\\"1111111111111111111111111111111111111111\\\",\\n      \\\"repository\\\": {\\n        \\\"id\\\": \\\"9007199254740997\\\",\\n        \\\"nodeId\\\": \\\"R_base\\\",\\n        \\\"name\\\": \\\"Repo\\\",\\n        \\\"fullName\\\": \\\"Owner/Repo\\\",\\n        \\\"owner\\\": {\\n          \\\"id\\\": \\\"101\\\",\\n          \\\"login\\\": \\\"Owner\\\"\\n        },\\n        \\\"links\\\": {\\n          \\\"apiUrl\\\": \\\"https://tls.invalid:40079/repos/owner/repo\\\",\\n          \\\"htmlUrl\\\": \\\"https://github.example/Owner/Repo\\\"\\n        }\\n      },\\n      \\\"repositoryAvailability\\\": \\\"present\\\"\\n    },\\n    \\\"head\\\": {\\n      \\\"commitSha\\\": \\\"2222222222222222222222222222222222222222\\\",\\n      \\\"repository\\\": {\\n        \\\"id\\\": \\\"9007199254740999\\\",\\n        \\\"nodeId\\\": \\\"R_fork\\\",\\n        \\\"name\\\": \\\"Fork\\\",\\n        \\\"fullName\\\": \\\"Other/Fork\\\",\\n        \\\"owner\\\": {\\n          \\\"id\\\": \\\"202\\\",\\n          \\\"login\\\": \\\"Other\\\"\\n        },\\n        \\\"links\\\": {\\n          \\\"apiUrl\\\": \\\"https://tls.invalid:40079/repos/Other/Fork\\\",\\n          \\\"htmlUrl\\\": \\\"https://github.example/Other/Fork\\\"\\n        }\\n      },\\n      \\\"repositoryAvailability\\\": \\\"present\\\"\\n    }\\n  },\\n  \\\"acquisition\\\": {\\n    \\\"startedAtUnixMs\\\": 1788874233733,\\n    \\\"completedAtUnixMs\\\": 1788874233735,\\n    \\\"elapsedMs\\\": 2,\\n    \\\"restApiVersion\\\": \\\"2022-11-28\\\",\\n    \\\"limits\\\": {\\n      \\\"maxAttempts\\\": 10,\\n      \\\"timeoutMs\\\": 30000.0,\\n      \\\"maxResponseBytes\\\": 8388608,\\n      \\\"maxAcceptedBodyBytes\\\": 16777216,\\n      \\\"maxRepresentationBytes\\\": 16777216\\n    },\\n    \\\"usage\\\": {\\n      \\\"attemptedRequests\\\": 1,\\n      \\\"acceptedBodyBytes\\\": 1541\\n    }\\n  },\\n  \\\"upstream\\\": {\\n    \\\"body\\\": {\\n      \\\"status\\\": 200,\\n      \\\"observedAtUnixMs\\\": 1788874233735\\n    }\\n  },\\n  \\\"data\\\": {\\n    \\\"id\\\": \\\"9007199254740993\\\",\\n    \\\"number\\\": \\\"7\\\",\\n    \\\"nodeId\\\": \\\"PR_native\\\",\\n    \\\"title\\\": \\\"Independent title \u03bb\\\",\\n    \\\"body\\\": \\\"quote \\\\\\\" slash \\\\\\\\ newline\\\\n\u96ea\\\",\\n    \\\"state\\\": \\\"future_native_state\\\",\\n    \\\"author\\\": {\\n      \\\"id\\\": \\\"9007199254740995\\\",\\n      \\\"nodeId\\\": \\\"U_native\\\",\\n      \\\"login\\\": \\\"Author\\\",\\n      \\\"links\\\": {\\n        \\\"apiUrl\\\": \\\"https://inert.invalid/user\\\",\\n        \\\"htmlUrl\\\": \\\"https://github.example/Author\\\"\\n      }\\n    },\\n    \\\"createdAt\\\": \\\"2001-01-01T00:00:00Z\\\",\\n    \\\"updatedAt\\\": \\\"2002-02-02T00:00:00Z\\\",\\n    \\\"closedAt\\\": null,\\n    \\\"mergedAt\\\": \\\"2003-03-03T00:00:00Z\\\",\\n    \\\"draft\\\": false,\\n    \\\"merged\\\": true,\\n    \\\"links\\\": {\\n      \\\"apiUrl\\\": \\\"https://foreign.invalid/repos/owner/repo/pulls/7\\\",\\n      \\\"htmlUrl\\\": \\\"https://github.example/Owner/Repo/pull/7\\\",\\n      \\\"diffUrl\\\": \\\"https://github.example/Owner/Repo/pull/7.diff\\\",\\n      \\\"patchUrl\\\": \\\"https://github.example/Owner/Repo/pull/7.patch\\\",\\n      \\\"issueUrl\\\": \\\"https://tls.invalid:40079/repos/owner/repo/issues/7\\\",\\n      \\\"relations\\\": {\\n        \\\"html\\\": {\\n          \\\"href\\\": \\\"https://github.example/Owner/Repo/pull/7\\\"\\n        },\\n        \\\"self\\\": {\\n          \\\"href\\\": \\\"https://tls.invalid:40079/repos/owner/repo/pulls/7\\\"\\n        }\\n      }\\n    },\\n    \\\"base\\\": {\\n      \\\"refName\\\": \\\"main\\\",\\n      \\\"commitSha\\\": \\\"1111111111111111111111111111111111111111\\\",\\n      \\\"repository\\\": {\\n        \\\"id\\\": \\\"9007199254740997\\\",\\n        \\\"nodeId\\\": \\\"R_base\\\",\\n        \\\"name\\\": \\\"Repo\\\",\\n        \\\"fullName\\\": \\\"Owner/Repo\\\",\\n        \\\"owner\\\": {\\n          \\\"id\\\": \\\"101\\\",\\n          \\\"login\\\": \\\"Owner\\\"\\n        },\\n        \\\"links\\\": {\\n          \\\"apiUrl\\\": \\\"https://tls.invalid:40079/repos/owner/repo\\\",\\n          \\\"htmlUrl\\\": \\\"https://github.example/Owner/Repo\\\"\\n        }\\n      },\\n      \\\"repositoryAvailability\\\": \\\"present\\\"\\n    },\\n    \\\"head\\\": {\\n      \\\"refName\\\": \\\"topic\\\",\\n      \\\"commitSha\\\": \\\"2222222222222222222222222222222222222222\\\",\\n      \\\"repository\\\": {\\n        \\\"id\\\": \\\"9007199254740999\\\",\\n        \\\"nodeId\\\": \\\"R_fork\\\",\\n        \\\"name\\\": \\\"Fork\\\",\\n        \\\"fullName\\\": \\\"Other/Fork\\\",\\n        \\\"owner\\\": {\\n          \\\"id\\\": \\\"202\\\",\\n          \\\"login\\\": \\\"Other\\\"\\n        },\\n        \\\"links\\\": {\\n          \\\"apiUrl\\\": \\\"https://tls.invalid:40079/repos/Other/Fork\\\",\\n          \\\"htmlUrl\\\": \\\"https://github.example/Other/Fork\\\"\\n        }\\n      },\\n      \\\"repositoryAvailability\\\": \\\"present\\\"\\n    }\\n  },\\n  \\\"unavailableFacts\\\": [\\n    {\\n      \\\"field\\\": \\\"closedAt\\\",\\n      \\\"reason\\\": \\\"null\\\"\\n    }\\n  ]\\n}\", projection: ProjectionMetadata { spans: [ProjectionSpan { output_start: 0, output_end: 4841, start_line: 1, end_line: 186, reaches_eof: true }], source_eof: true }, continuation: None }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_required_identity_contradictions_and_duplicates_are_rejected\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.31s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\nwarning: function `same_url` is never used\n  --> crates/resourcefs-sources/src/github/facts/identity.rs:77:4\n   |\n77 | fn same_url(actual: &str, expected: &Url) -> Result<(), ResourceError> {\n   |    ^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: `resourcefs-sources` (lib) generated 1 warning\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.62s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest facts_required_identity_contradictions_and_duplicates_are_rejected ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 1.06s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.64s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  },
+  {
+    "name": "nullable_body_defaults_to_empty",
+    "claims": [
+      "C06"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_independent_optional_presence_type_matrix",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest facts_independent_optional_presence_type_matrix ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.86s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_independent_optional_presence_type_matrix ... FAILED\n\nfailures:\n\n---- facts_independent_optional_presence_type_matrix stdout ----\n\nthread 'facts_independent_optional_presence_type_matrix' (2194865) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:359:17:\nassertion `left == right` failed: body\n  left: true\n right: false\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_independent_optional_presence_type_matrix\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.07s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.94s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest facts_independent_optional_presence_type_matrix ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 3.07s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.86s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  },
+  {
+    "name": "native_id_roundtrip_through_float",
+    "claims": [
+      "C06"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_native_identity_consumer_and_observed_request",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\nnative facts comparison and additive compatibility passed\ntest facts_native_identity_consumer_and_observed_request ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.08s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_native_identity_consumer_and_observed_request ... FAILED\n\nfailures:\n\n---- facts_native_identity_consumer_and_observed_request stdout ----\n\nthread 'facts_native_identity_consumer_and_observed_request' (2196095) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:221:5:\nC05/C06 production consumer rejected output\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_native_identity_consumer_and_observed_request\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.09s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.39s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nTraceback (most recent call last):\n  File \"/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources/../../.rfs-0n97/oracles/facts_consumer.py\", line 63, in <module>\n    compare(production, native, observations)\n    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources/../../.rfs-0n97/oracles/facts_consumer.py\", line 23, in compare\n    presence(native, data, old, new, str)\n    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources/../../.rfs-0n97/oracles/facts_consumer.py\", line 21, in presence\n    assert target[new] == expected, (old, target[new], expected)\n           ^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: ('id', '9007199254740992', '9007199254740993')\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\nnative facts comparison and additive compatibility passed\ntest facts_native_identity_consumer_and_observed_request ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.09s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.43s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  },
+  {
+    "name": "unknown_state_coerced_to_open",
+    "claims": [
+      "C06"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_native_identity_consumer_and_observed_request",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\nnative facts comparison and additive compatibility passed\ntest facts_native_identity_consumer_and_observed_request ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.10s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_native_identity_consumer_and_observed_request ... FAILED\n\nfailures:\n\n---- facts_native_identity_consumer_and_observed_request stdout ----\n\nthread 'facts_native_identity_consumer_and_observed_request' (2197347) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:221:5:\nC05/C06 production consumer rejected output\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_native_identity_consumer_and_observed_request\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.12s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.94s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nTraceback (most recent call last):\n  File \"/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources/../../.rfs-0n97/oracles/facts_consumer.py\", line 63, in <module>\n    compare(production, native, observations)\n    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources/../../.rfs-0n97/oracles/facts_consumer.py\", line 26, in compare\n    presence(native, data, old, new)\n    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources/../../.rfs-0n97/oracles/facts_consumer.py\", line 21, in presence\n    assert target[new] == expected, (old, target[new], expected)\n           ^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: ('state', 'open', 'future_native_state')\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\nnative facts comparison and additive compatibility passed\ntest facts_native_identity_consumer_and_observed_request ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.09s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.87s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  },
+  {
+    "name": "production_emits_schema_major_two",
+    "claims": [
+      "C06"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_native_identity_consumer_and_observed_request",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\nnative facts comparison and additive compatibility passed\ntest facts_native_identity_consumer_and_observed_request ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.09s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_native_identity_consumer_and_observed_request ... FAILED\n\nfailures:\n\n---- facts_native_identity_consumer_and_observed_request stdout ----\n\nthread 'facts_native_identity_consumer_and_observed_request' (2198520) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:221:5:\nC05/C06 production consumer rejected output\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_native_identity_consumer_and_observed_request\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.10s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.93s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nTraceback (most recent call last):\n  File \"/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources/../../.rfs-0n97/oracles/facts_consumer.py\", line 63, in <module>\n    compare(production, native, observations)\n    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources/../../.rfs-0n97/oracles/facts_consumer.py\", line 12, in compare\n    raise ValueError('unsupported schema major')\nValueError: unsupported schema major\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\nnative facts comparison and additive compatibility passed\ntest facts_native_identity_consumer_and_observed_request ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.09s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.98s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  },
+  {
+    "name": "304_overwrites_original_body_observation",
+    "claims": [
+      "C07"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_cache_provenance_changed_body_and_failed_revalidation",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest facts_cache_provenance_changed_body_and_failed_revalidation ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.08s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_cache_provenance_changed_body_and_failed_revalidation ... FAILED\n\nfailures:\n\n---- facts_cache_provenance_changed_body_and_failed_revalidation stdout ----\n\nthread 'facts_cache_provenance_changed_body_and_failed_revalidation' (2199706) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:474:5:\nassertion `left == right` failed\n  left: Object {\"date\": String(\"Tue, 01 Jan 2019 00:00:00 GMT\"), \"etag\": String(\"\\\"body-one\\\"\"), \"observedAtUnixMs\": Number(1788874260670), \"status\": Number(200)}\n right: Object {\"date\": String(\"Wed, 01 Jan 2020 00:00:00 GMT\"), \"observedAtUnixMs\": Number(1788874260672), \"status\": Number(304)}\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_cache_provenance_changed_body_and_failed_revalidation\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.08s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\nwarning: associated function `legacy` is never used\n  --> crates/resourcefs-sources/src/github/fetch.rs:76:8\n   |\n64 | impl BodyObservation {\n   | -------------------- associated function in this implementation\n...\n76 |     fn legacy(etag: &str) -> Self {\n   |        ^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: `resourcefs-sources` (lib) generated 1 warning\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.16s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest facts_cache_provenance_changed_body_and_failed_revalidation ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.08s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.27s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  },
+  {
+    "name": "failed_revalidation_returns_stale_body",
+    "claims": [
+      "C07,C15"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_cache_provenance_changed_body_and_failed_revalidation",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest facts_cache_provenance_changed_body_and_failed_revalidation ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.08s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_cache_provenance_changed_body_and_failed_revalidation ... FAILED\n\nfailures:\n\n---- facts_cache_provenance_changed_body_and_failed_revalidation stdout ----\n\nthread 'facts_cache_provenance_changed_body_and_failed_revalidation' (2200888) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:484:43:\nno stale fallback: SourceResource { canonical_reference: \"pr://owner/repo/7/facts\", content_type: \"application/json; charset=utf-8\", version_tag: VersionTag(\"sha256:e66d2f7f4db6912ebd5436a30c47d0ef2a4c43210c1fa440323538947dd20338\"), mutable: false, backing_file_uri: None, artifact_identity: false, artifact_origin: None, content: \"{\\n  \\\"schemaVersion\\\": {\\n    \\\"major\\\": 1,\\n    \\\"minor\\\": 0\\n  },\\n  \\\"kind\\\": \\\"github.pull_request\\\",\\n  \\\"resource\\\": \\\"pr://owner/repo/7/facts\\\",\\n  \\\"source\\\": {\\n    \\\"sourceId\\\": \\\"github-facts\\\",\\n    \\\"deployment\\\": {\\n      \\\"webOrigin\\\": \\\"https://github.example\\\",\\n      \\\"apiOrigin\\\": \\\"https://tls.invalid:41907\\\"\\n    }\\n  },\\n  \\\"repository\\\": {\\n    \\\"owner\\\": \\\"owner\\\",\\n    \\\"name\\\": \\\"repo\\\",\\n    \\\"observed\\\": {\\n      \\\"id\\\": \\\"9007199254740997\\\",\\n      \\\"nodeId\\\": \\\"R_base\\\",\\n      \\\"name\\\": \\\"Repo\\\",\\n      \\\"fullName\\\": \\\"Owner/Repo\\\",\\n      \\\"owner\\\": {\\n        \\\"id\\\": \\\"101\\\",\\n        \\\"login\\\": \\\"Owner\\\"\\n      },\\n      \\\"links\\\": {\\n        \\\"apiUrl\\\": \\\"https://tls.invalid:41907/repos/owner/repo\\\",\\n        \\\"htmlUrl\\\": \\\"https://github.example/Owner/Repo\\\"\\n      }\\n    }\\n  },\\n  \\\"request\\\": {\\n    \\\"repository\\\": {\\n      \\\"owner\\\": \\\"owner\\\",\\n      \\\"name\\\": \\\"repo\\\"\\n    },\\n    \\\"number\\\": \\\"7\\\"\\n  },\\n  \\\"observed\\\": {\\n    \\\"id\\\": \\\"9007199254740993\\\",\\n    \\\"number\\\": \\\"7\\\",\\n    \\\"nodeId\\\": \\\"PR_native\\\",\\n    \\\"base\\\": {\\n      \\\"commitSha\\\": \\\"1111111111111111111111111111111111111111\\\",\\n      \\\"repository\\\": {\\n        \\\"id\\\": \\\"9007199254740997\\\",\\n        \\\"nodeId\\\": \\\"R_base\\\",\\n        \\\"name\\\": \\\"Repo\\\",\\n        \\\"fullName\\\": \\\"Owner/Repo\\\",\\n        \\\"owner\\\": {\\n          \\\"id\\\": \\\"101\\\",\\n          \\\"login\\\": \\\"Owner\\\"\\n        },\\n        \\\"links\\\": {\\n          \\\"apiUrl\\\": \\\"https://tls.invalid:41907/repos/owner/repo\\\",\\n          \\\"htmlUrl\\\": \\\"https://github.example/Owner/Repo\\\"\\n        }\\n      },\\n      \\\"repositoryAvailability\\\": \\\"present\\\"\\n    },\\n    \\\"head\\\": {\\n      \\\"commitSha\\\": \\\"2222222222222222222222222222222222222222\\\",\\n      \\\"repository\\\": {\\n        \\\"id\\\": \\\"9007199254740999\\\",\\n        \\\"nodeId\\\": \\\"R_fork\\\",\\n        \\\"name\\\": \\\"Fork\\\",\\n        \\\"fullName\\\": \\\"Other/Fork\\\",\\n        \\\"owner\\\": {\\n          \\\"id\\\": \\\"202\\\",\\n          \\\"login\\\": \\\"Other\\\"\\n        },\\n        \\\"links\\\": {\\n          \\\"apiUrl\\\": \\\"https://tls.invalid:41907/repos/Other/Fork\\\",\\n          \\\"htmlUrl\\\": \\\"https://github.example/Other/Fork\\\"\\n        }\\n      },\\n      \\\"repositoryAvailability\\\": \\\"present\\\"\\n    }\\n  },\\n  \\\"acquisition\\\": {\\n    \\\"startedAtUnixMs\\\": 1788874265542,\\n    \\\"completedAtUnixMs\\\": 1788874265543,\\n    \\\"elapsedMs\\\": 1,\\n    \\\"restApiVersion\\\": \\\"2022-11-28\\\",\\n    \\\"limits\\\": {\\n      \\\"maxAttempts\\\": 10,\\n      \\\"timeoutMs\\\": 30000.0,\\n      \\\"maxResponseBytes\\\": 8388608,\\n      \\\"maxAcceptedBodyBytes\\\": 16777216,\\n      \\\"maxRepresentationBytes\\\": 16777216\\n    },\\n    \\\"usage\\\": {\\n      \\\"attemptedRequests\\\": 1,\\n      \\\"acceptedBodyBytes\\\": 0\\n    }\\n  },\\n  \\\"upstream\\\": {\\n    \\\"body\\\": {\\n      \\\"status\\\": 403,\\n      \\\"observedAtUnixMs\\\": 1788874265543\\n    }\\n  },\\n  \\\"data\\\": {\\n    \\\"id\\\": \\\"9007199254740993\\\",\\n    \\\"number\\\": \\\"7\\\",\\n    \\\"nodeId\\\": \\\"PR_native\\\",\\n    \\\"title\\\": \\\"Changed title \u03bb\\\",\\n    \\\"body\\\": \\\"quote \\\\\\\" slash \\\\\\\\ newline\\\\n\u96ea\\\",\\n    \\\"state\\\": \\\"future_native_state\\\",\\n    \\\"author\\\": {\\n      \\\"id\\\": \\\"9007199254740995\\\",\\n      \\\"nodeId\\\": \\\"U_native\\\",\\n      \\\"login\\\": \\\"Author\\\",\\n      \\\"links\\\": {\\n        \\\"apiUrl\\\": \\\"https://inert.invalid/user\\\",\\n        \\\"htmlUrl\\\": \\\"https://github.example/Author\\\"\\n      }\\n    },\\n    \\\"createdAt\\\": \\\"2001-01-01T00:00:00Z\\\",\\n    \\\"updatedAt\\\": \\\"2002-02-02T00:00:00Z\\\",\\n    \\\"closedAt\\\": null,\\n    \\\"mergedAt\\\": \\\"2003-03-03T00:00:00Z\\\",\\n    \\\"draft\\\": false,\\n    \\\"merged\\\": true,\\n    \\\"links\\\": {\\n      \\\"apiUrl\\\": \\\"https://tls.invalid:41907/repos/owner/repo/pulls/7\\\",\\n      \\\"htmlUrl\\\": \\\"https://github.example/Owner/Repo/pull/7\\\",\\n      \\\"diffUrl\\\": \\\"https://github.example/Owner/Repo/pull/7.diff\\\",\\n      \\\"patchUrl\\\": \\\"https://github.example/Owner/Repo/pull/7.patch\\\",\\n      \\\"issueUrl\\\": \\\"https://tls.invalid:41907/repos/owner/repo/issues/7\\\",\\n      \\\"relations\\\": {\\n        \\\"html\\\": {\\n          \\\"href\\\": \\\"https://github.example/Owner/Repo/pull/7\\\"\\n        },\\n        \\\"self\\\": {\\n          \\\"href\\\": \\\"https://tls.invalid:41907/repos/owner/repo/pulls/7\\\"\\n        }\\n      }\\n    },\\n    \\\"base\\\": {\\n      \\\"refName\\\": \\\"main\\\",\\n      \\\"commitSha\\\": \\\"1111111111111111111111111111111111111111\\\",\\n      \\\"repository\\\": {\\n        \\\"id\\\": \\\"9007199254740997\\\",\\n        \\\"nodeId\\\": \\\"R_base\\\",\\n        \\\"name\\\": \\\"Repo\\\",\\n        \\\"fullName\\\": \\\"Owner/Repo\\\",\\n        \\\"owner\\\": {\\n          \\\"id\\\": \\\"101\\\",\\n          \\\"login\\\": \\\"Owner\\\"\\n        },\\n        \\\"links\\\": {\\n          \\\"apiUrl\\\": \\\"https://tls.invalid:41907/repos/owner/repo\\\",\\n          \\\"htmlUrl\\\": \\\"https://github.example/Owner/Repo\\\"\\n        }\\n      },\\n      \\\"repositoryAvailability\\\": \\\"present\\\"\\n    },\\n    \\\"head\\\": {\\n      \\\"refName\\\": \\\"topic\\\",\\n      \\\"commitSha\\\": \\\"2222222222222222222222222222222222222222\\\",\\n      \\\"repository\\\": {\\n        \\\"id\\\": \\\"9007199254740999\\\",\\n        \\\"nodeId\\\": \\\"R_fork\\\",\\n        \\\"name\\\": \\\"Fork\\\",\\n        \\\"fullName\\\": \\\"Other/Fork\\\",\\n        \\\"owner\\\": {\\n          \\\"id\\\": \\\"202\\\",\\n          \\\"login\\\": \\\"Other\\\"\\n        },\\n        \\\"links\\\": {\\n          \\\"apiUrl\\\": \\\"https://tls.invalid:41907/repos/Other/Fork\\\",\\n          \\\"htmlUrl\\\": \\\"https://github.example/Other/Fork\\\"\\n        }\\n      },\\n      \\\"repositoryAvailability\\\": \\\"present\\\"\\n    }\\n  },\\n  \\\"unavailableFacts\\\": [\\n    {\\n      \\\"field\\\": \\\"closedAt\\\",\\n      \\\"reason\\\": \\\"null\\\"\\n    }\\n  ]\\n}\", projection: ProjectionMetadata { spans: [ProjectionSpan { output_start: 0, output_end: 4836, start_line: 1, end_line: 186, reaches_eof: true }], source_eof: true }, continuation: None }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_cache_provenance_changed_body_and_failed_revalidation\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.08s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.22s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest facts_cache_provenance_changed_body_and_failed_revalidation ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.08s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.29s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  },
+  {
+    "name": "max_for_min_in_attempt_dimension",
+    "claims": [
+      "C08"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_operator_intersection_is_observed_for_each_independent_dimension",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest facts_operator_intersection_is_observed_for_each_independent_dimension ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.22s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_operator_intersection_is_observed_for_each_independent_dimension ... FAILED\n\nfailures:\n\n---- facts_operator_intersection_is_observed_for_each_independent_dimension stdout ----\n\nthread 'facts_operator_intersection_is_observed_for_each_independent_dimension' (2202229) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:811:13:\nassertion `left == right` failed: maxAttempts\n  left: 2.0\n right: 1.0\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_operator_intersection_is_observed_for_each_independent_dimension\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.07s\n\n   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.65s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest facts_operator_intersection_is_observed_for_each_independent_dimension ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.37s\n\n   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-core)\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.63s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  },
+  {
+    "name": "cached_body_admission_skipped",
+    "claims": [
+      "C12"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_body_and_cached_readmission_exact_plus_one",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest facts_body_and_cached_readmission_exact_plus_one ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.42s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_body_and_cached_readmission_exact_plus_one ... FAILED\n\nfailures:\n\n---- facts_body_and_cached_readmission_exact_plus_one stdout ----\n\nthread 'facts_body_and_cached_readmission_exact_plus_one' (2204157) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:530:21:\nassertion `left == right` failed\n  left: Number(0)\n right: 1675\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_body_and_cached_readmission_exact_plus_one\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.31s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.07s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest facts_body_and_cached_readmission_exact_plus_one ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.43s\n\n    Blocking waiting for file lock on package cache\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.02s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  },
+  {
+    "name": "representation_envelope_gets_unmetered_allowance",
+    "claims": [
+      "C13"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--lib",
+      "github::facts::tests::final_facts_exact_pretty_bytes_and_hash_fit_cap_but_one_less_refuses",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest github::facts::tests::final_facts_exact_pretty_bytes_and_hash_fit_cap_but_one_less_refuses ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.05s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.13s\n     Running unittests src/lib.rs (target/debug/deps/resourcefs_sources-5893eebeba2f8ad7)\n",
+    "red_output": "\nrunning 1 test\ntest github::facts::tests::final_facts_exact_pretty_bytes_and_hash_fit_cap_but_one_less_refuses ... FAILED\n\nfailures:\n\n---- github::facts::tests::final_facts_exact_pretty_bytes_and_hash_fit_cap_but_one_less_refuses stdout ----\n\nthread 'github::facts::tests::final_facts_exact_pretty_bytes_and_hash_fit_cap_but_one_less_refuses' (2206344) panicked at crates/resourcefs-sources/src/github/facts_tests.rs:91:10:\none byte less cannot publish truncated JSON: SourceResource { canonical_reference: \"pr://owner/repo/7/facts\", content_type: \"application/json; charset=utf-8\", version_tag: VersionTag(\"sha256:705a241d9226516eb0b34b8825073c2d270a6cac739cf5f750dcc040ab768464\"), mutable: false, backing_file_uri: None, artifact_identity: false, artifact_origin: None, content: \"{\\n  \\\"schemaVersion\\\": {\\n    \\\"major\\\": 1,\\n    \\\"minor\\\": 0\\n  },\\n  \\\"kind\\\": \\\"github.pull_request\\\",\\n  \\\"text\\\": \\\"\u96ea \u03bb \\\\\\\"quote\\\\\\\" \\\\\\\\ slash\\\\nline\\\\t\\\\u0001\\\"\\n}\", projection: ProjectionMetadata { spans: [ProjectionSpan { output_start: 0, output_end: 145, start_line: 1, end_line: 8, reaches_eof: true }], source_eof: true }, continuation: None }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    github::facts::tests::final_facts_exact_pretty_bytes_and_hash_fit_cap_but_one_less_refuses\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.05s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.86s\n     Running unittests src/lib.rs (target/debug/deps/resourcefs_sources-5893eebeba2f8ad7)\nerror: test failed, to rerun pass `-p resourcefs-sources --lib`\n",
+    "restored_output": "\nrunning 1 test\ntest github::facts::tests::final_facts_exact_pretty_bytes_and_hash_fit_cap_but_one_less_refuses ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.05s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.86s\n     Running unittests src/lib.rs (target/debug/deps/resourcefs_sources-5893eebeba2f8ad7)\n"
+  },
+  {
+    "name": "follow_authorized_pr_head_repository_link",
+    "claims": [
+      "C14"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_fork_links_validate_own_identity_without_fetching_fork",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest facts_fork_links_validate_own_identity_without_fetching_fork ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.27s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.76s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_fork_links_validate_own_identity_without_fetching_fork ... FAILED\n\nfailures:\n\n---- facts_fork_links_validate_own_identity_without_fetching_fork stdout ----\n\nthread 'facts_fork_links_validate_own_identity_without_fetching_fork' (2208720) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:101:13:\nassertion `left == right` failed: no link/fork egress\n  left: \"/repos/Other/Fork\"\n right: \"/repos/owner/repo/pulls/7\"\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\nthread 'facts_fork_links_validate_own_identity_without_fetching_fork' (2208720) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:101:13:\nassertion `left == right` failed: no link/fork egress\n  left: \"/repos/Other/Fork\"\n right: \"/repos/owner/repo/pulls/7\"\n\nthread 'facts_fork_links_validate_own_identity_without_fetching_fork' (2208720) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:1282:53:\nvalid distinct fork: ResourceError { category: SourceUnavailable, message: \"GitHub facts read failed\", details: Some(ResourceErrorDetails { reason: TransportFailure, http_status: None, access_ambiguity: None, retry_guidance: None, limit: None, rate_limit_reset: None }) }\n\n\nfailures:\n    facts_fork_links_validate_own_identity_without_fetching_fork\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.27s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.28s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest facts_fork_links_validate_own_identity_without_fetching_fork ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.28s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.27s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  },
+  {
+    "name": "status_policy_infers_rate_limit_from_prose",
+    "claims": [
+      "C15"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_errors_are_status_derived_and_sanitized",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest facts_errors_are_status_derived_and_sanitized ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.37s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_errors_are_status_derived_and_sanitized ... FAILED\n\nfailures:\n\n---- facts_errors_are_status_derived_and_sanitized stdout ----\n\nthread 'facts_errors_are_status_derived_and_sanitized' (2210948) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:623:9:\nassertion `left == right` failed: 403 Forbidden\n  left: SourceUnavailable\n right: PermissionDenied\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_errors_are_status_derived_and_sanitized\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.13s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.44s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest facts_errors_are_status_derived_and_sanitized ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.38s\n\n    Blocking waiting for file lock on package cache\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.48s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  },
+  {
+    "name": "raw_leak_compound_1_status_body_becomes_message",
+    "claims": [
+      "C15",
+      "C15"
+    ],
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "resourcefs-sources",
+      "--test",
+      "github_facts_contract",
+      "facts_errors_are_status_derived_and_sanitized",
+      "--",
+      "--exact"
+    ],
+    "baseline_exit": 0,
+    "red_exit": 101,
+    "restored_exit": 0,
+    "baseline_output": "\nrunning 1 test\ntest facts_errors_are_status_derived_and_sanitized ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.37s\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n",
+    "red_output": "\nrunning 1 test\ntest facts_errors_are_status_derived_and_sanitized ... FAILED\n\nfailures:\n\n---- facts_errors_are_status_derived_and_sanitized stdout ----\n\nthread 'facts_errors_are_status_derived_and_sanitized' (2212709) panicked at crates/resourcefs-sources/tests/github_facts_contract.rs:629:9:\nassertion failed: !format!(\"{error:?}\").contains(\"token-secret\")\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    facts_errors_are_status_derived_and_sanitized\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.07s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\nwarning: function `sanitize` is never used\n   --> crates/resourcefs-sources/src/github/facts.rs:519:4\n    |\n519 | fn sanitize(error: ResourceError) -> ResourceError {\n    |    ^^^^^^^^\n    |\n    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: `resourcefs-sources` (lib) generated 1 warning\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.42s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\nerror: test failed, to rerun pass `-p resourcefs-sources --test github_facts_contract`\n",
+    "restored_output": "\nrunning 1 test\ntest facts_errors_are_status_derived_and_sanitized ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.37s\n\n   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-0n97-impl/crates/resourcefs-sources)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.27s\n     Running tests/github_facts_contract.rs (target/debug/deps/github_facts_contract-1e5ea85a0b440c92)\n"
+  }
+]

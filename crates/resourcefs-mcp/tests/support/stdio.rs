@@ -74,7 +74,10 @@ pub(crate) fn finish_process(
     allow_harness_output: bool,
 ) -> String {
     stdin.take();
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // Bounds process teardown, which a loaded Windows CI runner has exceeded
+    // at 2 s. Ten seconds still fails a server that genuinely hangs on stdin
+    // close rather than one that is merely descheduled. See rfs-1e6h.
+    let deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
         if let Some(status) = child.try_wait().expect("poll child") {
             break status;

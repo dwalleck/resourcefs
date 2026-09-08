@@ -102,7 +102,7 @@ async fn credential_reaches_the_wire_only_when_configured() {
     let port = listener.address.port();
 
     source(port, vec![credential(port)])
-        .read(&reference(port, "/doc"), &OperationGuard::new())
+        .read(&reference(port, "/doc"), &OperationGuard::new(), None)
         .await
         .expect("a credentialed read succeeds");
     settle().await;
@@ -130,7 +130,7 @@ async fn credential_reaches_the_wire_only_when_configured() {
 
     // POSITIVE CONTROL — same listener, same origin, no credential configured.
     source(port, Vec::new())
-        .read(&reference(port, "/doc"), &OperationGuard::new())
+        .read(&reference(port, "/doc"), &OperationGuard::new(), None)
         .await
         .expect("an uncredentialed read succeeds");
     settle().await;
@@ -196,7 +196,7 @@ async fn credential_never_reaches_an_observable_channel() {
 
     // Channel: a successful credentialed read's projection.
     let resource = source
-        .read(&reference(port, "/doc"), &OperationGuard::new())
+        .read(&reference(port, "/doc"), &OperationGuard::new(), None)
         .await
         .expect("a credentialed read succeeds");
     channels.push(("resource-debug", format!("{resource:?}")));
@@ -204,7 +204,7 @@ async fn credential_never_reaches_an_observable_channel() {
     // Channel: the refusal rendered when the credentialed origin redirects
     // across an origin boundary.
     let refusal = source
-        .read(&reference(port, "/hop"), &OperationGuard::new())
+        .read(&reference(port, "/hop"), &OperationGuard::new(), None)
         .await
         .expect_err("a credentialed cross-origin redirect is refused");
     channels.push(("error-message", refusal.message().to_owned()));
@@ -258,7 +258,11 @@ async fn cancelled_read_abandons_the_request() {
     .await;
     let control_port = control_listener.address.port();
     let control = source(control_port, Vec::new())
-        .read(&reference(control_port, "/doc:raw"), &OperationGuard::new())
+        .read(
+            &reference(control_port, "/doc:raw"),
+            &OperationGuard::new(),
+            None,
+        )
         .await
         .expect("an uncancelled trickled read completes");
     settle().await;
@@ -290,7 +294,7 @@ async fn cancelled_read_abandons_the_request() {
     });
 
     let refusal = source(port, Vec::new())
-        .read(&reference(port, "/doc:raw"), &guard)
+        .read(&reference(port, "/doc:raw"), &guard, None)
         .await
         .expect_err("a cancelled read must not return a document");
     settle().await;
@@ -375,7 +379,7 @@ async fn cancellation_survives_source_dispatch() {
     });
 
     let refusal = compiled
-        .read(&reference(port, "/doc:raw"), &guard)
+        .read(&reference(port, "/doc:raw"), &guard, None)
         .await
         .expect_err("a cancelled dispatched read must not return a document");
     settle().await;

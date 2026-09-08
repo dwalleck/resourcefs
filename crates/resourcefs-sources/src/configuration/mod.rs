@@ -21,7 +21,7 @@ pub use documents::{ConverterInput, DocumentConverter, DocumentsConfig, MAX_EXTE
 pub use downstream_mcp::{
     DownstreamMcpConfig, DownstreamServer, DownstreamTransport, MAX_SCHEME_CLAIM_BYTES, SchemeClaim,
 };
-pub use github::{GithubConfig, GithubRepository};
+pub use github::{GithubConfig, GithubDeployment, GithubRepository};
 pub use grants::{MutationGrants, MutationSupport};
 pub use https::{CredentialHeader, HttpsConfig, HttpsOrigin};
 pub use memory::{MemoryConfig, MemoryRoot, MemoryTarget, MemoryTargetKind};

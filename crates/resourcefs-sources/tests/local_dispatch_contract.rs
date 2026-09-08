@@ -14,6 +14,28 @@ use resourcefs_core::{
 use support::scratch_fixture;
 
 #[tokio::test]
+async fn direct_local_read_refuses_explicit_acquisition_controls() {
+    let fixture = scratch_fixture().await;
+    let reference = PathReference::local_root();
+    let controls = resourcefs_core::ReadAcquisitionLimits::default();
+    fixture
+        .local
+        .read(&reference, &OperationGuard::new(), None)
+        .await
+        .expect("local listing without controls");
+    let error = fixture
+        .local
+        .read(&reference, &OperationGuard::new(), Some(&controls))
+        .await
+        .expect_err("direct local controls must be refused");
+    assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(
+        error.details().expect("typed refusal").reason(),
+        resourcefs_core::ErrorReason::AcquisitionControlsUnsupported
+    );
+}
+
+#[tokio::test]
 async fn local_never_touches_filesystem() {
     let fixture = scratch_fixture().await;
 
@@ -178,7 +200,7 @@ async fn artifact_and_catalog_immutable() {
     // The artifact still reads its original bytes.
     let survived = fixture
         .compiled
-        .read(&artifact_reference, &OperationGuard::new())
+        .read(&artifact_reference, &OperationGuard::new(), None)
         .await
         .expect("artifact still readable");
     assert_eq!(survived.content(), "recoverable bytes\n");
