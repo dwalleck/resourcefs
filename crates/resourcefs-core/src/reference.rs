@@ -1361,10 +1361,7 @@ fn parse_pull_request_address(input: &str) -> Result<PullRequestAddress, Resourc
             repository: github_repository(owner, repository)?,
             number: PullRequestNumber::new(github_number(number, "GitHub pull request number")?)?,
             resource: PullRequestResource::Facts(PullRequestFact::Comment(
-                ConversationCommentId::new(github_number(
-                    id,
-                    "GitHub conversation comment ID",
-                )?)?,
+                ConversationCommentId::new(github_number(id, "GitHub conversation comment ID")?)?,
             )),
         }),
         [owner, repository, number, collection, id] => {

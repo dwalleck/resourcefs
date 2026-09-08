@@ -85,6 +85,11 @@ S0 plan correction (2026-09-08): the original 800-line estimate counted only the
 - `python scripts/module_shape_bfwa.py --stage baseline` → unchanged tree accepted, inherited checks retained.
 - The same command against each disposable `--root` mutation tree → the exact offending path/symbol, and the restored tree passes.
 
+
+### Checkpoint S0 (2026-09-08)
+
+Commit `0baf162`. Gate: 1 `N/A` — no executable production change; 2 `PASS` — unchanged tree accepted, three disposable mutations localized; 3 `PASS` — unlisted owner / parent serializer body / premature owner each red, restored tree green; 4 `PASS` — checker verdicts match pre-written expectations; 5 `PASS` — inherited h212/nae2/0n97 assertions retained at stage `facts`; 6 `PASS` — 6.3–6.9 s vs 10 s; 7 `PASS` — `python .rfs-bfwa/oracles/module_shape.py`; 8 `PASS` — all three mutations red; 9 `PASS` — restoration green. Plan correction: S0 measured 2,642 lines, not 800 (one-time workflow evidence).
+
 ## Slice S1: Core route grammar and cursor scope
 
 **Claim IDs:** C1, C2.
@@ -105,6 +110,11 @@ S0 plan correction (2026-09-08): the original 800-line estimate counted only the
 - `cargo test -p resourcefs-core --test selector_golden_contract` → selector grammar unchanged elsewhere.
 - `python scripts/module_shape_bfwa.py --stage grammar` → PASS.
 
+
+### Checkpoint S1 (2026-09-08)
+
+Commit `fca1d6a`. Gate: 1 `PASS` — core suite, GitHub facts/adapter/mutation suites, workspace all-target/all-feature check; 2 `PASS` — C1/C2 corpus; 3 `PASS` — malformed/canonical/cursor-scope fixture; 4 `PASS` — hand-written spelling/verdict table; 5 `PASS` — fence at stage `grammar` (reference.rs 1964 ≤ 1989, `reference/pull.rs` 51 ≤ 650); 6 `PASS` — release `reference_parse_budget` under 1 ms average; 7 `PASS` — `conversation_comment_facts_routes_and_cursor_scope`; 8 `PASS` — removed `comments/facts` arm and removed `:cursor:` split each red at their own assertion; 9 `PASS` — both restored green. Placement correction: the inherited 1989-line parent cap forced the new sum/parser into the private `reference/pull.rs` child (design.md records it); `cargo fmt` repair of `core/lib.rs` carried into the S2 commit.
+
 ## Slice S2: Shared envelope and singular comment read
 
 **Claim IDs:** C10, C11, C12, C17.
@@ -124,6 +134,11 @@ S0 plan correction (2026-09-08): the original 800-line estimate counted only the
 - `cargo test -p resourcefs-sources --test github_facts_contract` → presence matrix, parent rejection, singular shape and envelope order exact; existing PR facts rows unchanged.
 - `cargo test -p resourcefs-core --test github_reference_contract` → grammar rows still pass.
 - `python scripts/module_shape_bfwa.py --stage item` → PASS.
+
+
+### Checkpoint S2 (2026-09-08)
+
+Gate: 1 `PASS` — facts (24), adapter (24), mutation (15), MCP architecture (7) and stdio (43) suites; workspace all-target/all-feature check; 2 `PASS` — four named fences; 3 `PASS` — presence matrix (null vs absent vs empty vs unknown key vs duplicate key vs non-object vs >2^53 vs Unicode) and wrong-parent corpus; 4 `PASS` — independent expected key order/presence table; 5 `PASS` — fence at stage `item` (facts.rs 541 ≤ 750, pull.rs 269 ≤ 400, comment.rs 260 ≤ 400); 6 `PASS` — release `github_facts_production_budget` 27.7 ms / 32.8 MiB vs 1 s / 96 MiB; 7 `PASS` — the four fences; 8 `PASS` — ids-as-numbers, skipped `validate_parent`, empty `collection` on singular reads and `Option`-collapsed body each red; 9 `PASS` — all restored green. Known issue: pre-existing intermittent `facts_inflight_cancel_and_deadline_refuse_barrier_delayed_response` on the base branch, filed as `rfs-kpgy`; it reproduces without this slice's changes and a clean rerun passed. `cargo fmt` repaired S1's `core/lib.rs` ordering drift.
 
 ## Slice S3: Bounded collection read
 

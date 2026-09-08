@@ -121,6 +121,13 @@ where
         },
     )
     .await;
+    let (source, session) = build_source(&listener, operator).await;
+    (listener, source, session)
+}
+async fn build_source(
+    listener: &TlsListener,
+    operator: ReadAcquisitionLimits,
+) -> (GithubSource, session_support::ScratchFixture) {
     let port = listener.address.port();
     let api = format!("https://{}:{port}/", tls::FIXTURE_HOST);
     let origin = AllowedOrigin::new(&api, true).expect("origin");
@@ -151,15 +158,22 @@ where
     let source = GithubSourceMount::new(config, Arc::new(substrate))
         .bind(session.path_session().clone())
         .expect("source");
-    (listener, source, session)
+    (source, session)
 }
 async fn read(
     source: &GithubSource,
     limits: Option<&ReadAcquisitionLimits>,
 ) -> Result<SourceResource, resourcefs_core::ResourceError> {
+    read_reference(source, RESOURCE, limits).await
+}
+async fn read_reference(
+    source: &GithubSource,
+    reference: &str,
+    limits: Option<&ReadAcquisitionLimits>,
+) -> Result<SourceResource, resourcefs_core::ResourceError> {
     source
         .read(
-            &PathReference::parse(RESOURCE).expect("facts reference"),
+            &PathReference::parse(reference).expect("facts reference"),
             &OperationGuard::new(),
             limits,
         )
@@ -1492,4 +1506,369 @@ async fn github_facts_production_budget() -> Result<(), &'static str> {
         }
     }
     Ok(())
+}
+
+const COMMENT_NATIVE: &str = include_str!("../../../.rfs-bfwa/oracles/comment-native.json");
+const COMMENT_RESOURCE: &str = "pr://owner/repo/7/comments/9001/facts";
+
+/// Routes the parent pull request and one conversation comment, so the two
+/// requests of a comment read can be observed independently.
+async fn comment_fixture<F>(transform: F) -> (TlsListener, GithubSource)
+where
+    F: Fn(&str, usize, &str) -> FixtureResponse + Send + Sync + 'static,
+{
+    let count = AtomicUsize::new(0);
+    let listener = TlsListener::serve_request_router(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+        tls::match_cert(),
+        move |request| {
+            assert_eq!(request.method(), "GET", "facts cannot write");
+            let host = request
+                .head()
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':')
+                        .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
+                        .map(|(_, value)| value.trim())
+                })
+                .expect("Host header");
+            let target = request.target().to_owned();
+            let template = if target.starts_with("/repos/owner/repo/pulls/") {
+                NATIVE
+            } else if target.starts_with("/repos/owner/repo/issues/comments/") {
+                COMMENT_NATIVE
+            } else {
+                panic!("unexpected conversation-comment facts request {target}");
+            };
+            let native = template.replace("@API@", &format!("https://{host}/"));
+            transform(&target, count.fetch_add(1, Ordering::SeqCst), &native)
+        },
+    )
+    .await;
+    let (source, _session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
+    (listener, source)
+}
+
+fn top_level_keys(document: &str) -> Vec<&str> {
+    document
+        .lines()
+        .filter_map(|line| line.strip_prefix("  \""))
+        .filter_map(|line| line.split_once("\":").map(|(key, _)| key))
+        .collect()
+}
+
+#[tokio::test]
+async fn single_comment_facts_shape() {
+    let (listener, source) =
+        comment_fixture(|_, _, native| response("200 OK", native.into(), vec![])).await;
+    let resource = read_reference(&source, COMMENT_RESOURCE, None)
+        .await
+        .expect("single comment facts");
+    assert!(resource.continuation().is_none());
+    let facts = document(&resource);
+    assert_eq!(facts["kind"], "github.conversation_comment");
+    assert_eq!(facts["resource"], COMMENT_RESOURCE);
+    assert!(
+        facts.get("collection").is_none(),
+        "singular reads carry no collection object"
+    );
+    assert_eq!(facts["data"]["kind"], "github.conversation_comment");
+    assert_eq!(facts["data"]["id"], "9001");
+    assert_eq!(facts["data"]["nodeId"], "IC_native");
+    assert_eq!(facts["data"]["parent"]["kind"], "github.pull_request");
+    assert_eq!(facts["data"]["parent"]["id"], "9007199254740993");
+    assert_eq!(facts["data"]["parent"]["number"], "7");
+    assert_eq!(facts["data"]["parent"]["nodeId"], "PR_native");
+    assert_eq!(
+        facts["data"]["body"],
+        "Conversation quote \" slash \\ newline\n雪"
+    );
+    assert_eq!(facts["data"]["author"]["login"], "Commenter");
+    assert_eq!(facts["data"]["createdAt"], "2004-04-04T00:00:00Z");
+    assert_eq!(facts["data"]["updatedAt"], "2005-05-05T00:00:00Z");
+    assert_eq!(
+        facts["data"]["links"]["issueUrl"],
+        format!(
+            "https://{}:{}/repos/owner/repo/issues/7",
+            tls::FIXTURE_HOST,
+            listener.address.port()
+        )
+    );
+    assert_eq!(facts["acquisition"]["usage"]["attemptedRequests"], 2);
+    assert_eq!(facts["repository"]["observed"]["name"], "Repo");
+
+    // A cursor belongs to the collection only; native page and line selectors
+    // parse but the adapter refuses them.
+    assert_eq!(
+        PathReference::parse(format!("{COMMENT_RESOURCE}:cursor:e30"))
+            .expect_err("cursor on a singular comment")
+            .category(),
+        ErrorCategory::InvalidReference
+    );
+    for selector in [":raw", ":page:2", ":1-2"] {
+        let error = read_reference(&source, &format!("{COMMENT_RESOURCE}{selector}"), None)
+            .await
+            .expect_err("selector refused");
+        assert_eq!(
+            error.category(),
+            ErrorCategory::UnsupportedProjection,
+            "{selector}"
+        );
+    }
+    assert_eq!(listener.requests().len(), 2, "refusals acquire nothing");
+}
+
+#[tokio::test]
+async fn comment_records_preserve_native_presence() {
+    let cases = [
+        ("/body", json!(null), "null"),
+        ("/user", json!(null), "null"),
+        ("/node_id", json!(null), "null"),
+        ("/body", json!(""), "empty"),
+        ("/body", json!("snow 雪 \"quoted\" \\ back"), "unicode"),
+    ];
+    for (pointer, replacement, label) in cases {
+        let supplied = replacement.clone();
+        let (_, source) = comment_fixture(move |target, _, native| {
+            if !target.starts_with("/repos/owner/repo/issues/comments/") {
+                return response("200 OK", native.into(), vec![]);
+            }
+            let mut value: Value = serde_json::from_str(native).unwrap();
+            *value.pointer_mut(pointer).unwrap() = supplied.clone();
+            response("200 OK", value.to_string(), vec![])
+        })
+        .await;
+        let facts = document(
+            &read_reference(&source, COMMENT_RESOURCE, None)
+                .await
+                .expect(label),
+        );
+        let field = pointer.trim_start_matches('/');
+        let output = match field {
+            "user" => "author",
+            "node_id" => "nodeId",
+            "created_at" => "createdAt",
+            other => other,
+        };
+        match replacement {
+            Value::Null => {
+                // A supplied null stays present as null; it is not the same as
+                // an unsupplied optional field.
+                let slot = facts["data"]
+                    .get(output)
+                    .unwrap_or_else(|| panic!("{pointer} {label} present in {facts}"));
+                assert!(slot.is_null(), "{label} supplied null stays null");
+            }
+            _ => assert_eq!(
+                facts["data"][output], replacement,
+                "{label} supplied value survives"
+            ),
+        }
+    }
+
+    // Absent optional fields stay absent and are named in unavailableFacts.
+    for (pointer, output, unavailable) in [
+        ("/body", "body", "body"),
+        ("/user", "author", "author"),
+        ("/node_id", "nodeId", "nodeId"),
+        ("/created_at", "createdAt", "createdAt"),
+        ("/url", "links/apiUrl", "links.apiUrl"),
+    ] {
+        let (_, source) = comment_fixture(move |target, _, native| {
+            if !target.starts_with("/repos/owner/repo/issues/comments/") {
+                return response("200 OK", native.into(), vec![]);
+            }
+            let mut value: Value = serde_json::from_str(native).unwrap();
+            let (parent, key) = pointer.rsplit_once('/').unwrap();
+            let object = if parent.is_empty() {
+                &mut value
+            } else {
+                value.pointer_mut(parent).unwrap()
+            };
+            object.as_object_mut().unwrap().remove(key);
+            response("200 OK", value.to_string(), vec![])
+        })
+        .await;
+        let facts = document(
+            &read_reference(&source, COMMENT_RESOURCE, None)
+                .await
+                .expect(pointer),
+        );
+        let pointer_path = format!("/data/{}", output.replace('.', "/"));
+        assert!(
+            facts.pointer(&pointer_path).is_none(),
+            "{pointer} absent stays absent"
+        );
+        assert!(
+            facts["unavailableFacts"]
+                .as_array()
+                .expect("unavailable facts")
+                .iter()
+                .any(|entry| entry["field"] == unavailable && entry["reason"] == "omitted"),
+            "{pointer} named unavailable"
+        );
+    }
+
+    // Unknown native keys are ignored; ids above 2^53 stay exact decimal strings.
+    let (_, source) = comment_fixture(|target, _, native| {
+        if !target.starts_with("/repos/owner/repo/issues/comments/") {
+            return response("200 OK", native.into(), vec![]);
+        }
+        let mut value: Value = serde_json::from_str(native).unwrap();
+        value["future_native_field"] = json!({"nested": true});
+        value["id"] = json!(9007199254740993u64);
+        response("200 OK", value.to_string(), vec![])
+    })
+    .await;
+    let facts = document(
+        &read_reference(&source, COMMENT_RESOURCE, None)
+            .await
+            .expect("unknown key"),
+    );
+    assert_eq!(facts["data"]["id"], "9007199254740993");
+    assert!(facts["data"].get("future_native_field").is_none());
+
+    // Duplicate recognized keys and non-object records are rejected.
+    for body in [
+        r#"{"id":1,"id":2,"issue_url":"@API@repos/owner/repo/issues/7"}"#.to_owned(),
+        r#"[{"id":1}]"#.to_owned(),
+    ] {
+        let (_, source) = comment_fixture(move |target, _, native| {
+            if target.starts_with("/repos/owner/repo/issues/comments/") {
+                return response("200 OK", body.clone(), vec![]);
+            }
+            response("200 OK", native.into(), vec![])
+        })
+        .await;
+        let error = read_reference(&source, COMMENT_RESOURCE, None)
+            .await
+            .expect_err("malformed comment record");
+        assert_eq!(
+            error.details().expect("typed").reason(),
+            ErrorReason::UpstreamMalformed
+        );
+    }
+}
+
+#[tokio::test]
+async fn wrong_parent_rejects_whole_component() {
+    // The comment names another issue/PR in the same repository.
+    let (_, source) = comment_fixture(|target, _, native| {
+        if !target.starts_with("/repos/owner/repo/issues/comments/") {
+            return response("200 OK", native.into(), vec![]);
+        }
+        let mut value: Value = serde_json::from_str(native).unwrap();
+        let issue_url = value["issue_url"]
+            .as_str()
+            .unwrap()
+            .replace("/issues/7", "/issues/8");
+        value["issue_url"] = json!(issue_url);
+        response("200 OK", value.to_string(), vec![])
+    })
+    .await;
+    assert_eq!(
+        read_reference(&source, COMMENT_RESOURCE, None)
+            .await
+            .expect_err("wrong parent")
+            .category(),
+        ErrorCategory::NotFound
+    );
+
+    // The comment names a parent in another repository.
+    let (_, source) = comment_fixture(|target, _, native| {
+        if !target.starts_with("/repos/owner/repo/issues/comments/") {
+            return response("200 OK", native.into(), vec![]);
+        }
+        let mut value: Value = serde_json::from_str(native).unwrap();
+        let issue_url = value["issue_url"]
+            .as_str()
+            .unwrap()
+            .replace("/repos/owner/repo/issues/7", "/repos/other/repo/issues/7");
+        value["issue_url"] = json!(issue_url);
+        response("200 OK", value.to_string(), vec![])
+    })
+    .await;
+    assert_eq!(
+        read_reference(&source, COMMENT_RESOURCE, None)
+            .await
+            .expect_err("foreign parent")
+            .category(),
+        ErrorCategory::NotFound
+    );
+
+    // The addressed number is not the pull request the comment belongs to.
+    let (_, source) =
+        comment_fixture(|_, _, native| response("200 OK", native.into(), vec![])).await;
+    let error = read_reference(&source, "pr://owner/repo/8/comments/9001/facts", None)
+        .await
+        .expect_err("parent identity mismatch");
+    assert!(matches!(
+        error.details().expect("typed").reason(),
+        ErrorReason::UpstreamIdentityMismatch | ErrorReason::UpstreamMalformed
+    ));
+
+    // An issue number is not a pull request: the parent read is not found.
+    let (_, source) = comment_fixture(|target, _, native| {
+        if target.starts_with("/repos/owner/repo/pulls/") {
+            return response("404 Not Found", "{}".into(), vec![]);
+        }
+        response("200 OK", native.into(), vec![])
+    })
+    .await;
+    assert_eq!(
+        read_reference(&source, COMMENT_RESOURCE, None)
+            .await
+            .expect_err("issue number")
+            .category(),
+        ErrorCategory::NotFound
+    );
+}
+
+#[tokio::test]
+async fn envelope_serializes_shared_fields_in_order() {
+    let (_, source) =
+        comment_fixture(|_, _, native| response("200 OK", native.into(), vec![])).await;
+    let resource = read_reference(&source, COMMENT_RESOURCE, None)
+        .await
+        .expect("comment facts");
+    assert_eq!(
+        top_level_keys(resource.content()),
+        [
+            "schemaVersion",
+            "kind",
+            "resource",
+            "source",
+            "repository",
+            "acquisition",
+            "request",
+            "observed",
+            "upstream",
+            "data",
+            "unavailableFacts",
+        ]
+    );
+
+    let (_, source) = fixture(
+        |_, native, _| response("200 OK", native.into(), vec![]),
+        ReadAcquisitionLimits::default(),
+    )
+    .await;
+    let pull = read(&source, None).await.expect("pull facts");
+    assert_eq!(
+        top_level_keys(pull.content()),
+        [
+            "schemaVersion",
+            "kind",
+            "resource",
+            "source",
+            "repository",
+            "acquisition",
+            "request",
+            "observed",
+            "upstream",
+            "data",
+            "unavailableFacts",
+        ]
+    );
 }

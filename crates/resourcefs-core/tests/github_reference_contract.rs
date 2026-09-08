@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use resourcefs_core::{
     ConversationCommentId, DiffFileIndex, ErrorCategory, GithubRepositoryIdentity, IssueAddress,
-    IssueNumber, IssueResource, PathReference, PullRequestAddress, PullRequestNumber,
-    PullRequestResource, ResourceAddress, ReviewCommentId, ReviewId, MAX_PATH_REFERENCE_BYTES,
+    IssueNumber, IssueResource, MAX_PATH_REFERENCE_BYTES, PathReference, PullRequestAddress,
+    PullRequestNumber, PullRequestResource, ResourceAddress, ReviewCommentId, ReviewId,
 };
 
 #[test]

@@ -1,4 +1,5 @@
-//! Presence-aware native PR decoding and the bounded owned machine representation.
+//! Owned machine representation: the shared facts envelope, presence-aware
+//! decoding primitives, the bounded serialization boundary and family dispatch.
 mod identity;
 
 use std::{
@@ -9,24 +10,23 @@ use std::{
 
 use resourcefs_core::{
     AcquisitionLimitKind, ErrorCategory, ErrorReason, LimitDetail, OperationGuard, PathReference,
-    PullRequestAddress, PullRequestFact, ReadAcquisitionLimits, ResourceAddress, ResourceError,
-    ResourceErrorDetails, SourceResource, Utf8ContentType,
+    PullRequestAddress, PullRequestFact, PullRequestResource, ReadAcquisitionLimits,
+    ResourceAddress, ResourceError, ResourceErrorDetails, SourceResource, Utf8ContentType,
 };
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
     ser::SerializeMap,
 };
-use url::Url;
 
 use super::{
-    GITHUB_API_VERSION, GITHUB_JSON, GithubSource,
+    GITHUB_API_VERSION, GithubSource,
     fetch::{BodyObservation, unix_ms},
 };
 use crate::http::{BoundedRead, HttpReadBudget};
 
 #[derive(Debug, Default)]
-enum Presence<T> {
+pub(super) enum Presence<T> {
     #[default]
     Omitted,
     Null,
@@ -76,7 +76,7 @@ impl<T: Serialize> Serialize for Presence<T> {
 }
 
 #[derive(Debug)]
-struct NativeId(u64);
+pub(super) struct NativeId(u64);
 impl<'de> Deserialize<'de> for NativeId {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = u64::deserialize(deserializer)?;
@@ -97,7 +97,7 @@ impl Serialize for NativeId {
 macro_rules! native {
     ($name:ident { $($field:ident : $ty:ty),* $(,)? }) => {
         #[derive(Debug)]
-        struct $name { $($field: Presence<$ty>,)* }
+        pub(super) struct $name { $(pub(super) $field: Presence<$ty>,)* }
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
                 struct Field(&'static str);
@@ -144,29 +144,6 @@ macro_rules! native {
         }
     };
 }
-native!(NativePull {
-    id: NativeId,
-    node_id: String,
-    number: NativeId,
-    url: String,
-    html_url: String,
-    diff_url: String,
-    patch_url: String,
-    issue_url: String,
-    _links: Relations,
-    title: String,
-    body: String,
-    state: String,
-    user: Actor,
-    created_at: String,
-    updated_at: String,
-    closed_at: String,
-    merged_at: String,
-    draft: bool,
-    merged: bool,
-    base: Branch,
-    head: Branch,
-});
 native!(Actor {
     id: NativeId,
     node_id: String,
@@ -183,15 +160,10 @@ native!(Repository {
     url: String,
     html_url: String
 });
-native!(Branch {
-    sha: String,
-    r#ref: String,
-    repo: Repository
-});
 native!(Relation { href: String });
 
 #[derive(Debug)]
-struct Relations(BTreeMap<String, Presence<Relation>>);
+pub(super) struct Relations(BTreeMap<String, Presence<Relation>>);
 impl<'de> Deserialize<'de> for Relations {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct RelationsVisitor;
@@ -293,70 +265,6 @@ impl Serialize for Repository {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct BranchFacts<'a> {
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    ref_name: &'a Presence<String>,
-    commit_sha: &'a str,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    repository: &'a Presence<Repository>,
-    repository_availability: &'static str,
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ObservedBranch<'a> {
-    commit_sha: &'a str,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    repository: &'a Presence<Repository>,
-    repository_availability: &'static str,
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PullLinks<'a> {
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    api_url: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    html_url: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    diff_url: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    patch_url: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    issue_url: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    relations: &'a Presence<Relations>,
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Data<'a> {
-    id: &'a NativeId,
-    number: &'a NativeId,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    node_id: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    title: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    body: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    state: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    author: &'a Presence<Actor>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    created_at: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    updated_at: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    closed_at: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    merged_at: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    draft: &'a Presence<bool>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    merged: &'a Presence<bool>,
-    links: PullLinks<'a>,
-    base: BranchFacts<'a>,
-    head: BranchFacts<'a>,
-}
-#[derive(Serialize)]
 struct SchemaVersion {
     major: u8,
     minor: u8,
@@ -384,21 +292,6 @@ struct RequestedRepository<'a> {
     name: &'a str,
     #[serde(skip_serializing_if = "Presence::omitted")]
     observed: &'a Presence<Repository>,
-}
-#[derive(Serialize)]
-struct Request<'a> {
-    repository: RepositoryName<'a>,
-    number: &'a NativeId,
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Observed<'a> {
-    id: &'a NativeId,
-    number: &'a NativeId,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    node_id: &'a Presence<String>,
-    base: ObservedBranch<'a>,
-    head: ObservedBranch<'a>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -440,18 +333,51 @@ struct Unavailable {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Facts<'a> {
+struct Facts<'a, B: Serialize> {
     schema_version: SchemaVersion,
     kind: &'static str,
     resource: &'a str,
     source: Source<'a>,
     repository: RequestedRepository<'a>,
-    request: Request<'a>,
-    observed: Observed<'a>,
     acquisition: Acquisition,
-    upstream: Upstream<'a>,
-    data: Data<'a>,
+    #[serde(flatten)]
+    body: B,
     unavailable_facts: Vec<Unavailable>,
+}
+
+/// One bounded facts acquisition shared by every fact family in this read.
+struct FactsRead<'a> {
+    canonical: PathReference,
+    web_origin: &'a str,
+    limits: ReadAcquisitionLimits,
+    read: BoundedRead<'a>,
+    budget: HttpReadBudget,
+    started_at_unix_ms: u64,
+    started: tokio::time::Instant,
+}
+
+mod comment;
+mod pull;
+
+fn acquisition(ctx: &FactsRead<'_>) -> Result<Acquisition, ResourceError> {
+    Ok(Acquisition {
+        started_at_unix_ms: ctx.started_at_unix_ms,
+        completed_at_unix_ms: unix_ms()?,
+        elapsed_ms: ctx.started.elapsed().as_millis() as u64,
+        rest_api_version: GITHUB_API_VERSION,
+        limits: Limits {
+            max_attempts: ctx.limits.max_attempts(),
+            timeout_ms: u64::try_from(ctx.limits.timeout().as_millis())
+                .expect("bounded deadline fits in milliseconds"),
+            max_response_bytes: ctx.limits.max_response_bytes(),
+            max_accepted_body_bytes: ctx.limits.max_accepted_body_bytes(),
+            max_representation_bytes: ctx.limits.max_representation_bytes(),
+        },
+        usage: Usage {
+            attempted_requests: ctx.budget.used_attempts(),
+            accepted_body_bytes: ctx.budget.accepted_body_bytes(),
+        },
+    })
 }
 
 fn failure(reason: ErrorReason) -> ResourceError {
@@ -548,26 +474,18 @@ impl GithubSource {
         operation: &OperationGuard,
         acquisition: Option<&ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
-        match fact {
-            PullRequestFact::Pull => self
-                .facts_resource(reference, operation, acquisition)
-                .await
-                .map_err(sanitize),
-            PullRequestFact::Comments | PullRequestFact::Comment(_) => {
-                Err(super::unsupported_github_projection())
-            }
-        }
+        self.facts_resource(reference, fact, operation, acquisition)
+            .await
+            .map_err(sanitize)
     }
 
     async fn facts_resource(
         &self,
         reference: &PathReference,
+        fact: PullRequestFact,
         operation: &OperationGuard,
         acquisition: Option<&ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
-        if reference.projection().is_some() {
-            return Err(super::unsupported_github_projection());
-        }
         let ResourceAddress::PullRequest(address) = reference.address() else {
             return Err(super::unsupported_github_projection());
         };
@@ -577,6 +495,9 @@ impl GithubSource {
         else {
             return Err(super::unsupported_github_projection());
         };
+        if reference.projection().is_some() {
+            return Err(super::unsupported_github_projection());
+        }
         let canonical = PathReference::pull_request(address.clone(), None)?;
         self.authorize_repository(repository).map_err(|error| {
             error.with_details(ResourceErrorDetails::new(
@@ -600,153 +521,23 @@ impl GithubSource {
         read.check_acceptance()?;
         let started_at_unix_ms = unix_ms()?;
         let started = tokio::time::Instant::now();
-        let mut budget = HttpReadBudget::with_limits(&limits);
-        let endpoint = self.endpoint(repository, &format!("pulls/{}", number.get()))?;
-        let response = self
-            .fetch_controlled(endpoint.clone(), GITHUB_JSON, read, Some(&mut budget))
-            .await?;
-        let pull: NativePull = serde_json::from_slice(response.body())
-            .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
-        let web = Url::parse(web_origin).map_err(|_| failure(ErrorReason::UpstreamUnavailable))?;
-        let identity::ValidatedIdentity {
-            id,
-            number: observed_number,
-            base,
-            head,
-            base_sha,
-            head_sha,
-        } = identity::validate(
-            &pull,
-            repository,
-            number.get(),
-            &endpoint,
-            &self.api_base,
-            &web,
-        )?;
-        let mut unavailable_facts = Vec::new();
-        macro_rules! missing { ($($field:expr => $name:literal),* $(,)?) => { $(
-            $field.unavailable($name, &mut unavailable_facts);
-        )* }; }
-        missing!(pull.node_id => "nodeId", pull.title => "title", pull.body => "body", pull.state => "state",
-            pull.user => "author", pull.created_at => "createdAt", pull.updated_at => "updatedAt",
-            pull.closed_at => "closedAt", pull.merged_at => "mergedAt", pull.draft => "draft", pull.merged => "merged",
-            pull.html_url => "links.htmlUrl", pull.diff_url => "links.diffUrl", pull.patch_url => "links.patchUrl",
-            pull.issue_url => "links.issueUrl", pull._links => "links.relations", base.r#ref => "base.refName",
-            base.repo => "base.repository", head.r#ref => "head.refName", head.repo => "head.repository");
-        let completed_at_unix_ms = unix_ms()?;
-        let facts = Facts {
-            schema_version: SchemaVersion { major: 1, minor: 0 },
-            kind: "github.pull_request",
-            resource: canonical.requested(),
-            source: Source {
-                source_id: self.config.id(),
-                deployment: Deployment {
-                    web_origin,
-                    api_origin: self.api_base.origin().ascii_serialization(),
-                },
-            },
-            repository: RequestedRepository {
-                owner: repository.owner(),
-                name: repository.repository(),
-                observed: &base.repo,
-            },
-            request: Request {
-                repository: RepositoryName {
-                    owner: repository.owner(),
-                    name: repository.repository(),
-                },
-                number: observed_number,
-            },
-            observed: Observed {
-                id,
-                number: observed_number,
-                node_id: &pull.node_id,
-                base: ObservedBranch {
-                    commit_sha: base_sha,
-                    repository: &base.repo,
-                    repository_availability: base.repo.availability(),
-                },
-                head: ObservedBranch {
-                    commit_sha: head_sha,
-                    repository: &head.repo,
-                    repository_availability: head.repo.availability(),
-                },
-            },
-            acquisition: Acquisition {
-                started_at_unix_ms,
-                completed_at_unix_ms,
-                elapsed_ms: started.elapsed().as_millis() as u64,
-                rest_api_version: GITHUB_API_VERSION,
-                limits: Limits {
-                    max_attempts: limits.max_attempts(),
-                    timeout_ms: u64::try_from(limits.timeout().as_millis())
-                        .expect("bounded deadline fits in milliseconds"),
-                    max_response_bytes: limits.max_response_bytes(),
-                    max_accepted_body_bytes: limits.max_accepted_body_bytes(),
-                    max_representation_bytes: limits.max_representation_bytes(),
-                },
-                usage: Usage {
-                    attempted_requests: budget.used_attempts(),
-                    accepted_body_bytes: budget.accepted_body_bytes(),
-                },
-            },
-            upstream: Upstream {
-                body: &response.observation,
-                revalidation: &response.revalidation,
-            },
-            data: Data {
-                id,
-                number: observed_number,
-                node_id: &pull.node_id,
-                title: &pull.title,
-                body: &pull.body,
-                state: &pull.state,
-                author: &pull.user,
-                created_at: &pull.created_at,
-                updated_at: &pull.updated_at,
-                closed_at: &pull.closed_at,
-                merged_at: &pull.merged_at,
-                draft: &pull.draft,
-                merged: &pull.merged,
-                links: PullLinks {
-                    api_url: &pull.url,
-                    html_url: &pull.html_url,
-                    diff_url: &pull.diff_url,
-                    patch_url: &pull.patch_url,
-                    issue_url: &pull.issue_url,
-                    relations: &pull._links,
-                },
-                base: BranchFacts {
-                    ref_name: &base.r#ref,
-                    commit_sha: base_sha,
-                    repository: &base.repo,
-                    repository_availability: base.repo.availability(),
-                },
-                head: BranchFacts {
-                    ref_name: &head.r#ref,
-                    commit_sha: head_sha,
-                    repository: &head.repo,
-                    repository_availability: head.repo.availability(),
-                },
-            },
-            unavailable_facts,
-        };
-        let resource = finish_facts(
-            &facts,
-            limits.max_representation_bytes(),
-            canonical.clone(),
+        let mut ctx = FactsRead {
+            canonical,
+            web_origin,
+            limits,
             read,
-        )?;
-        if self
-            .session
-            .cache_generation(super::fetch::GITHUB_CACHE_NAMESPACE)
-            .await?
-            != response.cache_generation
-        {
-            return Err(failure(ErrorReason::UpstreamUnavailable));
+            budget: HttpReadBudget::with_limits(&limits),
+            started_at_unix_ms,
+            started,
+        };
+        let number = number.get();
+        match fact {
+            PullRequestFact::Pull => pull::read(self, repository, number, &mut ctx).await,
+            PullRequestFact::Comment(id) => {
+                comment::read_item(self, repository, number, id.get(), &mut ctx).await
+            }
+            PullRequestFact::Comments => Err(super::unsupported_github_projection()),
         }
-        read.check_acceptance()?;
-        Ok(resource)
     }
 }
 

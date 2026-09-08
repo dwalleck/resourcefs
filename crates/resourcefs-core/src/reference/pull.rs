@@ -1,7 +1,7 @@
 //! Pull-request fact families and their opaque source-cursor selector.
 use super::{
-    invalid_reference, parse_pull_request_address, projection_candidate_split,
     ConversationCommentId, ProjectionSelector, PullRequestAddress, PullRequestResource,
+    invalid_reference, parse_pull_request_address, projection_candidate_split,
 };
 
 /// Immutable machine-readable pull-request fact family.
