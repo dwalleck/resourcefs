@@ -14,7 +14,7 @@ use url::Url;
 use super::super::GithubSource;
 use super::super::fetch::BodyObservation;
 use super::{
-    Acquisition, Facts, FactsRead, NativeId, RepositoryName, Unavailable, Upstream, acquisition,
+    Facts, FactsRead, NativeId, RepositoryName, Unavailable, Upstream, acquisition, acquisition_at,
     comment, continuation, failure, finish_facts, identity,
 };
 
@@ -90,28 +90,6 @@ struct CollectionBody<'a> {
     upstream: Pages<'a>,
     data: Records<'a>,
     collection: Collection<'a>,
-}
-
-/// Effective acquisition metadata with zeroed observations, used only to
-/// measure the fixed envelope bytes before any page is admitted.
-fn probe_acquisition(ctx: &FactsRead<'_>) -> Acquisition {
-    Acquisition {
-        started_at_unix_ms: 0,
-        completed_at_unix_ms: 0,
-        elapsed_ms: 0,
-        rest_api_version: super::GITHUB_API_VERSION,
-        limits: super::Limits {
-            max_attempts: ctx.limits.max_attempts(),
-            timeout_ms: ctx.limits.timeout().as_nanos() as f64 / 1_000_000.0,
-            max_response_bytes: ctx.limits.max_response_bytes(),
-            max_accepted_body_bytes: ctx.limits.max_accepted_body_bytes(),
-            max_representation_bytes: ctx.limits.max_representation_bytes(),
-        },
-        usage: super::Usage {
-            attempted_requests: 0,
-            accepted_body_bytes: 0,
-        },
-    }
 }
 
 /// Bounded sanitized failure facts derived from one operational error.
@@ -261,7 +239,7 @@ pub(super) async fn read(
             name: repository.repository(),
             observed: &identity.base.repo,
         },
-        acquisition: probe_acquisition(ctx),
+        acquisition: acquisition_at(ctx.limits, 0, 0, 0, tokio::time::Instant::now())?,
         body: CollectionBody {
             request: CollectionRequest {
                 repository: RepositoryName {

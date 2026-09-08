@@ -312,7 +312,7 @@ struct Usage {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Acquisition {
+pub(super) struct Acquisition {
     started_at_unix_ms: u64,
     completed_at_unix_ms: u64,
     elapsed_ms: u64,
@@ -361,25 +361,44 @@ mod comment;
 mod continuation;
 mod pull;
 
-fn acquisition(ctx: &FactsRead<'_>) -> Result<Acquisition, ResourceError> {
+/// One acquisition observation from explicit parts. The collection uses the
+/// same constructor for its fixed-size probe document, so the envelope shape
+/// has exactly one owner.
+pub(super) fn acquisition_at(
+    limits: ReadAcquisitionLimits,
+    attempted_requests: usize,
+    accepted_body_bytes: usize,
+    started_at_unix_ms: u64,
+    started: tokio::time::Instant,
+) -> Result<Acquisition, ResourceError> {
     Ok(Acquisition {
-        started_at_unix_ms: ctx.started_at_unix_ms,
+        started_at_unix_ms,
         completed_at_unix_ms: unix_ms()?,
-        elapsed_ms: ctx.started.elapsed().as_millis() as u64,
+        elapsed_ms: started.elapsed().as_millis() as u64,
         rest_api_version: GITHUB_API_VERSION,
         limits: Limits {
-            max_attempts: ctx.limits.max_attempts(),
-            timeout_ms: u64::try_from(ctx.limits.timeout().as_millis())
+            max_attempts: limits.max_attempts(),
+            timeout_ms: u64::try_from(limits.timeout().as_millis())
                 .expect("bounded deadline fits in milliseconds"),
-            max_response_bytes: ctx.limits.max_response_bytes(),
-            max_accepted_body_bytes: ctx.limits.max_accepted_body_bytes(),
-            max_representation_bytes: ctx.limits.max_representation_bytes(),
+            max_response_bytes: limits.max_response_bytes(),
+            max_accepted_body_bytes: limits.max_accepted_body_bytes(),
+            max_representation_bytes: limits.max_representation_bytes(),
         },
         usage: Usage {
-            attempted_requests: ctx.budget.used_attempts(),
-            accepted_body_bytes: ctx.budget.accepted_body_bytes(),
+            attempted_requests,
+            accepted_body_bytes,
         },
     })
+}
+
+fn acquisition(ctx: &FactsRead<'_>) -> Result<Acquisition, ResourceError> {
+    acquisition_at(
+        ctx.limits,
+        ctx.budget.used_attempts(),
+        ctx.budget.accepted_body_bytes(),
+        ctx.started_at_unix_ms,
+        ctx.started,
+    )
 }
 
 fn failure(reason: ErrorReason) -> ResourceError {

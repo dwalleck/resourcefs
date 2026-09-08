@@ -38,9 +38,9 @@ Date: 2026-09-08. Route: Empirical (`route.md`). Evidence: `evidence.md` (P1/P2 
 | Source-neutral collection record ceiling | core `lib.rs` constant `MAX_COLLECTION_RECORDS` (deepen) | public constant | No provider names, no per-family policy |
 | One controlled page fetch with confined next-link resolution | sources `github/fetch.rs` (deepen) | `pub(super) async fn facts_page(...) -> Result<PageResponse, ResourceError>`; `PageResponse { body, observation, revalidation, cache_generation, next: Option<Url> }` | No fact schema, no decoding, no coverage policy |
 | Facts dispatch and shared envelope | sources `github/facts.rs` (deepen, net shrink) | `read_facts(reference, fact, operation, acquisition)`; generic `Facts<'a, B: Serialize>` with `#[serde(flatten)] body: B` | No per-family decoding, no HTTP call sites, no collection loop |
-| Singular PR facts projection | sources `github/facts/pull.rs` (create, moved from `facts.rs`) | private `pub(super) fn body(...)` | No HTTP, no cache, no clock, no cursor |
-| Conversation-comment decoding and record projection | sources `github/facts/comment.rs` (create) | private `pub(super)` record/parent decoders used by collection and item reads | No HTTP client, no coverage policy, no cursor encoding |
-| Bounded collection acquisition, atomic admission, coverage outcome | sources `github/facts/collection.rs` (create) | private `pub(super) async fn read(...)` returning records + `Collection` outcome + optional continuation | No HTTP stack, no cache, no provider JSON leakage to core/MCP, no generic continuation list |
+| Singular PR facts read | sources `github/facts/pull.rs` (create, moved from `facts.rs`) | private `pub(super) async fn read(...)` owning fetch, identity validation, projection and publication through the shared `FactsRead` context | No second HTTP client, no cursor, no collection loop |
+| Conversation-comment decoding, record projection and singular read | sources `github/facts/comment.rs` (create) | private `pub(super)` decoders/record plus the singular read and parent fetch used by the collection | No second HTTP client, no coverage policy, no cursor encoding |
+| Bounded collection acquisition, atomic admission, coverage outcome | sources `github/facts/collection.rs` (create) | private `pub(super) async fn read(...)` owning the page loop, admission, coverage, continuation decision and final publication through the shared context | No HTTP stack of its own, no second cache, no provider JSON leakage to core/MCP, no generic continuation list |
 | Opaque session-scoped continuation | sources `github/facts/continuation.rs` (create) | private `CursorOwner::{new, decode, continuation}` following the Jira `CursorOwner` shape | No credentials, no authorization grant, no network |
 | Mutation refusal for the new routes | sources `github/mutation.rs` (deepen) | existing refusal arm gains `Facts(_)` | No new write behavior |
 | Catalog grammar | sources `github/mod.rs` (deepen) | updated `catalog_entries` string | No new responsibility body |
@@ -95,13 +95,15 @@ Selected: **2** — one envelope owner, one serialization order, family sections
 |---|---|---|---|---|---|---|---|
 | `crates/resourcefs-core/src/reference.rs` | `PathReference`, `PullRequestResource`, `PullRequestFact` | route grammar, canonical spelling, typed child ids, per-family `:cursor:` split | existing address/selector types | provider behavior, HTTP | N/A | `github_reference_contract` | deepen |
 | `crates/resourcefs-core/src/reference/pull.rs` | private `PullRequestFact`, `parse_pull_request_reference` | pull-fact sum, `:cursor:` split and route scope | `super` grammar helpers | provider behavior, HTTP, serde | N/A | `github_reference_contract` | create |
-| `crates/resourcefs-core/src/lib.rs` | public constants | `MAX_COLLECTION_RECORDS` | — | provider names, family policy | N/A | core contracts | deepen |
+| `crates/resourcefs-core/src/resource.rs` | public constants | `MAX_COLLECTION_RECORDS` | — | provider names, family policy | N/A | core contracts | deepen |
+| `crates/resourcefs-core/src/error.rs` | public error/limit vocabulary | `AcquisitionLimitKind::CollectionRecords` | existing details | provider names | N/A | core contracts | deepen |
+| `crates/resourcefs-core/src/lib.rs` | re-exports | the new constant and variant | — | provider names | N/A | core contracts | retain |
 | `crates/resourcefs-sources/src/github/mod.rs` | `GithubSource` | dispatch, catalog string, parent/identity validation | all private owners | new fact bodies | N/A | adapter contracts | deepen |
 | `crates/resourcefs-sources/src/github/fetch.rs` | private fetch/cache/pagination | conditional fetch, cache, Link confinement, one page seam | `BoundedHttpResponse`, `HttpReadBudget` | fact schema, coverage policy | N/A | HTTP/GitHub contracts | deepen |
 | `crates/resourcefs-sources/src/github/facts.rs` | private facts entry | shared presence/decoder primitives, envelope, dispatch, capped serialization | serde, `BoundedRead`, `HttpReadBudget` | per-family bodies, HTTP clients | N/A | facts contracts | split |
-| `crates/resourcefs-sources/src/github/facts/pull.rs` | private | singular PR facts projection | `super` primitives | HTTP, cache, clock, cursor | N/A | facts contracts | create |
-| `crates/resourcefs-sources/src/github/facts/comment.rs` | private | conversation-comment decoding, parent record, record projection | `super` primitives | HTTP client, coverage, cursor | N/A | facts contracts | create |
-| `crates/resourcefs-sources/src/github/facts/collection.rs` | private | page loop, atomic admission, coverage outcome, continuation issuance | `fetch::facts_page`, `HttpReadBudget` | HTTP stack, cache, cursor encoding | N/A | facts contracts | create |
+| `crates/resourcefs-sources/src/github/facts/pull.rs` | private `read` | singular PR fetch/validate/project/publish | `super` primitives, `fetch`/budget | second HTTP client, cursor, collection loop | N/A | facts contracts | create |
+| `crates/resourcefs-sources/src/github/facts/comment.rs` | private decoders/record/`read_item`/`fetch_parent` | comment decoding, record projection, singular read | `super` primitives, `fetch`/budget | second HTTP client, coverage, cursor | N/A | facts contracts | create |
+| `crates/resourcefs-sources/src/github/facts/collection.rs` | private `read` | page loop, atomic admission, coverage outcome, continuation issuance, publication | `fetch::facts_page`, `HttpReadBudget`, shared envelope | HTTP stack of its own, second cache, cursor encoding | N/A | facts contracts | create |
 | `crates/resourcefs-sources/src/github/facts/continuation.rs` | private | cursor envelope encode/decode/validate | `SourceCursor`, base64url, sha2 | network, authorization grants, credentials | N/A | facts contracts | create |
 | `crates/resourcefs-sources/src/github/mutation.rs` | `GithubFieldTarget` | write-target parsing | existing refusal | new write behavior | N/A | mutation contract | deepen |
 
@@ -109,13 +111,26 @@ Selected: **2** — one envelope owner, one serialization order, family sections
 
 | Protected parent | Baseline responsibilities | Allowed change | Forbidden change | Exit condition |
 |---|---|---|---|---|
-| `crates/resourcefs-sources/src/github/mod.rs` | route dispatch, human rendering, validation helpers, catalog | one `Facts(fact)` dispatch arm, catalog string, no new helper body beyond wiring | new fact projection/admission/decoding bodies | production lines < 1136 and no new responsibility declaration |
+| `crates/resourcefs-sources/src/github/mod.rs` | route dispatch, human rendering, validation helpers, catalog | one `Facts(fact)` dispatch arm, catalog string, no new helper body beyond wiring | new fact projection/admission/decoding bodies | production lines ≤ 1136 and no new responsibility declaration (the implemented dispatch arm and catalog string net to the baseline count) |
 | `crates/resourcefs-mcp/src/server.rs` | tool registration/dispatch | none | any change | byte-identical to base |
 | `crates/resourcefs-core/src/reference.rs` | grammar | two parse arms, one canonical arm, the `Facts(PullRequestFact)` variant, `mod pull;` and the `PULL_REQUEST_PREFIX` branch delegating to the child | provider or transport vocabulary | production lines ≤ the inherited 1989 ceiling, and the shape fence approves exactly `parse`, `canonical_reference` and `parse_pull_request_address` body changes |
 
 ### Shape fence
 
 `scripts/module_shape_bfwa.py` (standalone, private, non-production) imports the inherited `scripts/module_shape.py` (which in turn inherits `scripts/module_shape_base.py`) and calls its `check()` with a merged ledger `scripts/module-ledger-bfwa.json` = the rfs-0n97 ledger plus the new owners, a `collection` stage, `reference.rs` body-change approvals (`parse`, `parse_pull_request_reference`, `canonical_reference`, `parse_pull_request_address`), and the new `MAX_COLLECTION_RECORDS` constant. `scripts/ci-gates.py` invokes the successor instead of the rfs-0n97 script. It reports claim IDs and exact paths/symbols and discovers the default branch through Git, never a hard-coded branch name.
+
+### Placement revision (S2–S4, 2026-09-08)
+
+The isolated design-conformance review reconstructed the production map before reading this document and reported five ownership deviations from the original ledger. They are resolved by revising the ledger to the implemented placement rather than by moving the code, because the implemented shape is the deeper one:
+
+- Each fact family owns its own end-to-end read (`pull::read`, `comment::read_item`, `collection::read`) and shares acquisition through one `FactsRead` context, `fetch::facts_page` and one `HttpReadBudget`. The alternative — `facts.rs` owning every HTTP call site and the family modules being pure projections — would put three fetch/validate/publish sequences and their error handling in one orchestrator and push `facts.rs` toward its growth tripwire.
+- `facts.rs` still owns the shared envelope, presence primitives, the acquisition constructor, sanitized serialization and dispatch; the family modules own only their own family's fetch, validation and projection.
+- The collection publishes its own document (rather than returning a `CollectionOutcome` the parent serializes) for the same reason: its admission accounting and continuation fallback need the final serialization, which lives behind `finish_facts`.
+- `identity.rs` and `pull.rs` depend on each other inside one private parent (`identity` validates `pull::NativePull`; `pull` calls `identity::validate`). This reciprocal private dependency is accepted: it keeps one identity validator instead of duplicating it, and no other module sees either type.
+- Ledger accounting corrections: `MAX_COLLECTION_RECORDS` is defined in `core/resource.rs` (re-exported by `lib.rs`); `core/error.rs` owns `AcquisitionLimitKind::CollectionRecords`; the protected-parent exit condition is `≤ 1136` production lines because the dispatch arm and catalog string net to the baseline.
+- The reviewer's remaining notes are not defects: no pass-through module, no provider payload in core/MCP, no protected parent responsibility body, and the pre-existing `facts_tests.rs` private reach-through is unchanged from the base.
+
+Duplicate acquisition construction was removed after the review: `collection.rs` now calls the single `acquisition_at` constructor owned by `facts.rs`.
 
 ## Claims
 
@@ -206,3 +221,6 @@ Result: `PASS` — `.rfs-bfwa/falsifier-cursor-result.json`, `all_pass: true`. P
 Requester approval (verbatim): "Approve and implement"
 Date: 2026-09-08
 Approved risk acceptances: None — every claim carries a deterministic regression fence and a named mutation; no `N/A — approved risk` row exists.
+
+Placement revision approval (verbatim): "Approve revised placement"
+Date: 2026-09-08
