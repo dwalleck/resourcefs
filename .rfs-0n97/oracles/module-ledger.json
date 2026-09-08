@@ -1,6 +1,6 @@
 {
   "baseline": "7de8d1477af6be825bada9015a6996b3f2917c7d",
-  "stage": "fetch",
+  "stage": "mcp",
   "stages": [
     "baseline",
     "core",

@@ -180,3 +180,24 @@ Symmetry/reuse: legacy reads retain their prior substrate policy and no implicit
 | 9. Restoration | PASS — every source restored and corresponding real adapter contract GREEN. |
 
 Reuse/symmetry: all human, conditional and mutation paths use the same extracted fetch/cache implementation. Media remains part of cache identity. No new write authority, cache or renderer. S3's temporary unused-private-control warnings remain until the S6 production consumer; this local checkpoint makes no standalone full-CI or publication claim. The post-S3 default-remote fetch reported no upstream movement.
+
+
+## S5 checkpoint — actual MCP controls, errors and gated trust
+
+`oracles/s5-results.json` retains 71 passing stdio/architecture/profile/schema tests and the release conversion probe. The four `s5-*.json` mutation records retain actual child-process failures/restorations. Their target production files are byte-identical in this MCP-only checkpoint; the same preparation filters remain, without S6 Facts tests.
+
+Qualification isolated ordinary test children with their own retained temporary session directory. Previously they shared the user's retained-session cache and encountered a sweep/open race (`open retained session lease failed (NotFound)`). Explicit profile storage and explicitly supplied test roots remain authoritative. The test-root override is feature-gated; therefore these real-process checks run with `--all-features`. No production storage behavior or trust selector was added.
+
+| Gate | Result |
+|---|---|
+| 1. Affected unit tests | PASS — 71 tests across stdio, architecture, profile and schema; one intentionally ignored fixture host. |
+| 2. Falsifiers | PASS — actual stdio validates controls before work, rejects unsupported controls, preserves typed details, and requires explicit gated GitHub trust. |
+| 3. Stress fixture | PASS — TLS positive/negative controls, production environment trust refusal, null/unknown/zero control syntax and no-root-refresh validation boundary. |
+| 4. Implementation / independent oracle | PASS — real child JSON-RPC responses and independent TLS method/path/request log, not mocked dispatch. |
+| 5. Approved module shape | PASS — C02 MCP stage; read/error owners extracted, parent registration delegates, no provider logic added to MCP. |
+| 6. Budget | PASS — 10,000 conversions: input mean/max 136/9,067 ns; error mean/max 704/38,212 ns, each below 1 ms. Finite metadata 312 bytes versus 4 KiB. Probe removed. |
+| 7. Regression fence | PASS — actual process/profile/schema/architecture contracts. |
+| 8. Named mutations | PASS — omitted GitHub CA propagation, production environment trust selection, omitted actual dispatch conversion and omitted error details each produce behavioral RED. |
+| 9. Restoration | PASS — each actual process filter GREEN after restoration; assembled preparation suites GREEN. |
+
+Reuse/symmetry: profile/read share AcquisitionInput, all three existing error families share ErrorOutput, and ordinary launch retains system trust. Existing root/cancellation/read-engine mechanisms remain authoritative. S3 unused-private-control warnings still await S6's consumer; no standalone publication/full-CI claim. Default-remote fetch after S4 reported no upstream movement.

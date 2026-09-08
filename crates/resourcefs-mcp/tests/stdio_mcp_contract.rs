@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tempfile::TempDir;
 
 const VERSION_2026: &str = "2026-07-28";
@@ -18,7 +18,7 @@ mod profile_tls;
 
 #[path = "support/stdio.rs"]
 mod stdio;
-use stdio::{McpProcessPermit, finish_process, read_message_from, write_message_to};
+use stdio::{finish_process, read_message_from, write_message_to, McpProcessPermit};
 
 const VERSION_2025: &str = "2025-11-25";
 const SOURCE_CATALOG_TEXT: &str = concat!(
@@ -95,6 +95,8 @@ struct McpProcess {
     cancelled_root_requests: usize,
     allow_harness_output: bool,
     _process_permit: McpProcessPermit,
+    // Drop runs child shutdown before fields (including this directory) are released.
+    _session_directory: Option<TempDir>,
 }
 
 impl McpProcess {
@@ -143,11 +145,21 @@ impl McpProcess {
 
     #[cfg(feature = "test-support")]
     fn start_profile_with_https_root(profile: &Path, current_directory: &Path) -> Self {
+        Self::start_profile_with_https_root_and_env(profile, current_directory, &[])
+    }
+
+    #[cfg(feature = "test-support")]
+    fn start_profile_with_https_root_and_env(
+        profile: &Path,
+        current_directory: &Path,
+        environment: &[(&str, &str)],
+    ) -> Self {
         let root_path = current_directory.join("profile-https-ca.der");
         fs::write(&root_path, profile_tls::root_certificate()).expect("write profile fixture CA");
         let executable = std::env::current_exe().expect("stdio contract test executable");
         let mut command = Command::new(executable);
         command
+            .envs(environment.iter().copied())
             .args([
                 "--ignored",
                 "--exact",
@@ -259,12 +271,27 @@ impl McpProcess {
         current_directory: Option<&Path>,
         environment: &[(&str, &str)],
     ) -> Self {
+        // Ordinary CLI fixtures must not sweep the user's shared session cache.
+        // Profile storage and explicit per-test overrides remain authoritative.
+        let session_directory = if session_root.is_none()
+            && !arguments.iter().any(|argument| argument == "--config")
+            && !environment
+                .iter()
+                .any(|(name, _)| *name == "RESOURCEFS_TEST_SESSION_ROOT")
+        {
+            Some(TempDir::new().expect("isolated child session directory"))
+        } else {
+            None
+        };
         let mut command = Command::new(binary());
         command
             .args(arguments)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(directory) = &session_directory {
+            command.env("RESOURCEFS_TEST_SESSION_ROOT", directory.path());
+        }
         if let Some(current_directory) = current_directory {
             command.current_dir(current_directory);
         }
@@ -284,7 +311,10 @@ impl McpProcess {
             command.env(name, value);
         }
         let permit = McpProcessPermit::acquire();
-        Self::from_child(command.spawn().expect("start resourcefs"), false, permit)
+        let mut process =
+            Self::from_child(command.spawn().expect("start resourcefs"), false, permit);
+        process._session_directory = session_directory;
+        process
     }
 
     fn from_child(
@@ -304,6 +334,7 @@ impl McpProcess {
             cancelled_root_requests: 0,
             allow_harness_output,
             _process_permit: process_permit,
+            _session_directory: None,
         }
     }
 
@@ -991,12 +1022,10 @@ fn lists_and_calls_discovery_tools() {
         search_result["structuredContent"]["groups"][0]["lines"][0],
         json!({"line": 1, "text": "fixture text"})
     );
-    assert!(
-        search_result["content"][0]["text"]
-            .as_str()
-            .expect("search TextContent")
-            .contains("fixture text")
-    );
+    assert!(search_result["content"][0]["text"]
+        .as_str()
+        .expect("search TextContent")
+        .contains("fixture text"));
 
     let glob_response = process.request(
         "tools/call",
@@ -1013,12 +1042,10 @@ fn lists_and_calls_discovery_tools() {
             "kind": "file"
         })
     );
-    assert!(
-        glob_result["content"][0]["text"]
-            .as_str()
-            .expect("glob TextContent")
-            .contains("rfs://workspace/workspace/fixture.txt")
-    );
+    assert!(glob_result["content"][0]["text"]
+        .as_str()
+        .expect("glob TextContent")
+        .contains("rfs://workspace/workspace/fixture.txt"));
 
     let unknown = process.request(
         "tools/call",
@@ -1169,16 +1196,12 @@ fn versioned_write_receipts_and_catalog_policy_work_over_stdio() {
     assert!(rem.get("error").is_none(), "{rem}");
     assert_eq!(rem["result"]["isError"], false);
     assert_eq!(rem["result"]["structuredContent"]["operation"], "deleted");
-    assert!(
-        rem["result"]["structuredContent"]
-            .get("versionTag")
-            .is_none()
-    );
-    assert!(
-        rem["result"]["structuredContent"]
-            .get("displayedRanges")
-            .is_none()
-    );
+    assert!(rem["result"]["structuredContent"]
+        .get("versionTag")
+        .is_none());
+    assert!(rem["result"]["structuredContent"]
+        .get("displayedRanges")
+        .is_none());
     assert_tool_error(&process.call_read("created.txt"), "not_found");
 
     let move_source = process.request(
@@ -1648,11 +1671,9 @@ fn renders_complete_success_and_errors() {
             json!([{"startLine": 1, "endLine": 1}])
         );
         assert_eq!(structured["displayedEof"], true);
-        assert!(
-            structured["versionTag"]
-                .as_str()
-                .is_some_and(|tag| tag.starts_with("sha256:") && tag.len() == 71)
-        );
+        assert!(structured["versionTag"]
+            .as_str()
+            .is_some_and(|tag| tag.starts_with("sha256:") && tag.len() == 71));
         assert!(structured.get("recoveryReference").is_none());
         assert_eq!(
             text,
@@ -1709,12 +1730,10 @@ fn renders_complete_success_and_errors() {
 
         let empty = process.call_read("empty.txt");
         assert_eq!(empty["structuredContent"]["content"], "");
-        assert!(
-            !empty["content"][0]["text"]
-                .as_str()
-                .expect("empty TextContent")
-                .is_empty()
-        );
+        assert!(!empty["content"][0]["text"]
+            .as_str()
+            .expect("empty TextContent")
+            .is_empty());
 
         let started = Instant::now();
         let maximum = process.call_read("maximum.txt");
@@ -1830,11 +1849,9 @@ fn renders_complete_success_and_errors() {
 
         let malformed = process.request("tools/call", json!({"name": "rfs_read", "arguments": {}}));
         assert_eq!(malformed["error"]["code"], -32602);
-        assert!(
-            malformed["error"]["message"]
-                .as_str()
-                .is_some_and(|text| text.contains("missing field `path`"))
-        );
+        assert!(malformed["error"]["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("missing field `path`")));
         assert!(malformed.get("result").is_none());
 
         let extra_argument = process.request(
@@ -1845,11 +1862,9 @@ fn renders_complete_success_and_errors() {
             }),
         );
         assert_eq!(extra_argument["error"]["code"], -32602);
-        assert!(
-            extra_argument["error"]["message"]
-                .as_str()
-                .is_some_and(|text| text.contains("unknown field `extra`"))
-        );
+        assert!(extra_argument["error"]["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("unknown field `extra`")));
         assert!(extra_argument.get("result").is_none());
 
         let unknown = process.request(
@@ -1969,12 +1984,10 @@ fn namespace_catalog_tracks_client_root_replacement() {
         replacement_catalog["structuredContent"]["content"],
         format!("{beta_root} (primary)\n")
     );
-    assert!(
-        !replacement_catalog["structuredContent"]["content"]
-            .as_str()
-            .expect("replacement content")
-            .contains(alpha_root)
-    );
+    assert!(!replacement_catalog["structuredContent"]["content"]
+        .as_str()
+        .expect("replacement content")
+        .contains(alpha_root));
     assert_ne!(
         replacement_catalog["structuredContent"]["versionTag"],
         initial_tag
@@ -2785,12 +2798,10 @@ fn stdio_rejects_non_lower_limits() {
         .as_str()
         .expect("bounded continuation")
         .to_owned();
-    assert!(
-        bounded["content"][0]["text"]
-            .as_str()
-            .expect("bounded TextContent")
-            .contains(&continuation)
-    );
+    assert!(bounded["content"][0]["text"]
+        .as_str()
+        .expect("bounded TextContent")
+        .contains(&continuation));
     let middle = process.call_read_arguments(json!({
         "path": continuation,
         "limits": {"bytes": 5},
@@ -3188,11 +3199,9 @@ fn canonical_identity_stays_private() {
         "rfs://workspace/workspace/fixture.txt"
     );
     assert!(structured.get("backingFileUri").is_none());
-    assert!(
-        !serde_json::to_string(&result)
-            .expect("serialize result")
-            .contains(&fixture.root.to_string_lossy() as &str)
-    );
+    assert!(!serde_json::to_string(&result)
+        .expect("serialize result")
+        .contains(&fixture.root.to_string_lossy() as &str));
     process.finish();
 }
 
@@ -3545,6 +3554,152 @@ fn profile_https_test_server() {
             &profile, root,
         ))
         .expect("profile HTTPS test server");
+}
+
+#[test]
+fn read_acquisition_validates_before_roots_and_reports_unsupported() {
+    let fixture = WorkspaceFixture::new();
+    let mut process = McpProcess::start(&fixture.root);
+    process.initialize_with_roots(VERSION_2026, vec![mcp_root(&fixture.root, "workspace")]);
+    for acquisition in [
+        json!(null),
+        json!([]),
+        json!({"unknown": 1}),
+        json!({"maxAttempts": null}),
+        json!({"maxAttempts": 0}),
+        json!({"maxAttempts": -1}),
+        json!({"maxAttempts": 1.5}),
+        json!({"maxAttempts": 11}),
+    ] {
+        let response = process.request(
+            "tools/call",
+            json!({
+                "name": "rfs_read", "arguments": {"path": "fixture.txt", "acquisition": acquisition}
+            }),
+        );
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+        assert_eq!(
+            process.root_list_calls, 0,
+            "malformed acquisition refreshed roots"
+        );
+    }
+    let rejected = process.call_read_arguments(json!({
+        "path": "fixture.txt", "acquisition": {"maxAttempts": 1}
+    }));
+    assert_eq!(rejected["isError"], true, "{rejected}");
+    assert_eq!(
+        rejected["structuredContent"]["error"]["category"],
+        "unsupported_projection"
+    );
+    assert_eq!(
+        rejected["structuredContent"]["error"]["details"]["reason"],
+        "acquisition_controls_unsupported"
+    );
+    let unchanged = process.call_read("fixture.txt");
+    assert_eq!(unchanged["structuredContent"]["content"], "fixture text\n");
+    process.finish();
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn github_profile_trust_reaches_real_stdio_reads_only_when_explicit() {
+    let fixture = WorkspaceFixture::new();
+    let body = json!({
+        "id": 8001, "number": 7, "state": "open", "title": "Native fixture title",
+        "body": "Native fixture body", "user": {"login": "author", "id": 2},
+        "html_url": "https://github.example/owner/repo/pull/7",
+        "created_at": "2026-08-20T01:02:03Z", "updated_at": "2026-08-21T02:03:04Z",
+        "draft": false, "merged": false, "head": {"ref": "feature"}, "base": {"ref": "main"}
+    })
+    .to_string();
+    let server = profile_tls::ProfileTlsServer::start_native(vec![
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body: body.clone(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body,
+        },
+    ]);
+    let profile = fixture.root.join("github-trust.json");
+    fs::write(
+        &profile,
+        serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "sources": [{
+                "kind": "github", "id": "github", "required": true,
+                "apiBaseUrl": server.base_url(), "allowPrivateNetwork": true,
+                "credential": {"kind": "environment", "name": "RFS_GITHUB_TEST_TOKEN"},
+                "repositories": [{"name": "owner/repo"}]
+            }]
+        }))
+        .expect("GitHub profile JSON"),
+    )
+    .expect("GitHub profile");
+    let environment = [("RFS_GITHUB_TEST_TOKEN", "fixture-token")];
+    let mut trusted =
+        McpProcess::start_profile_with_https_root_and_env(&profile, &fixture.root, &environment);
+    trusted.initialize(VERSION_2026);
+    let title = trusted.call_read("pr://owner/repo/7/title");
+    assert_eq!(
+        title["structuredContent"]["content"],
+        "Native fixture title"
+    );
+    let body = trusted.call_read("pr://owner/repo/7/body");
+    assert_eq!(body["structuredContent"]["content"], "Native fixture body");
+    trusted.finish();
+    let requests = server.recorded_requests();
+    assert_eq!(requests.len(), 2);
+    for (index, request) in requests.iter().enumerate() {
+        assert_eq!(request.sequence, index + 1);
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/repos/owner/repo/pulls/7");
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name == "authorization" && value == "Bearer fixture-token"));
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name == "accept" && value == "application/vnd.github+json"));
+    }
+    // Even injecting the helper's environment cannot select trust in the shipped CLI.
+    let root_path = fixture.root.join("profile-https-ca.der");
+    let root_text = root_path.to_str().expect("fixture CA path");
+    let mut ordinary = McpProcess::start_profile_with_env(
+        &profile,
+        &fixture.root,
+        &[
+            environment[0],
+            (PROFILE_HTTPS_HELPER, "1"),
+            (PROFILE_HTTPS_ROOT, root_text),
+        ],
+    );
+    ordinary.initialize(VERSION_2026);
+    let refused = ordinary.call_read("pr://owner/repo/7/title");
+    assert_eq!(refused["isError"], true, "{refused}");
+    ordinary.finish();
+    assert_eq!(
+        server.recorded_requests().len(),
+        2,
+        "system trust must refuse before HTTP"
+    );
+    let mut invalid_profile: Value =
+        serde_json::from_slice(&fs::read(&profile).expect("profile bytes"))
+            .expect("profile document");
+    invalid_profile["sources"][0]["httpsRoot"] = json!(root_text);
+    fs::write(
+        &profile,
+        serde_json::to_vec(&invalid_profile).expect("invalid profile JSON"),
+    )
+    .expect("invalid profile");
+    let profile_text = profile.to_str().expect("profile path");
+    let rejected_profile = run_invalid(&["check", "--config", profile_text]);
+    assert!(
+        !rejected_profile.status.success(),
+        "profile cannot select fixture trust"
+    );
 }
 
 #[cfg(feature = "test-support")]

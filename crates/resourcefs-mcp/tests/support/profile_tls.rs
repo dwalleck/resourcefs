@@ -37,10 +37,28 @@ pub fn root_certificate() -> &'static [u8] {
 
 const MAX_REQUEST_HEAD: usize = 16 * 1024;
 
+#[derive(Clone, Debug)]
+pub struct RecordedRequest {
+    pub sequence: usize,
+    pub method: String,
+    pub path: String,
+    pub headers: Vec<(String, String)>,
+}
+
+pub struct NativeResponse {
+    pub path: String,
+    pub body: String,
+}
+
+enum Responses {
+    Html(Arc<str>),
+    Native(Vec<NativeResponse>),
+}
+
 pub struct ProfileTlsServer {
     address: SocketAddr,
     accepts: Arc<AtomicUsize>,
-    requests: Arc<Mutex<Vec<String>>>,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
     failures: Arc<Mutex<Vec<String>>>,
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<()>>,
@@ -48,7 +66,15 @@ pub struct ProfileTlsServer {
 
 impl ProfileTlsServer {
     pub fn start(body: &str) -> Self {
-        let body: Arc<str> = Arc::from(body);
+        Self::start_responses(Responses::Html(Arc::from(body)))
+    }
+
+    pub fn start_native(responses: Vec<NativeResponse>) -> Self {
+        Self::start_responses(Responses::Native(responses))
+    }
+
+    fn start_responses(responses: Responses) -> Self {
+        let responses = Arc::new(responses);
         let accepts = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let failures = Arc::new(Mutex::new(Vec::new()));
@@ -79,11 +105,11 @@ impl ProfileTlsServer {
                             let (stream, _) = accepted.expect("accept profile TLS connection");
                             accept_count.fetch_add(1, Ordering::SeqCst);
                             let acceptor = acceptor.clone();
-                            let body = Arc::clone(&body);
+                            let responses = Arc::clone(&responses);
                             let requests = Arc::clone(&request_log);
                             let failures = Arc::clone(&failure_log);
                             tokio::spawn(async move {
-                                if let Err(error) = serve(stream, acceptor, &body, &requests).await {
+                                if let Err(error) = serve(stream, acceptor, &responses, &requests).await {
                                     failures
                                         .lock()
                                         .expect("profile TLS failure log")
@@ -118,6 +144,10 @@ impl ProfileTlsServer {
     }
 
     pub fn requests(&self) -> Vec<String> {
+        self.recorded_requests().into_iter().map(|request| request.path).collect()
+    }
+
+    pub fn recorded_requests(&self) -> Vec<RecordedRequest> {
         let failures = self.failures.lock().expect("profile TLS failure log");
         assert!(
             failures.is_empty(),
@@ -158,8 +188,8 @@ fn server_config() -> ServerConfig {
 async fn serve<S>(
     stream: S,
     acceptor: TlsAcceptor,
-    body: &str,
-    requests: &Mutex<Vec<String>>,
+    responses: &Responses,
+    requests: &Mutex<Vec<RecordedRequest>>,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -189,18 +219,30 @@ where
     }
     let request = std::str::from_utf8(&head)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "request head was not UTF-8"))?;
-    let target = request
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
+    let mut lines = request.lines();
+    let mut request_line = lines.next().unwrap_or("").split_whitespace();
+    let method = request_line.next().unwrap_or("");
+    let target = request_line.next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing request target"))?;
-    requests
-        .lock()
-        .expect("profile TLS request log")
-        .push(target.to_owned());
+    let headers = lines.filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned())).collect();
+    let sequence = {
+        let mut log = requests.lock().expect("profile TLS request log");
+        let sequence = log.len() + 1;
+        log.push(RecordedRequest { sequence, method: method.to_owned(), path: target.to_owned(), headers });
+        sequence
+    };
+    let (status, content_type, body) = match responses {
+        Responses::Html(body) => ("200 OK", "text/html; charset=utf-8", body.as_ref()),
+        Responses::Native(responses) => match responses.get(sequence - 1) {
+            Some(response) if response.path == target && method == "GET" =>
+                ("200 OK", "application/json", response.body.as_str()),
+            _ => ("404 Not Found", "application/json", "{\"message\":\"unexpected fixture request\"}"),
+        },
+    };
 
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     tls.write_all(response.as_bytes()).await?;
