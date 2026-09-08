@@ -1,0 +1,42 @@
+[
+  [
+    {
+      "name": "attempt_charge_removed",
+      "claim": "C09 supporting C10/C12",
+      "path": "crates/resourcefs-sources/src/http/read.rs",
+      "old": "                budget.charge_attempt()?;",
+      "new": "                // Deliberate mutant: omit physical-attempt charge.",
+      "test_command": "cargo test -p resourcefs-sources --lib controlled_retry_uses_one_shared_physical_attempt_ledger"
+    }
+  ],
+  [
+    {
+      "name": "cumulative_admission_reset",
+      "claim": "C09 supporting C10/C12",
+      "path": "crates/resourcefs-sources/src/http/read.rs",
+      "old": "    pub(crate) fn admit_body(&mut self, bytes: usize) -> Result<(), ResourceError> {",
+      "new": "    pub(crate) fn admit_body(&mut self, bytes: usize) -> Result<(), ResourceError> {\n        self.accepted_body_bytes = 0;",
+      "test_command": "cargo test -p resourcefs-sources --lib verified_http_bodies_share_cumulative_admission_without_reset"
+    }
+  ],
+  [
+    {
+      "name": "effective_response_cap_ignored",
+      "claim": "C09 supporting C10/C12",
+      "path": "crates/resourcefs-sources/src/http/read.rs",
+      "old": ".fetch_attempt(request, self.operation, self.response_ceiling)",
+      "new": ".fetch_attempt(request, self.operation, self.substrate.ceilings().fetch_bytes())",
+      "test_command": "cargo test -p resourcefs-sources --lib effective_response_cap_bounds_stream_and_reused_body_admission"
+    }
+  ],
+  [
+    {
+      "name": "logical_deadline_restarted",
+      "claim": "C09 supporting C10/C12",
+      "path": "crates/resourcefs-sources/src/http/read.rs",
+      "old": "        let retry = if budget",
+      "new": "        let self_renewed = Self { deadline: LogicalDeadline::new(tokio::time::Instant::now(), self.timeout)?, ..self };\n        return self_renewed.fetch_with_renewed_deadline(request, budget).await;\n    }\n\n    async fn fetch_with_renewed_deadline(self, request: HttpRequest, budget: Option<&mut HttpReadBudget>) -> Result<BoundedHttpResponse, ResourceError> {\n        let retry = if budget",
+      "test_command": "cargo test -p resourcefs-sources --lib controlled_deadline_spans_body_retry_wait_and_final_acceptance"
+    }
+  ]
+]

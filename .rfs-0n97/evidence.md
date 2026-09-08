@@ -142,3 +142,22 @@ Qualification found the derived all-optional acquisition struct accepted `[]`. T
 | 9. Restoration | PASS — all three defects removed; all 56 focused tests GREEN. |
 
 Caller/helper review: every GithubConfig constructor is migrated; URL validation and repository normalization reuse existing owners. The published schema fixture is CLI-generated, not a parallel handwritten contract. Custom Facts eligibility remains the S6 consumer obligation, not a claimed live Facts result here. No publication or tracker closure.
+
+
+## S3 checkpoint — shared bounded HTTP acquisition
+
+`oracles/s3-results.json`, `s3-mutation-results.json` and `s3-feature-mutation.json` retain the observed commands, physical-request/body/deadline mutants and resolved-feature mutation. The async delayed-header fixture replaced a blocking sleep that prevented Tokio from polling the actual deadline. Controlled acquisition tests live in the exact mounted `http/read_acquisition_tests.rs` child. The two existing GitHub mutation callers pass the unchanged substrate response ceiling to the expanded physical-fetch method.
+
+| Gate | Result |
+|---|---|
+| 1. Affected unit tests | PASS — 20 HTTP bounds/substrate tests (2 ignored) and 19 HTTP read unit tests; all-target/all-feature check passed. |
+| 2. Falsifiers | PASS — observed physical attempts, exact/plus-one response and cumulative admission, shared send/body/wait/final deadline, resolved no-http2/no-http3 premise. |
+| 3. Stress fixture | PASS — two 8 MiB admissions and a refused additional byte, unequal smaller bodies, retry and delayed-header/body controls. |
+| 4. Implementation / independent oracle | PASS — real TLS request logs and explicit independent byte arithmetic; Cargo's resolved graph supplies the protocol premise. |
+| 5. Approved module shape | PASS — C02 transport stage; HTTP read owner 348 lines, provider-free; inherited parent and exact test-mount rules retained. |
+| 6. Budget | PASS — retained release 16 MiB driver 40,849,524 ns versus 1 s; bookkeeping 184 bytes versus 4 KiB. One shared runtime deadline, no second clock. |
+| 7. Regression fence | PASS — focused HTTP contracts and resolved-feature oracle. |
+| 8. Named mutations | PASS — omitted attempt charge, reset admission, default response cap, restarted deadline and enabled HTTP2 each produce the intended RED. Structural preparation mutations retain their qualified exact diagnostics. |
+| 9. Restoration | PASS — each controlled-source mutation restored and focused test GREEN; manifest mutation was disposable and original resolved graph GREEN. |
+
+Symmetry/reuse: legacy reads retain their prior substrate policy and no implicit cumulative byte cap. The new private limit-bearing entrypoints have no production Facts caller at this local checkpoint, so the compiler reports three dead-code warning groups; no warning is suppressed. This is a compiling, behavior-checked local mechanism checkpoint, not a claim of standalone full-CI readiness or publication. S6 supplies their production consumer, and the assembled full gate must be warning-free. The local-only authorization remains unchanged.

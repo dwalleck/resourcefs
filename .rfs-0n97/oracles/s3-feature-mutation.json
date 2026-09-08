@@ -1,0 +1,6 @@
+{
+  "red_exit": 1,
+  "red_output": "C09 FAIL: registry+https://github.com/rust-lang/crates.io-index#reqwest@0.13.2 enables ['http2']; physical-attempt premise requires reproof\n",
+  "restored_exit": 0,
+  "restored_output": "C09 reqwest 0.13.2: __rustls,__rustls-aws-lc-rs,__tls,rustls,stream\nC09 PASS: resolved all-feature reqwest graph enables neither http2 nor http3\n"
+}

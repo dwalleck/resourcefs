@@ -89,6 +89,8 @@ pub const FIXTURE_HOST: &str = "tls.invalid";
 pub enum FixtureResponse {
     /// `200 OK` carrying `body`.
     Body(String),
+    /// `200 OK` whose entire response waits asynchronously before the headers.
+    DelayedBody { delay: Duration, body: String },
     /// `302 Found` pointing at `location`, absolute or origin-relative.
     Redirect(String),
     /// `200 OK` carrying `body` under an explicit `Content-Type`.
@@ -174,7 +176,7 @@ impl FixtureResponse {
     /// [`write_response`] so each write can be counted and paced.
     fn render_head(&self) -> String {
         match self {
-            Self::Body(body) => format!(
+            Self::Body(body) | Self::DelayedBody { body, .. } => format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             ),
@@ -319,6 +321,9 @@ async fn write_response<W>(stream: &mut W, response: &FixtureResponse, flushed: 
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
+    if let FixtureResponse::DelayedBody { delay, .. } = response {
+        tokio::time::sleep(*delay).await;
+    }
     if stream
         .write_all(response.render_head().as_bytes())
         .await

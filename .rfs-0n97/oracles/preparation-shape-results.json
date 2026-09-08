@@ -1,0 +1,181 @@
+{
+  "fixture_qualification": "Initial blank-only growth fixture was not counted as a valid oversized mutant. Replaced by directly measured 650/651 physical-line fixtures. Two expected diagnostic predicates were corrected to the already observed invariant failures; production oracle unchanged.",
+  "trials": [
+    {
+      "case": "wrong-last_modified-getter",
+      "mutation_exit": 1,
+      "expected_failure": "last_modified must remain a pure",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/http/mod.rs: last_modified must remain a pure bounded-response field getter"
+      ]
+    },
+    {
+      "case": "wrong-date-getter",
+      "mutation_exit": 1,
+      "expected_failure": "date must remain a pure",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/http/mod.rs: date must remain a pure bounded-response field getter"
+      ]
+    },
+    {
+      "case": "wrong-selected_api_version-getter",
+      "mutation_exit": 1,
+      "expected_failure": "selected_api_version must remain a pure",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/http/mod.rs: selected_api_version must remain a pure bounded-response field getter"
+      ]
+    },
+    {
+      "case": "wrong-rate_limit_reset-getter",
+      "mutation_exit": 1,
+      "expected_failure": "rate_limit_reset must remain a pure",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/http/mod.rs: rate_limit_reset must remain a pure bounded-response field getter"
+      ]
+    },
+    {
+      "case": "foreign-new-decoration",
+      "mutation_exit": 1,
+      "expected_failure": "new#1 permits only",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/http/mod.rs: new#1 permits only its typed error-detail decoration"
+      ]
+    },
+    {
+      "case": "foreign-header_within_ceiling-decoration",
+      "mutation_exit": 1,
+      "expected_failure": "header_within_ceiling#1 permits only",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/http/mod.rs: header_within_ceiling#1 permits only its typed error-detail decoration"
+      ]
+    },
+    {
+      "case": "foreign-cancelled_mid_request-decoration",
+      "mutation_exit": 1,
+      "expected_failure": "cancelled_mid_request#1 permits only",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/http/mod.rs: cancelled_mid_request#1 permits only its typed error-detail decoration"
+      ]
+    },
+    {
+      "case": "foreign-policy_error_or-decoration",
+      "mutation_exit": 1,
+      "expected_failure": "policy_error_or#1 permits only",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/http/mod.rs: policy_error_or#1 permits only its typed error-detail decoration"
+      ]
+    },
+    {
+      "case": "provider-decoder-in-metadata-helper",
+      "mutation_exit": 1,
+      "expected_failure": "source-specific query/JSON dependency reached source-neutral HTTP",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 inherited C12 FAIL crates/resourcefs-sources/src/http/mod.rs: source-specific query/JSON dependency reached source-neutral HTTP"
+      ]
+    },
+    {
+      "case": "changed-rendered-collection",
+      "mutation_exit": 1,
+      "expected_failure": "untouched body/declaration changed: collection#1",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/github/mod.rs: untouched body/declaration changed: collection#1"
+      ]
+    },
+    {
+      "case": "missing-fetch-collection",
+      "mutation_exit": 1,
+      "expected_failure": "required extracted slot collection#1",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/github/fetch.rs: required extracted slot collection#1 from collection#2 is missing"
+      ]
+    },
+    {
+      "case": "missing-fetch-page_url",
+      "mutation_exit": 1,
+      "expected_failure": "required extracted slot page_url#1",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/github/fetch.rs: required extracted slot page_url#1 from page_url#1 is missing"
+      ]
+    },
+    {
+      "case": "retained-source-collection",
+      "mutation_exit": 1,
+      "expected_failure": "extracted slot collection#2 belongs",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/github/mod.rs: untouched body/declaration changed: collection#2",
+        "C02 FAIL crates/resourcefs-sources/src/github/mod.rs: extracted slot collection#2 belongs in crates/resourcefs-sources/src/github/fetch.rs"
+      ]
+    },
+    {
+      "case": "second-acquisition-test-mount",
+      "mutation_exit": 1,
+      "expected_failure": "another path mount",
+      "matched": true,
+      "restoration_exit": 0,
+      "failures": [
+        "C02 inherited C12 FAIL crates/resourcefs-sources/src/http/read_tests.rs: test-only child crates/resourcefs-sources/src/http/read_acquisition_tests.rs has another path mount"
+      ]
+    },
+    {
+      "case": "foreign-io-in-metadata-helper",
+      "mutation_exit": 1,
+      "expected_exit": 1,
+      "expected_failure": "retained_observation acquired non-metadata work",
+      "matched": true,
+      "restoration_exit": 0,
+      "measured_child_lines": 412,
+      "failures": [
+        "C02 FAIL crates/resourcefs-sources/src/http/mod.rs: retained_observation acquired non-metadata work: ['read']"
+      ]
+    },
+    {
+      "case": "acquisition-test-child-650",
+      "mutation_exit": 0,
+      "expected_exit": 0,
+      "expected_failure": "C02 PASS",
+      "matched": true,
+      "restoration_exit": 0,
+      "measured_child_lines": 650,
+      "failures": []
+    },
+    {
+      "case": "acquisition-test-child-651",
+      "mutation_exit": 1,
+      "expected_exit": 1,
+      "expected_failure": "exceeds 650 physical lines",
+      "matched": true,
+      "restoration_exit": 0,
+      "measured_child_lines": 651,
+      "failures": [
+        "C02 inherited C1 FAIL crates/resourcefs-sources/src/http/read_acquisition_tests.rs: 651 lines exceeds child tripwire 650",
+        "C02 inherited C12 FAIL crates/resourcefs-sources/src/http/read_acquisition_tests.rs: test-only child exceeds 650 physical lines"
+      ]
+    }
+  ]
+}

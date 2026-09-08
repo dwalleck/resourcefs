@@ -127,7 +127,8 @@ The following disjoint groups cover the inputs this slice changes. Independent o
 | Canonical Facts variant | core/reference.rs | Existing typed reference parser/canonical renderer; no HTTP/JSON or provider DTOs. |
 | Acquisition values and operational detail facts | core/acquisition.rs; core/error.rs | Pure validating values through existing read/error seam; no provider state, credentials, serde_json, rmcp or policy engine. |
 | Deployment pairing/operator controls | sources/configuration/github.rs | Existing validated configuration interface; no sign-in lifecycle, network probing or profile syntax. |
-| Native decode, identity validation, owned facts serialization | sources/github/facts.rs | Private concrete read entrypoint reached by GithubSource; no public provider trait, no human fallback, no transport/cache duplication. |
+| Native decode and owned facts serialization | sources/github/facts.rs | Private concrete read entrypoint reached by GithubSource; no public provider trait, human fallback, or transport/cache duplication. |
+| Native identity/link validation | sources/github/facts/identity.rs | One private `validate` entrypoint returns six borrowed validated operands; no HTTP, cache, clock, or serialization responsibility. |
 | Fetch/cache/observation metadata | sources/github/fetch.rs | Private existing cache/fetch seam extracted once and reused by human/facts/mutation consumers; no owned facts schema or review verdicts. |
 | Physical requests, deadlines, admission | sources/http/{mod.rs,read.rs} | Existing substrate and BoundedRead; no GitHub/Jira JSON, source identity or provider error prose matching. |
 | MCP acquisition syntax | mcp/acquisition.rs | Shared concrete DTO/validation bridge used by read and profile; no network or owned GitHub schema. |
@@ -161,7 +162,8 @@ Counts below are measured at the source base. `P/L` means physical lines / nonbl
 | C acquisition.rs (new) | Validated limits/intersection | Rust consumers, MCP conversion, sources; public control contracts | Create pure owner; no deadlines/HTTP engines. |
 | S github/mod.rs (1498/1354) | Mount/source/read/discovery/catalog orchestration and existing projections | GithubSource; github_adapter_contract/live | Split fetch; facts dispatch/catalog only; no new decoder/serializer bodies. |
 | S github/fetch.rs (new) | Existing conditional fetch/cache plus observation metadata | Human and facts/mutation paths; public adapter/cache contracts | Create by extraction/deepen; no parallel cache or facts schema. |
-| S github/facts.rs (new) | Private PR facts read, presence/identity/owned schema | GithubSource::read; github_facts_contract | Create; no reqwest, generic provider trait or human rendering. |
+| S github/facts.rs (new) | Private PR facts read, presence and owned schema | GithubSource::read; github_facts_contract | Create; no reqwest, generic provider trait or human rendering. |
+| S github/facts/identity.rs (new) | Native identity and recognizable-link consistency | facts.rs through one `validate` function; same public adapter contracts | Private child; borrowed result only, no HTTP/cache/clock/serialization. |
 | S github/wire.rs (390/362) | Legacy private wire DTO/decode | Human/mutation consumers; github_wire_contract | Retain; no new facts DTOs or global nullability tightening. |
 | S github/render.rs (245/229) | Legacy text/order rendering | Human consumers; adapter/wire contracts | Retain unchanged; no machine serialization. |
 | S github/mutation.rs (1317/1264) | Existing mutation routing/authority/cache invalidation | MutationAdapter; github_mutation_contract | Wiring for extracted fetch and explicit Facts refusal only; no new write capability. |
@@ -283,3 +285,9 @@ Requester approval, 2026-09-08: **"Approve and implement"**, selected in respons
 Specific choices presented for approval: explicit optional read controls with honest unsupported-resource refusal; decimal-string native IDs/numbers and major/minor owned schema; validated public/ghe pairing with non-guessed custom-base compatibility; one shared fetch/cache extraction; the narrow successor shape-fence transition; and test-only GitHub CA propagation through the real stdio path.
 
 Approved risk acceptances: **None.** No regression fence is waived. Numerical/transport/live proof obligations remain mandatory, and unavailable corporate/native inputs do not become a pass.
+
+### Approved implementation placement revision
+
+The formatted Facts implementation reached 952 physical lines and failed the approved 750-line tripwire. Responsibility review found no honest 202-line deletion: the remaining schema and presence declarations encode contract fields. The requester selected **"Extract private identity child"** after being offered that seam versus explicitly revising the single-file limit.
+
+The approved revision moves identity/link helpers and validation orchestration into `github/facts/identity.rs`, with one private `validate` entrypoint returning `ValidatedIdentity` containing six borrowed operands. The parent retains native decoding, owned schema, acquisition orchestration, bounded serialization and publication checks. Limits remain 750 lines for the parent and 350 for the child. The placement fence requires the moved symbols in the child, rejects their return to the parent, restricts the child to one exposed function, and forbids HTTP/cache/clock/serialization dependencies there. No behavior, risk acceptance, or other ownership changes.

@@ -218,6 +218,39 @@ def check(root, repository, stage, transition=None):
         else:
             ledger.add(read_tests)
             codes[read_tests] = ""
+    if transition is not None:
+        for path, row in transition.test_children.items():
+            if path not in sources:
+                fail(path, "required successor test-only child is missing")
+                continue
+            parent = row["parent"]
+            child = row["module"]
+            filename = re.escape(Path(path).name)
+            mount_text = r'#\s*\[\s*path\s*=\s*"' + filename + r'"\s*\]\s*mod\s+' + re.escape(child) + r'\s*;'
+            direct_test = row.get("cfg_test", False)
+            if direct_test:
+                mount_text = r'#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*' + mount_text
+            mount = re.compile(mount_text)
+            parent_source = sources.get(parent, "")
+            matches = list(mount.finditer(parent_source))
+            # Either the exact read::tests ancestor is already validated,
+            # or the ledger requires a direct cfg(test) attribute at the mount.
+            test_ancestor = parent == read_tests and codes.get(parent) == ""
+            if (not direct_test and not test_ancestor) or len(matches) != 1:
+                fail(path, f"requires exactly one test-only {child} mount in {parent}")
+            for owner, source in sources.items():
+                remaining = mount.sub("", source) if owner == parent else source
+                if not direct_test and owner.startswith(HTTP) and re.search(
+                        r'\bmod\s+' + re.escape(child) + r'\s*;', mask(remaining)):
+                    fail(owner, f"test-only child {path} has another module mount")
+                if re.search(r'\bmod\s+' + re.escape(Path(path).stem) + r'\s*;', mask(remaining)):
+                    fail(owner, f"test-only child {path} has a bare module mount")
+                if re.search(r'#\s*\[\s*path\s*=\s*"[^"]*' + filename + r'"', remaining):
+                    fail(owner, f"test-only child {path} has another path mount")
+            if len(sources[path].splitlines()) > row["maximum"]:
+                fail(path, f'test-only child exceeds {row["maximum"]} physical lines')
+            ledger.add(path)
+            codes[path] = ""
     mcp_parent = "crates/resourcefs-mcp/src/server.rs"
     mcp_tests = "crates/resourcefs-mcp/src/server/jira_query_tests.rs"
     if mcp_tests in sources:
@@ -333,13 +366,16 @@ def check(root, repository, stage, transition=None):
         if path == HTTP + "mod.rs" and delta >= 0:
             fail(path, f"request extraction must net shrink parent; delta={delta:+d}")
         added_declarations = Counter(DECL.findall(mask(after))) - Counter(DECL.findall(mask(before)))
+        allowed_new = () if transition is None else transition.added_functions.get(path, ())
         for symbol in sorted(added_declarations):
-            fail(path, f"new responsibility declaration {symbol}; parent delta={delta:+d}")
+            if symbol not in allowed_new or added_declarations[symbol] != 1:
+                fail(path, f"new responsibility declaration {symbol}; parent delta={delta:+d}")
         old_functions, new_functions = functions(before), functions(after)
         for key, (body, raw_body) in new_functions.items():
             symbol = key[0]
             if key not in old_functions:
-                fail(path, f"new responsibility/test function {symbol}; parent delta={delta:+d}")
+                if symbol not in allowed_new or key[1] != 1:
+                    fail(path, f"new responsibility/test function {symbol}; parent delta={delta:+d}")
                 continue
             old_body, old_raw = old_functions[key]
             if TOKEN.findall(body) == TOKEN.findall(old_body) and re.findall(r'"(?:\\.|[^"\\])*"', raw_body) == re.findall(r'"(?:\\.|[^"\\])*"', old_raw):

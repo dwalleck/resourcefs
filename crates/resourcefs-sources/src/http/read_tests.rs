@@ -194,9 +194,11 @@ async fn retry_wait_cancellation_and_over_deadline_delay_send_no_followup() {
         assert!(operation.cancel());
     };
     let (result, ()) = tokio::join!(fetch, cancel);
+    let error = result.expect_err("cancelled wait");
+    assert_eq!(error.category(), ErrorCategory::Cancelled);
     assert_eq!(
-        result.expect_err("cancelled wait").category(),
-        ErrorCategory::Cancelled
+        error.details().expect("cancellation facts").reason(),
+        resourcefs_core::ErrorReason::Cancelled
     );
     let operation = OperationGuard::new();
     let mut read = substrate.begin_read(&operation).expect("logical read");
@@ -592,3 +594,6 @@ async fn read_only_post_requires_valid_retry_after_and_replays_transport_failure
     );
     assert_eq!(listener.bodies(), vec![b"{}".to_vec(); 4]);
 }
+
+#[path = "read_acquisition_tests.rs"]
+mod acquisition;

@@ -136,9 +136,14 @@ class Transition:
         self.admitted_paths = {path for path, row in ledger['owners'].items()
                                if row['stage'] in self.active}
         self.changed_bodies = {}
+        self.added_functions = {}
+        self.test_children = {path: row for path, row in ledger.get('test_children', {}).items()
+                              if row['stage'] in self.active}
         for name in self.active:
             for path, symbols in ledger['body_changes'].get(name, {}).items():
                 self.changed_bodies.setdefault(path, set()).update(symbols)
+            for path, symbols in ledger.get('added_functions', {}).get(name, {}).items():
+                self.added_functions.setdefault(path, set()).update(symbols)
 
     def server_projection(self, source):
         inherited = self.inherited
@@ -185,7 +190,52 @@ def check(root, repository, ledger, stage):
     sources = {p.relative_to(root).as_posix(): p.read_text(encoding='utf-8')
                for directory in (root / 'crates').glob('*/src') for p in directory.rglob('*.rs')}
     codes = {path: inherited.production(source) for path, source in sources.items()}
+    # Inherited checks validated these exact mounts and their cfg(test)
+    # ancestry before exclusion from the production ownership census.
+    for path in policy.test_children:
+        if path in codes:
+            codes[path] = ''
     declarations = {path: inherited.DECL.findall(code) for path, code in codes.items()}
+    if 'transport' in policy.active:
+        path = SOURCES + 'http/mod.rs'
+        before = inherited.git(repository, 'show', f'{baseline}:{path}')
+        before_bodies = inherited.functions(before)
+        after_bodies = inherited.functions(sources.get(path, ''))
+        # These are error-decoration changes, not general body exemptions.
+        reasons = {
+            ('new', 1): 'LimitExceeded',
+            ('header_within_ceiling', 1): 'LimitExceeded',
+            ('cancelled_mid_request', 1): 'Cancelled',
+            ('policy_error_or', 1): 'DeadlineExceeded|TransportFailure',
+        }
+        for key, allowed_reasons in reasons.items():
+            if key not in after_bodies:
+                fail(path, f'required error boundary {key[0]}#{key[1]} is missing')
+                continue
+            _, raw = after_bodies[key]
+            projection = re.sub(
+                r'\.\s*with_details\s*\(\s*ResourceErrorDetails\s*::\s*new\s*\(\s*'
+                r'ErrorReason\s*::\s*(?:' + allowed_reasons + r')\s*\)\s*\)',
+                '', raw)
+            if fingerprint(projection, inherited) != fingerprint(before_bodies[key][1], inherited):
+                fail(path, f'{key[0]}#{key[1]} permits only its typed error-detail decoration')
+        for name in ('last_modified', 'date', 'selected_api_version', 'rate_limit_reset'):
+            expected = 'self.' + name + ('' if name == 'rate_limit_reset' else '.as_deref()')
+            found = after_bodies.get((name, 1))
+            if found is None or fingerprint(found[1], inherited) != fingerprint(expected, inherited):
+                fail(path, f'{name} must remain a pure bounded-response field getter')
+        retained = after_bodies.get(('retained_observation', 1))
+        if retained is None:
+            fail(path, 'required retained_observation metadata helper is missing')
+        else:
+            allowed_calls = {'header_within_ceiling', 'Some', 'Ok', 'Err', 'to_str',
+                             'is_empty', 'bytes', 'all', 'contains', 'parse_http_date',
+                             'is_err', 'to_owned'}
+            foreign_calls = set(inherited.CALL.findall(retained[0])) - allowed_calls
+            if foreign_calls or re.search(r'\b(?:for|while|loop|unsafe|async|await)\b', retained[0]):
+                fail(path, f'retained_observation acquired non-metadata work: {sorted(foreign_calls)}')
+            if len(inherited.TOKEN.findall(retained[0])) > 250:
+                fail(path, 'retained_observation exceeds its bounded metadata-helper shape')
 
     for path, row in ledger['owners'].items():
         if row['stage'] not in policy.active:
@@ -219,6 +269,18 @@ def check(root, repository, ledger, stage):
             for other, symbols in declarations.items():
                 if other != path and other.startswith(namespace) and symbol in symbols:
                     fail(other, f'symbol {symbol} belongs in {path}')
+
+    if 'facts' in policy.active:
+        identity_path = SOURCES + 'github/facts/identity.rs'
+        facts_path = SOURCES + 'github/facts.rs'
+        for symbol in ledger['owners'][identity_path]['symbols']:
+            if symbol in declarations.get(facts_path, []):
+                fail(facts_path, f'identity responsibility {symbol} belongs in {identity_path}')
+        entry_points = re.findall(
+            r'\bpub\s*\(\s*super\s*\)\s+(?:async\s+)?fn\s+(\w+)',
+            codes.get(identity_path, ''))
+        if entry_points != ['validate']:
+            fail(identity_path, 'identity validation must expose exactly one function: validate')
 
     # ErrorCategory already has a stable Serialize contract. Preserve it without
     # admitting serialization responsibilities into the new operational details.
@@ -292,14 +354,15 @@ def check(root, repository, ledger, stage):
         after_nodes = node_spans(sources[GITHUB], inherited)
         changes = {symbol for name in policy.active for symbol in ledger['github_changes'].get(name, [])}
         moves = set(ledger['github_moves']) if 'fetch' in policy.active else set()
+        move_slots = ledger.get('github_move_slots', {}) if 'fetch' in policy.active else {}
         for key in sorted(set(before_nodes) | set(after_nodes)):
             symbol = key[0]
             if key not in before_nodes:
                 fail(GITHUB, f'new parent responsibility declaration {symbol}#{key[1]}')
             elif key not in after_nodes:
-                if symbol not in moves:
+                if symbol not in moves and f'{symbol}#{key[1]}' not in move_slots:
                     fail(GITHUB, f'unapproved removed declaration {symbol}#{key[1]}')
-            elif symbol not in changes:
+            elif symbol not in changes and f'{symbol}#{key[1]}' not in changes:
                 old = before_github[slice(*before_nodes[key])]
                 new = sources[GITHUB][slice(*after_nodes[key])]
                 if fingerprint(old, inherited) != fingerprint(new, inherited):
@@ -308,6 +371,15 @@ def check(root, repository, ledger, stage):
             for symbol in ledger['owners'][SOURCES + 'github/fetch.rs']['symbols']:
                 if symbol in declarations[GITHUB]:
                     fail(GITHUB, f'extracted fetch symbol {symbol} retained in parent')
+            fetch_path = SOURCES + 'github/fetch.rs'
+            fetch_slots = {f'{name}#{ordinal}' for name, ordinal in
+                           node_spans(sources.get(fetch_path, ''), inherited)}
+            parent_slots = {f'{name}#{ordinal}' for name, ordinal in after_nodes}
+            for source_slot, target_slot in move_slots.items():
+                if source_slot in parent_slots:
+                    fail(GITHUB, f'extracted slot {source_slot} belongs in {fetch_path}')
+                if target_slot not in fetch_slots:
+                    fail(fetch_path, f'required extracted slot {target_slot} from {source_slot} is missing')
     return failures, observations
 
 
