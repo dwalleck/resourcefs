@@ -497,7 +497,19 @@ impl TlsListener {
                             .lock()
                             .expect("request body log is uncontended")
                             .push(body);
-                        write_response(&mut tls, &router(&request), &flushed).await;
+                        // The router is a synchronous closure, and fixtures use
+                        // it to hold a response open on a blocking barrier. Run
+                        // it on a blocking thread: called inline it occupies a
+                        // runtime worker, and a worker parked on a blocking
+                        // call cannot service the timer that the read under
+                        // test relies on to enforce its own deadline.
+                        let response = {
+                            let router = Arc::clone(&router);
+                            tokio::task::spawn_blocking(move || router(&request))
+                                .await
+                                .expect("fixture router")
+                        };
+                        write_response(&mut tls, &response, &flushed).await;
                     }
                     let _ = tls.shutdown().await;
                 });
