@@ -245,6 +245,10 @@ Gate: 1 `PASS` — stdio (45), architecture (7), profile (19), schema (4), mutat
 
 Gate: 1 `PASS` — the live rows compile and skip cleanly without the gate; with the gate they run; 2 `PASS` — C20 rows executed against real GitHub; 3 `N/A` — live upstream, assertions are shape/invariant based and never compare moving counts; 4 `PASS` — independent `gh api` observation on the same public PR; 5 `N/A` — no production ownership change; 6 `N/A` — one-off credential-gated phase; 7 `PASS` — both live rows; 8 `N/A` — approved risk: no fence mutation for a live row (absence of the gate is a skip, never a pass); 9 `N/A` — approved risk: no fence to restore. Evidence recorded in `evidence.md` (S6 live read-only proof) with the exact commands and observations.
 
+### Final integration check (2026-09-08)
+
+Assembled tree `e409054`. Complete gate `python scripts/ci-gates.py` → `All repository gates passed.` (exit 0, 1,692 s, zero failing test results). Every slice's falsifier, fence, mutation and restoration evidence is recorded above; the isolated design-conformance review's findings are resolved (see `design.md` placement revision) and the live read-only proof is recorded in `evidence.md`. No `FAIL` remains in any recorded gate. No push, PR, merge or tracker closure.
+
 ## Self-review
 
 1. Every design row is assigned: C1,C2→S1; C3,C4,C9→S4; C5,C6,C7,C8,C14,C15,C19→S3; C10,C11,C12,C17→S2; C13,C16→S5; C18→S0; C20→S6. Every `PENDING` falsifier is discharged by its claim's slice.

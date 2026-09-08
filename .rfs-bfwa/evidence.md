@@ -76,3 +76,21 @@ Revision: the tree committed as S6 on `feat/rfs-bfwa` (base `feat/rfs-0n97` = `0
 | S-comment stdio | `RFS_LIVE=1 GITHUB_TOKEN=… cargo test -p resourcefs-mcp --test stdio_live_smoke -- --ignored --nocapture` | PASS — `live_stdio_github_comment_facts_match_native_observation` drove the real `rfs serve` over stdio: the collection matched the independent observation (7 records) and the single-comment document overflowed the inline page, so its artifact continuation chain was followed and the reconstructed bytes parsed to the same native record. Credential sentinel absent from output. |
 
 Without the gate both rows print an explicit skip and are never counted as passes. These are Linux runtime plus public GitHub live proofs; corporate `ghe.com`, native Windows and Cyril acceptance remain the separate gate.
+
+## Final integration check (2026-09-08)
+
+Assembled tree: commit `e409054` on `feat/rfs-bfwa` (base `feat/rfs-0n97` = `084d136`).
+
+| Obligation | Result |
+|---|---|
+| Complete repository gate `python scripts/ci-gates.py` | PASS — `All repository gates passed.` (exit 0, 1,692 s). Zero failing test results in the log. |
+| Module placement fence (stage `live`) | PASS — inherited h212/nae2/0n97 assertions retained. |
+| Formatting, Clippy (`-D warnings`), all-target/all-feature workspace check | PASS. |
+| Debug and release workspace suites, ignored production budgets, `cargo deny check` | PASS. |
+| Slice falsifiers and fences S0–S6 | PASS — recorded per slice in `plan.md`. |
+| Named mutations S0–S5 | PASS — every listed mutation red, every restoration green. |
+| Live read-only proof | PASS — adapter and stdio rows against public `rust-lang/rust` PR 159232 (see S6 section). |
+| Isolated design-conformance review | Fresh-context reviewer reconstructed the production map before reading `design.md`; its five ownership findings were resolved by the approved placement revision plus the `acquisition_at` de-duplication, and its artifact-accounting findings (identity ledger row, dependency graph, growth rows, `resource.rs` bound) were corrected. |
+| Known issue | `rfs-kpgy` — the pre-existing flaky in-flight deadline test was repaired here (release-before-await, so the typed deadline refusal is asserted rather than deadlocking) and passes repeatedly; the ticket remains open for the upstream owner to close. |
+
+No push, pull request, merge or tracker closure was performed. The branch is a local stack on `feat/rfs-0n97`; publication needs its own authorization.
