@@ -2098,7 +2098,7 @@ async fn partial_retention_and_rejection_precedence() {
     // Cancellation after a verified page rejects every page of this read.
     let operation = Arc::new(OperationGuard::new());
     let cancelling = Arc::clone(&operation);
-    let (_, source) = collection_fixture(move |target, api, index| {
+    let (_, source) = collection_fixture(move |_target, api, index| {
         if index == 0 {
             cancelling.cancel();
             let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");

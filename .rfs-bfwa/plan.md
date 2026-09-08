@@ -14,9 +14,9 @@ Incidental Rust spellings implementing the approved interfaces, not new ownershi
 - `MAX_COLLECTION_RECORDS: usize = 1_000` in core `lib.rs`; no new `ReadAcquisitionLimits` dimension.
 - `fetch.rs`: `pub(super) struct PageResponse { pub(super) body: Arc<[u8]>, pub(super) observation: BodyObservation, pub(super) revalidation: Option<BodyObservation>, pub(super) cache_generation: u64, pub(super) next: Option<Url> }` and `pub(super) async fn facts_page(&self, url: Url, operation: BoundedRead<'_>, budget: &mut HttpReadBudget) -> Result<PageResponse, ResourceError>`, reusing `fetch_controlled` and `next_link`.
 - `facts.rs`: `struct Facts<'a, B: Serialize>` with `#[serde(flatten)] body: B`, `read_facts(reference, fact, operation, acquisition)`, and the shared `Presence`/`NativeId`/`native!` primitives stay here; `finish_facts` keeps the capped writer.
-- `facts/pull.rs`: `pub(super) fn body(...) -> Result<PullBody<'_>, ResourceError>`-shaped private projection moved from `facts.rs`, byte-identical JSON output.
-- `facts/comment.rs`: presence-aware `NativeComment`/`NativeParent` decoders plus `pub(super) fn record(...)`; validates parent linkage through the existing `validate_parent` rules.
-- `facts/collection.rs`: `pub(super) async fn read(...) -> Result<CollectionOutcome, ResourceError>` where the outcome carries records, `Collection` coverage and an optional next `Url`.
+- `facts/pull.rs`: `pub(super) async fn read(source, repository, number, ctx) -> Result<SourceResource, ResourceError>` owning the singular PR fetch, identity validation, projection and publication through the shared `FactsRead` context; JSON output is byte-identical to the pre-slice implementation.
+- `facts/comment.rs`: presence-aware `NativeComment` decoders, `pub(super) fn record(...)` and the singular `read_item`/`fetch_parent` used by the collection; parent linkage goes through the existing `validate_parent` rules.
+- `facts/collection.rs`: `pub(super) async fn read(...) -> Result<SourceResource, ResourceError>` owning the page loop, admission, coverage, continuation decision and publication through the shared `FactsRead` context (revised placement, approved "Approve revised placement").
 - `facts/continuation.rs`: `CursorOwner::{new, decode, continuation}` following `atlassian/jira/cursor.rs`; envelope `{"v":1,"r":…,"o":…,"s":…,"n":…}` with SHA-256 origin and session bindings, base64url no padding.
 - No new trait, no second HTTP client, no provider type in core/MCP, no MCP production change.
 
@@ -27,11 +27,15 @@ Baseline production lines are physical counts at `084d136`; ranges are drift tri
 | Module | Baseline P | Projected final P | Responsibility change | Interface change | Protected-parent rule |
 |---|---:|---:|---|---|---|
 | `crates/resourcefs-core/src/reference.rs` | 1946 | 1990–2045 | add fact-family sum and `:cursor:` split | `PullRequestFact`, `parse_pull_request_reference` | body changes limited to `parse`, `parse_pull_request_reference`, `canonical_reference`, `parse_pull_request_address` |
-| `crates/resourcefs-core/src/lib.rs` | 78 | 80–86 | add `MAX_COLLECTION_RECORDS` | new public constant | wiring only |
+| `crates/resourcefs-core/src/lib.rs` | 78 | 80–86 | re-export the new constant and limit kind | re-exports | wiring only |
+| `crates/resourcefs-core/src/reference/pull.rs` | 0 | 40–70 | create: pull-fact sum and `:cursor:` split | private parser | private grammar child |
+| `crates/resourcefs-core/src/resource.rs` | 710 (685 production) | 720 (690 production) | add `MAX_COLLECTION_RECORDS` | new public constant | source-neutral only |
+| `crates/resourcefs-core/src/error.rs` | 286 | 290–296 | add `AcquisitionLimitKind::CollectionRecords` | new limit kind | source-neutral vocabulary |
+| `crates/resourcefs-sources/src/github/facts/identity.rs` | 250 | 250–255 | retain identity validation | unchanged `validate` | private; no HTTP/cache/clock |
 | `crates/resourcefs-sources/src/github/facts.rs` | 748 | 470–620 | envelope + dispatch only; PR projection moves out | generic `Facts<B>`, `read_facts(fact)` | net shrink; no family bodies. Tripwire raised to 760 for the rebase: origin/main's reviewed file is 748 lines and the family dispatch lands in S1 before the S2 extraction returns it to 569 |
-| `crates/resourcefs-sources/src/github/facts/pull.rs` | 0 | 240–340 | create: singular PR projection | private body entry | private; no HTTP/cache/clock/cursor |
-| `crates/resourcefs-sources/src/github/facts/comment.rs` | 0 | 220–330 | create: comment decoding + record projection | private decoders/record | private; no HTTP client/coverage/cursor |
-| `crates/resourcefs-sources/src/github/facts/collection.rs` | 0 | 420–620 | create: page loop, atomic admission, coverage | private `read` entry | private; no HTTP stack/cache/cursor encoding |
+| `crates/resourcefs-sources/src/github/facts/pull.rs` | 0 | 240–340 | create: singular PR fetch/validate/project/publish | private `read` entry | private; no second HTTP client/cursor |
+| `crates/resourcefs-sources/src/github/facts/comment.rs` | 0 | 220–330 | create: comment decoding, record projection, singular read | private decoders/record/read | private; no second HTTP client/coverage/cursor |
+| `crates/resourcefs-sources/src/github/facts/collection.rs` | 0 | 420–620 | create: page loop, atomic admission, coverage, continuation, publication | private `read` entry | private; no HTTP stack of its own/cursor encoding |
 | `crates/resourcefs-sources/src/github/facts/continuation.rs` | 0 | 180–270 | create: cursor codec/binding | private `CursorOwner` | private; no network/credentials |
 | `crates/resourcefs-sources/src/github/fetch.rs` | 565 | 600–690 | add one controlled page seam | `facts_page`, `PageResponse` | no fact schema/coverage policy |
 | `crates/resourcefs-sources/src/github/mod.rs` | 1136 | 1140–1160 | dispatch arm + catalog string only | `Facts(fact)` arm | protected: no new responsibility body |
