@@ -91,6 +91,22 @@ Assembled tree: commit `e409054` on `feat/rfs-bfwa` (base `feat/rfs-0n97` = `084
 | Named mutations S0–S5 | PASS — every listed mutation red, every restoration green. |
 | Live read-only proof | PASS — adapter and stdio rows against public `rust-lang/rust` PR 159232 (see S6 section). |
 | Isolated design-conformance review | PASS — fresh-context reviewer reconstructed the production map before reading `design.md`; its five ownership findings were resolved by the approved placement revision plus the `acquisition_at` de-duplication, its artifact-accounting findings (identity ledger row, dependency graph, growth rows, `resource.rs` bound) were corrected, and the final verdict is verbatim `PASS — no remaining mismatch`. |
-| Known issue | `rfs-kpgy` — the pre-existing flaky in-flight deadline test was repaired here (release-before-await, so the typed deadline refusal is asserted rather than deadlocking) and passes repeatedly; the ticket remains open for the upstream owner to close. |
+| Known issue | `rfs-kpgy` — the pre-existing flaky in-flight deadline test was repaired upstream at the seam (`4a25e71` runs the fixture router off the runtime worker); this branch's superseded workaround was reverted on rebase and the ticket is closed with that reference. |
 
 No push, pull request, merge or tracker closure was performed. The branch is a local stack on `feat/rfs-0n97`; publication needs its own authorization.
+
+
+## Rebase onto origin/main (PR #9 merge, 2026-09-08)
+
+`feat/rfs-0n97` merged as PR #9, so the stack was rebased from `084d136` onto `origin/main` = `340d08b`. Conflicting upstream commits and how each was reconciled:
+
+| Upstream commit | Reconciliation |
+|---|---|
+| `a30c046` review findings on bounded PR facts | Ported into the family layout: `Limits.timeoutMs` is whole milliseconds; `sanitize` keeps request-shaped refusals their own message and names not-found/unavailable; `facts_resource` destructures the address once; the `SourceAdapter::read` restructure keeps fact dispatch inside the outer deadline and the shared `reject_acquisition`; `rfs_search` refuses every facts reference; the identity origin check applies unchanged. |
+| `dd03b13` placement gate out of ticket directories | The successor moved to `scripts/module_shape_bfwa.py` with `scripts/module-ledger-bfwa.json`, invoked by `scripts/ci-gates.py` and importing the published `scripts/module_shape.py`. |
+| `4a25e71` fixture router off the runtime worker | The branch's own flake workaround was reverted: upstream repaired the same `rfs-kpgy` flake at the seam, so the test's original timing assertion stands. Only the `_target` lint fix is retained. |
+| `4dc469f`, `7636e40` budgets and docs | Applied; the `DESIGN.md` and `docs/operating.md` collection sections were rebased onto the corrected read-limits spelling and error-model rule. |
+
+Rebased gate: `python scripts/ci-gates.py` → `All repository gates passed.` (exit 0, 1,438 s, zero failing test results). Reference/facts/adapter/mutation/stdio suites, formatting, Clippy (`-D warnings`), the workspace all-target/all-feature check, the placement fence (stage `live`) and the live adapter/stdio rows all pass on the rebased tree. The only numeric plan correction is the `facts.rs` tripwire (750 → 760) for the intermediate S1 commit, recorded in `plan.md`.
+
+Primary checkout reconciliation (per the safe-reconcile procedure): `main` was 17 behind and 0 ahead, so it fast-forwarded to `340d08b`. No untracked path collided with a newly tracked upstream path. `.rivets/issues.jsonl` was the only tracked path modified on both sides; its local copy was backed up to `/tmp/bfwa-main-backup/issues.jsonl.local`, the upstream store was taken as the base (so `rfs-br1u` reads closed), and the nine unpublished local tickets (`rfs-0n97`, `rfs-3r0s`, `rfs-bfwa`, `rfs-e5cv`, `rfs-iktl`, `rfs-jrz7`, `rfs-kpgy`, `rfs-nchb`, `rfs-r31i`) were restored by id union — 93 tickets total. The eight modified Gilfoyle reference files and three untracked research/module-shape files are untouched.

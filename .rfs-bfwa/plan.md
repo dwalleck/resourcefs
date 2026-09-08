@@ -247,7 +247,7 @@ Gate: 1 `PASS` — the live rows compile and skip cleanly without the gate; with
 
 ### Final integration check (2026-09-08)
 
-Assembled tree `e409054`. Complete gate `python scripts/ci-gates.py` → `All repository gates passed.` (exit 0, 1,692 s, zero failing test results). Every slice's falsifier, fence, mutation and restoration evidence is recorded above; the isolated design-conformance review's findings are resolved (see `design.md` placement revision) and the live read-only proof is recorded in `evidence.md`. No `FAIL` remains in any recorded gate. No push, PR, merge or tracker closure.
+Assembled tree `e409054`; rebased onto `origin/main` = `340d08b` (PR #9) with the upstream review fixes ported into the family layout, then re-gated. Complete gate `python scripts/ci-gates.py` → `All repository gates passed.` (exit 0; 1,692 s pre-rebase, 1,438 s post-rebase; zero failing test results). Every slice's falsifier, fence, mutation and restoration evidence is recorded above; the isolated design-conformance review's findings are resolved (see `design.md` placement revision) and the live read-only proof is recorded in `evidence.md`. No `FAIL` remains in any recorded gate. No push, PR, merge or tracker closure.
 
 ## Self-review
 
