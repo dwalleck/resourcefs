@@ -211,6 +211,11 @@ Gate: 1 `PASS` — facts (33 + 2 ignored budgets), adapter (24), mutation (15); 
 - `cargo test -p resourcefs-sources --test github_mutation_contract` → both routes refused with zero egress.
 - `python scripts/module_shape_bfwa.py --stage mcp` → PASS.
 
+
+### Checkpoint S5 (2026-09-08)
+
+Gate: 1 `PASS` — stdio (45), architecture (7), profile (19), schema (4), mutation (15); 2 `PASS` — C13/C16 fences; 3 `PASS` — oversized collection recovered across artifact pages, denied collection, field/creation mutation attempts on both routes, catalog listing; 4 `PASS` — the fence parses the reconstructed bytes and compares record identity/parent to the acquired fixture while the child process request log proves no reacquisition; 5 `PASS` — fence at stage `exposure` (`github/mod.rs` catalog string only); 6 `N/A` — no new loop or phase, retained recovery budget unchanged; 7 `PASS` — the two fences plus the extended mutation matrix; 8 `PASS` — facts route made a mutable field target and the rendered recovery reference dropped each red; 9 `PASS` — both restored green. Test-support change: the TLS fixture now compares a request path without its query, so collection reads (which carry `per_page`/`page`) resolve by endpoint.
+
 ## Slice S6: Live read-only proof
 
 **Claim IDs:** C20.

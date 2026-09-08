@@ -195,6 +195,16 @@ One logical deadline covers the acquisition, retry waits, and final acceptance, 
 
 Failures retain the ordinary error category and may include bounded structured `details`. In particular, a 404 has reason `upstream_not_found_or_hidden` and `accessAmbiguity: "missing_or_access_hidden"`: it is not proof that a private PR does not exist. Rate-limit errors may carry numeric retry guidance/reset time; limit errors may name the effective bound and observed value. Provider error prose, response bodies and arbitrary headers are not exposed in these details. Inspect the category/reason rather than matching human-readable messages.
 
+## GitHub conversation-comment facts
+
+`pr://owner/repo/<number>/comments/facts` returns the conversation-comment collection and `pr://owner/repo/<number>/comments/<id>/facts` returns one comment, as owned read-only JSON with the same envelope and `acquisition` controls as PR Facts. The parent pull request is read and verified first, so a comment that belongs to another pull request or repository, or a number that is not a pull request, is rejected instead of partially published.
+
+The `collection` object reports `state` (`complete`, `incomplete`, `unknown`), `acceptedCount`, and only the facts that are true: `localLimit`, sanitized `failure`, `continuation`, `inconsistency`. An empty successful read is `complete` with `acceptedCount: 0`; a denied or missing collection is an error, never an empty success. A later transport, malformed or deadline failure keeps the verified earlier pages with `incomplete` coverage; cancellation or an authority violation rejects every page of that read. `providerCap` and `reportedTotal` are absent because the provider supplies neither.
+
+Pages are admitted whole and only while the 1,000-record ceiling, the accepted-body ceiling and the final serialized document all fit. The ceiling is local policy: it is not a caller `acquisition` dimension and it never raises or replaces a provider cap. With the default ten-attempt budget a collection read reaches nine data pages plus the parent lookup, because the parent is charged to the same budget.
+
+A truncated collection names `collection.continuation`, an opaque `pr://.../comments/facts:cursor:<...>` reference. Resume by reading that reference unchanged; it carries no credential, expires with the Path Session, and binds the original resource, API origin and endpoint family, so a handle from another session, resource or origin acquires nothing. Continuation is best-effort traversal, not a snapshot: repeated or stalled pagination is reported as `state: unknown` with an `inconsistency` reason rather than followed or silently completed. Output that exceeds the display limit still uses normal lossless artifact recovery; the source continuation is surfaced separately and acquires new upstream data.
+
 ## Logging
 
 The default sink is `info` level on standard error. Configure bounded rotating files when stderr belongs to an MCP supervisor:

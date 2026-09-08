@@ -3937,7 +3937,7 @@ fn github_facts_stdio_reconstructs_native_json_without_reacquisition() {
                 break;
             };
             assert_eq!(server.recorded_requests().len(), 1);
-            result = process.call_read_arguments(json!({"path":next,"limits":{"bytes":1024}}));
+            result = process.call_read_arguments(json!({"path":next,"limits":{"bytes":4096}}));
         }
         assert_eq!(
             pages > 1,
@@ -4074,4 +4074,135 @@ fn github_facts_stdio_cancelled_http_read_cannot_publish_and_session_recovers() 
     assert_eq!(facts["data"]["id"], "9007199254740993");
     assert_eq!(server.recorded_requests().len(), 2);
     process.finish();
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn github_comment_facts_recover_without_reacquisition() {
+    let fixture = WorkspaceFixture::new();
+    let comment: Value = serde_json::from_str(include_str!(
+        "../../../.rfs-bfwa/oracles/comment-native.json"
+    ))
+    .expect("native comment fixture");
+    let mut records = Vec::new();
+    for id in 9_001..9_009_u64 {
+        let mut record = comment.clone();
+        record["id"] = json!(id);
+        record["url"] = json!(format!("@API@repos/owner/repo/issues/comments/{id}"));
+        record["issue_url"] = json!("@API@repos/owner/repo/issues/7");
+        record["body"] = json!("雪 \"escaped\"\n".repeat(300));
+        records.push(record);
+    }
+    let server = profile_tls::ProfileTlsServer::start_native(vec![
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body: include_str!("../../../.rfs-0n97/oracles/pr-native.json").into(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/issues/7/comments".into(),
+            body: serde_json::to_string(&records).expect("page body"),
+        },
+    ]);
+    let profile = fixture.root.join("github-comment-facts.json");
+    fs::write(
+        &profile,
+        json!({"schemaVersion":1,"sources":[{
+            "kind":"github","id":"github","required":true,"apiBaseUrl":server.base_url(),
+            "webOrigin":"https://github.example","allowPrivateNetwork":true,
+            "credential":{"kind":"environment","name":"RFS_GITHUB_TEST_TOKEN"},
+            "repositories":[{"name":"owner/repo"}],"acquisition":{"maxAttempts":2}
+        }]})
+        .to_string(),
+    )
+    .expect("profile");
+    let mut process = McpProcess::start_profile_with_https_root_and_env(
+        &profile,
+        &fixture.root,
+        &[("RFS_GITHUB_TEST_TOKEN", "comment-facts-stdio-secret")],
+    );
+    process.initialize(VERSION_2026);
+    let mut result = process.call_read_arguments(json!({
+        "path":"pr://owner/repo/7/comments/facts","limits":{"bytes":4096}
+    }));
+    let mut bytes = String::new();
+    let mut pages = 0;
+    let mut root = None;
+    loop {
+        assert_eq!(result["isError"], false, "{result}");
+        let output = &result["structuredContent"];
+        bytes.push_str(output["content"].as_str().expect("JSON page"));
+        pages += 1;
+        assert!(pages < 1000, "recovery must progress");
+        if root.is_none() {
+            root = output["recoveryReference"].as_str().map(str::to_owned);
+        }
+        let Some(next) = output["continuationReference"].as_str() else {
+            break;
+        };
+        assert_eq!(
+            server.recorded_requests().len(),
+            2,
+            "recovery cannot acquire again"
+        );
+        result = process.call_read_arguments(json!({"path":next,"limits":{"bytes":1024}}));
+    }
+    assert!(
+        pages > 1,
+        "an oversized collection is recovered across pages"
+    );
+    let facts: Value = serde_json::from_str(&bytes).expect("reconstructed full JSON");
+    assert_eq!(facts["kind"], "github.conversation_comment_collection");
+    assert_eq!(facts["collection"]["acceptedCount"], 8);
+    assert_eq!(facts["data"]["records"][0]["id"], "9001");
+    assert_eq!(facts["data"]["records"][7]["id"], "9008");
+    assert_eq!(
+        facts["data"]["records"][0]["parent"]["number"], "7",
+        "verified parent identity survives recovery"
+    );
+    let root = root.expect("an oversized document must name its recovery root");
+    {
+        reconstruct_with_limits(&mut process, &root, json!({"bytes":4096}), &bytes);
+    }
+    assert_eq!(
+        server.recorded_requests().len(),
+        2,
+        "one acquisition per endpoint, recovery adds none"
+    );
+    assert!(!bytes.contains("comment-facts-stdio-secret"));
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn catalog_advertises_comment_facts() {
+    let fixture = WorkspaceFixture::new();
+    let server = profile_tls::ProfileTlsServer::start_native(vec![]);
+    let profile = fixture.root.join("github-catalog.json");
+    fs::write(
+        &profile,
+        json!({"schemaVersion":1,"sources":[{
+            "kind":"github","id":"github","required":true,"apiBaseUrl":server.base_url(),
+            "webOrigin":"https://github.example","allowPrivateNetwork":true,
+            "credential":{"kind":"environment","name":"RFS_GITHUB_TEST_TOKEN"},
+            "repositories":[{"name":"owner/repo"}]
+        }]})
+        .to_string(),
+    )
+    .expect("profile");
+    let mut process = McpProcess::start_profile_with_https_root_and_env(
+        &profile,
+        &fixture.root,
+        &[("RFS_GITHUB_TEST_TOKEN", "catalog-secret")],
+    );
+    process.initialize(VERSION_2026);
+    let result = process.call_read_arguments(json!({"path":"rfs://"}));
+    assert_eq!(result["isError"], false, "{result}");
+    let catalog = result["structuredContent"]["content"]
+        .as_str()
+        .expect("catalog text");
+    for spelling in [
+        "pr://<owner>/<repository>/<number>",
+        "comments[/facts|/<id>/facts",
+    ] {
+        assert!(catalog.contains(spelling), "catalog lacks {spelling}");
+    }
 }
