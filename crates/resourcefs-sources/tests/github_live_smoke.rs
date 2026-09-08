@@ -45,6 +45,27 @@ fn live_token() -> Option<String> {
     }
 }
 
+/// An independent native observation, or `None` when the `gh` CLI is absent.
+///
+/// `gh` is a dependency beyond the `RFS_LIVE`/`GITHUB_TOKEN` gate, and
+/// `scripts/live-smoke.sh` already degrades when it produces nothing, so a
+/// runner without it skips this cross-check rather than failing the row.
+fn native_gh(token: &str, endpoint: &str) -> Option<serde_json::Value> {
+    let native = match std::process::Command::new("gh")
+        .args(["api", "-H", "X-GitHub-Api-Version: 2022-11-28", endpoint])
+        .env("GH_TOKEN", token)
+        .output()
+    {
+        Ok(native) => native,
+        Err(error) => {
+            eprintln!("gh CLI is unavailable ({error}); skipping native cross-check");
+            return None;
+        }
+    };
+    assert!(native.status.success(), "native read failed");
+    Some(serde_json::from_slice(&native.stdout).expect("native JSON"))
+}
+
 async fn live_source(token: String) -> Option<GithubSource> {
     let origin = AllowedOrigin::new("https://api.github.com/", false).expect("origin");
     let secret = Secret::new(token).expect("token is a valid secret");
@@ -262,18 +283,9 @@ async fn live_github_reads_hold_up() {
 #[ignore = "live GitHub smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
 async fn live_github_facts_preserve_native_identity_and_links() {
     let Some(token) = live_token() else { return };
-    let native = std::process::Command::new("gh")
-        .args([
-            "api",
-            "-H",
-            "X-GitHub-Api-Version: 2022-11-28",
-            &format!("repos/{REPOSITORY}/pulls/{SMALL_PR}"),
-        ])
-        .env("GH_TOKEN", &token)
-        .output()
-        .expect("independent native gh read");
-    assert!(native.status.success(), "native read failed");
-    let native: serde_json::Value = serde_json::from_slice(&native.stdout).expect("native JSON");
+    let Some(native) = native_gh(&token, &format!("repos/{REPOSITORY}/pulls/{SMALL_PR}")) else {
+        return;
+    };
     let source = live_source(token).await.expect("live source");
     let resource = read(&source, &format!("pr://{REPOSITORY}/{SMALL_PR}/facts")).await;
     let facts: serde_json::Value = serde_json::from_str(resource.content()).expect("facts JSON");

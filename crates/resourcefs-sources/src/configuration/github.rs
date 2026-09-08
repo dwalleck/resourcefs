@@ -48,7 +48,7 @@ impl GithubDeployment {
             validate_documented_origin(&api_base_url, &api)?;
             require_matching_web(web_origin.as_deref(), "https://github.com")?;
             DeploymentIdentity::Public
-        } else if host.ends_with(".ghe.com") {
+        } else if claims_enterprise_cloud(host) {
             validate_documented_origin(&api_base_url, &api)?;
             let tenant = host
                 .strip_prefix("api.")
@@ -85,6 +85,14 @@ impl GithubDeployment {
             DeploymentIdentity::Custom { web_origin } => web_origin.as_deref(),
         }
     }
+}
+
+/// Only the documented `api.<tenant>.ghe.com` authority claims Enterprise
+/// Cloud identity, and a claim that then fails its shape is an error rather
+/// than a guess. Any other `.ghe.com` host never made the claim: it is a
+/// legacy custom base whose reads keep working without a derived identity.
+fn claims_enterprise_cloud(host: &str) -> bool {
+    host.starts_with("api.") && host.ends_with(".ghe.com")
 }
 
 fn valid_tenant(tenant: &str) -> bool {

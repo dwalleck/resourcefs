@@ -441,6 +441,21 @@ fn github_deployment_pairing_and_custom_identity() {
         "custom identity cannot be invented"
     );
 
+    // A `.ghe.com` host that never claimed the documented `api.<tenant>`
+    // authority is a legacy custom base, not a malformed Enterprise Cloud one:
+    // it keeps loading, and its existing reads keep working, without identity.
+    let legacy = "https://acme.ghe.com/api/v3/";
+    let deployment =
+        GithubDeployment::new(Some(legacy.to_owned()), None).expect("legacy ghe.com base");
+    assert_eq!(deployment.api_base_url(), legacy);
+    assert_eq!(deployment.web_origin(), None);
+    let paired = GithubDeployment::new(
+        Some(legacy.to_owned()),
+        Some("https://acme.ghe.com".to_owned()),
+    )
+    .expect("legacy ghe.com base with declared web origin");
+    assert_eq!(paired.web_origin(), Some("https://acme.ghe.com"));
+
     for (api, web) in [
         ("https://api.github.com", Some("https://other.example")),
         ("https://api.a.ghe.com", Some("https://b.ghe.com")),

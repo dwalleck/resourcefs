@@ -158,10 +158,15 @@ impl HttpStatus {
         if (100..=999).contains(&value) {
             Ok(Self(value))
         } else {
+            // The status came from the far end, not from the caller's
+            // reference; `invalid_reference` is what an agent reads as "the
+            // path you wrote is wrong" and would stop it retrying a
+            // recoverable upstream defect.
             Err(ResourceError::new(
-                ErrorCategory::InvalidReference,
+                ErrorCategory::SourceUnavailable,
                 "HTTP status must have three digits",
-            ))
+            )
+            .with_details(ResourceErrorDetails::new(ErrorReason::UpstreamMalformed)))
         }
     }
     pub const fn get(self) -> u16 {

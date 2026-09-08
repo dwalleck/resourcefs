@@ -31,7 +31,7 @@ impl ReadAcquisitionLimits {
             let observed = u64::try_from(timeout.as_nanos()).ok();
             return Err(invalid_limit(
                 AcquisitionLimitKind::ElapsedNanoseconds,
-                30_000_000_000,
+                u64::try_from(hard.timeout.as_nanos()).expect("hard deadline fits in nanoseconds"),
                 observed,
             ));
         }

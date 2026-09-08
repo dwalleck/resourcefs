@@ -98,15 +98,7 @@ impl SourceAdapter for CompiledSources {
     ) -> Result<SourceResource, ResourceError> {
         match reference.address() {
             ResourceAddress::Catalog(address) => {
-                if acquisition.is_some() {
-                    return Err(ResourceError::new(
-                        ErrorCategory::UnsupportedProjection,
-                        "acquisition controls are not supported for this resource",
-                    )
-                    .with_details(resourcefs_core::ResourceErrorDetails::new(
-                        resourcefs_core::ErrorReason::AcquisitionControlsUnsupported,
-                    )));
-                }
+                resourcefs_core::reject_acquisition(acquisition)?;
                 let document = match address {
                     CatalogAddress::Sources => {
                         NamespaceCatalog::source_document(self.catalog_entries()?)?

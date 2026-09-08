@@ -117,7 +117,8 @@ pub(crate) struct BoundedRead<'a> {
     pub(super) substrate: &'a HttpSubstrate,
     pub(super) operation: &'a OperationGuard,
     pub(super) deadline: LogicalDeadline,
-    pub(super) response_ceiling: usize,
+    /// Readable crate-wide so a refusal can name the bound it enforced.
+    pub(crate) response_ceiling: usize,
     timeout: std::time::Duration,
 }
 

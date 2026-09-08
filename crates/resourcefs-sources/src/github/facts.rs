@@ -404,7 +404,9 @@ struct Observed<'a> {
 #[serde(rename_all = "camelCase")]
 struct Limits {
     max_attempts: usize,
-    timeout_ms: f64,
+    /// Whole milliseconds: `timeoutMs` is declared `"type": "integer"` in the
+    /// profile and tool schemas, so echoing `30000.0` would not round-trip.
+    timeout_ms: u64,
     max_response_bytes: usize,
     max_accepted_body_bytes: usize,
     max_representation_bytes: usize,
@@ -516,19 +518,26 @@ fn finish_facts<T: Serialize>(
     Ok(resource)
 }
 
+/// Withholds anything the upstream said, while leaving the caller a cause.
+/// Only categories carrying an upstream answer are rewritten, and each ends
+/// with a machine-readable reason rather than a bare message.
 fn sanitize(error: ResourceError) -> ResourceError {
-    let sanitized = ResourceError::new(error.category(), "GitHub facts read failed");
-    if let Some(details) = error.details() {
-        return sanitized.with_details(*details);
-    }
     let reason = match error.category() {
         ErrorCategory::Cancelled => ErrorReason::Cancelled,
         ErrorCategory::PermissionDenied => ErrorReason::UpstreamDenied,
         ErrorCategory::LimitExceeded => ErrorReason::LimitExceeded,
-        ErrorCategory::SourceUnavailable => ErrorReason::TransportFailure,
-        _ => return sanitized,
+        ErrorCategory::NotFound => ErrorReason::UpstreamNotFoundOrHidden,
+        ErrorCategory::SourceUnavailable => ErrorReason::UpstreamUnavailable,
+        // Every other category describes the request, not the upstream: this
+        // adapter's own sentence, with nothing in it to withhold. Blanking it
+        // costs the caller their only description of what they got wrong.
+        _ => return error,
     };
-    sanitized.with_details(ResourceErrorDetails::new(reason))
+    let sanitized = ResourceError::new(error.category(), "GitHub facts read failed");
+    match error.details() {
+        Some(details) => sanitized.with_details(*details),
+        None => sanitized.with_details(ResourceErrorDetails::new(reason)),
+    }
 }
 
 impl GithubSource {
@@ -552,19 +561,16 @@ impl GithubSource {
         if reference.projection().is_some() {
             return Err(super::unsupported_github_projection());
         }
-        let ResourceAddress::PullRequest(PullRequestAddress::Item {
+        let ResourceAddress::PullRequest(address) = reference.address() else {
+            return Err(super::unsupported_github_projection());
+        };
+        let PullRequestAddress::Item {
             repository, number, ..
-        }) = reference.address()
+        } = address
         else {
             return Err(super::unsupported_github_projection());
         };
-        let canonical = PathReference::pull_request(
-            match reference.address() {
-                ResourceAddress::PullRequest(address) => address.clone(),
-                _ => return Err(super::unsupported_github_projection()),
-            },
-            None,
-        )?;
+        let canonical = PathReference::pull_request(address.clone(), None)?;
         self.authorize_repository(repository).map_err(|error| {
             error.with_details(ResourceErrorDetails::new(
                 ErrorReason::RepositoryNotAuthorized,
@@ -666,7 +672,8 @@ impl GithubSource {
                 rest_api_version: GITHUB_API_VERSION,
                 limits: Limits {
                     max_attempts: limits.max_attempts(),
-                    timeout_ms: limits.timeout().as_nanos() as f64 / 1_000_000.0,
+                    timeout_ms: u64::try_from(limits.timeout().as_millis())
+                        .expect("bounded deadline fits in milliseconds"),
                     max_response_bytes: limits.max_response_bytes(),
                     max_accepted_body_bytes: limits.max_accepted_body_bytes(),
                     max_representation_bytes: limits.max_representation_bytes(),

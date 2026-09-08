@@ -79,5 +79,5 @@ pub use session::{
     MutationOperationWaiter, OperationGuard, PathSession, ScratchState, SessionCacheEntry,
     SessionCacheKey, SessionStorage, SessionToken,
 };
-pub use source::SourceAdapter;
+pub use source::{SourceAdapter, reject_acquisition};
 pub use version::VersionTag;

@@ -84,7 +84,7 @@ async fn final_facts_measured_bytes_and_hash_fit_cap_but_one_less_refuses() {
     let completed = finish_facts(&value, GENEROUS_REPRESENTATION_CAP, facts_reference(), read)
         .expect("generous cap allows complete representation");
     assert_literal_facts_content(completed.content());
-    let measured_bytes = completed.content().as_bytes().len();
+    let measured_bytes = completed.content().len();
     let independent_hash = format!(
         "sha256:{:x}",
         Sha256::digest(completed.content().as_bytes())

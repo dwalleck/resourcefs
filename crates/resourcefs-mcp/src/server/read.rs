@@ -1,7 +1,7 @@
 use resourcefs_core::{ReadAcquisitionLimits, ReadRequest, TextLimits};
 
 use super::*;
-use crate::acquisition::AcquisitionInput;
+use crate::acquisition::{AcquisitionInput, describe_limit_rejection};
 
 /// Mirrors the error `ReadEngine` reports at its next liveness checkpoint after
 /// cancellation, preserving the established read cancellation category.
@@ -49,6 +49,9 @@ fn deserialize_acquisition<'de, D>(deserializer: D) -> Result<Option<Acquisition
 where
     D: Deserializer<'de>,
 {
+    // An empty object is a request for acquisition support, not the absence of
+    // one: a Resource that cannot honor controls owes the caller a refusal
+    // rather than a silent success. See docs/operating.md.
     AcquisitionInput::deserialize(deserializer).map(Some)
 }
 
@@ -62,7 +65,7 @@ impl ResourceFsServer {
             .acquisition
             .map(AcquisitionInput::into_limits)
             .transpose()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| describe_limit_rejection(&error))?;
         self.execute_read(
             &input.path,
             limits,
@@ -114,7 +117,13 @@ impl ResourceFsServer {
             .map(AcquisitionInput::into_limits)
             .transpose()
             .map_err(|error| {
-                McpError::invalid_params(format!("invalid rfs_read arguments: {error}"), None)
+                McpError::invalid_params(
+                    format!(
+                        "invalid rfs_read arguments: {}",
+                        describe_limit_rejection(&error)
+                    ),
+                    None,
+                )
             })?;
         let operation = OperationGuard::new();
         let cancelled_result = || render::failure(&input.path, &cancelled_read_error());

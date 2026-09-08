@@ -1141,8 +1141,16 @@ impl HttpSubstrate {
     ) -> Option<String> {
         let value = match Self::header_within_ceiling(headers, name) {
             Ok(Some(value)) => value,
-            // Like an unusable ETag, optional invalid observations are absent.
-            Ok(None) | Err(_) => return None,
+            // The upstream sent nothing to observe.
+            Ok(None) => return None,
+            // The upstream sent something this adapter will not retain. That
+            // is a different cause from absence and is named separately here
+            // rather than folded into a catch-all, but it reaches provenance
+            // the same way: a published observation asserts what was observed
+            // AND kept, and a value refused at the ceiling is one this adapter
+            // cannot attest to. It is not a failed read — an oversized `Date`
+            // must not cost the caller the body.
+            Err(_) => return None,
         };
         let Ok(text) = value.to_str() else {
             return None;

@@ -815,34 +815,53 @@ impl SourceAdapter for GithubSource {
         operation: &OperationGuard,
         acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
-        if matches!(
+        let facts = matches!(
             reference.address(),
             ResourceAddress::PullRequest(PullRequestAddress::Item {
                 resource: PullRequestResource::Facts,
                 ..
             })
-        ) {
-            return self.read_facts(reference, operation, acquisition).await;
+        );
+        if !facts {
+            resourcefs_core::reject_acquisition(acquisition)?;
         }
-        if acquisition.is_some() {
-            return Err(ResourceError::new(
-                ErrorCategory::UnsupportedProjection,
-                "acquisition controls are not supported for this resource",
+        // The operator's configured ceiling bounds every read from this
+        // source, not only the one Resource that also accepts caller
+        // controls. With no ceiling configured it is the hard maximum, which
+        // the substrate ceilings already meet, so this is the previous
+        // behavior until an operator asks for something tighter.
+        let limits = self
+            .config
+            .acquisition_limits()
+            .intersect(acquisition.copied().unwrap_or_default());
+        // A backstop for the work the read's own deadline does not cover —
+        // session-cache acquisition and representation assembly — so it is
+        // given a margin rather than pre-empting that more precise error.
+        let wall = self
+            .substrate
+            .ceilings()
+            .timeout()
+            .min(limits.timeout())
+            .saturating_add(std::time::Duration::from_secs(1));
+        let pending = async {
+            if facts {
+                self.read_facts(reference, operation, acquisition).await
+            } else {
+                let operation = self.substrate.begin_read_with_limits(operation, &limits)?.0;
+                self.read_resource(reference, operation).await
+            }
+        };
+        tokio::time::timeout(wall, pending).await.map_err(|_| {
+            // Typed like the read's own deadline: the backstop fires outside
+            // `read_facts`, so nothing else would give this failure a reason.
+            ResourceError::new(
+                ErrorCategory::SourceUnavailable,
+                "GitHub operation exceeded the configured logical deadline",
             )
             .with_details(resourcefs_core::ResourceErrorDetails::new(
-                resourcefs_core::ErrorReason::AcquisitionControlsUnsupported,
-            )));
-        }
-        let timeout = self.substrate.ceilings().timeout();
-        let operation = self.substrate.begin_read(operation)?;
-        tokio::time::timeout(timeout, self.read_resource(reference, operation))
-            .await
-            .map_err(|_| {
-                ResourceError::new(
-                    ErrorCategory::SourceUnavailable,
-                    "GitHub operation exceeded the configured logical deadline",
-                )
-            })?
+                resourcefs_core::ErrorReason::DeadlineExceeded,
+            ))
+        })?
     }
 }
 
@@ -888,6 +907,13 @@ impl DiscoveryAdapter for GithubSource {
             .cloned();
         let searched = match reference.address() {
             ResourceAddress::Issue(address) => PathReference::issue(address.clone(), page)?,
+            // A Facts document accepts no selector, so a hit's line number
+            // names a reference that cannot be read back. Refuse the search
+            // rather than answer it with records nothing can follow.
+            ResourceAddress::PullRequest(PullRequestAddress::Item {
+                resource: PullRequestResource::Facts,
+                ..
+            }) => return Err(unsupported_github_projection()),
             ResourceAddress::PullRequest(address) => {
                 PathReference::pull_request(address.clone(), page)?
             }

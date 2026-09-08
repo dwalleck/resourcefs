@@ -322,7 +322,9 @@ fn live_stdio_github_facts_match_native_observation() {
     let Some(token) = live_token() else { return };
     let temporary = TempDir::new().expect("temporary directory");
     let profile = write_profile(temporary.path());
-    let native = Command::new("gh")
+    // `gh` is a dependency beyond the RFS_LIVE/GITHUB_TOKEN gate, so a runner
+    // without it skips this cross-check rather than failing the row.
+    let native = match Command::new("gh")
         .args([
             "api",
             "-H",
@@ -331,7 +333,13 @@ fn live_stdio_github_facts_match_native_observation() {
         ])
         .env("GH_TOKEN", &token)
         .output()
-        .expect("native gh observation");
+    {
+        Ok(native) => native,
+        Err(error) => {
+            eprintln!("gh CLI is unavailable ({error}); skipping native cross-check");
+            return;
+        }
+    };
     assert!(native.status.success(), "native observation failed");
     let native: Value = serde_json::from_slice(&native.stdout).expect("native JSON");
     let mut server = Server::start(&profile, &token);

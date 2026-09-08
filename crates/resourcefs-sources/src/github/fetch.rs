@@ -102,14 +102,26 @@ pub(super) fn unix_ms() -> Result<u64, ResourceError> {
     })
 }
 
+/// GitHub signals exhaustion on a 403 through the rate-limit headers; without
+/// them a 403 is an authorization refusal.
+///
+/// Both classifiers below triage the same upstream response, so they share one
+/// predicate rather than restating it in opposite polarities that must be kept
+/// in agreement by hand.
+fn is_rate_limited(response: &crate::BoundedHttpResponse) -> bool {
+    response.rate_limit_remaining() == Some(0) || response.retry_after().is_some()
+}
+
 fn classify_facts_status(response: &crate::BoundedHttpResponse) -> Result<(), ResourceError> {
     use resourcefs_core::{
         AccessAmbiguity, ErrorReason, HttpStatus, ResourceErrorDetails, RetryGuidance,
     };
     let (category, reason) = match response.status() {
-        200 => return Ok(()),
+        // The same success range the legacy classifier accepts: a 2xx that is
+        // not 200 is not an outage on one path and a success on the other.
+        200..=299 => return Ok(()),
         401 => (ErrorCategory::PermissionDenied, ErrorReason::UpstreamDenied),
-        403 if response.rate_limit_remaining() != Some(0) && response.retry_after().is_none() => {
+        403 if !is_rate_limited(response) => {
             (ErrorCategory::PermissionDenied, ErrorReason::UpstreamDenied)
         }
         403 | 429 => (
@@ -200,6 +212,7 @@ impl GithubSource {
         mut budget: Option<&mut HttpReadBudget>,
     ) -> Result<FetchedResponse, ResourceError> {
         let controlled = budget.is_some();
+        let response_ceiling = operation.response_ceiling;
         let key = Self::cache_key(&url, accept)?;
         let cache_generation = self
             .session
@@ -287,10 +300,26 @@ impl GithubSource {
             if let Some(budget) = budget.as_deref_mut() {
                 budget.admit_body(response.body().len().saturating_add(1))?;
             }
-            return Err(ResourceError::new(
+            let refusal = ResourceError::new(
                 ErrorCategory::LimitExceeded,
                 "GitHub response exceeds the bounded HTTP body ceiling",
-            ));
+            );
+            // A ceiling refusal that does not name the ceiling leaves the
+            // caller nothing to lower; every other controlled failure here
+            // carries its reason.
+            return Err(if controlled {
+                refusal.with_details(
+                    ResourceErrorDetails::new(ErrorReason::LimitExceeded).with_limit(
+                        resourcefs_core::LimitDetail::new(
+                            resourcefs_core::AcquisitionLimitKind::ResponseBodyBytes,
+                            response_ceiling as u64,
+                            None,
+                        )?,
+                    ),
+                )
+            } else {
+                refusal
+            });
         }
         let etag = response.etag().map(str::to_owned);
         // An unreadable Link is a corrupt continuation, not the last page.
@@ -364,14 +393,10 @@ impl GithubSource {
                 ErrorCategory::PermissionDenied,
                 "GitHub rejected the configured credential",
             )),
-            403 if response.rate_limit_remaining() == Some(0)
-                || response.retry_after().is_some() =>
-            {
-                Err(github_error(
-                    ErrorCategory::SourceUnavailable,
-                    "GitHub rate limit is exhausted",
-                ))
-            }
+            403 if is_rate_limited(response) => Err(github_error(
+                ErrorCategory::SourceUnavailable,
+                "GitHub rate limit is exhausted",
+            )),
             403 => Err(github_error(
                 ErrorCategory::PermissionDenied,
                 "GitHub denied the requested operation",

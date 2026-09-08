@@ -105,10 +105,27 @@ fn validate_observed_link(
     }
     let actual = match Url::parse(link) {
         Ok(url) => url,
+        // Not a URL at all: an opaque provider observation, published as-is.
         Err(_) => return Ok(()),
     };
+    // A value that *is* a URL is offered as one of this deployment's own
+    // links. One whose origin is neither the API nor the web authority is not
+    // an unrecognized shape to wave through — it is a contradiction, and
+    // publishing it puts an arbitrary URL (`file:///…`, another host) in a
+    // field an agent reads as this deployment's.
+    let api_origin = actual.origin() == api.origin();
+    if !api_origin && actual.origin() != web.origin() {
+        return Err(failure(ErrorReason::UpstreamIdentityMismatch));
+    }
     let (owner, name, native_number, authority_matches) =
-        if let Some((prefix, path)) = actual.path().split_once("/repos/") {
+        // Selected by origin, not by path content: a web URL whose first
+        // segment happens to be `repos` is a repository named `repos`, not an
+        // API URL, and must not skip validation by taking the API branch.
+        if let Some((prefix, path)) = actual
+            .path()
+            .split_once("/repos/")
+            .filter(|_| api_origin)
+        {
             let mut parts = path.split('/');
             let (Some(owner), Some(name), Some(kind), Some(number)) =
                 (parts.next(), parts.next(), parts.next(), parts.next())

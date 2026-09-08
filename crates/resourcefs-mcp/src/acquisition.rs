@@ -1,6 +1,6 @@
 use std::{fmt, time::Duration};
 
-use resourcefs_core::{ReadAcquisitionLimits, ResourceError};
+use resourcefs_core::{AcquisitionLimitKind, ReadAcquisitionLimits, ResourceError};
 use schemars::JsonSchema;
 use serde::{
     Deserialize, Deserializer,
@@ -28,6 +28,8 @@ pub(crate) struct AcquisitionInput {
     max_representation_bytes: Option<usize>,
 }
 
+const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;
+
 impl AcquisitionInput {
     pub(crate) fn into_limits(self) -> Result<ReadAcquisitionLimits, ResourceError> {
         ReadAcquisitionLimits::new(
@@ -37,6 +39,39 @@ impl AcquisitionInput {
             self.max_accepted_body_bytes,
             self.max_representation_bytes,
         )
+    }
+}
+
+/// Renders an acquisition rejection in the syntax the caller actually wrote.
+///
+/// Core names the failing dimension only in the machine-readable detail, in
+/// its own vocabulary and — for the deadline — in nanoseconds. Its message is
+/// identical for all five dimensions, so relaying that alone tells an operator
+/// a limit is wrong without telling them which one or what the ceiling is.
+pub(crate) fn describe_limit_rejection(error: &ResourceError) -> String {
+    let Some(limit) = error.details().and_then(|details| details.limit()) else {
+        return error.message().to_owned();
+    };
+    let scale = match limit.kind() {
+        AcquisitionLimitKind::ElapsedNanoseconds => NANOSECONDS_PER_MILLISECOND,
+        _ => 1,
+    };
+    let field = match limit.kind() {
+        AcquisitionLimitKind::Attempts => "maxAttempts",
+        AcquisitionLimitKind::ElapsedNanoseconds => "timeoutMs",
+        AcquisitionLimitKind::ResponseBodyBytes => "maxResponseBytes",
+        AcquisitionLimitKind::AcceptedBodyBytes => "maxAcceptedBodyBytes",
+        AcquisitionLimitKind::RepresentationBytes => "maxRepresentationBytes",
+    };
+    let bound = limit.bound() / scale;
+    match limit.observed() {
+        Some(observed) => {
+            format!(
+                "{field} must be between 1 and {bound}, but is {}",
+                observed / scale
+            )
+        }
+        None => format!("{field} must be between 1 and {bound}"),
     }
 }
 
