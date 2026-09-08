@@ -90,7 +90,7 @@ Assembled tree: commit `e409054` on `feat/rfs-bfwa` (base `feat/rfs-0n97` = `084
 | Slice falsifiers and fences S0–S6 | PASS — recorded per slice in `plan.md`. |
 | Named mutations S0–S5 | PASS — every listed mutation red, every restoration green. |
 | Live read-only proof | PASS — adapter and stdio rows against public `rust-lang/rust` PR 159232 (see S6 section). |
-| Isolated design-conformance review | Fresh-context reviewer reconstructed the production map before reading `design.md`; its five ownership findings were resolved by the approved placement revision plus the `acquisition_at` de-duplication, and its artifact-accounting findings (identity ledger row, dependency graph, growth rows, `resource.rs` bound) were corrected. |
+| Isolated design-conformance review | PASS — fresh-context reviewer reconstructed the production map before reading `design.md`; its five ownership findings were resolved by the approved placement revision plus the `acquisition_at` de-duplication, its artifact-accounting findings (identity ledger row, dependency graph, growth rows, `resource.rs` bound) were corrected, and the final verdict is verbatim `PASS — no remaining mismatch`. |
 | Known issue | `rfs-kpgy` — the pre-existing flaky in-flight deadline test was repaired here (release-before-await, so the typed deadline refusal is asserted rather than deadlocking) and passes repeatedly; the ticket remains open for the upstream owner to close. |
 
 No push, pull request, merge or tracker closure was performed. The branch is a local stack on `feat/rfs-0n97`; publication needs its own authorization.
