@@ -884,7 +884,7 @@ impl SourceCatalogMetadata for GithubSource {
             )?,
             SourceCatalogEntry::new(
                 "pr://",
-                "pr://<owner>/<repository>[/<number>[/title|body|facts|comments[/facts|/<id>/facts|/<id>]|reviews|review-comments|diff]][:selector]",
+                "pr://<owner>/<repository>[/<number>[/title|body|facts|comments[/facts|/<id>/facts|/<id>]|reviews[/facts|/<id>/facts]|review-comments[/facts|/<id>/facts]|diff]][:selector]",
                 "pr://owner/repository/42",
                 None,
             )?,

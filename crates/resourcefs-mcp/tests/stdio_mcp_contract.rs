@@ -4472,5 +4472,163 @@ fn catalog_advertises_github_repository_and_comment_facts_routes() {
         pull_request_route.contains("/<id>/facts"),
         "singular comment facts route is discoverable: {pull_request_route}"
     );
+    assert!(
+        pull_request_route.contains("reviews[/facts"),
+        "review-submission facts routes are discoverable: {pull_request_route}"
+    );
+    assert!(
+        pull_request_route.contains("review-comments[/facts"),
+        "inline review-comment facts routes are discoverable: {pull_request_route}"
+    );
+    process.finish();
+}
+
+#[cfg(feature = "test-support")]
+fn review_fixture_record(id: u64, commit: &str, body: &str) -> Value {
+    json!({
+        "id": id,
+        "node_id": format!("PRR_{id}"),
+        "user": {
+            "id": 501u64,
+            "node_id": "U_reviewer",
+            "login": "reviewer",
+            "url": "@API@users/reviewer",
+            "html_url": "https://github.example/reviewer"
+        },
+        "body": body,
+        "state": "COMMENTED",
+        "html_url": format!("https://github.example/owner/repo/pull/7#pullrequestreview-{id}"),
+        "pull_request_url": "@API@repos/owner/repo/pulls/7",
+        "submitted_at": "2026-08-21T01:01:16Z",
+        "commit_id": commit
+    })
+}
+
+#[cfg(feature = "test-support")]
+fn inline_fixture_record(id: u64, commit: &str, diff_hunk: &str) -> Value {
+    json!({
+        "id": id,
+        "node_id": format!("PRRC_{id}"),
+        "url": format!("@API@repos/owner/repo/pulls/comments/{id}"),
+        "html_url": format!("https://github.example/owner/repo/pull/7#discussion_r{id}"),
+        "pull_request_url": "@API@repos/owner/repo/pulls/7",
+        "pull_request_review_id": 4988827796u64,
+        "body": "inline body",
+        "user": {
+            "id": 502u64,
+            "node_id": "U_reviewer",
+            "login": "reviewer",
+            "url": "@API@users/reviewer",
+            "html_url": "https://github.example/reviewer"
+        },
+        "created_at": "2026-08-21T01:01:16Z",
+        "updated_at": "2026-08-21T01:01:16Z",
+        "path": "compiler/rustc_middle/src/ty/print/pretty.rs",
+        "diff_hunk": diff_hunk,
+        "commit_id": commit,
+        "original_commit_id": commit,
+        "side": "RIGHT",
+        "line": null,
+        "start_side": null,
+        "start_line": null,
+        "original_line": 2741,
+        "original_start_line": null,
+        "position": 1,
+        "original_position": 20,
+        "subject_type": "line"
+    })
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn github_review_and_inline_facts_recover_without_reacquisition() {
+    const COMMIT: &str = "a8395d4c879b743dda521b3d3929b6819c8ad3b8";
+    let fixture = WorkspaceFixture::new();
+    let reviews: Vec<Value> = (4_988_827_790..4_988_827_798_u64)
+        .map(|id| review_fixture_record(id, COMMIT, &"review body 雪 \"escaped\"\n".repeat(120)))
+        .collect();
+    let inline_hunk = "@@ -1,1 +1,1 @@\n-old\n+new\n".repeat(300);
+    let inline = inline_fixture_record(3_826_494_362, COMMIT, &inline_hunk);
+    let parent = include_str!("../../../.rfs-0n97/oracles/pr-native.json");
+    let server = profile_tls::ProfileTlsServer::start_native(vec![
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body: parent.into(),
+            headers: Vec::new(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7/reviews?per_page=100&page=1".into(),
+            body: serde_json::to_string(&reviews).expect("review page"),
+            headers: Vec::new(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body: parent.into(),
+            headers: Vec::new(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/comments/3826494362".into(),
+            body: inline.to_string(),
+            headers: Vec::new(),
+        },
+    ]);
+    let profile = comment_facts_profile(&fixture, "review-inline-facts", &server, 16_000_000);
+    let mut process = McpProcess::start_profile_with_https_root_and_env(
+        &profile,
+        &fixture.root,
+        &[("RFS_GITHUB_TEST_TOKEN", "review-inline-stdio-secret")],
+    );
+    process.initialize(VERSION_2026);
+
+    let result = process.call_read_arguments(json!({
+        "path":"pr://owner/repo/7/reviews/facts","limits":{"bytes":4096}
+    }));
+    let root = result["structuredContent"]["recoveryReference"]
+        .as_str()
+        .expect("an oversized review collection must name its recovery root")
+        .to_owned();
+    let (facts, bytes, source_cursor) =
+        recover_artifact_document(&mut process, result, json!({"bytes": 1024}));
+    assert!(
+        source_cursor.is_none(),
+        "the fixture has no source cursor to recover"
+    );
+    assert!(
+        bytes.len() > 4_096,
+        "the oversized collection must span artifact pages"
+    );
+    assert_eq!(facts["kind"], "github.review_submission_collection");
+    assert_eq!(facts["collection"]["acceptedCount"], 8);
+    assert_eq!(facts["data"]["records"][0]["id"], "4988827790");
+    assert_eq!(facts["data"]["records"][0]["commitSha"], COMMIT);
+    assert_eq!(
+        facts["data"]["records"][0]["parent"]["number"], "7",
+        "verified parent identity survives recovery"
+    );
+    reconstruct_with_limits(&mut process, &root, json!({"bytes": 1024}), &bytes);
+    assert_eq!(
+        server.recorded_requests().len(),
+        2,
+        "recovery adds no acquisition"
+    );
+
+    let result = process.call_read_arguments(json!({
+        "path":"pr://owner/repo/7/review-comments/3826494362/facts","limits":{"bytes":4096}
+    }));
+    let (facts, bytes, source_cursor) =
+        recover_artifact_document(&mut process, result, json!({"bytes": 1024}));
+    assert!(source_cursor.is_none());
+    assert_eq!(facts["kind"], "github.review_comment");
+    assert_eq!(facts["data"]["id"], "3826494362");
+    assert_eq!(facts["data"]["line"], Value::Null);
+    assert_eq!(facts["data"]["originalLine"], 2741);
+    assert_eq!(facts["data"]["side"], "RIGHT");
+    assert_eq!(facts["data"]["diffHunk"], inline_hunk);
+    assert!(!bytes.contains("review-inline-stdio-secret"));
+    assert_eq!(
+        server.recorded_requests().len(),
+        4,
+        "one acquisition per endpoint; recovery adds none"
+    );
     process.finish();
 }

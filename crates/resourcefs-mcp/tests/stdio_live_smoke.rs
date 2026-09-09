@@ -522,3 +522,105 @@ fn live_stdio_github_comment_facts_match_native_observation() {
         next_records.len()
     );
 }
+
+#[test]
+#[ignore = "live full-stack smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
+fn live_stdio_github_review_and_inline_facts_match_native_observation() {
+    let Some(token) = live_token() else { return };
+    let temporary = TempDir::new().expect("temporary directory");
+    let profile = write_profile_with_attempts(temporary.path(), Some(2));
+    let Some(native_reviews) = native_gh(
+        &token,
+        "repos/rust-lang/rust/pulls/159232/reviews?per_page=100",
+    ) else {
+        return;
+    };
+    let Some(native_inline) = native_gh(
+        &token,
+        "repos/rust-lang/rust/pulls/159232/comments?per_page=100",
+    ) else {
+        return;
+    };
+    let native_reviews = native_reviews
+        .as_array()
+        .expect("native reviews")
+        .to_owned();
+    let native_inline = native_inline.as_array().expect("native inline").to_owned();
+    assert!(
+        !native_reviews.is_empty() && !native_inline.is_empty(),
+        "the evidence PR must still carry reviews and inline comments"
+    );
+
+    let mut server = Server::start(&profile, &token);
+    server.initialize();
+
+    let result = server.call(
+        "rfs_read",
+        json!({"path": format!("{SMALL_PR}/reviews/facts")}),
+    );
+    let (review_facts, review_bytes, review_cursor) =
+        recover_artifact_document(&mut server, result);
+    assert!(review_cursor.is_none());
+    assert_eq!(review_facts["kind"], "github.review_submission_collection");
+    let review_records = review_facts["data"]["records"]
+        .as_array()
+        .expect("review records");
+    for native in &native_reviews {
+        let id = native["id"].as_u64().expect("native review id").to_string();
+        let record = review_records
+            .iter()
+            .find(|record| record["id"] == json!(id))
+            .unwrap_or_else(|| panic!("review {id} missing from recovered facts"));
+        assert_eq!(record["commitSha"], native["commit_id"]);
+        assert_eq!(record["submittedAt"], native["submitted_at"]);
+        assert_eq!(
+            record["links"]["pullRequestUrl"],
+            native["pull_request_url"]
+        );
+    }
+
+    let result = server.call(
+        "rfs_read",
+        json!({"path": format!("{SMALL_PR}/review-comments/facts")}),
+    );
+    let (inline_facts, inline_bytes, inline_cursor) =
+        recover_artifact_document(&mut server, result);
+    assert!(inline_cursor.is_none());
+    assert_eq!(inline_facts["kind"], "github.review_comment_collection");
+    let inline_records = inline_facts["data"]["records"]
+        .as_array()
+        .expect("inline records");
+    for native in &native_inline {
+        let id = native["id"].as_u64().expect("native inline id").to_string();
+        let record = inline_records
+            .iter()
+            .find(|record| record["id"] == json!(id))
+            .unwrap_or_else(|| panic!("inline comment {id} missing from recovered facts"));
+        assert_eq!(record["path"], native["path"]);
+        assert_eq!(record["side"], native["side"]);
+        assert_eq!(record["originalLine"], native["original_line"]);
+        assert_eq!(record["subjectType"], native["subject_type"]);
+    }
+
+    let id = native_inline[0]["id"].as_u64().expect("native inline id");
+    let result = server.call(
+        "rfs_read",
+        json!({"path": format!("{SMALL_PR}/review-comments/{id}/facts")}),
+    );
+    let (single, single_bytes, single_cursor) = recover_artifact_document(&mut server, result);
+    assert!(single_cursor.is_none());
+    assert_eq!(single["data"]["id"], id.to_string());
+    assert_eq!(single["data"]["diffHunk"], native_inline[0]["diff_hunk"]);
+    assert_eq!(
+        single["data"]["originalCommitSha"],
+        native_inline[0]["original_commit_id"]
+    );
+    for bytes in [review_bytes, inline_bytes, single_bytes] {
+        assert!(!bytes.contains(&token), "no credential may reach output");
+    }
+    eprintln!(
+        "S-review review/inline facts: {} reviews, {} inline comments recovered before parsing",
+        review_records.len(),
+        inline_records.len()
+    );
+}
