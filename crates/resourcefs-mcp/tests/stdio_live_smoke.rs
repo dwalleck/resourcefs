@@ -21,6 +21,7 @@ use tempfile::TempDir;
 
 const PROTOCOL_VERSION: &str = "2026-07-28";
 const SMALL_PR: &str = "pr://rust-lang/rust/159232";
+const MULTIPAGE_PR: &str = "pr://rust-lang/rust/159628";
 const BOOK_PAGE: &str = "https://doc.rust-lang.org/stable/book/ch01-01-installation.html";
 
 fn binary() -> &'static str {
@@ -41,24 +42,48 @@ fn live_token() -> Option<String> {
     token
 }
 
+fn native_gh(token: &str, endpoint: &str) -> Option<Value> {
+    let native = match Command::new("gh")
+        .args(["api", "-H", "X-GitHub-Api-Version: 2022-11-28", endpoint])
+        .env("GH_TOKEN", token)
+        .output()
+    {
+        Ok(native) => native,
+        Err(error) => {
+            eprintln!("gh CLI is unavailable ({error}); skipping native cross-check");
+            return None;
+        }
+    };
+    assert!(native.status.success(), "native read failed");
+    Some(serde_json::from_slice(&native.stdout).expect("native JSON"))
+}
+
 /// One GitHub source and one HTTPS source, both required, so a probe failure
 /// is a startup failure rather than a silently degraded mount.
 fn write_profile(directory: &Path) -> PathBuf {
+    write_profile_with_attempts(directory, None)
+}
+
+fn write_profile_with_attempts(directory: &Path, max_attempts: Option<u64>) -> PathBuf {
     let path = directory.join("live.json");
+    let mut github = json!({
+        "kind": "github",
+        "id": "forge",
+        "required": true,
+        "allowPrivateNetwork": false,
+        "credential": {"kind": "environment", "name": "GITHUB_TOKEN"},
+        "repositories": [{"name": "rust-lang/rust"}]
+    });
+    if let Some(max_attempts) = max_attempts {
+        github["acquisition"] = json!({"maxAttempts": max_attempts});
+    }
     fs::write(
         &path,
         serde_json::to_vec_pretty(&json!({
             "schemaVersion": 1,
             "session": {"cacheDirectory": "live-cache"},
             "sources": [
-                {
-                    "kind": "github",
-                    "id": "forge",
-                    "required": true,
-                    "allowPrivateNetwork": false,
-                    "credential": {"kind": "environment", "name": "GITHUB_TOKEN"},
-                    "repositories": [{"name": "rust-lang/rust"}]
-                },
+                github,
                 {
                     "kind": "https",
                     "id": "docs",
@@ -175,6 +200,44 @@ impl Server {
         );
         String::from_utf8_lossy(&output.stderr).into_owned()
     }
+}
+
+/// Recover one JSON document through artifact pages only. A source cursor is
+/// not another representation page: return it separately for a client to
+/// traverse as its own document.
+fn recover_artifact_document(
+    server: &mut Server,
+    mut result: Value,
+) -> (Value, String, Option<String>) {
+    let mut bytes = String::new();
+    let mut source_cursor = None;
+    let mut pages = 0_usize;
+    loop {
+        assert_eq!(result["isError"], false, "{result}");
+        let structured = &result["structuredContent"];
+        bytes.push_str(structured["content"].as_str().expect("JSON page"));
+        if source_cursor.is_none() {
+            source_cursor = structured
+                .get("sourceContinuationReference")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+        pages += 1;
+        assert!(pages < 1_000, "artifact recovery must progress");
+        let Some(next) = structured
+            .get("continuationReference")
+            .and_then(Value::as_str)
+        else {
+            break;
+        };
+        if !next.starts_with("artifact://") {
+            source_cursor = Some(next.to_owned());
+            break;
+        }
+        result = server.call("rfs_read", json!({"path": next}));
+    }
+    let document = serde_json::from_str(&bytes).expect("one recovered JSON document");
+    (document, bytes, source_cursor)
 }
 
 #[test]
@@ -322,43 +385,16 @@ fn live_stdio_github_facts_match_native_observation() {
     let Some(token) = live_token() else { return };
     let temporary = TempDir::new().expect("temporary directory");
     let profile = write_profile(temporary.path());
-    // `gh` is a dependency beyond the RFS_LIVE/GITHUB_TOKEN gate, so a runner
-    // without it skips this cross-check rather than failing the row.
-    let native = match Command::new("gh")
-        .args([
-            "api",
-            "-H",
-            "X-GitHub-Api-Version: 2022-11-28",
-            "repos/rust-lang/rust/pulls/159232",
-        ])
-        .env("GH_TOKEN", &token)
-        .output()
-    {
-        Ok(native) => native,
-        Err(error) => {
-            eprintln!("gh CLI is unavailable ({error}); skipping native cross-check");
-            return;
-        }
+    let Some(native) = native_gh(&token, "repos/rust-lang/rust/pulls/159232") else {
+        return;
     };
-    assert!(native.status.success(), "native observation failed");
-    let native: Value = serde_json::from_slice(&native.stdout).expect("native JSON");
     let mut server = Server::start(&profile, &token);
     server.initialize();
-    let mut result = server.call("rfs_read", json!({"path":format!("{SMALL_PR}/facts")}));
-    let mut bytes = String::new();
-    loop {
-        assert_eq!(result["isError"], false);
-        bytes.push_str(
-            result["structuredContent"]["content"]
-                .as_str()
-                .expect("facts page"),
-        );
-        let Some(next) = result["structuredContent"]["continuationReference"].as_str() else {
-            break;
-        };
-        result = server.call("rfs_read", json!({"path":next}));
+    let first = server.call("rfs_read", json!({"path":format!("{SMALL_PR}/facts")}));
+    let (facts, bytes, source_cursor) = recover_artifact_document(&mut server, first);
+    if let Some(source_cursor) = source_cursor {
+        eprintln!("facts source cursor is independently addressable: {source_cursor}");
     }
-    let facts: Value = serde_json::from_str(&bytes).expect("complete facts");
     assert_eq!(facts["schemaVersion"]["major"], 1);
     assert_eq!(
         facts["data"]["id"],
@@ -378,86 +414,111 @@ fn live_stdio_github_facts_match_native_observation() {
 fn live_stdio_github_comment_facts_match_native_observation() {
     let Some(token) = live_token() else { return };
     let temporary = TempDir::new().expect("temporary directory");
-    let profile = write_profile(temporary.path());
-    let native = Command::new("gh")
-        .args([
-            "api",
-            "-H",
-            "X-GitHub-Api-Version: 2022-11-28",
-            "repos/rust-lang/rust/issues/159232/comments?per_page=100&page=1",
-        ])
-        .env("GH_TOKEN", &token)
-        .output()
-        .expect("native gh observation");
-    assert!(native.status.success(), "native observation failed");
-    let native: Vec<Value> = serde_json::from_slice(&native.stdout).expect("native comments");
-    assert!(!native.is_empty(), "fixture PR must have comments");
+    let profile = write_profile_with_attempts(temporary.path(), Some(2));
+    let Some(native_first_value) = native_gh(
+        &token,
+        "repos/rust-lang/rust/issues/159628/comments?per_page=100&page=1",
+    ) else {
+        return;
+    };
+    let Some(native_second_value) = native_gh(
+        &token,
+        "repos/rust-lang/rust/issues/159628/comments?per_page=100&page=2",
+    ) else {
+        return;
+    };
+    let native_first = native_first_value
+        .as_array()
+        .expect("native first comment page")
+        .to_owned();
+    let native_second = native_second_value
+        .as_array()
+        .expect("native second comment page")
+        .to_owned();
+    assert!(
+        !native_first.is_empty(),
+        "fixture PR must have first-page comments"
+    );
+    assert!(
+        !native_second.is_empty(),
+        "fixture PR must have second-page comments"
+    );
+    let native_ids = |page: &[Value]| {
+        page.iter()
+            .map(|comment| {
+                comment["id"]
+                    .as_u64()
+                    .expect("native comment id")
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+    };
+
     let mut server = Server::start(&profile, &token);
     server.initialize();
-    let mut result = server.call(
+    let first = server.call(
         "rfs_read",
-        json!({"path": format!("{SMALL_PR}/comments/facts")}),
+        json!({"path": format!("{MULTIPAGE_PR}/comments/facts")}),
     );
-    let mut bytes = String::new();
-    loop {
-        assert_eq!(result["isError"], false);
-        bytes.push_str(
-            result["structuredContent"]["content"]
-                .as_str()
-                .expect("facts page"),
-        );
-        let Some(next) = result["structuredContent"]["continuationReference"].as_str() else {
-            break;
-        };
-        result = server.call("rfs_read", json!({"path": next}));
-    }
-    let facts: Value = serde_json::from_str(&bytes).expect("complete collection");
+    let (facts, bytes, source_cursor) = recover_artifact_document(&mut server, first);
+    let source_cursor = source_cursor.expect("initial facts source continuation");
     assert_eq!(facts["kind"], "github.conversation_comment_collection");
-    assert_eq!(facts["request"]["number"], "159232");
+    assert_eq!(facts["request"]["number"], "159628");
+    assert_eq!(facts["collection"]["scope"], "initial");
+    assert_eq!(facts["collection"]["state"], "incomplete");
+    assert!(facts["collection"]["continuation"].is_string());
     let records = facts["data"]["records"].as_array().expect("records");
-    assert!(!records.is_empty());
+    assert_eq!(records.len(), native_first.len());
     assert_eq!(
-        facts["collection"]["acceptedCount"]
-            .as_u64()
-            .expect("count"),
-        records.len() as u64
+        facts["collection"]["acceptedCount"],
+        records.len(),
+        "accepted count follows the observed first page"
     );
     assert_eq!(
-        records[0]["id"],
-        native[0]["id"].as_u64().expect("id").to_string()
+        records
+            .iter()
+            .map(|record| record["id"].as_str().expect("facts comment id").to_owned())
+            .collect::<Vec<_>>(),
+        native_ids(&native_first)
     );
-    assert_eq!(records[0]["nodeId"], native[0]["node_id"]);
-    assert_eq!(records[0]["body"], native[0]["body"]);
-    assert_eq!(records[0]["parent"]["number"], "159232");
 
-    // The single-comment read through the real binary matches the same record.
-    // A large comment body overflows the inline page, so recovery is followed
-    // before parsing exactly as a client must.
-    let id = native[0]["id"].as_u64().expect("id");
-    let mut result = server.call(
-        "rfs_read",
-        json!({"path": format!("{SMALL_PR}/comments/{id}/facts")}),
+    let next = server.call("rfs_read", json!({"path": source_cursor}));
+    let (next_facts, next_bytes, next_source_cursor) = recover_artifact_document(&mut server, next);
+    assert!(
+        next_source_cursor.is_none(),
+        "the second observed page is the terminal source segment"
     );
-    let mut single = String::new();
-    loop {
-        assert_eq!(result["isError"], false, "{result}");
-        single.push_str(
-            result["structuredContent"]["content"]
-                .as_str()
-                .expect("comment JSON page"),
-        );
-        let Some(next) = result["structuredContent"]["continuationReference"].as_str() else {
-            break;
-        };
-        result = server.call("rfs_read", json!({"path": next}));
-    }
-    let single: Value = serde_json::from_str(&single).expect("comment facts");
-    assert_eq!(single["data"]["id"], id.to_string());
-    assert_eq!(single["data"]["nodeId"], native[0]["node_id"]);
-    assert!(single.get("collection").is_none());
+    assert_eq!(next_facts["request"]["number"], "159628");
+    assert_eq!(next_facts["collection"]["scope"], "continuation");
+    assert_eq!(next_facts["collection"]["state"], "complete");
+    let next_records = next_facts["data"]["records"]
+        .as_array()
+        .expect("continued records");
+    assert_eq!(next_records.len(), native_second.len());
+    assert_eq!(
+        next_records
+            .iter()
+            .map(|record| record["id"].as_str().expect("facts comment id").to_owned())
+            .collect::<Vec<_>>(),
+        native_ids(&native_second)
+    );
     assert!(!bytes.contains(&token));
+    assert!(!next_bytes.contains(&token));
+
+    let id = native_first[0]["id"].as_u64().expect("native comment id");
+    let first = server.call(
+        "rfs_read",
+        json!({"path": format!("{MULTIPAGE_PR}/comments/{id}/facts")}),
+    );
+    let (single, _, single_source_cursor) = recover_artifact_document(&mut server, first);
+    assert!(single_source_cursor.is_none());
+    assert_eq!(single["data"]["id"], id.to_string());
+    assert_eq!(single["data"]["nodeId"], native_first[0]["node_id"]);
+    assert_eq!(single["data"]["body"], native_first[0]["body"]);
+    assert!(single.get("collection").is_none());
     eprintln!(
-        "S-comment conversation-comment facts: {} records",
-        records.len()
+        "S-comment conversation-comment facts: {} + {} records across source segments",
+        records.len(),
+        next_records.len()
     );
 }
