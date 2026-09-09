@@ -981,6 +981,7 @@ impl HttpSubstrate {
             ));
         }
         let request_url = request.url().clone();
+        reject_url_userinfo(&request_url).map_err(HttpFetchFailure::terminal)?;
         self.refuse_degraded(&request_url)
             .map_err(HttpFetchFailure::terminal)?;
         self.allowlist
@@ -1304,6 +1305,14 @@ fn redirect_policy(
         // origin's secret to a different server — allowlisted or not. The hop
         // is refused rather than stripped, because a silently de-authenticated
         // request usually fails in a way that reads as a server fault.
+        if reject_url_userinfo(attempt.url()).is_err() {
+            // An upstream redirect crosses an authority boundary; it is not
+            // malformed caller input that a collection may soften to a prefix.
+            return attempt.error(ResourceError::new(
+                ErrorCategory::PermissionDenied,
+                "redirect was not followed: URL userinfo is forbidden",
+            ));
+        }
         if let Some(first) = attempt.previous().first() {
             for origin in &credentialed {
                 if origin.authorizes(first) && !origin.authorizes(attempt.url()) {
@@ -1370,6 +1379,24 @@ fn cancelled_mid_request() -> ResourceError {
         "request was cancelled before its response was accepted",
     )
     .with_details(ResourceErrorDetails::new(ErrorReason::Cancelled))
+}
+
+pub(crate) fn reject_url_userinfo(url: &Url) -> Result<(), ResourceError> {
+    let authority = url
+        .as_str()
+        .split_once("://")
+        .map(|(_, rest)| {
+            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .unwrap_or_default();
+    if authority.contains('@') || !url.username().is_empty() || url.password().is_some() {
+        return Err(ResourceError::new(
+            ErrorCategory::InvalidReference,
+            "HTTP request URL must not contain userinfo",
+        ));
+    }
+    Ok(())
 }
 
 fn classify_reqwest_failure(error: reqwest::Error) -> HttpFetchFailure {

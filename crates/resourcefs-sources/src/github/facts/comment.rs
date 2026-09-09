@@ -1,16 +1,19 @@
 //! Conversation-comment decoding and the owned record projection.
 use std::fmt;
 
-use resourcefs_core::{ErrorReason, GithubRepositoryIdentity, ResourceError, SourceResource};
+use resourcefs_core::{
+    ConversationCommentId, ErrorReason, GithubRepositoryIdentity, PullRequestNumber, ResourceError,
+    SourceResource,
+};
 use serde::{
     Deserialize, Deserializer, Serialize,
     de::{self, MapAccess, Visitor},
 };
 use url::Url;
 
-use super::super::{GITHUB_JSON, GithubSource, malformed_upstream};
+use super::super::{GITHUB_JSON, GithubSource};
 use super::{
-    Actor, Facts, FactsRead, NativeId, Presence, RepositoryName, Unavailable, Upstream,
+    Actor, Facts, FactsRead, Links, NativeId, Presence, RepositoryName, Unavailable, Upstream,
     acquisition, failure, finish_facts, identity, pull,
 };
 
@@ -28,21 +31,13 @@ native!(NativeComment {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ParentLinks<'a> {
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    api_url: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    html_url: &'a Presence<String>,
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(super) struct ParentFacts<'a> {
     kind: &'static str,
     id: &'a NativeId,
     number: &'a NativeId,
     #[serde(skip_serializing_if = "Presence::omitted")]
     node_id: &'a Presence<String>,
-    links: ParentLinks<'a>,
+    links: Links<'a>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -91,14 +86,53 @@ struct CommentBody<'a> {
     data: CommentRecord<'a>,
 }
 
-/// Required native identity from a presence-aware decode.
-///
-/// Distinct from `identity::required`, which reports one fixed reason: this one
-/// names the missing field, and the identity module owns identity validation.
-fn native_field<'a, T>(value: &'a Presence<T>, field: &str) -> Result<&'a T, ResourceError> {
-    value
-        .value()
-        .ok_or_else(|| malformed_upstream(&format!("GitHub {field} is required")))
+/// A validated comment owns exactly the decoded native object and its
+/// availability observations. Projection only borrows this value and cannot
+/// fail, so collection admission never repeats identity checks or availability
+/// bookkeeping.
+pub(super) struct ValidatedRecord {
+    comment: NativeComment,
+    unavailable: Vec<Unavailable>,
+}
+
+impl ValidatedRecord {
+    pub(super) fn id(&self) -> u64 {
+        self.comment
+            .id
+            .value()
+            .expect("validated comment has an id")
+            .0
+    }
+
+    pub(super) fn unavailable(&self) -> &[Unavailable] {
+        &self.unavailable
+    }
+
+    pub(super) fn project<'a>(
+        &'a self,
+        pull: &'a pull::NativePull,
+        identity: &'a identity::ValidatedIdentity<'a>,
+    ) -> CommentRecord<'a> {
+        CommentRecord {
+            kind: "github.conversation_comment",
+            id: self
+                .comment
+                .id
+                .value()
+                .expect("validated comment has an id"),
+            node_id: &self.comment.node_id,
+            parent: parent_facts(pull, identity),
+            body: &self.comment.body,
+            author: &self.comment.user,
+            created_at: &self.comment.created_at,
+            updated_at: &self.comment.updated_at,
+            links: CommentLinks {
+                api_url: &self.comment.url,
+                html_url: &self.comment.html_url,
+                issue_url: &self.comment.issue_url,
+            },
+        }
+    }
 }
 
 pub(super) fn parent_facts<'a>(
@@ -110,50 +144,45 @@ pub(super) fn parent_facts<'a>(
         id: identity.id,
         number: identity.number,
         node_id: &pull.node_id,
-        links: ParentLinks {
+        links: Links {
             api_url: &pull.url,
             html_url: &pull.html_url,
         },
     }
 }
 
-/// The owned record for one conversation comment beneath a verified parent.
-pub(super) fn record<'a>(
-    comment: &'a NativeComment,
-    pull: &'a pull::NativePull,
-    identity: &'a identity::ValidatedIdentity<'a>,
+/// Validate and own one conversation comment. The parent/link checks happen
+/// before availability is recorded, so a contradictory identity can never be
+/// softened into an ordinary later-page prefix.
+pub(super) fn validate_record(
+    comment: NativeComment,
     repository: &GithubRepositoryIdentity,
-    number: u64,
-    unavailable: &mut Vec<Unavailable>,
-) -> Result<CommentRecord<'a>, ResourceError> {
-    super::super::validate_parent(
-        native_field(&comment.issue_url, "conversation comment issue_url")?,
-        repository,
-        "issues",
-        number,
-    )?;
-    comment.node_id.unavailable("nodeId", unavailable);
-    comment.body.unavailable("body", unavailable);
-    comment.user.unavailable("author", unavailable);
-    comment.created_at.unavailable("createdAt", unavailable);
-    comment.updated_at.unavailable("updatedAt", unavailable);
-    comment.url.unavailable("links.apiUrl", unavailable);
-    comment.html_url.unavailable("links.htmlUrl", unavailable);
-    comment.issue_url.unavailable("links.issueUrl", unavailable);
-    Ok(CommentRecord {
-        kind: "github.conversation_comment",
-        id: native_field(&comment.id, "conversation comment id")?,
-        node_id: &comment.node_id,
-        parent: parent_facts(pull, identity),
-        body: &comment.body,
-        author: &comment.user,
-        created_at: &comment.created_at,
-        updated_at: &comment.updated_at,
-        links: CommentLinks {
-            api_url: &comment.url,
-            html_url: &comment.html_url,
-            issue_url: &comment.issue_url,
-        },
+    number: PullRequestNumber,
+    comment_id: Option<ConversationCommentId>,
+    api: &Url,
+    web: &Url,
+) -> Result<ValidatedRecord, ResourceError> {
+    identity::validate_comment_links(repository, number, comment_id, &comment, api, web)?;
+    let mut unavailable = Vec::new();
+    comment.node_id.unavailable("nodeId", &mut unavailable);
+    comment.body.unavailable("body", &mut unavailable);
+    comment.user.unavailable("author", &mut unavailable);
+    comment
+        .created_at
+        .unavailable("createdAt", &mut unavailable);
+    comment
+        .updated_at
+        .unavailable("updatedAt", &mut unavailable);
+    comment.url.unavailable("links.apiUrl", &mut unavailable);
+    comment
+        .html_url
+        .unavailable("links.htmlUrl", &mut unavailable);
+    comment
+        .issue_url
+        .unavailable("links.issueUrl", &mut unavailable);
+    Ok(ValidatedRecord {
+        comment,
+        unavailable,
     })
 }
 
@@ -161,11 +190,13 @@ pub(super) fn record<'a>(
 pub(super) async fn read_item(
     source: &GithubSource,
     repository: &GithubRepositoryIdentity,
-    number: u64,
-    comment_id: u64,
+    number: PullRequestNumber,
+    comment_id: ConversationCommentId,
     ctx: &mut FactsRead<'_>,
 ) -> Result<SourceResource, ResourceError> {
-    let (pull, parent_endpoint) = fetch_parent(source, repository, number, ctx).await?;
+    let (pull, parent_endpoint, parent_generation) =
+        fetch_parent(source, repository, number, ctx).await?;
+    super::establish_generation(ctx, parent_generation);
     let web = Url::parse(ctx.web_origin).map_err(|_| failure(ErrorReason::UpstreamUnavailable))?;
     let identity = identity::validate(
         &pull,
@@ -175,21 +206,26 @@ pub(super) async fn read_item(
         &source.api_base,
         &web,
     )?;
-    let endpoint = source.endpoint(repository, &format!("issues/comments/{comment_id}"))?;
+    let endpoint = source.endpoint(repository, &format!("issues/comments/{}", comment_id.get()))?;
     let response = source
         .fetch_controlled(endpoint, GITHUB_JSON, ctx.read, Some(&mut ctx.budget))
         .await?;
+    if response.cache_generation != parent_generation {
+        return Err(failure(ErrorReason::UpstreamUnavailable));
+    }
     let comment: NativeComment = serde_json::from_slice(response.body())
         .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
-    let mut unavailable_facts = Vec::new();
-    let data = record(
-        &comment,
-        &pull,
-        &identity,
+    let validated = validate_record(
+        comment,
         repository,
         number,
-        &mut unavailable_facts,
+        Some(comment_id),
+        &source.api_base,
+        &web,
     )?;
+    let requested_number = NativeId::from_positive(number.get());
+    let requested_comment_id = NativeId::from_positive(comment_id.get());
+    let data = validated.project(&pull, &identity);
     let facts = Facts {
         schema_version: super::SchemaVersion { major: 1, minor: 0 },
         kind: "github.conversation_comment",
@@ -213,8 +249,8 @@ pub(super) async fn read_item(
                     owner: repository.owner(),
                     name: repository.repository(),
                 },
-                number: identity.number,
-                comment_id: native_field(&comment.id, "conversation comment id")?,
+                number: &requested_number,
+                comment_id: &requested_comment_id,
             },
             observed: CommentObserved {
                 parent: parent_facts(&pull, &identity),
@@ -225,7 +261,7 @@ pub(super) async fn read_item(
             },
             data,
         },
-        unavailable_facts,
+        unavailable_facts: validated.unavailable.clone(),
     };
     let resource = finish_facts(
         &facts,
@@ -233,27 +269,20 @@ pub(super) async fn read_item(
         ctx.canonical.clone(),
         ctx.read,
     )?;
-    if source
-        .session
-        .cache_generation(super::super::fetch::GITHUB_CACHE_NAMESPACE)
-        .await?
-        != response.cache_generation
-    {
-        return Err(failure(ErrorReason::UpstreamUnavailable));
-    }
+    super::check_generation(source, ctx).await?;
     ctx.read.check_acceptance()?;
     Ok(resource)
 }
 
 /// Fetches the pull-request parent that owns the comment, with the endpoint it
-/// was read from so the caller can validate the observed identity against it.
+/// was read from and its generation baseline.
 pub(super) async fn fetch_parent(
     source: &GithubSource,
     repository: &GithubRepositoryIdentity,
-    number: u64,
+    number: PullRequestNumber,
     ctx: &mut FactsRead<'_>,
-) -> Result<(pull::NativePull, Url), ResourceError> {
-    let endpoint = source.endpoint(repository, &format!("pulls/{number}"))?;
+) -> Result<(pull::NativePull, Url, u64), ResourceError> {
+    let endpoint = source.endpoint(repository, &format!("pulls/{}", number.get()))?;
     let response = source
         .fetch_controlled(
             endpoint.clone(),
@@ -262,7 +291,8 @@ pub(super) async fn fetch_parent(
             Some(&mut ctx.budget),
         )
         .await?;
+    let generation = response.cache_generation;
     let pull: pull::NativePull = serde_json::from_slice(response.body())
         .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
-    Ok((pull, endpoint))
+    Ok((pull, endpoint, generation))
 }

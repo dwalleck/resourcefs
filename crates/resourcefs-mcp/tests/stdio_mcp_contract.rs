@@ -4090,6 +4090,9 @@ fn github_comment_facts_recover_without_reacquisition() {
         record["id"] = json!(id);
         record["url"] = json!(format!("@API@repos/owner/repo/issues/comments/{id}"));
         record["issue_url"] = json!("@API@repos/owner/repo/issues/7");
+        record["html_url"] = json!(format!(
+            "https://github.example/owner/repo/pull/7#issuecomment-{id}"
+        ));
         record["body"] = json!("雪 \"escaped\"\n".repeat(300));
         records.push(record);
     }

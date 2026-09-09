@@ -86,6 +86,12 @@ impl<'de> Deserialize<'de> for NativeId {
         Ok(Self(value))
     }
 }
+impl NativeId {
+    pub(super) fn from_positive(value: u64) -> Self {
+        debug_assert!(value > 0);
+        Self(value)
+    }
+}
 impl Serialize for NativeId {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(&self.0)
@@ -186,6 +192,11 @@ impl<'de> Deserialize<'de> for Relations {
         deserializer.deserialize_map(RelationsVisitor)
     }
 }
+impl Serialize for Relations {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
 impl Serialize for Relation {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
@@ -195,19 +206,13 @@ impl Serialize for Relation {
         map.end()
     }
 }
-impl Serialize for Relations {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize(serializer)
-    }
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Links<'a> {
+pub(super) struct Links<'a> {
     #[serde(skip_serializing_if = "Presence::omitted")]
-    api_url: &'a Presence<String>,
+    pub(super) api_url: &'a Presence<String>,
     #[serde(skip_serializing_if = "Presence::omitted")]
-    html_url: &'a Presence<String>,
+    pub(super) html_url: &'a Presence<String>,
 }
 impl Serialize for Actor {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -293,7 +298,7 @@ struct RequestedRepository<'a> {
     #[serde(skip_serializing_if = "Presence::omitted")]
     observed: &'a Presence<Repository>,
 }
-#[derive(Serialize)]
+#[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Limits {
     max_attempts: usize,
@@ -304,13 +309,13 @@ struct Limits {
     max_accepted_body_bytes: usize,
     max_representation_bytes: usize,
 }
-#[derive(Serialize)]
+#[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Usage {
     attempted_requests: usize,
     accepted_body_bytes: usize,
 }
-#[derive(Serialize)]
+#[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Acquisition {
     started_at_unix_ms: u64,
@@ -326,7 +331,7 @@ struct Upstream<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     revalidation: &'a Option<BodyObservation>,
 }
-#[derive(Serialize)]
+#[derive(Clone, Copy, Serialize)]
 struct Unavailable {
     field: &'static str,
     reason: &'static str,
@@ -346,24 +351,23 @@ struct Facts<'a, B: Serialize> {
 }
 
 /// One bounded facts acquisition shared by every fact family in this read.
-struct FactsRead<'a> {
-    canonical: PathReference,
-    web_origin: &'a str,
-    limits: ReadAcquisitionLimits,
-    read: BoundedRead<'a>,
-    budget: HttpReadBudget,
-    started_at_unix_ms: u64,
-    started: tokio::time::Instant,
+pub(super) struct FactsRead<'a> {
+    pub(super) canonical: PathReference,
+    pub(super) web_origin: &'a str,
+    pub(super) limits: ReadAcquisitionLimits,
+    pub(super) read: BoundedRead<'a>,
+    pub(super) budget: HttpReadBudget,
+    pub(super) started_at_unix_ms: u64,
+    pub(super) started: tokio::time::Instant,
+    pub(super) cache_generation: Option<u64>,
 }
 
 mod collection;
 mod comment;
-mod continuation;
+pub(super) mod continuation;
 mod pull;
 
-/// One acquisition observation from explicit parts. The collection uses the
-/// same constructor for its fixed-size probe document, so the envelope shape
-/// has exactly one owner.
+/// One acquisition observation shared by measurement and final emission.
 pub(super) fn acquisition_at(
     limits: ReadAcquisitionLimits,
     attempted_requests: usize,
@@ -391,6 +395,28 @@ pub(super) fn acquisition_at(
     })
 }
 
+pub(super) fn establish_generation(ctx: &mut FactsRead<'_>, generation: u64) {
+    ctx.cache_generation = Some(generation);
+}
+
+pub(super) async fn check_generation(
+    source: &GithubSource,
+    ctx: &FactsRead<'_>,
+) -> Result<(), ResourceError> {
+    let Some(expected) = ctx.cache_generation else {
+        return Ok(());
+    };
+    if source
+        .session
+        .cache_generation(super::fetch::GITHUB_CACHE_NAMESPACE)
+        .await?
+        != expected
+    {
+        return Err(failure(ErrorReason::UpstreamUnavailable));
+    }
+    Ok(())
+}
+
 fn acquisition(ctx: &FactsRead<'_>) -> Result<Acquisition, ResourceError> {
     acquisition_at(
         ctx.limits,
@@ -409,37 +435,46 @@ fn failure(reason: ErrorReason) -> ResourceError {
     .with_details(ResourceErrorDetails::new(reason))
 }
 
-struct CappedWriter {
-    bytes: Vec<u8>,
+struct CappedWriter<W> {
+    output: W,
     cap: usize,
-    exceeded: bool,
+    written: usize,
+    exceeded: Option<usize>,
 }
-impl Write for CappedWriter {
+impl<W> CappedWriter<W> {
+    fn new(output: W, cap: usize) -> Self {
+        Self {
+            output,
+            cap,
+            written: 0,
+            exceeded: None,
+        }
+    }
+}
+impl<W: Write> Write for CappedWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.cap - self.bytes.len() {
-            self.exceeded = true;
+        let observed = self
+            .written
+            .checked_add(bytes.len())
+            .ok_or_else(|| io::Error::other("representation byte count overflow"))?;
+        if observed > self.cap {
+            self.exceeded = Some(observed);
             return Err(io::Error::other("representation limit"));
         }
-        self.bytes.extend_from_slice(bytes);
+        self.output.write_all(bytes)?;
+        self.written = observed;
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        self.output.flush()
     }
 }
-fn finish_facts<T: Serialize>(
+fn serialize_facts<T: Serialize, W: Write>(
     facts: &T,
-    cap: usize,
-    reference: PathReference,
-    read: BoundedRead<'_>,
-) -> Result<SourceResource, ResourceError> {
-    let mut writer = CappedWriter {
-        bytes: Vec::new(),
-        cap,
-        exceeded: false,
-    };
-    if serde_json::to_writer_pretty(&mut writer, facts).is_err() {
-        if writer.exceeded {
+    writer: &mut CappedWriter<W>,
+) -> Result<(), ResourceError> {
+    if serde_json::to_writer_pretty(&mut *writer, facts).is_err() {
+        if let Some(observed) = writer.exceeded {
             return Err(ResourceError::new(
                 ErrorCategory::LimitExceeded,
                 "GitHub facts representation exceeds its limit",
@@ -447,15 +482,33 @@ fn finish_facts<T: Serialize>(
             .with_details(
                 ResourceErrorDetails::new(ErrorReason::LimitExceeded).with_limit(LimitDetail::new(
                     AcquisitionLimitKind::RepresentationBytes,
-                    cap as u64,
-                    None,
+                    writer.cap as u64,
+                    Some(observed as u64),
                 )?),
             ));
         }
         return Err(failure(ErrorReason::UpstreamMalformed));
     }
+    Ok(())
+}
+
+/// Counts the exact final encoding without retaining another copy of its bytes.
+fn serialized_len<T: Serialize>(facts: &T) -> Result<usize, ResourceError> {
+    let mut writer = CappedWriter::new(io::sink(), usize::MAX);
+    serialize_facts(facts, &mut writer)?;
+    Ok(writer.written)
+}
+
+fn finish_facts<T: Serialize>(
+    facts: &T,
+    cap: usize,
+    reference: PathReference,
+    read: BoundedRead<'_>,
+) -> Result<SourceResource, ResourceError> {
+    let mut writer = CappedWriter::new(Vec::new(), cap);
+    serialize_facts(facts, &mut writer)?;
     let content =
-        String::from_utf8(writer.bytes).map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
+        String::from_utf8(writer.output).map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
     let resource = SourceResource::utf8(
         reference,
         content,
@@ -555,15 +608,15 @@ impl GithubSource {
             budget: HttpReadBudget::with_limits(&limits),
             started_at_unix_ms,
             started,
+            cache_generation: None,
         };
-        let number = number.get();
         match fact {
-            PullRequestFact::Pull => pull::read(self, repository, number, &mut ctx).await,
+            PullRequestFact::Pull => pull::read(self, repository, *number, &mut ctx).await,
             PullRequestFact::Comment(id) => {
-                comment::read_item(self, repository, number, id.get(), &mut ctx).await
+                comment::read_item(self, repository, *number, id, &mut ctx).await
             }
             PullRequestFact::Comments => {
-                collection::read(self, repository, number, cursor, &mut ctx).await
+                collection::read(self, repository, *number, cursor, &mut ctx).await
             }
         }
     }

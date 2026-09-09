@@ -161,6 +161,47 @@ fn basic_credential_maximum_stays_within_budget() {
 }
 
 #[tokio::test]
+async fn userinfo_url_is_refused_before_egress() {
+    let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let listener = TlsListener::serve_router(loopback, 0, match_cert(), |_path| {
+        FixtureResponse::Response {
+            status: "200 OK",
+            headers: Vec::new(),
+            body: b"must-not-arrive".to_vec(),
+        }
+    })
+    .await;
+    let port = listener.address.port();
+    let origin = AllowedOrigin::new(&format!("https://{FIXTURE_HOST}:{port}/"), true)
+        .expect("fixture origin");
+    let token = Secret::new("token-canary".to_owned()).expect("token");
+    let credential = OriginCredential::new(origin.clone(), "Authorization", Some("Bearer"), &token)
+        .expect("credential");
+    let substrate = tls_substrate_with_credentials(
+        OriginAllowlist::new(vec![origin]),
+        vec![loopback],
+        vec![credential],
+    );
+    let url = Url::parse(&format!(
+        "https://embedded:password@{FIXTURE_HOST}:{port}/issue"
+    ))
+    .expect("userinfo URL");
+    let failure = neutral_consumer(&substrate, url)
+        .await
+        .expect_err("userinfo must be rejected before HTTP egress");
+    settle().await;
+    assert_eq!(failure.category(), ErrorCategory::InvalidReference);
+    assert!(
+        listener.requests().is_empty(),
+        "userinfo URL must never reach the wire"
+    );
+    assert!(
+        listener.heads().is_empty(),
+        "no Authorization header was sent"
+    );
+}
+
+#[tokio::test]
 async fn source_headers_and_response_metadata_are_typed_and_bounded() {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let listener = TlsListener::serve_router(loopback, 0, match_cert(), |_path| {

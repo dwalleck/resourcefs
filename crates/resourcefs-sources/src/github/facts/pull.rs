@@ -135,10 +135,10 @@ struct PullBody<'a> {
 pub(super) async fn read(
     source: &GithubSource,
     repository: &GithubRepositoryIdentity,
-    number: u64,
+    number: resourcefs_core::PullRequestNumber,
     ctx: &mut FactsRead<'_>,
 ) -> Result<SourceResource, ResourceError> {
-    let endpoint = source.endpoint(repository, &format!("pulls/{number}"))?;
+    let endpoint = source.endpoint(repository, &format!("pulls/{}", number.get()))?;
     let response = source
         .fetch_controlled(
             endpoint.clone(),
@@ -147,6 +147,7 @@ pub(super) async fn read(
             Some(&mut ctx.budget),
         )
         .await?;
+    super::establish_generation(ctx, response.cache_generation);
     let pull: NativePull = serde_json::from_slice(response.body())
         .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
     let web = Url::parse(ctx.web_origin).map_err(|_| failure(ErrorReason::UpstreamUnavailable))?;
@@ -158,6 +159,7 @@ pub(super) async fn read(
         base_sha,
         head_sha,
     } = identity::validate(&pull, repository, number, &endpoint, &source.api_base, &web)?;
+    let requested_number = super::NativeId::from_positive(number.get());
     let mut unavailable_facts = Vec::new();
     macro_rules! missing { ($($field:expr => $name:literal),* $(,)?) => { $(
         $field.unavailable($name, &mut unavailable_facts);
@@ -191,7 +193,7 @@ pub(super) async fn read(
                     owner: repository.owner(),
                     name: repository.repository(),
                 },
-                number: observed_number,
+                number: &requested_number,
             },
             observed: Observed {
                 id,
@@ -256,14 +258,7 @@ pub(super) async fn read(
         ctx.canonical.clone(),
         ctx.read,
     )?;
-    if source
-        .session
-        .cache_generation(super::super::fetch::GITHUB_CACHE_NAMESPACE)
-        .await?
-        != response.cache_generation
-    {
-        return Err(failure(ErrorReason::UpstreamUnavailable));
-    }
+    super::check_generation(source, ctx).await?;
     ctx.read.check_acceptance()?;
     Ok(resource)
 }

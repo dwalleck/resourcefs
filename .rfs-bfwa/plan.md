@@ -259,3 +259,96 @@ Assembled tree `e409054`; rebased onto `origin/main` = `340d08b` (PR #9) with th
 6. Partition arithmetic is recorded (5,250 + 1,050 = 6,300 > 4,000) and every slice names its increment; every increment has a mergeable definition.
 7. Tracker taxonomy: the plan adds no deferral; successors are cited by verified IDs (`rfs-r31i`, `rfs-nchb`, `rfs-iktl`, `rfs-e5cv`, `rfs-3r0s`, `rfs-jrz7`).
 8. This plan declares no slice complete; `checkpointed-build` judges completion.
+
+## PR10 approved review repair plan amendment
+
+Approval and corrected claims: `design.md` section "Approved PR10 review repair
+amendment". Per-finding scope, rejected claims and checkpoint ownership:
+`review-decisions.md`. Base is `70c6063`; source equals the assessed `acd02a9`.
+Earlier checkpoint receipts above remain historical, not evidence for changed code.
+
+Main integrates patches from five disjoint writer worktrees. Writers run no build,
+formatter, linter or test and make no commits. Main owns red/green, mutation/restoration,
+production budgets, final gates and commits. This prohibition transfers proof to Main;
+it does not waive any check.
+
+| Repair | Inherited slices / claims | Atomic outcome | Estimated changed lines | Local increment |
+|---|---|---|---:|---|
+| R1 | S2–S4; C3–C15/C17 and reviewed obligations | Authenticated cursors, typed comment identity, exact whole-page admission, scoped outcomes, read-wide validity, source regression/fixture repairs and matching contract | 3,000 | Review-source |
+| R2 | S5/S6; C13/C16/C20 | Correct recovery consumers, strict request-target fixtures, native live-helper reuse | 600 | Review-consumers |
+| R3 | S0; C18 | One permanent placement command/ledger, inherited checks removed from frozen evidence dependency | 600 | Review-gate |
+
+Estimate 4,200 plus 20% churn allowance (840) = 5,040: review increments are required.
+Source repair owns the cursor/fetch consumer seam atomically; cursor and collection
+patches cannot be treated as independently green while PageResponse changes. Consumer
+and permanent-gate changes are separate local commits/increments. No push, PR, merge or
+tracker closure is authorized by the request; local review partition does not imply
+publication. If actual source repair exceeds its review-size boundary, split at a
+verified interface-compatible seam before committing, not by arbitrary file count.
+
+Expected module ownership remains the design's revised ledger. Facts identity and
+collection owners can grow to implement their existing invariants; helpers must stay
+within those responsibilities, not become pass-through files to satisfy line counts.
+The only protected github/mod.rs changes are private key state/constructor wiring and
+catalog grammar. Cursor cryptography stays in continuation.rs. Existing HTTP request
+authority validation rejects userinfo. Core record policy and grammar remain unchanged.
+The permanent gate owner records exact measured deltas and retained restrictions in its
+single ledger; unchanged obligations are inherited, not silently widened.
+
+R1 expected observable checks: addressed and observed IDs agree including >2^53; wrong
+parent/link authority rejects the whole read; ordinary later malformed records retain
+the prefix without a cursor; duplicates never claim complete; tampered targets and URL
+userinfo acquire nothing; source clones resume and foreign contexts cannot; 600+401
+resumes the unadmitted page; nested pretty bytes, long metadata and full failure details
+fit exact ceilings; resumed scope is explicit; actual expiry and generation invalidation
+reject publication. Existing source production tests retain their release limits,
+including <=1s collection processing. Per-page work may revisit a bounded prefix only
+within the ten-attempt ledger, never perform full serialization once per record.
+
+R2 expected checks: one JSON document reconstructed under both inline and spilled
+partial outputs, no artifact-recovery egress, separate source-cursor traversal, wrong
+query target rejected, missing gh follows established skip behavior. The existing
+1024-byte continuation helper remains the small-page fence.
+
+R3 expected checks: permanent import chain works without frozen oracle directories;
+old forbidden dependencies and protected-parent restrictions still fail; new unauthorized
+owners still fail; invalid stage is a usage error; restored legitimate tree passes.
+
+Main records exact commands, observed outcomes, independent fixture comparisons and
+compilable named-mutation red/restored-green results in review-decisions.md. Final
+assembly requires source/HTTP/MCP affected tests, existing production budgets,
+credential-gated adapter and real stdio live smoke, python scripts/ci-gates.py, and
+independent design/security review. No checkpoint is declared complete by this plan.
+
+### Verified integration partition
+
+Implementation exposed an ordering dependency: the final placement policy requires
+the new source symbols, while the old checker rejects their responsibility changes.
+The coherent local commit order is therefore **R3 → R1 → R2 → final receipts**:
+
+- R3 transports the existing `module-ledger-bfwa.json` policy unchanged into the
+  permanent ledger and keeps the original `validate` identity entry point. The
+  permanent-only checker passes against an archived `70c6063` source tree with no
+  frozen ticket directories. This checkpoint changes gate machinery, not source
+  behavior or its accepted ownership map.
+- R1 changes source behavior and its contract together, including the exact
+  corresponding required-symbol/API policy. It carries the source regression
+  corpus and the approved design/plan amendment. Source, tests and contract
+  changes total 3,739 changed lines before that small policy delta, below the
+  4,000-line review boundary; the final evidence ledger is a separate receipt.
+- R2 carries MCP recovery/strict fixtures and live-oracle changes (865 changed
+  lines measured before final receipts).
+- The final receipt commit records completed gates and the resulting commit
+  identities. It contains no production behavior.
+
+The source corpus now passes 39 tests (2 ignored), including the requested
+shared-route differential, hundred-record byte boundaries, full outcome checks,
+all cursor fields and actual public-token/hash forgery attempts. Compilable
+source/MCP/gate mutations and actual adapter/stdio continuation runs are recorded
+in `review-decisions.md` and `evidence.md`. Final gate completion remains required
+before these local commits.
+
+Final assembled gate: **PASS**, exit 0 / `All repository gates passed`.
+R1's original MCP recovery fixture, with only its required HTML-anchor
+consistency correction, also passes without the R2 helper changes. R3's old
+source checkpoint and the final strict policy both pass their permanent gate.

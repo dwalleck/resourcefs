@@ -5,7 +5,7 @@ mod tls;
 
 use resourcefs_core::{
     AllowedOrigin, ErrorCategory, ErrorReason, HttpCeilings, OperationGuard, PathReference,
-    ReadAcquisitionLimits, Secret, SourceAdapter, SourceResource,
+    ReadAcquisitionLimits, ReadRequest, Secret, SourceAdapter, SourceResource, TextLimits,
 };
 use resourcefs_sources::{
     GithubConfig, GithubDeployment, GithubRepository, GithubSource, GithubSourceMount,
@@ -17,7 +17,7 @@ use std::{
     net::{IpAddr, Ipv4Addr},
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -77,12 +77,25 @@ fn response(status: &'static str, body: String, headers: Vec<(String, String)>) 
         body: body.into_bytes(),
     }
 }
-async fn fixture<F>(transform: F, operator: ReadAcquisitionLimits) -> (TlsListener, GithubSource)
+
+fn host_from_head(head: &str) -> &str {
+    head.lines()
+        .find_map(|line| {
+            line.split_once(':')
+                .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
+                .map(|(_, value)| value.trim())
+        })
+        .expect("Host header")
+}
+async fn fixture<F>(
+    transform: F,
+    operator: ReadAcquisitionLimits,
+) -> (TlsListener, GithubSource, session_support::ScratchFixture)
 where
     F: Fn(usize, &str, &str) -> FixtureResponse + Send + Sync + 'static,
 {
-    let (listener, source, _session) = fixture_with_session(transform, operator).await;
-    (listener, source)
+    let (listener, source, session) = fixture_with_session(transform, operator).await;
+    (listener, source, session)
 }
 async fn fixture_with_session<F>(
     transform: F,
@@ -103,15 +116,7 @@ where
                 "/repos/owner/repo/pulls/7",
                 "no link/fork egress"
             );
-            let host = request
-                .head()
-                .lines()
-                .find_map(|line| {
-                    line.split_once(':')
-                        .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-                        .map(|(_, value)| value.trim())
-                })
-                .expect("Host header");
+            let host = host_from_head(request.head());
             let native = NATIVE.replace("@API@", &format!("https://{host}/"));
             transform(
                 count.fetch_add(1, Ordering::SeqCst),
@@ -173,7 +178,7 @@ async fn read_reference(
 ) -> Result<SourceResource, resourcefs_core::ResourceError> {
     source
         .read(
-            &PathReference::parse(reference).expect("facts reference"),
+            &PathReference::parse(reference)?,
             &OperationGuard::new(),
             limits,
         )
@@ -192,8 +197,38 @@ fn limits(
 }
 
 #[tokio::test]
+async fn session_scratch_retain_and_read_engine_recover_artifact_while_owner_lives() {
+    let fixture = session_support::scratch_fixture().await;
+    let operation = OperationGuard::new();
+    let content = "session scratch artifact bytes\n";
+    let address = fixture
+        .session
+        .path_session()
+        .retain(content, &operation)
+        .await
+        .expect("retain scratch artifact");
+    let reference = PathReference::artifact(address, None).expect("artifact reference");
+    let recovered = fixture
+        .reads
+        .read(
+            ReadRequest {
+                reference,
+                limits: TextLimits::default(),
+                numbered: false,
+                acquisition: None,
+            },
+            &operation,
+        )
+        .await
+        .expect("read retained artifact through ReadEngine");
+    assert_eq!(recovered.content(), content);
+    assert!(recovered.recovery_reference().is_none());
+    assert!(recovered.continuation_reference().is_none());
+}
+
+#[tokio::test]
 async fn facts_native_identity_consumer_and_observed_request() {
-    let (listener, source) = fixture(
+    let (listener, source, _session) = fixture(
         |_, native, _| {
             response(
                 "200 OK",
@@ -277,7 +312,7 @@ async fn facts_required_identity_contradictions_and_duplicates_are_rejected() {
         ("/base/repo/owner/login", json!("wrong")),
     ];
     for (pointer, replacement) in cases {
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             move |_, native, _| {
                 let mut value: Value = serde_json::from_str(native).unwrap();
                 *value.pointer_mut(pointer).unwrap() = replacement.clone();
@@ -297,7 +332,7 @@ async fn facts_required_identity_contradictions_and_duplicates_are_rejected() {
         assert_eq!(listener.requests().len(), 1);
     }
     for field in ["id", "number", "url", "base", "head"] {
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             move |_, native, _| {
                 let mut value: Value = serde_json::from_str(native).unwrap();
                 value.as_object_mut().unwrap().remove(field);
@@ -316,7 +351,7 @@ async fn facts_required_identity_contradictions_and_duplicates_are_rejected() {
         "\"_links\":{\"self\":{},\"self\":{}},",
         "\"html_url\":null,",
     ] {
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             move |_, native, _| {
                 response(
                     "200 OK",
@@ -349,7 +384,7 @@ async fn facts_independent_optional_presence_type_matrix() {
     ];
     for (native_key, owned_key) in fields {
         for mode in 0..4 {
-            let (listener, source) = fixture(
+            let (listener, source, _session) = fixture(
                 move |_, native, _| {
                     let mut value: Value = serde_json::from_str(native).unwrap();
                     match mode {
@@ -396,7 +431,7 @@ async fn facts_independent_optional_presence_type_matrix() {
     for side in ["base", "head"] {
         for field in ["ref", "repo"] {
             for mode in 0..4 {
-                let (listener, source) = fixture(
+                let (listener, source, _session) = fixture(
                     move |_, native, _| {
                         let mut value: Value = serde_json::from_str(native).unwrap();
                         match mode {
@@ -441,7 +476,7 @@ async fn facts_independent_optional_presence_type_matrix() {
 
 #[tokio::test]
 async fn facts_cache_provenance_changed_body_and_failed_revalidation() {
-    let (listener, source) = fixture(
+    let (listener, source, _session) = fixture(
         |index, native, head| {
             if index == 1 || index == 2 {
                 assert!(
@@ -506,7 +541,7 @@ async fn facts_body_and_cached_readmission_exact_plus_one() {
     for cached in [false, true] {
         for accepted in [false, true] {
             for plus_one in [false, true] {
-                let (listener, source) = fixture(
+                let (listener, source, _session) = fixture(
                     move |index, native, _| {
                         if cached && index > 0 {
                             response("304 Not Modified", String::new(), vec![])
@@ -556,7 +591,7 @@ async fn facts_body_and_cached_readmission_exact_plus_one() {
 async fn facts_representation_includes_escaping_and_envelope() {
     let body = "\u{0001}\"\\雪\n".repeat(300);
     let expected = body.clone();
-    let (listener, source) = fixture(
+    let (listener, source, _session) = fixture(
         move |_, native, _| {
             let mut value: Value = serde_json::from_str(native).unwrap();
             value["body"] = json!(body);
@@ -621,7 +656,7 @@ async fn facts_errors_are_status_derived_and_sanitized() {
             ErrorReason::UpstreamUnavailable,
         ),
     ] {
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             move |_, _, _| {
                 response(
                     status,
@@ -647,7 +682,7 @@ async fn facts_errors_are_status_derived_and_sanitized() {
 
 #[tokio::test]
 async fn facts_denial_and_precancel_have_no_egress_with_positive_control() {
-    let (listener, source) = fixture(
+    let (listener, source, _session) = fixture(
         |_, native, _| response("200 OK", native.into(), vec![]),
         ReadAcquisitionLimits::default(),
     )
@@ -684,7 +719,7 @@ async fn facts_inflight_cancel_and_deadline_refuse_barrier_delayed_response() {
         let notify = Arc::clone(&arrived);
         let (release, blocked) = std::sync::mpsc::channel();
         let blocked = std::sync::Mutex::new(blocked);
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             move |index, native, _| {
                 if index == 0 {
                     notify.notify_one();
@@ -870,7 +905,7 @@ async fn facts_operator_intersection_is_observed_for_each_independent_dimension(
             [2.0, 4000.0, 20000.0, 30000.0, 40000.0],
         ),
     ] {
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             |_, native, _| response("200 OK", native.into(), vec![]),
             operator,
         )
@@ -896,7 +931,7 @@ async fn facts_operator_intersection_is_observed_for_each_independent_dimension(
         }
         assert_eq!(listener.requests().len(), 1);
     }
-    let (listener, source) = fixture(
+    let (listener, source, _session) = fixture(
         |_, native, _| response("200 OK", native.into(), vec![]),
         limits(Some(1), None, None),
     )
@@ -945,7 +980,7 @@ async fn facts_link_and_nested_native_optional_matrix() {
     ];
     for path in paths {
         for mode in 0..4 {
-            let (listener, source) = fixture(
+            let (listener, source, _session) = fixture(
                 move |_, native, _| {
                     let mut value: Value = serde_json::from_str(native).unwrap();
                     let (parent, key) = path.rsplit_once('/').unwrap();
@@ -997,7 +1032,7 @@ async fn facts_link_and_nested_native_optional_matrix() {
 #[tokio::test]
 async fn facts_retry_attempts_and_redirects_are_observed_not_inferred() {
     for attempts in [1, 2] {
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             |index, native, _| {
                 if index == 0 {
                     response(
@@ -1015,7 +1050,14 @@ async fn facts_retry_attempts_and_redirects_are_observed_not_inferred() {
         let control = ReadAcquisitionLimits::new(Some(attempts), None, None, None, None).unwrap();
         let result = read(&source, Some(&control)).await;
         if attempts == 1 {
-            assert!(result.is_err());
+            let error = result.expect_err("parent does not retry beyond the attempt bound");
+            assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+            let details = error.details().expect("typed retry refusal");
+            assert_eq!(details.reason(), ErrorReason::UpstreamUnavailable);
+            assert_eq!(
+                details.retry_guidance(),
+                Some(resourcefs_core::RetryGuidance::DelaySeconds(0))
+            );
         } else {
             assert_eq!(
                 document(&result.expect("permitted retry"))["acquisition"]["usage"]["attemptedRequests"],
@@ -1028,7 +1070,7 @@ async fn facts_retry_attempts_and_redirects_are_observed_not_inferred() {
         "/repos/owner/repo/pulls/8",
         "https://forbidden.invalid/token-leak",
     ] {
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             move |_, _, _| FixtureResponse::Redirect(location.into()),
             ReadAcquisitionLimits::default(),
         )
@@ -1049,7 +1091,7 @@ async fn facts_malformed_bodies_and_uncached_304_never_publish() {
         vec![0xff, 0xfe],
         b"{\"id\":18446744073709551616}".to_vec(),
     ] {
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             move |_, _, _| FixtureResponse::Response {
                 status: "200 OK",
                 headers: vec![],
@@ -1068,7 +1110,7 @@ async fn facts_malformed_bodies_and_uncached_304_never_publish() {
         assert!(!format!("{error:?}").contains("malformed-secret"));
         assert_eq!(listener.requests().len(), 1);
     }
-    let (listener, source) = fixture(
+    let (listener, source, _session) = fixture(
         |_, _, _| response("304 Not Modified", String::new(), vec![]),
         ReadAcquisitionLimits::default(),
     )
@@ -1183,7 +1225,7 @@ async fn facts_duplicate_nested_identity_and_relation_keys_are_not_last_value_wi
             "\"href\":\"https://secret.invalid\",\"href\":\"https://github.example/Owner/Repo/pull/7\"",
         ),
     ] {
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             move |_, native, _| {
                 assert!(native.contains(needle), "fixture mutation must apply");
                 response("200 OK", native.replacen(needle, replacement, 1), vec![])
@@ -1207,7 +1249,7 @@ async fn facts_recognized_optional_parent_links_reject_contradictions_but_opaque
         "/_links/html/href",
     ] {
         for bad_parent in [false, true] {
-            let (listener, source) = fixture(
+            let (listener, source, _session) = fixture(
                 move |_, native, _| {
                     let mut value: Value = serde_json::from_str(native).unwrap();
                     let link = value.pointer_mut(path).expect("fixture link");
@@ -1240,7 +1282,7 @@ async fn facts_recognized_optional_parent_links_reject_contradictions_but_opaque
         }
     }
     for relation in ["issue", "comments", "review_comments"] {
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             move |_, native, _| {
                 let mut value: Value = serde_json::from_str(native).unwrap();
                 let parent = value["url"].as_str().unwrap();
@@ -1266,7 +1308,7 @@ async fn facts_recognized_optional_parent_links_reject_contradictions_but_opaque
         );
         assert_eq!(listener.requests().len(), 1);
     }
-    let (listener, source) = fixture(
+    let (listener, source, _session) = fixture(
         |_, native, _| {
             let mut value: Value = serde_json::from_str(native).unwrap();
             for key in ["html_url", "diff_url", "patch_url", "issue_url"] {
@@ -1303,7 +1345,7 @@ async fn facts_native_objects_reject_empty_arrays() {
         "/_links/self",
         "/_links/html",
     ] {
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             move |_, native, _| {
                 let mut value: Value = serde_json::from_str(native).unwrap();
                 *value.pointer_mut(path).expect("native object") = json!([]);
@@ -1330,7 +1372,7 @@ async fn facts_fork_links_validate_own_identity_without_fetching_fork() {
         ("/head/repo/html_url", "https://github.example/Owner/Repo"),
         ("/head/repo/html_url", "https://foreign.invalid/Other/Fork"),
     ] {
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             move |_, native, _| {
                 let mut value: Value = serde_json::from_str(native).unwrap();
                 let api = value["url"]
@@ -1352,7 +1394,7 @@ async fn facts_fork_links_validate_own_identity_without_fetching_fork() {
         );
         assert_eq!(listener.requests().len(), 1);
     }
-    let (listener, source) = fixture(
+    let (listener, source, _session) = fixture(
         |_, native, _| response("200 OK", native.into(), vec![]),
         ReadAcquisitionLimits::default(),
     )
@@ -1383,7 +1425,7 @@ async fn facts_repository_links_preserve_templates_opaque_and_empty_values() {
                 "https://foreign.invalid/repos/{owner}/{repo}",
                 "https://foreign.invalid/{owner}/{repo}",
             ] {
-                let (listener, source) = fixture(
+                let (listener, source, _session) = fixture(
                     move |_, native, _| {
                         let mut value: Value = serde_json::from_str(native).unwrap();
                         value[side]["repo"][native_key] = json!(supplied);
@@ -1423,7 +1465,7 @@ async fn github_facts_production_budget() -> Result<(), &'static str> {
     for measure_heap in [false, true] {
         let body = Arc::new(OnceLock::<String>::new());
         let served = Arc::clone(&body);
-        let (listener, source) = fixture(
+        let (listener, source, _session) = fixture(
             move |_, _, _| {
                 response(
                     "200 OK",
@@ -1513,7 +1555,9 @@ const COMMENT_RESOURCE: &str = "pr://owner/repo/7/comments/9001/facts";
 
 /// Routes the parent pull request and one conversation comment, so the two
 /// requests of a comment read can be observed independently.
-async fn comment_fixture<F>(transform: F) -> (TlsListener, GithubSource)
+async fn comment_fixture<F>(
+    transform: F,
+) -> (TlsListener, GithubSource, session_support::ScratchFixture)
 where
     F: Fn(&str, usize, &str) -> FixtureResponse + Send + Sync + 'static,
 {
@@ -1524,15 +1568,7 @@ where
         tls::match_cert(),
         move |request| {
             assert_eq!(request.method(), "GET", "facts cannot write");
-            let host = request
-                .head()
-                .lines()
-                .find_map(|line| {
-                    line.split_once(':')
-                        .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-                        .map(|(_, value)| value.trim())
-                })
-                .expect("Host header");
+            let host = host_from_head(request.head());
             let target = request.target().to_owned();
             let template = if target.starts_with("/repos/owner/repo/pulls/") {
                 NATIVE
@@ -1541,26 +1577,23 @@ where
             } else {
                 panic!("unexpected conversation-comment facts request {target}");
             };
-            let native = template.replace("@API@", &format!("https://{host}/"));
+            let native = template
+                .replace("@API@", &format!("https://{host}/"))
+                .replace(
+                    "https://github.example/Owner/Repo/pull/7",
+                    "https://github.example/owner/repo/pull/7",
+                );
             transform(&target, count.fetch_add(1, Ordering::SeqCst), &native)
         },
     )
     .await;
-    let (source, _session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
-    (listener, source)
-}
-
-fn top_level_keys(document: &str) -> Vec<&str> {
-    document
-        .lines()
-        .filter_map(|line| line.strip_prefix("  \""))
-        .filter_map(|line| line.split_once("\":").map(|(key, _)| key))
-        .collect()
+    let (source, session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
+    (listener, source, session)
 }
 
 #[tokio::test]
 async fn single_comment_facts_shape() {
-    let (listener, source) =
+    let (listener, source, _session) =
         comment_fixture(|_, _, native| response("200 OK", native.into(), vec![])).await;
     let resource = read_reference(&source, COMMENT_RESOURCE, None)
         .await
@@ -1630,7 +1663,7 @@ async fn comment_records_preserve_native_presence() {
     ];
     for (pointer, replacement, label) in cases {
         let supplied = replacement.clone();
-        let (_, source) = comment_fixture(move |target, _, native| {
+        let (_, source, _session) = comment_fixture(move |target, _, native| {
             if !target.starts_with("/repos/owner/repo/issues/comments/") {
                 return response("200 OK", native.into(), vec![]);
             }
@@ -1675,7 +1708,7 @@ async fn comment_records_preserve_native_presence() {
         ("/created_at", "createdAt", "createdAt"),
         ("/url", "links/apiUrl", "links.apiUrl"),
     ] {
-        let (_, source) = comment_fixture(move |target, _, native| {
+        let (_, source, _session) = comment_fixture(move |target, _, native| {
             if !target.starts_with("/repos/owner/repo/issues/comments/") {
                 return response("200 OK", native.into(), vec![]);
             }
@@ -1710,31 +1743,74 @@ async fn comment_records_preserve_native_presence() {
         );
     }
 
-    // Unknown native keys are ignored; ids above 2^53 stay exact decimal strings.
-    let (_, source) = comment_fixture(|target, _, native| {
+    // Unknown native keys are ignored; a matching id above 2^53 stays exact.
+    let large_id = 9_007_199_254_740_993_u64;
+    let large_reference = format!("pr://owner/repo/7/comments/{large_id}/facts");
+    let (_, source, _session) = comment_fixture(move |target, _, native| {
         if !target.starts_with("/repos/owner/repo/issues/comments/") {
             return response("200 OK", native.into(), vec![]);
         }
         let mut value: Value = serde_json::from_str(native).unwrap();
         value["future_native_field"] = json!({"nested": true});
-        value["id"] = json!(9007199254740993u64);
+        value["id"] = json!(large_id);
+        value["url"] = json!(format!(
+            "{}/{large_id}",
+            value["url"]
+                .as_str()
+                .expect("comment api URL")
+                .rsplit_once('/')
+                .expect("comment api URL segment")
+                .0
+        ));
+        value["html_url"] = json!(format!(
+            "https://github.example/owner/repo/pull/7#issuecomment-{large_id}"
+        ));
         response("200 OK", value.to_string(), vec![])
     })
     .await;
     let facts = document(
-        &read_reference(&source, COMMENT_RESOURCE, None)
+        &read_reference(&source, &large_reference, None)
             .await
-            .expect("unknown key"),
+            .expect("unknown key and matching large id"),
     );
     assert_eq!(facts["data"]["id"], "9007199254740993");
+    assert_eq!(facts["request"]["commentId"], "9007199254740993");
     assert!(facts["data"].get("future_native_field").is_none());
+
+    // A positive provider id that differs from the addressed id is not accepted.
+    let (_, source, _session) = comment_fixture(move |target, _, native| {
+        if !target.starts_with("/repos/owner/repo/issues/comments/") {
+            return response("200 OK", native.into(), vec![]);
+        }
+        let mut value: Value = serde_json::from_str(native).unwrap();
+        value["id"] = json!(9002_u64);
+        value["url"] = json!(format!(
+            "{}/9002",
+            value["url"]
+                .as_str()
+                .expect("comment api URL")
+                .rsplit_once('/')
+                .expect("comment api URL segment")
+                .0
+        ));
+        value["html_url"] = json!("https://github.example/owner/repo/pull/7#issuecomment-9002");
+        response("200 OK", value.to_string(), vec![])
+    })
+    .await;
+    let error = read_reference(&source, COMMENT_RESOURCE, None)
+        .await
+        .expect_err("wrong observed comment id");
+    assert_eq!(
+        error.details().expect("typed identity refusal").reason(),
+        ErrorReason::UpstreamIdentityMismatch
+    );
 
     // Duplicate recognized keys and non-object records are rejected.
     for body in [
         r#"{"id":1,"id":2,"issue_url":"@API@repos/owner/repo/issues/7"}"#.to_owned(),
         r#"[{"id":1}]"#.to_owned(),
     ] {
-        let (_, source) = comment_fixture(move |target, _, native| {
+        let (_, source, _session) = comment_fixture(move |target, _, native| {
             if target.starts_with("/repos/owner/repo/issues/comments/") {
                 return response("200 OK", body.clone(), vec![]);
             }
@@ -1754,7 +1830,7 @@ async fn comment_records_preserve_native_presence() {
 #[tokio::test]
 async fn wrong_parent_rejects_whole_component() {
     // The comment names another issue/PR in the same repository.
-    let (_, source) = comment_fixture(|target, _, native| {
+    let (_, source, _session) = comment_fixture(|target, _, native| {
         if !target.starts_with("/repos/owner/repo/issues/comments/") {
             return response("200 OK", native.into(), vec![]);
         }
@@ -1776,7 +1852,7 @@ async fn wrong_parent_rejects_whole_component() {
     );
 
     // The comment names a parent in another repository.
-    let (_, source) = comment_fixture(|target, _, native| {
+    let (_, source, _session) = comment_fixture(|target, _, native| {
         if !target.starts_with("/repos/owner/repo/issues/comments/") {
             return response("200 OK", native.into(), vec![]);
         }
@@ -1798,7 +1874,7 @@ async fn wrong_parent_rejects_whole_component() {
     );
 
     // The addressed number is not the pull request the comment belongs to.
-    let (_, source) =
+    let (_, source, _session) =
         comment_fixture(|_, _, native| response("200 OK", native.into(), vec![])).await;
     let error = read_reference(&source, "pr://owner/repo/8/comments/9001/facts", None)
         .await
@@ -1809,7 +1885,7 @@ async fn wrong_parent_rejects_whole_component() {
     ));
 
     // An issue number is not a pull request: the parent read is not found.
-    let (_, source) = comment_fixture(|target, _, native| {
+    let (_, source, _session) = comment_fixture(|target, _, native| {
         if target.starts_with("/repos/owner/repo/pulls/") {
             return response("404 Not Found", "{}".into(), vec![]);
         }
@@ -1826,53 +1902,261 @@ async fn wrong_parent_rejects_whole_component() {
 }
 
 #[tokio::test]
-async fn envelope_serializes_shared_fields_in_order() {
-    let (_, source) =
-        comment_fixture(|_, _, native| response("200 OK", native.into(), vec![])).await;
-    let resource = read_reference(&source, COMMENT_RESOURCE, None)
-        .await
-        .expect("comment facts");
-    assert_eq!(
-        top_level_keys(resource.content()),
-        [
-            "schemaVersion",
-            "kind",
-            "resource",
-            "source",
-            "repository",
-            "acquisition",
-            "request",
-            "observed",
-            "upstream",
-            "data",
-            "unavailableFacts",
-        ]
-    );
-
-    let (_, source) = fixture(
-        |_, native, _| response("200 OK", native.into(), vec![]),
-        ReadAcquisitionLimits::default(),
-    )
+async fn facts_identity_corpus_has_explicit_verdicts_not_human_parity() {
+    // Facts intentionally has its own verdict table: unlike a human adapter's
+    // later-page policy, these singular link contradictions are always hard
+    // refusals, while empty actors remain losslessly acceptable.
+    for (field, replacement) in [
+        (
+            "html_url",
+            "https://foreign.invalid/owner/repo/pull/7#issuecomment-9001",
+        ),
+        ("html_url", "file:///tmp/comment"),
+        (
+            "html_url",
+            "https://user:pass@github.example/owner/repo/pull/7#issuecomment-9001",
+        ),
+        (
+            "html_url",
+            "https://github.example/owner/repo/issues/8#issuecomment-9001",
+        ),
+        (
+            "html_url",
+            "https://github.example/owner/repo/issues/7#issuecomment-9002",
+        ),
+    ] {
+        let (listener, source, _session) = comment_fixture(move |target, _, native| {
+            if !target.starts_with("/repos/owner/repo/issues/comments/") {
+                return response("200 OK", native.into(), vec![]);
+            }
+            let mut value: Value = serde_json::from_str(native).unwrap();
+            value[field] = json!(replacement);
+            response("200 OK", value.to_string(), vec![])
+        })
+        .await;
+        assert!(
+            read_reference(&source, COMMENT_RESOURCE, None)
+                .await
+                .is_err(),
+            "facts singular rejects {field}={replacement}"
+        );
+        assert_eq!(listener.requests().len(), 2);
+    }
+    // GitHub's issue-shaped web URL is an accepted spelling of the same
+    // conversation comment identity.
+    let (_, source, _session) = comment_fixture(|target, _, native| {
+        if !target.starts_with("/repos/owner/repo/issues/comments/") {
+            return response("200 OK", native.into(), vec![]);
+        }
+        let mut value: Value = serde_json::from_str(native).unwrap();
+        value["html_url"] = json!("https://github.example/owner/repo/issues/7#issuecomment-9001");
+        response("200 OK", value.to_string(), vec![])
+    })
     .await;
-    let pull = read(&source, None).await.expect("pull facts");
-    assert_eq!(
-        top_level_keys(pull.content()),
-        [
-            "schemaVersion",
-            "kind",
-            "resource",
-            "source",
-            "repository",
-            "acquisition",
-            "request",
-            "observed",
-            "upstream",
-            "data",
-            "unavailableFacts",
-        ]
+    let facts = document(
+        &read_reference(&source, COMMENT_RESOURCE, None)
+            .await
+            .expect("issue-shaped web URL remains accepted"),
     );
-}
+    assert_eq!(
+        facts["data"]["links"]["htmlUrl"],
+        "https://github.example/owner/repo/issues/7#issuecomment-9001"
+    );
 
+    for kind in ["off-origin", "file", "userinfo", "self-id"] {
+        let (listener, source, _session) = comment_fixture(move |target, _, native| {
+            if !target.starts_with("/repos/owner/repo/issues/comments/") {
+                return response("200 OK", native.into(), vec![]);
+            }
+            let mut value: Value = serde_json::from_str(native).unwrap();
+            let link = match kind {
+                "off-origin" => {
+                    "https://foreign.invalid/repos/owner/repo/issues/comments/9001".to_owned()
+                }
+                "file" => "file:///tmp/comment".to_owned(),
+                "userinfo" => {
+                    let current = value["url"].as_str().expect("api URL");
+                    format!(
+                        "https://user:pass@{}",
+                        current.trim_start_matches("https://")
+                    )
+                }
+                _ => {
+                    let current = value["url"].as_str().expect("api URL");
+                    format!(
+                        "{}/9002",
+                        current.rsplit_once('/').expect("comment api URL segment").0
+                    )
+                }
+            };
+            value["url"] = json!(link);
+            response("200 OK", value.to_string(), vec![])
+        })
+        .await;
+        assert!(
+            read_reference(&source, COMMENT_RESOURCE, None)
+                .await
+                .is_err(),
+            "facts singular rejects {kind} API link"
+        );
+        assert_eq!(listener.requests().len(), 2);
+    }
+
+    // Empty actor values are an intentional facts distinction, not a human
+    // adapter parity requirement.
+    let (_, source, _session) = comment_fixture(|target, _, native| {
+        if !target.starts_with("/repos/owner/repo/issues/comments/") {
+            return response("200 OK", native.into(), vec![]);
+        }
+        let mut value: Value = serde_json::from_str(native).unwrap();
+        value["user"]["login"] = json!("");
+        response("200 OK", value.to_string(), vec![])
+    })
+    .await;
+    let facts = document(
+        &read_reference(&source, COMMENT_RESOURCE, None)
+            .await
+            .expect("empty actor login remains observable"),
+    );
+    assert_eq!(facts["data"]["author"]["login"], "");
+
+    // The same identity corpus on a later collection page rejects the whole
+    // component; ordinary malformed records use the retained-prefix fence.
+    for (field, replacement) in [
+        (
+            "html_url",
+            "https://foreign.invalid/owner/repo/pull/7#issuecomment-101",
+        ),
+        ("html_url", "file:///tmp/comment"),
+        (
+            "html_url",
+            "https://user:pass@github.example/owner/repo/pull/7#issuecomment-101",
+        ),
+        (
+            "html_url",
+            "https://github.example/owner/repo/pull/7#issuecomment-102",
+        ),
+        (
+            "html_url",
+            "https://github.example/owner/repo/issues/8#issuecomment-101",
+        ),
+        (
+            "html_url",
+            "https://github.example/owner/repo/issues/7#issuecomment-102",
+        ),
+    ] {
+        let (_, source, _session) = collection_fixture(move |target, api, _| {
+            if target.contains("page=2") {
+                let mut page = vec![comment_json(101, api)];
+                page[0][field] = json!(replacement);
+                return response(
+                    "200 OK",
+                    serde_json::to_string(&page).expect("identity page"),
+                    vec![],
+                );
+            }
+            let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+            comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
+        })
+        .await;
+        assert!(
+            read_reference(&source, COLLECTION_RESOURCE, None)
+                .await
+                .is_err(),
+            "facts later-page identity contradiction rejects {field}={replacement}"
+        );
+    }
+    let (_, source, _session) = collection_fixture(|target, api, _| {
+        if target.contains("page=2") {
+            let mut page = vec![comment_json(101, api)];
+            page[0]["html_url"] =
+                json!("https://github.example/owner/repo/issues/7#issuecomment-101");
+            return response(
+                "200 OK",
+                serde_json::to_string(&page).expect("accepted issue-shaped page"),
+                vec![],
+            );
+        }
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
+    })
+    .await;
+    let facts = document(
+        &read_reference(&source, COLLECTION_RESOURCE, None)
+            .await
+            .expect("issue-shaped later comment URL remains accepted"),
+    );
+    assert_eq!(
+        facts["data"]["records"].as_array().expect("records").len(),
+        101
+    );
+    assert_eq!(
+        facts["data"]["records"][100]["links"]["htmlUrl"],
+        "https://github.example/owner/repo/issues/7#issuecomment-101"
+    );
+
+    for kind in ["off-origin", "file", "userinfo", "self-id"] {
+        let (listener, source, _session) = collection_fixture(move |target, api, _| {
+            if target.contains("page=2") {
+                let mut page = vec![comment_json(101, api)];
+                let current = page[0]["url"].as_str().expect("api URL").to_owned();
+                page[0]["url"] = json!(match kind {
+                    "off-origin" => {
+                        "https://foreign.invalid/repos/owner/repo/issues/comments/101".to_owned()
+                    }
+                    "file" => "file:///tmp/comment".to_owned(),
+                    "userinfo" => format!(
+                        "https://user:pass@{}",
+                        current.trim_start_matches("https://")
+                    ),
+                    _ => format!(
+                        "{}/102",
+                        current.rsplit_once('/').expect("comment api URL segment").0
+                    ),
+                });
+                return response(
+                    "200 OK",
+                    serde_json::to_string(&page).expect("identity API page"),
+                    vec![],
+                );
+            }
+            let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+            comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
+        })
+        .await;
+        assert!(
+            read_reference(&source, COLLECTION_RESOURCE, None)
+                .await
+                .is_err(),
+            "facts later-page API contradiction rejects {kind}"
+        );
+        assert_eq!(listener.requests().len(), 3);
+    }
+    // A later native Link containing userinfo is an authority violation: it
+    // must not be softened into a retained prefix.
+    let (listener, source, _session) = collection_fixture(|target, api, _| {
+        if target.contains("page=2") {
+            let hostile = format!(
+                "https://user:pass@{}repos/owner/repo/issues/7/comments?per_page=100&page=3",
+                api.trim_start_matches("https://")
+            );
+            let page = vec![comment_json(101, api)];
+            return response(
+                "200 OK",
+                serde_json::to_string(&page).expect("hostile Link page"),
+                vec![("Link".into(), format!("<{hostile}>; rel=\"next\""))],
+            );
+        }
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
+    })
+    .await;
+    let error = read_reference(&source, COLLECTION_RESOURCE, None)
+        .await
+        .expect_err("userinfo authority violation");
+    assert_eq!(error.category(), ErrorCategory::PermissionDenied);
+    assert_eq!(listener.requests().len(), 3, "whole-read fence");
+}
 const COLLECTION_RESOURCE: &str = "pr://owner/repo/7/comments/facts";
 
 fn comment_json(id: u64, api: &str) -> Value {
@@ -1910,7 +2194,9 @@ fn comment_page(ids: &[u64], api: &str, next: Option<&str>) -> FixtureResponse {
 
 /// Routes the parent pull request and the conversation-comment collection,
 /// handing the transform the API base so it can build native pages.
-async fn collection_fixture<F>(transform: F) -> (TlsListener, GithubSource)
+async fn collection_fixture<F>(
+    transform: F,
+) -> (TlsListener, GithubSource, session_support::ScratchFixture)
 where
     F: Fn(&str, &str, usize) -> FixtureResponse + Send + Sync + 'static,
 {
@@ -1921,15 +2207,7 @@ where
         tls::match_cert(),
         move |request| {
             assert_eq!(request.method(), "GET", "facts cannot write");
-            let host = request
-                .head()
-                .lines()
-                .find_map(|line| {
-                    line.split_once(':')
-                        .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-                        .map(|(_, value)| value.trim())
-                })
-                .expect("Host header");
+            let host = host_from_head(request.head());
             let api = format!("https://{host}/");
             let target = request.target().to_owned();
             if target.starts_with("/repos/owner/repo/pulls/") {
@@ -1939,8 +2217,8 @@ where
         },
     )
     .await;
-    let (source, _session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
-    (listener, source)
+    let (source, session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
+    (listener, source, session)
 }
 
 async fn read_with_operation(
@@ -1961,7 +2239,7 @@ async fn read_with_operation(
 #[tokio::test]
 async fn collection_admits_whole_pages_atomically() {
     // 600 + 400 records are admitted whole.
-    let (listener, source) = collection_fixture(|target, api, _| {
+    let (listener, source, _session) = collection_fixture(|target, api, _| {
         let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
         if target.contains("page=2") {
             comment_page(&(601..=1000).collect::<Vec<_>>(), api, None)
@@ -1974,6 +2252,8 @@ async fn collection_admits_whole_pages_atomically() {
         .await
         .expect("600+400 admitted");
     let facts = document(&resource);
+    assert_eq!(facts["schemaVersion"]["minor"], 1);
+    assert_eq!(facts["collection"]["scope"], "initial");
     assert_eq!(facts["collection"]["state"], "complete");
     assert_eq!(facts["collection"]["acceptedCount"], 1000);
     assert_eq!(
@@ -1985,7 +2265,7 @@ async fn collection_admits_whole_pages_atomically() {
     assert_eq!(listener.requests().len(), 3);
 
     // 600 followed by 401 retains only the first page.
-    let (listener, source) = collection_fixture(|target, api, _| {
+    let (listener, source, _session) = collection_fixture(|target, api, _| {
         let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
         if target.contains("page=2") {
             comment_page(&(601..=1001).collect::<Vec<_>>(), api, None)
@@ -1994,21 +2274,49 @@ async fn collection_admits_whole_pages_atomically() {
         }
     })
     .await;
-    let facts = document(
-        &read_reference(&source, COLLECTION_RESOURCE, None)
-            .await
-            .expect("first page retained"),
-    );
+    let resource = read_reference(&source, COLLECTION_RESOURCE, None)
+        .await
+        .expect("first page retained");
+    let facts = document(&resource);
+    let records = facts["data"]["records"].as_array().expect("records");
+    assert_eq!(facts["schemaVersion"]["minor"], 1);
+    assert_eq!(facts["collection"]["scope"], "initial");
     assert_eq!(facts["collection"]["state"], "incomplete");
     assert_eq!(facts["collection"]["acceptedCount"], 600);
-    assert_eq!(facts["collection"]["localLimit"]["kind"], "records");
+    assert_eq!(records.len(), 600);
+    assert_eq!(records.first().expect("first record")["id"], "1");
+    assert_eq!(records.last().expect("last record")["id"], "600");
+    assert_eq!(
+        facts["collection"]["localLimit"]["kind"],
+        "collection_records"
+    );
     assert_eq!(facts["collection"]["localLimit"]["bound"], 1000);
     assert_eq!(facts["collection"]["localLimit"]["observed"], 1001);
+    let continuation = facts["collection"]["continuation"]
+        .as_str()
+        .expect("refused page continuation");
+    assert_eq!(resource.continuation(), Some(continuation));
     assert_eq!(facts["acquisition"]["usage"]["attemptedRequests"], 3);
-    assert_eq!(listener.requests().len(), 3);
+    let before_resume = listener.requests().len();
+    let resumed = read_reference(&source, continuation, None)
+        .await
+        .expect("resume refused page");
+    let resumed_facts = document(&resumed);
+    assert_eq!(resumed_facts["collection"]["scope"], "continuation");
+    assert_eq!(resumed_facts["collection"]["state"], "complete");
+    assert_eq!(resumed_facts["collection"]["acceptedCount"], 401);
+    assert_eq!(
+        resumed_facts["data"]["records"]
+            .as_array()
+            .expect("resumed records")
+            .first()
+            .expect("resumed first")["id"],
+        "601"
+    );
+    assert_eq!(listener.requests().len(), before_resume + 2);
 
     // A 1,001-record first page is a typed failure, never an empty success.
-    let (_, source) =
+    let (_, source, _session) =
         collection_fixture(|_, api, _| comment_page(&(1..=1001).collect::<Vec<_>>(), api, None))
             .await;
     let error = read_reference(&source, COLLECTION_RESOURCE, None)
@@ -2029,12 +2337,14 @@ async fn collection_admits_whole_pages_atomically() {
 
 #[tokio::test]
 async fn empty_complete_is_not_inaccessible() {
-    let (_, source) = collection_fixture(|_, _, _| comment_page(&[], "", None)).await;
+    let (_, source, _session) = collection_fixture(|_, _, _| comment_page(&[], "", None)).await;
     let facts = document(
         &read_reference(&source, COLLECTION_RESOURCE, None)
             .await
             .expect("empty complete collection"),
     );
+    assert_eq!(facts["schemaVersion"]["minor"], 1);
+    assert_eq!(facts["collection"]["scope"], "initial");
     assert_eq!(facts["collection"]["state"], "complete");
     assert_eq!(facts["collection"]["acceptedCount"], 0);
     assert_eq!(
@@ -2043,7 +2353,7 @@ async fn empty_complete_is_not_inaccessible() {
     );
 
     for status in ["404 Not Found", "403 Forbidden"] {
-        let (_, source) =
+        let (_, source, _session) =
             collection_fixture(move |_, _, _| response(status, "{}".into(), vec![])).await;
         let error = read_reference(&source, COLLECTION_RESOURCE, None)
             .await
@@ -2059,7 +2369,7 @@ async fn empty_complete_is_not_inaccessible() {
 async fn partial_retention_and_rejection_precedence() {
     // A malformed later page retains the verified first page with honest
     // coverage; the collection is not reported complete.
-    let (listener, source) = collection_fixture(|target, api, _| {
+    let (listener, source, _session) = collection_fixture(|target, api, _| {
         if target.contains("page=2") {
             return response("200 OK", "{malformed".into(), vec![]);
         }
@@ -2067,11 +2377,10 @@ async fn partial_retention_and_rejection_precedence() {
         comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
     })
     .await;
-    let facts = document(
-        &read_reference(&source, COLLECTION_RESOURCE, None)
-            .await
-            .expect("first page retained"),
-    );
+    let resource = read_reference(&source, COLLECTION_RESOURCE, None)
+        .await
+        .expect("first page retained");
+    let facts = document(&resource);
     assert_eq!(facts["collection"]["state"], "incomplete");
     assert_eq!(facts["collection"]["acceptedCount"], 100);
     assert_eq!(
@@ -2082,10 +2391,75 @@ async fn partial_retention_and_rejection_precedence() {
         facts["collection"]["failure"]["reason"],
         "upstream_malformed"
     );
+    assert!(facts["collection"].get("continuation").is_none());
+    assert!(resource.continuation().is_none());
     assert_eq!(listener.requests().len(), 3);
 
+    // A later page missing its required id retains the verified prefix but
+    // never issues a cursor for a page whose records were malformed.
+    let (_, source, _session) = collection_fixture(|target, api, _| {
+        if target.contains("page=2") {
+            let mut page = vec![comment_json(101, api)];
+            page[0]
+                .as_object_mut()
+                .expect("comment object")
+                .remove("id");
+            return response(
+                "200 OK",
+                serde_json::to_string(&page).expect("malformed record page"),
+                vec![],
+            );
+        }
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
+    })
+    .await;
+    let resource = read_reference(&source, COLLECTION_RESOURCE, None)
+        .await
+        .expect("malformed later record retains prefix");
+    let facts = document(&resource);
+    assert_eq!(facts["collection"]["acceptedCount"], 100);
+    assert_eq!(
+        facts["collection"]["failure"]["reason"],
+        "upstream_malformed"
+    );
+    assert!(facts["collection"].get("continuation").is_none());
+    assert!(resource.continuation().is_none());
+
+    // A wrong parent is an authority contradiction, so it rejects all pages.
+    let (_, source, _session) = collection_fixture(|target, api, _| {
+        if target.contains("page=2") {
+            let mut page = vec![comment_json(101, api)];
+            page[0]["issue_url"] = json!(format!("{api}repos/owner/repo/issues/8"));
+            return response(
+                "200 OK",
+                serde_json::to_string(&page).expect("wrong-parent page"),
+                vec![],
+            );
+        }
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
+    })
+    .await;
+    assert!(
+        read_reference(&source, COLLECTION_RESOURCE, None)
+            .await
+            .is_err(),
+        "wrong parent rejects the whole collection"
+    );
+
+    // Duplicate ids on the first page are not a complete collection.
+    let (_, source, _session) =
+        collection_fixture(|_, api, _| comment_page(&[1, 1], api, None)).await;
+    assert!(
+        read_reference(&source, COLLECTION_RESOURCE, None)
+            .await
+            .is_err(),
+        "duplicate first-page ids are refused"
+    );
+
     // A malformed first page is a typed failure, not an empty collection.
-    let (_, source) =
+    let (_, source, _session) =
         collection_fixture(|_, _, _| response("200 OK", "{malformed".into(), vec![])).await;
     let error = read_reference(&source, COLLECTION_RESOURCE, None)
         .await
@@ -2098,12 +2472,12 @@ async fn partial_retention_and_rejection_precedence() {
     // Cancellation after a verified page rejects every page of this read.
     let operation = Arc::new(OperationGuard::new());
     let cancelling = Arc::clone(&operation);
-    let (_, source) = collection_fixture(move |_target, api, index| {
+    let (listener, source, _session) = collection_fixture(move |_target, api, index| {
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
         if index == 0 {
-            cancelling.cancel();
-            let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
             return comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two));
         }
+        cancelling.cancel();
         comment_page(&[], api, None)
     })
     .await;
@@ -2111,18 +2485,279 @@ async fn partial_retention_and_rejection_precedence() {
         .await
         .expect_err("cancellation rejects the component");
     assert_eq!(error.category(), ErrorCategory::Cancelled);
+    assert_eq!(
+        listener.requests().len(),
+        3,
+        "parent and both pages were requested before cancellation was observed"
+    );
 }
 
 #[tokio::test]
+async fn collection_final_failure_rolls_back_last_verified_page() {
+    let healthy = Arc::new(AtomicBool::new(false));
+    let fixture_healthy = Arc::clone(&healthy);
+    let (listener, source, _session) = collection_fixture(move |target, api, _| {
+        if target.contains("page=3") {
+            if fixture_healthy.load(Ordering::SeqCst) {
+                return comment_page(&[201], api, None);
+            }
+            return response(
+                "503 Service Unavailable",
+                "retry secret".into(),
+                vec![("Retry-After".into(), "3600".into())],
+            );
+        }
+        if target.contains("page=2") {
+            let page_three = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=3");
+            let mut records: Vec<Value> = (101..=200).map(|id| comment_json(id, api)).collect();
+            records[0]
+                .as_object_mut()
+                .expect("comment object")
+                .remove("body");
+            return response(
+                "200 OK",
+                serde_json::to_string(&records).expect("page JSON"),
+                vec![("Link".into(), format!("<{page_three}>; rel=\"next\""))],
+            );
+        }
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
+    })
+    .await;
+
+    let wide_controls =
+        ReadAcquisitionLimits::new(Some(4), None, None, None, None).expect("four attempts");
+    let first = read_reference(&source, COLLECTION_RESOURCE, Some(&wide_controls))
+        .await
+        .expect("two verified pages plus final failure");
+    let first_facts = document(&first);
+    assert_eq!(first_facts["collection"]["scope"], "initial");
+    assert_eq!(first_facts["collection"]["state"], "incomplete");
+    assert_eq!(first_facts["collection"]["acceptedCount"], 200);
+    assert_eq!(
+        first_facts["data"]["records"]
+            .as_array()
+            .expect("first records")
+            .len(),
+        200
+    );
+    assert_eq!(
+        first_facts["collection"]["failure"]["category"],
+        "source_unavailable"
+    );
+    assert_eq!(
+        first_facts["collection"]["failure"]["reason"],
+        "upstream_unavailable"
+    );
+    assert_eq!(first_facts["collection"]["failure"]["httpStatus"], 503);
+    assert_eq!(
+        first_facts["collection"]["failure"]["retryGuidance"]["delaySeconds"],
+        3600
+    );
+    let first_cursor = first_facts["collection"]["continuation"]
+        .as_str()
+        .expect("failed page continuation")
+        .to_owned();
+    assert_eq!(first.continuation(), Some(first_cursor.as_str()));
+    let first_cursor_payload = cursor_parts(
+        first_cursor
+            .rsplit(":cursor:")
+            .next()
+            .expect("encoded first cursor"),
+    )
+    .0;
+    assert!(
+        first_cursor_payload["target"]
+            .as_str()
+            .expect("first cursor target")
+            .contains("page=3")
+    );
+    assert_eq!(
+        first_facts["unavailableFacts"]
+            .as_array()
+            .expect("first unavailable facts")
+            .iter()
+            .filter(|entry| entry["field"] == "body" && entry["reason"] == "omitted")
+            .count(),
+        1
+    );
+    assert_eq!(first_facts["acquisition"]["usage"]["attemptedRequests"], 4);
+    assert_eq!(listener.requests().len(), 4);
+
+    let mut candidate = first_facts.clone();
+    let candidate_collection = candidate["collection"]
+        .as_object_mut()
+        .expect("candidate collection");
+    assert!(candidate_collection.remove("failure").is_some());
+    assert!(candidate_collection.get("localLimit").is_none());
+    assert!(candidate_collection.get("continuation").is_some());
+    let candidate_bytes = serde_json::to_vec_pretty(&candidate)
+        .expect("candidate JSON")
+        .len();
+    let full_failure_bytes = first.content().len();
+    let failure_overhead = full_failure_bytes
+        .checked_sub(candidate_bytes)
+        .expect("failure makes the document larger");
+    assert!(
+        failure_overhead > 128,
+        "failure field must add substantial representation bytes"
+    );
+    let cap = candidate_bytes.checked_add(64).expect("representation cap");
+    assert!(
+        cap < full_failure_bytes.saturating_sub(64),
+        "derived cap leaves the required failure-growth margin"
+    );
+    let controls =
+        ReadAcquisitionLimits::new(Some(4), None, None, None, Some(cap)).expect("derived cap");
+
+    let limited = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
+        .await
+        .expect("rollback publishes the verified prefix");
+    let limited_facts = document(&limited);
+    assert_eq!(listener.requests().len(), 8, "four requests per read");
+    assert_eq!(
+        limited_facts["acquisition"]["usage"]["attemptedRequests"],
+        4
+    );
+    assert_eq!(limited_facts["collection"]["scope"], "initial");
+    assert_eq!(limited_facts["collection"]["state"], "incomplete");
+    assert_eq!(limited_facts["collection"]["acceptedCount"], 100);
+    assert!(limited_facts["collection"].get("failure").is_none());
+    assert_eq!(
+        limited_facts["collection"]["localLimit"]["kind"],
+        "representation_bytes"
+    );
+    assert_eq!(limited_facts["collection"]["localLimit"]["bound"], cap);
+    assert!(
+        limited_facts["collection"]["localLimit"]["observed"]
+            .as_u64()
+            .expect("observed representation bytes")
+            > cap as u64
+    );
+    assert!(limited.content().len() <= cap);
+    let limited_records = limited_facts["data"]["records"]
+        .as_array()
+        .expect("retained records");
+    assert_eq!(limited_records.len(), 100);
+    assert_eq!(
+        limited_records
+            .iter()
+            .map(|record| record["id"].as_str().expect("comment ID"))
+            .collect::<Vec<_>>(),
+        (1..=100).map(|id| id.to_string()).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        limited_facts["upstream"]["pages"]
+            .as_array()
+            .expect("retained upstream pages")
+            .len(),
+        1
+    );
+    assert!(
+        !limited_facts["unavailableFacts"]
+            .as_array()
+            .expect("rolled-back unavailable facts")
+            .iter()
+            .any(|entry| entry["field"] == "body" && entry["reason"] == "omitted"),
+        "rolled-back page metadata must be removed"
+    );
+    let limited_cursor = limited_facts["collection"]["continuation"]
+        .as_str()
+        .expect("rollback continuation")
+        .to_owned();
+    assert_eq!(limited.continuation(), Some(limited_cursor.as_str()));
+    let limited_cursor_payload = cursor_parts(
+        limited_cursor
+            .rsplit(":cursor:")
+            .next()
+            .expect("encoded rollback cursor"),
+    )
+    .0;
+    assert!(
+        limited_cursor_payload["target"]
+            .as_str()
+            .expect("rollback cursor target")
+            .contains("page=2")
+    );
+    assert!(
+        !limited_cursor_payload["target"]
+            .as_str()
+            .expect("rollback cursor target")
+            .contains("page=3")
+    );
+
+    healthy.store(true, Ordering::SeqCst);
+    let resumed = read_reference(&source, &limited_cursor, Some(&controls))
+        .await
+        .expect("resume reaches the repaired final page");
+    let resumed_facts = document(&resumed);
+    assert_eq!(resumed_facts["collection"]["scope"], "continuation");
+    assert_eq!(resumed_facts["collection"]["state"], "complete");
+    assert_eq!(resumed_facts["collection"]["acceptedCount"], 101);
+    assert!(resumed_facts["collection"].get("failure").is_none());
+    assert!(resumed_facts["collection"].get("continuation").is_none());
+    assert!(resumed.continuation().is_none());
+    let resumed_records = resumed_facts["data"]["records"]
+        .as_array()
+        .expect("resumed records");
+    assert_eq!(resumed_records.len(), 101);
+    assert_eq!(resumed_records.first().expect("resumed first")["id"], "101");
+    assert_eq!(resumed_records.last().expect("resumed last")["id"], "201");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn collection_generation_change_between_pages_rejects_verified_prefix() {
+    let page_two_arrived = Arc::new(tokio::sync::Notify::new());
+    let notify = Arc::clone(&page_two_arrived);
+    let (release, blocked) = std::sync::mpsc::channel();
+    let blocked = std::sync::Mutex::new(blocked);
+    let (listener, source, session_fixture) = collection_fixture(move |_, api, index| {
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        if index == 0 {
+            return comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two));
+        }
+        notify.notify_one();
+        blocked
+            .lock()
+            .expect("generation barrier")
+            .recv_timeout(Duration::from_secs(5))
+            .expect("release generation barrier");
+        comment_page(&(101..=200).collect::<Vec<_>>(), api, None)
+    })
+    .await;
+    let source = Arc::new(source);
+    let reading = Arc::clone(&source);
+    let task =
+        tokio::spawn(async move { read_reference(&reading, COLLECTION_RESOURCE, None).await });
+    tokio::time::timeout(Duration::from_secs(3), page_two_arrived.notified())
+        .await
+        .expect("second page request arrived");
+    session_fixture
+        .path_session()
+        .cache_remove_namespace("github-http")
+        .await
+        .expect("invalidate GitHub generation");
+    release.send(()).expect("release second page");
+    let result = tokio::time::timeout(Duration::from_secs(3), task)
+        .await
+        .expect("bounded generation read")
+        .expect("reader task");
+    assert!(result.is_err(), "generation change rejects all prior pages");
+    assert!(listener.requests().len() >= 3);
+}
+#[tokio::test]
 async fn collection_coverage_vocabulary_is_honest() {
-    let (_, source) = collection_fixture(|_, api, _| comment_page(&[1, 2, 3], api, None)).await;
+    let (_, source, _session) =
+        collection_fixture(|_, api, _| comment_page(&[1, 2, 3], api, None)).await;
     let facts = document(
         &read_reference(&source, COLLECTION_RESOURCE, None)
             .await
             .expect("complete collection"),
     );
     let collection = facts["collection"].as_object().expect("collection object");
-    for key in ["state", "acceptedCount"] {
+    assert_eq!(facts["schemaVersion"]["minor"], 1);
+    assert_eq!(collection["scope"], "initial");
+    for key in ["state", "acceptedCount", "scope"] {
         assert!(collection.contains_key(key), "{key}");
     }
     // This family has no provider cap and no supplied total; neither is invented.
@@ -2139,7 +2774,7 @@ async fn collection_coverage_vocabulary_is_honest() {
 
 #[tokio::test]
 async fn one_budget_covers_parent_and_pages() {
-    let (listener, source) = collection_fixture(|target, api, _| {
+    let (listener, source, _session) = collection_fixture(|target, api, _| {
         let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
         if target.contains("page=2") {
             comment_page(&(101..=200).collect::<Vec<_>>(), api, None)
@@ -2150,72 +2785,309 @@ async fn one_budget_covers_parent_and_pages() {
     .await;
     let controls =
         ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("two attempts");
-    let facts = document(
-        &read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
-            .await
-            .expect("parent plus one page fit the budget"),
-    );
+    let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
+        .await
+        .expect("parent plus one page fit the budget");
+    let facts = document(&resource);
+    assert_eq!(facts["schemaVersion"]["minor"], 1);
+    assert_eq!(facts["collection"]["scope"], "initial");
     assert_eq!(facts["collection"]["state"], "incomplete");
     assert_eq!(facts["collection"]["acceptedCount"], 100);
     assert_eq!(facts["collection"]["failure"]["category"], "limit_exceeded");
+    assert_eq!(facts["collection"]["failure"]["limit"]["kind"], "attempts");
+    let continuation = facts["collection"]["continuation"]
+        .as_str()
+        .expect("budget continuation");
+    assert_eq!(resource.continuation(), Some(continuation));
     assert_eq!(facts["acquisition"]["usage"]["attemptedRequests"], 2);
     assert_eq!(listener.requests().len(), 2, "the attempt budget is shared");
 }
 
 #[tokio::test]
-async fn representation_ceiling_includes_outcome_overhead() {
-    // Measure two real documents so the cap is derived from observed bytes,
-    // never from the admission arithmetic under test.
-    let (_, source) = collection_fixture(|_, api, _| comment_page(&[1], api, None)).await;
-    let one = read_reference(&source, COLLECTION_RESOURCE, None)
-        .await
-        .expect("one record")
-        .content()
-        .len();
-    let (_, source) = collection_fixture(|_, api, _| comment_page(&[1, 2], api, None)).await;
-    let two = read_reference(&source, COLLECTION_RESOURCE, None)
-        .await
-        .expect("two records")
-        .content()
-        .len();
-    assert!(two > one + 1_024, "records must dominate the reserve");
-
-    // A cap that admits one record but not two keeps the first page and names
-    // the representation limit; the second page is never admitted.
-    let (_, source) = collection_fixture(|target, api, _| {
-        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+async fn collection_early_retry_does_not_fit_publishes_prefix_while_deadline_remains() {
+    let (listener, source, _session) = collection_fixture(|target, api, _| {
         if target.contains("page=2") {
-            comment_page(&[2], api, None)
-        } else {
-            comment_page(&[1], api, Some(&page_two))
+            return response(
+                "503 Service Unavailable",
+                "retry secret".into(),
+                vec![("Retry-After".into(), "3600".into())],
+            );
+        }
+        let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+        comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
+    })
+    .await;
+    let controls = ReadAcquisitionLimits::new(None, Some(Duration::from_secs(5)), None, None, None)
+        .expect("deadline controls");
+    let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
+        .await
+        .expect("retry that cannot fit publishes verified prefix");
+    let facts = document(&resource);
+    assert_eq!(facts["schemaVersion"]["minor"], 1);
+    assert_eq!(facts["collection"]["scope"], "initial");
+    assert_eq!(facts["collection"]["state"], "incomplete");
+    assert_eq!(facts["collection"]["acceptedCount"], 100);
+    assert_eq!(
+        facts["collection"]["failure"]["reason"],
+        "deadline_exceeded"
+    );
+    assert_eq!(
+        facts["collection"]["failure"]["retryGuidance"]["delaySeconds"],
+        3600
+    );
+    let continuation = facts["collection"]["continuation"]
+        .as_str()
+        .expect("retry target remains resumable");
+    assert_eq!(resource.continuation(), Some(continuation));
+    assert_eq!(listener.requests().len(), 3);
+}
+#[tokio::test]
+async fn collection_response_and_aggregate_limits_keep_distinct_full_details() {
+    fn page_body(api: &str, first: u64, last: u64) -> String {
+        let records: Vec<Value> = (first..=last).map(|id| comment_json(id, api)).collect();
+        serde_json::to_string(&records).expect("page JSON")
+    }
+
+    #[derive(Clone, Copy)]
+    enum Case {
+        ResponseTooLarge,
+        FreshAggregateTooSmall,
+        FreshAggregateFits,
+    }
+
+    for case in [
+        Case::ResponseTooLarge,
+        Case::FreshAggregateTooSmall,
+        Case::FreshAggregateFits,
+    ] {
+        let (listener, source, _session) = collection_fixture(|target, api, _| {
+            if target.contains("page=2") {
+                return response("200 OK", page_body(api, 101, 200), vec![]);
+            }
+            let next = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+            response(
+                "200 OK",
+                page_body(api, 1, 100),
+                vec![("Link".into(), format!("<{next}>; rel=\"next\""))],
+            )
+        })
+        .await;
+        let api = format!("https://{}:{}/", tls::FIXTURE_HOST, listener.address.port());
+        let parent_bytes = NATIVE.replace("@API@", &api).len();
+        let first_bytes = page_body(&api, 1, 100).len();
+        let second_bytes = page_body(&api, 101, 200).len();
+        assert!(
+            first_bytes < second_bytes,
+            "the first page must fit every case"
+        );
+        assert!(
+            parent_bytes < second_bytes - 1,
+            "the parent must fit every case"
+        );
+        let (response_bound, aggregate_bound, kind, bound, observed) = match case {
+            Case::ResponseTooLarge => (
+                Some(second_bytes - 1),
+                None,
+                "response_body_bytes",
+                second_bytes - 1,
+                second_bytes,
+            ),
+            Case::FreshAggregateTooSmall => (
+                None,
+                Some(parent_bytes + second_bytes - 1),
+                "accepted_body_bytes",
+                parent_bytes + second_bytes - 1,
+                parent_bytes + first_bytes + second_bytes,
+            ),
+            Case::FreshAggregateFits => (
+                None,
+                Some(parent_bytes + second_bytes),
+                "accepted_body_bytes",
+                parent_bytes + second_bytes,
+                parent_bytes + first_bytes + second_bytes,
+            ),
+        };
+        let controls =
+            ReadAcquisitionLimits::new(None, None, response_bound, aggregate_bound, None)
+                .expect("native-byte-derived limit");
+        let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
+            .await
+            .expect("verified first page survives the later limit");
+        let facts = document(&resource);
+        assert_eq!(facts["collection"]["scope"], "initial");
+        assert_eq!(facts["collection"]["state"], "incomplete");
+        assert_eq!(facts["collection"]["acceptedCount"], 100);
+        assert_eq!(facts["collection"]["failure"]["category"], "limit_exceeded");
+        assert_eq!(facts["collection"]["failure"]["reason"], "limit_exceeded");
+        assert_eq!(
+            facts["collection"]["failure"]["limit"],
+            json!({"kind":kind,"bound":bound,"observed":observed})
+        );
+        let ids = facts["data"]["records"]
+            .as_array()
+            .expect("retained records")
+            .iter()
+            .map(|record| record["id"].as_str().expect("comment ID"))
+            .collect::<Vec<_>>();
+        assert_eq!(ids, (1..=100).map(|id| id.to_string()).collect::<Vec<_>>());
+        assert_eq!(listener.requests().len(), 3);
+
+        if !matches!(case, Case::FreshAggregateFits) {
+            assert!(
+                resource.continuation().is_none(),
+                "a fresh read cannot fix this limit"
+            );
+            assert!(facts["collection"].get("continuation").is_none());
+            continue;
+        }
+        let continuation = facts["collection"]["continuation"]
+            .as_str()
+            .expect("fresh parent plus second page fits");
+        assert_eq!(resource.continuation(), Some(continuation));
+        let resumed = read_reference(&source, continuation, Some(&controls))
+            .await
+            .expect("same-bound continuation succeeds");
+        let resumed_facts = document(&resumed);
+        assert_eq!(resumed_facts["collection"]["scope"], "continuation");
+        assert_eq!(resumed_facts["collection"]["state"], "complete");
+        assert_eq!(resumed_facts["collection"]["acceptedCount"], 100);
+        let resumed_ids = resumed_facts["data"]["records"]
+            .as_array()
+            .expect("resumed records")
+            .iter()
+            .map(|record| record["id"].as_str().expect("comment ID"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            resumed_ids,
+            (101..=200).map(|id| id.to_string()).collect::<Vec<_>>()
+        );
+        assert!(resumed.continuation().is_none());
+        assert_eq!(listener.requests().len(), 5);
+    }
+}
+#[tokio::test]
+async fn representation_ceiling_includes_outcome_overhead() {
+    // Measure the actual pretty document, including nested records, long
+    // provenance, unavailable/null fields and revalidation observations.
+    let etag = format!("\"{}\"", "e".repeat(8_190));
+    let date = "Tue, 01 Jan 2019 00:00:00 GMT".to_owned();
+    let (listener, source, _session) = collection_fixture({
+        let etag = etag.clone();
+        let date = date.clone();
+        move |target, api, index| {
+            let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+            let page = if target.contains("page=2") { 2 } else { 1 };
+            let ids: Vec<u64> = if page == 1 {
+                (1..=100).collect()
+            } else {
+                (101..=200).collect()
+            };
+            if index >= 2 {
+                return response(
+                    "304 Not Modified",
+                    String::new(),
+                    vec![("Date".into(), date.clone())],
+                );
+            }
+            let mut records: Vec<Value> = ids.iter().map(|id| comment_json(*id, api)).collect();
+            records.iter_mut().for_each(|record| {
+                record["body"] = json!("nested pretty body ".repeat(32));
+            });
+            if page == 1 {
+                records[0]["body"] = Value::Null;
+                records[1].as_object_mut().expect("record").remove("body");
+                records[2]["user"] = Value::Null;
+                records[3].as_object_mut().expect("record").remove("user");
+                records[4]["user"]["login"] = json!("");
+            }
+            let mut headers = vec![("ETag".into(), etag.clone()), ("Date".into(), date.clone())];
+            headers.push(("Link".into(), format!("<{page_two}>; rel=\"next\"")));
+            if page == 2 {
+                headers.pop();
+            }
+            response(
+                "200 OK",
+                serde_json::to_string(&records).expect("large page JSON"),
+                headers,
+            )
         }
     })
     .await;
-    let controls = ReadAcquisitionLimits::new(None, None, None, None, Some(two)).expect("cap");
-    let facts = document(
-        &read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
-            .await
-            .expect("first page fits"),
-    );
-    assert_eq!(facts["collection"]["state"], "incomplete");
+
+    let first = read_reference(&source, COLLECTION_RESOURCE, None)
+        .await
+        .expect("two real pages");
+    let first_facts = document(&first);
     assert_eq!(
-        facts["collection"]["localLimit"]["kind"],
+        first_facts["data"]["records"]
+            .as_array()
+            .expect("records")
+            .len(),
+        200
+    );
+    assert_eq!(first_facts["collection"]["acceptedCount"], 200);
+    let revalidated = read_reference(&source, COLLECTION_RESOURCE, None)
+        .await
+        .expect("revalidated two real pages");
+    let revalidated_facts = document(&revalidated);
+    assert_eq!(
+        revalidated_facts["upstream"]["pages"][0]["revalidation"]["status"], 304,
+        "revalidation observations: {}",
+        revalidated_facts["upstream"]
+    );
+    assert_eq!(
+        revalidated_facts["upstream"]["pages"][0]["body"]["etag"]
+            .as_str()
+            .expect("8KiB ETag")
+            .len(),
+        8_192
+    );
+
+    // Lower the observed complete-document ceiling enough to refuse page two,
+    // while leaving a large margin for the first 100-record pretty document.
+    let cap = revalidated.content().len().saturating_sub(8 * 1024);
+    assert!(cap > 100_000, "cap must leave room for one full page");
+    let controls = ReadAcquisitionLimits::new(None, None, None, None, Some(cap)).expect("cap");
+    let limited = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
+        .await
+        .expect("whole first page under measured lower ceiling");
+    assert!(limited.content().len() <= cap);
+    let limited_facts = document(&limited);
+    let records = limited_facts["data"]["records"]
+        .as_array()
+        .expect("records");
+    assert_eq!(records.len(), 100);
+    assert_eq!(records.first().expect("first record")["id"], "1");
+    assert_eq!(records.last().expect("last record")["id"], "100");
+    assert_eq!(limited_facts["collection"]["scope"], "initial");
+    assert_eq!(limited_facts["collection"]["state"], "incomplete");
+    assert_eq!(
+        limited_facts["collection"]["localLimit"]["kind"],
         "representation_bytes"
     );
-    assert_eq!(facts["collection"]["acceptedCount"], 1);
+    assert_eq!(limited_facts["collection"]["acceptedCount"], 100);
+    let continuation = limited_facts["collection"]["continuation"]
+        .as_str()
+        .expect("representation continuation");
+    assert_eq!(limited.continuation(), Some(continuation));
 
-    // A first page that cannot fit is a typed failure.
-    let (_, source) = collection_fixture(|_, api, _| comment_page(&[1], api, None)).await;
-    let controls = ReadAcquisitionLimits::new(None, None, None, None, Some(one - 1)).expect("cap");
-    let error = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
+    let resumed = read_reference(&source, continuation, None)
         .await
-        .expect_err("unreturnable first page");
-    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+        .expect("resume representation-refused page");
+    let resumed_facts = document(&resumed);
+    assert_eq!(resumed_facts["collection"]["scope"], "continuation");
+    assert_eq!(resumed_facts["collection"]["state"], "complete");
+    assert_eq!(resumed_facts["collection"]["acceptedCount"], 100);
+    assert_eq!(
+        resumed_facts["data"]["records"][0]["id"], "101",
+        "resume starts at refused page without skipping"
+    );
+    assert!(listener.requests().len() >= 9);
 }
 
 #[tokio::test]
 async fn repeated_pagination_is_explicit() {
-    let (listener, source) = collection_fixture(|target, api, _| {
+    let (listener, source, _session) = collection_fixture(|target, api, _| {
         // Every page names the same next target, so traversal cannot progress.
         let repeated = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
         if target.contains("page=2") {
@@ -2231,6 +3103,7 @@ async fn repeated_pagination_is_explicit() {
             .expect("repeated pagination is reported, not looped"),
     );
     assert_eq!(facts["collection"]["state"], "unknown");
+    assert_eq!(facts["collection"]["scope"], "initial");
     assert_eq!(
         facts["collection"]["inconsistency"]["reason"],
         "repeated_pagination"
@@ -2245,7 +3118,7 @@ async fn github_collection_production_budget() {
     // Nine pages of 100 records: one shared attempt budget spends the first
     // attempt on the parent, so nine data pages is the reachable maximum.
     let body = "x".repeat(6_000);
-    let (_, source) = collection_fixture(move |target, api, _| {
+    let (_, source, _session) = collection_fixture(move |target, api, _| {
         // `per_page=100` also contains `page=`, so take the last occurrence.
         let page: u64 = target
             .rsplit("page=")
@@ -2336,9 +3209,25 @@ fn b64_encode(bytes: &[u8]) -> String {
     out
 }
 
+fn cursor_parts(encoded: &str) -> (Value, Vec<u8>) {
+    let bytes = b64_decode(encoded);
+    assert!(bytes.len() > 32, "cursor payload and tag");
+    let split = bytes.len() - 32;
+    (
+        serde_json::from_slice(&bytes[..split]).expect("cursor payload"),
+        bytes[split..].to_vec(),
+    )
+}
+
+fn cursor_spelling(resource: &str, payload: &Value, tag: &[u8]) -> String {
+    let mut bytes = serde_json::to_vec(payload).expect("cursor payload JSON");
+    bytes.extend_from_slice(tag);
+    format!("{resource}:cursor:{}", b64_encode(&bytes))
+}
+
 /// A truncated collection whose next page is never fetched, so the handle is
 /// issued from the attempt budget rather than from a failed page.
-async fn truncated_collection() -> (TlsListener, GithubSource) {
+async fn truncated_collection() -> (TlsListener, GithubSource, session_support::ScratchFixture) {
     collection_fixture(|target, api, _| {
         let page_two = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
         if target.contains("page=2") {
@@ -2352,21 +3241,19 @@ async fn truncated_collection() -> (TlsListener, GithubSource) {
 
 #[tokio::test]
 async fn continuation_encoding_is_canonical_and_bounded() {
-    let (_, source) = truncated_collection().await;
+    let (listener, source, _session) = truncated_collection().await;
     let controls = ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("budget");
     let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
         .expect("truncated collection");
     let facts = document(&resource);
+    assert_eq!(facts["schemaVersion"]["minor"], 1);
+    assert_eq!(facts["collection"]["scope"], "initial");
     let continuation = facts["collection"]["continuation"]
         .as_str()
         .expect("continuation named");
     assert_eq!(resource.continuation(), Some(continuation));
-    assert!(continuation.starts_with("pr://owner/repo/7/comments/facts:cursor:"));
-    assert!(
-        continuation.len() <= resourcefs_core::MAX_PATH_REFERENCE_BYTES,
-        "handle must fit the reference ceiling"
-    );
+    assert!(continuation.len() <= resourcefs_core::MAX_PATH_REFERENCE_BYTES);
     let parsed = PathReference::parse(continuation).expect("handle parses");
     assert!(
         parsed
@@ -2375,63 +3262,81 @@ async fn continuation_encoding_is_canonical_and_bounded() {
             .is_some(),
         "handle is a typed source cursor"
     );
-    // The envelope is canonical unpadded base64url JSON naming the native page.
+
+    // v2 is payload JSON followed by a raw 32-byte HMAC tag.
     let encoded = continuation
         .rsplit(":cursor:")
         .next()
         .expect("cursor spelling");
-    let envelope: Value = serde_json::from_slice(&b64_decode(encoded)).expect("canonical envelope");
-    assert_eq!(envelope["version"], 1);
-    assert_eq!(envelope["resource"], COLLECTION_RESOURCE);
-    assert!(envelope["origin"].as_str().expect("origin").len() == 64);
-    assert!(envelope["session"].as_str().expect("session").len() == 64);
-    assert!(envelope["next"].as_str().expect("next").contains("page=2"));
+    assert!(!encoded.contains('='));
+    let (payload, tag) = cursor_parts(encoded);
+    assert_eq!(tag.len(), 32);
+    assert_eq!(payload["version"], 2);
+    assert_eq!(payload["source"], "github-facts");
+    assert_eq!(payload["resource"], COLLECTION_RESOURCE);
+    let expected_api = format!("https://{}:{}/", tls::FIXTURE_HOST, listener.address.port());
+    assert_eq!(payload["api"], expected_api);
+    assert!(
+        payload["target"]
+            .as_str()
+            .expect("target")
+            .contains("page=2")
+    );
+    assert_eq!(
+        b64_encode(&b64_decode(encoded)),
+        encoded,
+        "encoded cursor is canonical unpadded base64url"
+    );
 
-    // A padded or non-canonical handle is refused by the grammar.
+    // A padded or unsigned handle is rejected without any upstream request.
     for malformed in [
         format!("{COLLECTION_RESOURCE}:cursor:{encoded}="),
+        format!(
+            "{COLLECTION_RESOURCE}:cursor:{}",
+            b64_encode(&serde_json::to_vec(&payload).expect("unsigned payload"))
+        ),
         format!("{COLLECTION_RESOURCE}:cursor:e30"),
     ] {
-        let parsed = PathReference::parse(&malformed);
-        assert!(
-            parsed.is_err()
-                || parsed
-                    .expect("parse")
-                    .projection()
-                    .is_none_or(|selector| selector.source_cursor().is_none())
-                || read_reference(&source, &malformed, None).await.is_err(),
-            "{malformed}"
-        );
+        let before = listener.requests().len();
+        let error = read_reference(&source, &malformed, None)
+            .await
+            .expect_err("malformed cursor");
+        assert_eq!(error.category(), ErrorCategory::InvalidReference);
+        assert_eq!(listener.requests().len(), before);
     }
 }
 
 #[tokio::test]
 async fn continuation_is_session_and_authority_bound() {
-    // A valid handle resumes exactly the next native page.
-    let (listener, source) = truncated_collection().await;
+    use aws_lc_rs::hmac;
+    use sha2::{Digest, Sha256};
+
+    let (listener, source, session_fixture) = truncated_collection().await;
     let controls = ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("budget");
     let first = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
         .expect("first read");
-    let cursor = document(&first)["collection"]["continuation"]
+    let first_facts = document(&first);
+    let cursor = first_facts["collection"]["continuation"]
         .as_str()
         .expect("handle")
         .to_owned();
-    let before = listener.requests().len();
-    let resumed = read_reference(&source, &cursor, None)
-        .await
-        .expect("resume");
-    let facts = document(&resumed);
-    assert_eq!(facts["data"]["records"][0]["id"], "101");
-    assert_eq!(facts["collection"]["acceptedCount"], 100);
-    assert_eq!(
-        listener.requests().len(),
-        before + 2,
-        "resume re-reads the parent and the named page"
-    );
+    let encoded = cursor.rsplit(":cursor:").next().expect("cursor");
+    let (payload, tag) = cursor_parts(encoded);
 
-    // Another Path Session acquires nothing.
-    let (other, _session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
+    // A clone shares the issuing source's key and session authority.
+    let before_clone = listener.requests().len();
+    let resumed = read_reference(&source.clone(), &cursor, None)
+        .await
+        .expect("clone resumes");
+    let resumed_facts = document(&resumed);
+    assert_eq!(resumed_facts["collection"]["scope"], "continuation");
+    assert_eq!(resumed_facts["data"]["records"][0]["id"], "101");
+    assert_eq!(resumed_facts["collection"]["acceptedCount"], 100);
+    assert_eq!(listener.requests().len(), before_clone + 2);
+
+    // A different Path Session acquires nothing.
+    let (other, _other_session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
     let quiet = listener.requests().len();
     let error = read_reference(&other, &cursor, None)
         .await
@@ -2440,36 +3345,267 @@ async fn continuation_is_session_and_authority_bound() {
     assert_eq!(
         listener.requests().len(),
         quiet,
-        "no egress for a foreign handle"
+        "foreign session has no egress"
     );
 
-    // Another resource acquires nothing.
+    // A different resource is refused before its parent is fetched.
     let error = read_reference(&source, "pr://owner/repo/8/comments/facts:cursor:AAA", None)
         .await
         .expect_err("foreign resource");
-    assert!(matches!(error.category(), ErrorCategory::InvalidReference));
+    assert_eq!(error.category(), ErrorCategory::InvalidReference);
+    assert_eq!(listener.requests().len(), quiet);
+
+    let api = payload["api"].as_str().expect("api").to_owned();
+    let userinfo_target = api.replacen("https://", "https://cursor-user:cursor-pass@", 1)
+        + "repos/owner/repo/issues/7/comments?per_page=100&page=2";
+    let numeric_target =
+        format!("{api}repositories/724712/issues/159628/comments?per_page=100&page=2");
+    let edits = vec![
+        ("version", json!(1)),
+        ("source", json!("other-source")),
+        ("api", json!("https://foreign.invalid/")),
+        ("resource", json!("pr://owner/repo/8/comments/facts")),
+        ("target", json!(numeric_target)),
+        ("target", json!(userinfo_target)),
+    ];
+    // Public artifact authority must not be usable as the signing key, either
+    // directly or through the old published SHA-256 session correlator.
+    let artifact = session_fixture
+        .session
+        .path_session()
+        .retain("known artifact token", &OperationGuard::new())
+        .await
+        .expect("artifact token");
+    let known_token = artifact.session_token().to_string();
+    let token_hash = Sha256::digest(known_token.as_bytes());
+    let payload_bytes = serde_json::to_vec(&payload).expect("forged payload bytes");
+    let payload_text = std::str::from_utf8(&payload_bytes).expect("JSON payload");
+    assert!(!payload_text.contains(&known_token));
+    assert!(!payload_text.contains(&format!("{token_hash:x}")));
+    for public_key in [known_token.as_bytes(), token_hash.as_ref()] {
+        let key = hmac::Key::new(hmac::HMAC_SHA256, public_key);
+        let forged_tag = hmac::sign(&key, &payload_bytes);
+        let forged = cursor_spelling(COLLECTION_RESOURCE, &payload, forged_tag.as_ref());
+        let before = listener.requests().len();
+        let error = read_reference(&source, &forged, None)
+            .await
+            .expect_err("public artifact authority cannot forge a source cursor");
+        assert_eq!(error.category(), ErrorCategory::InvalidReference);
+        assert_eq!(
+            listener.requests().len(),
+            before,
+            "forgery must precede egress"
+        );
+    }
+
+    for (field, value) in edits {
+        let mut edited = payload.clone();
+        edited[field] = value;
+        let tampered = cursor_spelling(COLLECTION_RESOURCE, &edited, &tag);
+        let before = listener.requests().len();
+        let error = read_reference(&source, &tampered, None)
+            .await
+            .expect_err(field);
+        assert_eq!(error.category(), ErrorCategory::InvalidReference, "{field}");
+        assert_eq!(
+            listener.requests().len(),
+            before,
+            "{field} mutation must not fetch parent or page"
+        );
+    }
+
+    // Removing or modifying the tag must fail even when the target stays on
+    // the configured API origin; an origin-only confine is not sufficient.
+    let unsigned = cursor_spelling(COLLECTION_RESOURCE, &payload, &[]);
+    let before = listener.requests().len();
+    assert_eq!(
+        read_reference(&source, &unsigned, None)
+            .await
+            .expect_err("missing HMAC tag")
+            .category(),
+        ErrorCategory::InvalidReference
+    );
+    assert_eq!(listener.requests().len(), before);
+
+    let mut altered_tag = tag.clone();
+    altered_tag[0] ^= 0x80;
+    let same_origin = cursor_spelling(COLLECTION_RESOURCE, &payload, &altered_tag);
+    let before = listener.requests().len();
+    assert_eq!(
+        read_reference(&source, &same_origin, None)
+            .await
+            .expect_err("invalid HMAC tag")
+            .category(),
+        ErrorCategory::InvalidReference
+    );
     assert_eq!(
         listener.requests().len(),
-        quiet,
-        "no egress for a foreign resource"
+        before,
+        "MAC failure on same-origin target must not fetch"
     );
 
-    // A tampered origin acquires nothing: the envelope is re-encoded with a
-    // different origin digest and presented to the same source.
-    let encoded = cursor.rsplit(":cursor:").next().expect("cursor");
-    let mut envelope: Value = serde_json::from_slice(&b64_decode(encoded)).expect("envelope");
-    envelope["origin"] = json!("0".repeat(64));
-    let tampered = format!(
-        "{COLLECTION_RESOURCE}:cursor:{}",
-        b64_encode(serde_json::to_vec(&envelope).expect("encode").as_slice())
-    );
-    let error = read_reference(&source, &tampered, None)
-        .await
-        .expect_err("foreign origin");
-    assert_eq!(error.category(), ErrorCategory::InvalidReference);
+    // A legacy unsigned v1 envelope is not a valid v2 handle.
+    let legacy_payload = json!({
+        "version": 1,
+        "resource": COLLECTION_RESOURCE,
+        "origin": "0".repeat(64),
+        "session": "0".repeat(64),
+        "next": payload["target"],
+    });
+    let legacy_bytes = serde_json::to_vec(&legacy_payload).expect("legacy payload");
+    let legacy = format!("{COLLECTION_RESOURCE}:cursor:{}", b64_encode(&legacy_bytes));
+    let before = listener.requests().len();
     assert_eq!(
-        listener.requests().len(),
-        quiet,
-        "no egress for a foreign origin"
+        read_reference(&source, &legacy, None)
+            .await
+            .expect_err("legacy unsigned cursor")
+            .category(),
+        ErrorCategory::InvalidReference
     );
+    assert_eq!(listener.requests().len(), before);
+}
+
+#[tokio::test]
+async fn human_and_facts_comment_routes_share_identity_guards_not_partial_policy() {
+    #[derive(Clone, Copy)]
+    enum IdentityCase {
+        Matching,
+        WrongId,
+        WrongParent,
+    }
+    for case in [
+        IdentityCase::Matching,
+        IdentityCase::WrongId,
+        IdentityCase::WrongParent,
+    ] {
+        let (listener, source, _session) = comment_fixture(move |target, _, native| {
+            if !target.starts_with("/repos/owner/repo/issues/comments/") {
+                return response("200 OK", native.into(), vec![]);
+            }
+            let mut comment: Value = serde_json::from_str(native).expect("native comment");
+            match case {
+                IdentityCase::Matching => {}
+                IdentityCase::WrongId => {
+                    comment["id"] = json!(9002);
+                    comment["url"] = json!(
+                        comment["url"]
+                            .as_str()
+                            .expect("api URL")
+                            .replace("/9001", "/9002")
+                    );
+                    comment["html_url"] = json!(
+                        comment["html_url"]
+                            .as_str()
+                            .expect("web URL")
+                            .replace("issuecomment-9001", "issuecomment-9002")
+                    );
+                }
+                IdentityCase::WrongParent => {
+                    comment["issue_url"] = json!(
+                        comment["issue_url"]
+                            .as_str()
+                            .expect("parent URL")
+                            .replace("/issues/7", "/issues/8")
+                    );
+                }
+            }
+            response("200 OK", comment.to_string(), vec![])
+        })
+        .await;
+        let human = read_reference(&source, "pr://owner/repo/7/comments/9001", None).await;
+        let facts = read_reference(&source, COMMENT_RESOURCE, None).await;
+        match case {
+            IdentityCase::Matching => {
+                let native: Value = serde_json::from_str(COMMENT_NATIVE).expect("native control");
+                assert!(
+                    human
+                        .expect("matching human comment")
+                        .content()
+                        .contains(native["body"].as_str().expect("native body"))
+                );
+                assert_eq!(
+                    document(&facts.expect("matching facts comment"))["data"]["body"],
+                    native["body"]
+                );
+            }
+            IdentityCase::WrongId | IdentityCase::WrongParent => {
+                let expected = match case {
+                    IdentityCase::WrongId => ErrorCategory::SourceUnavailable,
+                    IdentityCase::WrongParent => ErrorCategory::NotFound,
+                    IdentityCase::Matching => unreachable!("handled matching control"),
+                };
+                assert_eq!(
+                    human.expect_err("human identity guard").category(),
+                    expected
+                );
+                let error = facts.expect_err("facts identity guard");
+                assert_eq!(error.category(), expected);
+                assert_eq!(
+                    error.details().expect("typed identity").reason(),
+                    ErrorReason::UpstreamIdentityMismatch
+                );
+            }
+        }
+        assert_eq!(
+            listener.requests().len(),
+            4,
+            "both routes inspect the same native record"
+        );
+    }
+
+    #[derive(Clone, Copy)]
+    enum DuplicateCase {
+        FirstPage,
+        LaterPage,
+    }
+    for case in [DuplicateCase::FirstPage, DuplicateCase::LaterPage] {
+        let (listener, source, _session) = collection_fixture(move |target, api, _| match case {
+            DuplicateCase::FirstPage => comment_page(&[1, 1], api, None),
+            DuplicateCase::LaterPage if target.contains("page=2") => {
+                comment_page(&[100, 101], api, None)
+            }
+            DuplicateCase::LaterPage => {
+                let next = format!("{api}repos/owner/repo/issues/7/comments?per_page=100&page=2");
+                comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&next))
+            }
+        })
+        .await;
+        let human = read_reference(&source, "pr://owner/repo/7/comments", None).await;
+        assert_eq!(
+            human.expect_err("human duplicate guard").category(),
+            ErrorCategory::SourceUnavailable
+        );
+        let facts = read_reference(&source, COLLECTION_RESOURCE, None).await;
+        match case {
+            DuplicateCase::FirstPage => {
+                assert_eq!(
+                    facts.expect_err("facts duplicate guard").category(),
+                    ErrorCategory::SourceUnavailable
+                );
+                assert_eq!(listener.requests().len(), 4);
+            }
+            DuplicateCase::LaterPage => {
+                // This difference is intentional: facts retain a verified
+                // prefix, but must not claim complete coverage or offer a cursor.
+                let resource = facts.expect("facts retain the earlier verified page");
+                let document = document(&resource);
+                assert_eq!(document["collection"]["state"], "unknown");
+                assert_eq!(
+                    document["collection"]["inconsistency"]["reason"],
+                    "duplicate_record_id"
+                );
+                assert_eq!(document["collection"]["acceptedCount"], 100);
+                let ids = document["data"]["records"]
+                    .as_array()
+                    .expect("verified records")
+                    .iter()
+                    .map(|record| record["id"].as_str().expect("id"))
+                    .collect::<Vec<_>>();
+                assert_eq!(ids, (1..=100).map(|id| id.to_string()).collect::<Vec<_>>());
+                assert!(resource.continuation().is_none());
+                assert!(document["collection"].get("continuation").is_none());
+                assert_eq!(listener.requests().len(), 6);
+            }
+        }
+    }
 }

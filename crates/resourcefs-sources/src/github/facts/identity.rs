@@ -1,7 +1,12 @@
-//! Validating native PR and repository identities without acquiring linked resources.
-use resourcefs_core::{ErrorReason, GithubRepositoryIdentity, ResourceError};
+//! Validating native PR, repository and conversation-comment identities without
+//! acquiring linked resources.
+use resourcefs_core::{
+    ConversationCommentId, ErrorCategory, ErrorReason, GithubRepositoryIdentity, PullRequestNumber,
+    ResourceError, ResourceErrorDetails,
+};
 use url::Url;
 
+use super::comment::NativeComment;
 use super::pull::{Branch, NativePull};
 use super::{NativeId, Presence, Repository, failure};
 
@@ -17,14 +22,14 @@ pub(super) struct ValidatedIdentity<'a> {
 pub(super) fn validate<'a>(
     pull: &'a NativePull,
     repository: &GithubRepositoryIdentity,
-    number: u64,
+    number: PullRequestNumber,
     endpoint: &Url,
     api: &Url,
     web: &Url,
 ) -> Result<ValidatedIdentity<'a>, ResourceError> {
     let id = required(&pull.id)?;
     let observed_number = required(&pull.number)?;
-    if observed_number.0 != number {
+    if observed_number.0 != number.get() {
         return Err(failure(ErrorReason::UpstreamIdentityMismatch));
     }
     same_url(required(&pull.url)?, endpoint)?;
@@ -34,12 +39,12 @@ pub(super) fn validate<'a>(
         &pull.patch_url,
         &pull.issue_url,
     ] {
-        validate_observed_link(link, repository, number, api, web)?;
+        validate_observed_link(link, repository, number.get(), api, web)?;
     }
     if let Some(relations) = pull._links.value() {
         for name in ["self", "html", "issue", "comments", "review_comments"] {
             if let Some(Presence::Present(relation)) = relations.0.get(name) {
-                validate_observed_link(&relation.href, repository, number, api, web)?;
+                validate_observed_link(&relation.href, repository, number.get(), api, web)?;
             }
         }
     }
@@ -57,6 +62,192 @@ pub(super) fn validate<'a>(
         base_sha,
         head_sha,
     })
+}
+
+/// Validate the authority and recognizable identity of comment links. Empty
+/// and non-URL provider values remain lossless opaque observations, while a
+/// parsed URL must belong to this deployment and cannot carry credentials.
+pub(super) fn validate_comment_links(
+    repository: &GithubRepositoryIdentity,
+    number: PullRequestNumber,
+    comment_id: Option<ConversationCommentId>,
+    comment: &NativeComment,
+    api: &Url,
+    web: &Url,
+) -> Result<(), ResourceError> {
+    let observed_id = comment
+        .id
+        .value()
+        .ok_or_else(|| failure(ErrorReason::UpstreamMalformed))?;
+    if comment_id.is_some_and(|comment_id| observed_id.0 != comment_id.get()) {
+        return Err(failure(ErrorReason::UpstreamIdentityMismatch));
+    }
+    let comment_id = comment_id.unwrap_or_else(|| {
+        ConversationCommentId::new(observed_id.0).expect("decoded native IDs are positive")
+    });
+    let issue = comment
+        .issue_url
+        .value()
+        .ok_or_else(|| failure(ErrorReason::UpstreamIdentityMismatch))?;
+    let issue = Url::parse(issue).map_err(|_| failure(ErrorReason::UpstreamIdentityMismatch))?;
+    validate_api_authority(&issue, api)?;
+    let Some((owner, name, family, observed_number)) = api_route(&issue, api)? else {
+        return Err(failure(ErrorReason::UpstreamIdentityMismatch));
+    };
+    if !owner.eq_ignore_ascii_case(repository.owner())
+        || !name.eq_ignore_ascii_case(repository.repository())
+        || family != "issues"
+        || observed_number != number.get()
+    {
+        return Err(ResourceError::new(
+            ErrorCategory::NotFound,
+            "GitHub comment does not belong to the addressed pull request",
+        )
+        .with_details(ResourceErrorDetails::new(
+            ErrorReason::UpstreamIdentityMismatch,
+        )));
+    }
+    validate_optional_comment_link(&comment.url, repository, number, comment_id, api, web, true)?;
+    validate_optional_comment_link(
+        &comment.html_url,
+        repository,
+        number,
+        comment_id,
+        api,
+        web,
+        false,
+    )?;
+    Ok(())
+}
+
+fn validate_optional_comment_link(
+    link: &Presence<String>,
+    repository: &GithubRepositoryIdentity,
+    number: PullRequestNumber,
+    comment_id: ConversationCommentId,
+    api: &Url,
+    web: &Url,
+    api_link: bool,
+) -> Result<(), ResourceError> {
+    let Some(value) = link.value() else {
+        return Ok(());
+    };
+    let Ok(parsed) = Url::parse(value) else {
+        return Ok(());
+    };
+    let expected = if api_link { api } else { web };
+    if parsed.origin() != expected.origin()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err(failure(ErrorReason::UpstreamIdentityMismatch));
+    }
+    if api_link {
+        if let Some((owner, name, family, observed_id)) = api_route(&parsed, api)?
+            && (!owner.eq_ignore_ascii_case(repository.owner())
+                || !name.eq_ignore_ascii_case(repository.repository())
+                || family != "issues/comments"
+                || observed_id != comment_id.get())
+        {
+            return Err(failure(ErrorReason::UpstreamIdentityMismatch));
+        }
+    } else if let Some(route) = web_route(&parsed, web)?
+        && (!route.owner.eq_ignore_ascii_case(repository.owner())
+            || !route.name.eq_ignore_ascii_case(repository.repository())
+            || route.number != number
+            || route.comment_id.is_some_and(|id| id != comment_id))
+    {
+        return Err(failure(ErrorReason::UpstreamIdentityMismatch));
+    }
+    Ok(())
+}
+
+fn validate_api_authority(url: &Url, api: &Url) -> Result<(), ResourceError> {
+    if url.origin() != api.origin() || !url.username().is_empty() || url.password().is_some() {
+        return Err(failure(ErrorReason::UpstreamIdentityMismatch));
+    }
+    Ok(())
+}
+
+fn api_route<'a>(
+    url: &'a Url,
+    api: &Url,
+) -> Result<Option<(&'a str, &'a str, &'a str, u64)>, ResourceError> {
+    let prefix = api.path().trim_end_matches('/');
+    let Some(path) = url.path().strip_prefix(prefix) else {
+        return Ok(None);
+    };
+    let Some(path) = path.strip_prefix("/repos/") else {
+        return Ok(None);
+    };
+    let mut parts = path.trim_end_matches('/').split('/');
+    let (Some(owner), Some(name), Some(first), Some(second)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Ok(None);
+    };
+    let (family, number) = if first == "issues" && second == "comments" {
+        let Some(comment_id) = parts.next() else {
+            return Ok(None);
+        };
+        if parts.next().is_some() {
+            return Ok(None);
+        }
+        ("issues/comments", comment_id)
+    } else {
+        if parts.next().is_some() {
+            return Ok(None);
+        }
+        (first, second)
+    };
+    let number = number
+        .parse::<u64>()
+        .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
+    Ok(Some((owner, name, family, number)))
+}
+
+struct WebCommentRoute<'a> {
+    owner: &'a str,
+    name: &'a str,
+    number: PullRequestNumber,
+    comment_id: Option<ConversationCommentId>,
+}
+
+fn web_route<'a>(url: &'a Url, web: &Url) -> Result<Option<WebCommentRoute<'a>>, ResourceError> {
+    if url.origin() != web.origin() {
+        return Ok(None);
+    }
+    let mut parts = url.path().trim_matches('/').split('/');
+    let (Some(owner), Some(name), Some(family), Some(number)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Ok(None);
+    };
+    if parts.next().is_some() || !matches!(family, "pull" | "issues") {
+        return Ok(None);
+    }
+    let number = number
+        .parse::<u64>()
+        .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
+    let number = PullRequestNumber::new(number)
+        .map_err(|_| failure(ErrorReason::UpstreamIdentityMismatch))?;
+    let fragment_id = url
+        .fragment()
+        .and_then(|fragment| fragment.strip_prefix("issuecomment-"))
+        .map(|value| {
+            let id = value
+                .parse::<u64>()
+                .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
+            ConversationCommentId::new(id)
+                .map_err(|_| failure(ErrorReason::UpstreamIdentityMismatch))
+        })
+        .transpose()?;
+    Ok(Some(WebCommentRoute {
+        owner,
+        name,
+        number,
+        comment_id: fragment_id,
+    }))
 }
 
 fn required<T>(field: &Presence<T>) -> Result<&T, ResourceError> {

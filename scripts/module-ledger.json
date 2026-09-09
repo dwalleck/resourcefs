@@ -6,7 +6,8 @@
         "date",
         "selected_api_version",
         "rate_limit_reset",
-        "retained_observation"
+        "retained_observation",
+        "reject_url_userinfo"
       ]
     }
   },
@@ -39,7 +40,8 @@
         "new#1",
         "header_within_ceiling",
         "cancelled_mid_request",
-        "policy_error_or"
+        "policy_error_or",
+        "redirect_policy"
       ]
     }
   },
@@ -57,11 +59,13 @@
     "crates/resourcefs-sources/src/github/facts/continuation.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",
     "crates/resourcefs-sources/src/github/facts/identity.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|Serialize|Serializer|Deserialize|Deserializer|serde_json|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",
     "crates/resourcefs-sources/src/github/facts/pull.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference",
-    "crates/resourcefs-sources/src/github/fetch.rs": "schemaVersion|unavailableFacts|PullRequestFacts|rmcp|schemars"
+    "crates/resourcefs-sources/src/github/fetch.rs": "schemaVersion|unavailableFacts|PullRequestFacts|rmcp|schemars",
+    "crates/resourcefs-sources/src/github/mod.rs": "aws_lc_rs|aws-lc-rs|hmac|Hmac"
   },
   "github_changes": {
     "configuration": [
-      "new#2"
+      "new#2",
+      "GithubSource"
     ],
     "core": [
       "read",
@@ -162,41 +166,87 @@
       ]
     },
     "crates/resourcefs-sources/src/github/facts.rs": {
-      "maximum": 760,
+      "maximum": 700,
       "module": "facts",
       "parent": "crates/resourcefs-sources/src/github/mod.rs",
       "stage": "facts",
-      "symbols": []
+      "symbols": [
+        "NativeId",
+        "FactsRead",
+        "establish_generation",
+        "check_generation",
+        "from_positive",
+        "serialized_len",
+        "serialize_facts",
+        "CappedWriter"
+      ]
     },
     "crates/resourcefs-sources/src/github/facts/collection.rs": {
-      "maximum": 700,
+      "maximum": 850,
       "module": "collection",
       "parent": "crates/resourcefs-sources/src/github/facts.rs",
       "stage": "collection",
-      "symbols": []
+      "symbols": [
+        "CandidatePage",
+        "CollectionScope",
+        "CoverageState",
+        "CollectionStop",
+        "CollectionView",
+        "collection",
+        "failure_facts",
+        "is_representation_limit",
+        "unavailable_for",
+        "rollback_allowed",
+        "retryable",
+        "rejects_every_page",
+        "local_limit_error",
+        "note_unavailable",
+        "build_facts",
+        "measure_candidate",
+        "observed_representation",
+        "actual_stop"
+      ]
     },
     "crates/resourcefs-sources/src/github/facts/comment.rs": {
-      "maximum": 400,
+      "maximum": 340,
       "module": "comment",
       "parent": "crates/resourcefs-sources/src/github/facts.rs",
       "stage": "item",
-      "symbols": []
+      "symbols": [
+        "ValidatedRecord",
+        "validate_record",
+        "id",
+        "unavailable",
+        "project",
+        "parent_facts",
+        "read_item",
+        "fetch_parent"
+      ]
     },
     "crates/resourcefs-sources/src/github/facts/continuation.rs": {
       "maximum": 320,
       "module": "continuation",
       "parent": "crates/resourcefs-sources/src/github/facts.rs",
       "stage": "continuation",
-      "symbols": []
+      "symbols": [
+        "CursorOwner",
+        "new_session_key"
+      ]
     },
     "crates/resourcefs-sources/src/github/facts/identity.rs": {
-      "maximum": 350,
+      "maximum": 460,
       "module": "identity",
       "parent": "crates/resourcefs-sources/src/github/facts.rs",
       "stage": "facts",
       "symbols": [
         "ValidatedIdentity",
+        "WebCommentRoute",
         "validate",
+        "validate_comment_links",
+        "validate_optional_comment_link",
+        "validate_api_authority",
+        "api_route",
+        "web_route",
         "required",
         "sha",
         "same_url",
@@ -220,9 +270,11 @@
       "symbols": [
         "CacheMetadata",
         "FetchedResponse",
+        "PageResponse",
         "fetch",
         "cache_key",
-        "cache"
+        "cache",
+        "confine_next"
       ]
     }
   },
