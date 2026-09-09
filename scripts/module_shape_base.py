@@ -2,16 +2,15 @@
 """C1/C12 placement census. Not a Rust parser or a behavioral proof.
 
 Compare a source tree (--root may be a disposable copy) with the pinned approved
-starting tree in --repository. Run inherited policy unchanged. Parent body token
-checks ignore comments/formatting, not implementation; query facade edits admit
-only existing calls plus the named dispatch seam. Review still owns semantic
-meaning, macro expansion, module depth, allocation cost, and behavioral bounds.
+starting tree in --repository. Run retained policy. Parent body token checks
+ignore comments/formatting, not implementation; query facade edits admit only
+existing calls plus the named dispatch seam. Review still owns semantic meaning,
+macro expansion, module depth, allocation cost, and behavioral bounds.
 """
 
 import argparse
 from collections import Counter
 import difflib
-import importlib.util
 from pathlib import Path
 import re
 import subprocess
@@ -63,6 +62,62 @@ FN = re.compile(r"\bfn\s+([A-Za-z_]\w*)")
 TOKEN = re.compile(r"[A-Za-z_]\w*|\d+|::|=>|->|[^\s]")
 CALL = re.compile(r"\b([A-Za-z_]\w*)\s*(?:!\s*)?\(")
 CONTROL = re.compile(r"\b(?:for|while|loop|unsafe)\b|\b(?:sort\w*|spawn\w*|sleep|timeout\w*)\s*\(")
+# Historical C1 placement obligations are permanent policy, not executable
+# evidence. Keep their original owners, stages, and responsibility checks here
+# so the active successor gate can run without importing an archived checkout.
+HISTORICAL_PARENTS = {
+    CORE + "reference.rs": (2089, 1989),
+    CORE + "discovery.rs": (1342, 1367),
+    SOURCES + "atlassian/jira.rs": (467, 317),
+    SOURCES + "atlassian/wire.rs": (571, 601),
+    SOURCES + "atlassian/render.rs": (480, 488),
+    HTTP + "mod.rs": (1759, 1679),
+}
+HISTORICAL_CHILD_LIMITS = {
+    CORE + "reference/jira.rs": 650,
+    CORE + "reference/source_page.rs": 160,
+    SOURCES + "http/read.rs": 350,
+    SOURCES + "atlassian/jira/transport.rs": 400,
+    SOURCES + "atlassian/jira/browse.rs": 600,
+    SOURCES + "atlassian/jira/cursor.rs": 250,
+    SOURCES + "atlassian/wire/collections.rs": 600,
+    SOURCES + "atlassian/render/collections.rs": 350,
+}
+HISTORICAL_REQUIRED = {
+    "extraction": (
+        CORE + "reference/jira.rs",
+        SOURCES + "http/read.rs",
+        SOURCES + "atlassian/jira/transport.rs",
+    ),
+    "projects": (
+        CORE + "reference/source_page.rs",
+        SOURCES + "atlassian/jira/browse.rs",
+        SOURCES + "atlassian/wire/collections.rs",
+        SOURCES + "atlassian/render/collections.rs",
+    ),
+    "issues": (SOURCES + "atlassian/jira/cursor.rs",),
+}
+HISTORICAL_OWNERS = {
+    "parse_jira_address": CORE + "reference/jira.rs",
+    "encode_jira_segment": CORE + "reference/jira.rs",
+    "fetch_bounded_attempts": SOURCES + "http/read.rs",
+    "decode_project_page": SOURCES + "atlassian/wire/collections.rs",
+    "decode_project": SOURCES + "atlassian/wire/collections.rs",
+    "decode_issue_page": SOURCES + "atlassian/wire/collections.rs",
+    "render_project": SOURCES + "atlassian/render/collections.rs",
+    "render_projects": SOURCES + "atlassian/render/collections.rs",
+    "render_issues": SOURCES + "atlassian/render/collections.rs",
+    "encode_cursor": SOURCES + "atlassian/jira/cursor.rs",
+    "decode_cursor": SOURCES + "atlassian/jira/cursor.rs",
+}
+HISTORICAL_JIRA_TRANSPORT = {
+    "fetch_cached", "fetch_uncached", "cache_namespace", "cache_key",
+    "classify_status", "sanitize_fetch_error",
+}
+HISTORICAL_DECLARATION = re.compile(
+    r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\b"
+)
+HISTORICAL_INFRASTRUCTURE = re.compile(r"\b(?:serde_json|reqwest|rmcp)\b")
 
 
 def git(repository, *args, optional=False):
@@ -175,6 +230,70 @@ def functions(source):
     return result
 
 
+def check_historical(root, stage):
+    """Run the retained historical C1 checks from the permanent policy."""
+    failures = []
+    observations = []
+
+    def fail(path, predicate):
+        failures.append(f"C1 FAIL {path}: {predicate}")
+
+    stages = tuple(HISTORICAL_REQUIRED)
+    if stage not in stages:
+        raise ValueError(f"invalid historical policy stage {stage!r}")
+    required = {
+        path
+        for name in stages[: stages.index(stage) + 1]
+        for path in HISTORICAL_REQUIRED[name]
+    }
+    for relative in sorted(required):
+        if not (root / relative).is_file():
+            fail(relative, "required published owner is missing")
+
+    for relative, (before, maximum) in HISTORICAL_PARENTS.items():
+        path = root / relative
+        if not path.is_file():
+            fail(relative, "protected parent is missing")
+            continue
+        lines = len(path.read_text(encoding="utf-8").splitlines())
+        observations.append(f"{relative}: {before} -> {lines}, maximum {maximum}")
+        if lines > maximum:
+            fail(relative, f"{lines} lines exceeds approved {maximum}; placement review required")
+
+    watched = (
+        root / CORE / "reference",
+        root / SOURCES / "atlassian",
+        root / SOURCES / "http",
+    )
+    paths = {path for directory in watched for path in directory.rglob("*.rs")}
+    paths.add(root / CORE / "reference.rs")
+    for path in sorted(paths):
+        relative = path.relative_to(root).as_posix()
+        source = path.read_text(encoding="utf-8")
+        if relative not in HISTORICAL_PARENTS:
+            maximum = HISTORICAL_CHILD_LIMITS.get(relative, 650)
+            lines = len(source.splitlines())
+            if lines > maximum:
+                fail(relative, f"{lines} lines exceeds child tripwire {maximum}")
+        for name in HISTORICAL_DECLARATION.findall(source):
+            owner = HISTORICAL_OWNERS.get(name)
+            if relative.startswith(SOURCES + "atlassian/jira") and name in HISTORICAL_JIRA_TRANSPORT:
+                owner = SOURCES + "atlassian/jira/transport.rs"
+            if owner is not None and relative != owner:
+                fail(relative, f"{name} belongs in {owner}")
+        if relative.startswith(CORE + "reference/"):
+            if HISTORICAL_INFRASTRUCTURE.search(source):
+                fail(relative, "provider/protocol infrastructure reached core reference grammar")
+        if relative != SOURCES + "http/mod.rs" and re.search(r"\breqwest\b", source):
+            fail(relative, "HTTP client must remain in the existing substrate module")
+
+    for path in (root / "crates/resourcefs-mcp/src").rglob("*.rs"):
+        source = path.read_text(encoding="utf-8")
+        if re.search(r"\b(?:with_fixture_browse_limits|FixtureBrowseLimits|with_jira_browse_limits_for_test|BrowseLimits)\b", source):
+            fail(path.relative_to(root).as_posix(), "test-only browse limits reached production protocol code")
+    return failures, observations
+
+
 def check(root, repository, stage, transition=None):
     """Run historical assertions, optionally using an explicit successor policy.
 
@@ -188,12 +307,11 @@ def check(root, repository, stage, transition=None):
     def fail(path, predicate):
         failures.append(f"C12 FAIL {path}: {predicate}")
 
-    inherited_path = root / ".rfs-h212/oracles/module_shape.py"
-    spec = importlib.util.spec_from_file_location("h212_module_shape", inherited_path)
-    inherited = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(inherited)
-    inherited_failures, inherited_observations = inherited.check(root, "issues")
-    failures.extend(item.replace("C16 FAIL", "C1 FAIL", 1) for item in inherited_failures)
+    # The final successor policy always includes all three historical stages.
+    # Run that retained check on every explicit successor checkpoint, as the
+    # former active gate did, while transition controls newer owners.
+    inherited_failures, inherited_observations = check_historical(root, "issues")
+    failures.extend(inherited_failures)
     observations.extend("C1 " + item for item in inherited_observations)
     git(repository, "cat-file", "-e", BASELINE + "^{commit}")
     observations.append(f"C12 baseline={BASELINE} upstream={upstream(repository)}")
@@ -406,9 +524,9 @@ def check(root, repository, stage, transition=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=("http", "query"), required=True)
-    parser.add_argument("--root", type=Path, help="source tree, including inherited oracle; may be a disposable copy")
-    parser.add_argument("--repository", type=Path, default=Path(__file__).resolve().parents[2],
-                        help="Git checkout providing pinned baseline (default: oracle checkout)")
+    parser.add_argument("--root", type=Path, help="source tree; may be a disposable copy")
+    parser.add_argument("--repository", type=Path, default=Path(__file__).resolve().parents[1],
+                        help="Git checkout providing pinned baseline")
     args = parser.parse_args()
     try:
         repository = Path(git(args.repository.resolve(strict=True), "rev-parse", "--show-toplevel"))

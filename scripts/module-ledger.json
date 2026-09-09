@@ -1,29 +1,88 @@
 {
-  "baseline": "7de8d1477af6be825bada9015a6996b3f2917c7d",
-  "stage": "facts",
-  "stages": ["baseline", "core", "configuration", "transport", "fetch", "mcp", "facts"],
-  "owners": {
-    "crates/resourcefs-core/src/acquisition.rs": {"stage": "core", "maximum": 300, "symbols": ["ReadAcquisitionLimits", "intersect"], "parent": "crates/resourcefs-core/src/lib.rs", "module": "acquisition"},
-    "crates/resourcefs-mcp/src/acquisition.rs": {"stage": "configuration", "maximum": 200, "symbols": ["AcquisitionInput", "into_limits"], "parent": "crates/resourcefs-mcp/src/lib.rs", "module": "acquisition"},
-    "crates/resourcefs-sources/src/github/fetch.rs": {"stage": "fetch", "maximum": 650, "symbols": ["CacheMetadata", "FetchedResponse", "fetch", "cache_key", "cache"], "parent": "crates/resourcefs-sources/src/github/mod.rs", "module": "fetch"},
-    "crates/resourcefs-mcp/src/server/read.rs": {"stage": "mcp", "maximum": 400, "symbols": ["ReadInput", "ReadLimitsInput", "into_text_limits", "execute_read", "dispatch_read"], "parent": "crates/resourcefs-mcp/src/server.rs", "module": "read"},
-    "crates/resourcefs-mcp/src/render/error.rs": {"stage": "mcp", "maximum": 300, "symbols": [], "parent": "crates/resourcefs-mcp/src/render.rs", "module": "error"},
-    "crates/resourcefs-sources/src/github/facts.rs": {"stage": "facts", "maximum": 750, "symbols": [], "parent": "crates/resourcefs-sources/src/github/mod.rs", "module": "facts"},
-    "crates/resourcefs-sources/src/github/facts/identity.rs": {"stage": "facts", "maximum": 350, "symbols": ["ValidatedIdentity", "validate", "required", "sha", "same_url", "validate_observed_link", "repository_link_identity", "validate_repository"], "parent": "crates/resourcefs-sources/src/github/facts.rs", "module": "identity"}
-  },
-  "body_changes": {
-    "core": {"crates/resourcefs-sources/src/atlassian/jira.rs": ["read", "search"]},
-    "transport": {"crates/resourcefs-sources/src/http/mod.rs": ["begin_read", "fetch_attempt", "read_bounded", "new#1", "header_within_ceiling", "cancelled_mid_request", "policy_error_or"]},
-    "facts": {"crates/resourcefs-core/src/reference.rs": ["canonical_reference#5", "parse_pull_request_address"]}
-  },
   "added_functions": {
-    "transport": {"crates/resourcefs-sources/src/http/mod.rs": ["last_modified", "date", "selected_api_version", "rate_limit_reset", "retained_observation"]}
+    "transport": {
+      "crates/resourcefs-sources/src/http/mod.rs": [
+        "last_modified",
+        "date",
+        "selected_api_version",
+        "rate_limit_reset",
+        "retained_observation"
+      ]
+    }
   },
-  "test_children": {
-    "crates/resourcefs-sources/src/http/read_acquisition_tests.rs": {"stage": "transport", "maximum": 650, "parent": "crates/resourcefs-sources/src/http/read_tests.rs", "module": "acquisition"},
-    "crates/resourcefs-sources/src/github/facts_tests.rs": {"stage": "facts", "maximum": 650, "parent": "crates/resourcefs-sources/src/github/facts.rs", "module": "tests", "cfg_test": true}
+  "baseline": "7de8d1477af6be825bada9015a6996b3f2917c7d",
+  "body_changes": {
+    "core": {
+      "crates/resourcefs-sources/src/atlassian/jira.rs": [
+        "read",
+        "search"
+      ]
+    },
+    "facts": {
+      "crates/resourcefs-core/src/reference.rs": [
+        "canonical_reference#5",
+        "parse_pull_request_address"
+      ]
+    },
+    "grammar": {
+      "crates/resourcefs-core/src/reference.rs": [
+        "parse",
+        "canonical_reference",
+        "parse_pull_request_address"
+      ]
+    },
+    "transport": {
+      "crates/resourcefs-sources/src/http/mod.rs": [
+        "begin_read",
+        "fetch_attempt",
+        "read_bounded",
+        "new#1",
+        "header_within_ceiling",
+        "cancelled_mid_request",
+        "policy_error_or"
+      ]
+    }
   },
-  "github_moves": ["CacheMetadata", "FetchedResponse", "body", "request", "cache_key", "fetch", "cache", "classify_status", "next_link", "next_link_target", "link_value_is_next", "GITHUB_JSON", "GITHUB_DIFF", "GITHUB_API_VERSION", "USER_AGENT", "GITHUB_CACHE_NAMESPACE"],
+  "forbidden_dependencies": {
+    "crates/resourcefs-core/src/acquisition.rs": "serde|serde_json|rmcp|reqwest|tokio|Github|Jira|HttpSubstrate|Instant",
+    "crates/resourcefs-core/src/error.rs": "serde_json|rmcp|reqwest|tokio|GithubSource|AtlassianSource|HttpSubstrate|Deserialize|Serializer|Deserializer",
+    "crates/resourcefs-core/src/read.rs": "serde_json|rmcp|reqwest|GithubSource|AtlassianSource|GithubConfig|AtlassianSite|HttpSubstrate",
+    "crates/resourcefs-core/src/reference/pull.rs": "serde|serde_json|rmcp|reqwest|tokio|Github|Jira|HttpSubstrate",
+    "crates/resourcefs-mcp/src/acquisition.rs": "reqwest|HttpSubstrate|Github|Jira",
+    "crates/resourcefs-mcp/src/render/error.rs": "reqwest|HttpSubstrate|Github|PullRequestFacts",
+    "crates/resourcefs-mcp/src/server/read.rs": "reqwest|HttpSubstrate|Github|PullRequestFacts",
+    "crates/resourcefs-sources/src/github/facts.rs": "reqwest|ClientBuilder|HttpSubstrate|CacheMetadata|SessionCacheWrite|sleep|retry_available",
+    "crates/resourcefs-sources/src/github/facts/collection.rs": "reqwest|ClientBuilder|CacheMetadata|SessionCacheWrite|sleep|retry_available|sha2",
+    "crates/resourcefs-sources/src/github/facts/comment.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference",
+    "crates/resourcefs-sources/src/github/facts/continuation.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",
+    "crates/resourcefs-sources/src/github/facts/identity.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|Serialize|Serializer|Deserialize|Deserializer|serde_json|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",
+    "crates/resourcefs-sources/src/github/facts/pull.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference",
+    "crates/resourcefs-sources/src/github/fetch.rs": "schemaVersion|unavailableFacts|PullRequestFacts|rmcp|schemars"
+  },
+  "github_changes": {
+    "configuration": [
+      "new#2"
+    ],
+    "core": [
+      "read",
+      "search"
+    ],
+    "exposure": [
+      "catalog_entries"
+    ],
+    "facts": [
+      "pull_request_resource",
+      "read",
+      "catalog_entries"
+    ],
+    "fetch": [
+      "json"
+    ],
+    "grammar": [
+      "read",
+      "pull_request_resource"
+    ]
+  },
   "github_move_slots": {
     "MAX_PAGES_PER_OPERATION#1": "MAX_PAGES_PER_OPERATION#1",
     "collection#2": "collection#1",
@@ -33,24 +92,185 @@
     "page_url#1": "page_url#1",
     "split_first_outside_quotes#1": "split_first_outside_quotes#1"
   },
-  "github_changes": {
-    "core": ["read", "search"],
-    "configuration": ["new#2"],
-    "fetch": ["json"],
-    "facts": ["pull_request_resource", "read", "catalog_entries"]
+  "github_moves": [
+    "CacheMetadata",
+    "FetchedResponse",
+    "body",
+    "request",
+    "cache_key",
+    "fetch",
+    "cache",
+    "classify_status",
+    "next_link",
+    "next_link_target",
+    "link_value_is_next",
+    "GITHUB_JSON",
+    "GITHUB_DIFF",
+    "GITHUB_API_VERSION",
+    "USER_AGENT",
+    "GITHUB_CACHE_NAMESPACE"
+  ],
+  "owners": {
+    "crates/resourcefs-core/src/acquisition.rs": {
+      "maximum": 300,
+      "module": "acquisition",
+      "parent": "crates/resourcefs-core/src/lib.rs",
+      "stage": "core",
+      "symbols": [
+        "ReadAcquisitionLimits",
+        "intersect"
+      ]
+    },
+    "crates/resourcefs-core/src/reference/pull.rs": {
+      "maximum": 650,
+      "module": "pull",
+      "parent": "crates/resourcefs-core/src/reference.rs",
+      "stage": "grammar",
+      "symbols": [
+        "PullRequestFact",
+        "parse_pull_request_reference"
+      ]
+    },
+    "crates/resourcefs-mcp/src/acquisition.rs": {
+      "maximum": 200,
+      "module": "acquisition",
+      "parent": "crates/resourcefs-mcp/src/lib.rs",
+      "stage": "configuration",
+      "symbols": [
+        "AcquisitionInput",
+        "into_limits"
+      ]
+    },
+    "crates/resourcefs-mcp/src/render/error.rs": {
+      "maximum": 300,
+      "module": "error",
+      "parent": "crates/resourcefs-mcp/src/render.rs",
+      "stage": "mcp",
+      "symbols": []
+    },
+    "crates/resourcefs-mcp/src/server/read.rs": {
+      "maximum": 400,
+      "module": "read",
+      "parent": "crates/resourcefs-mcp/src/server.rs",
+      "stage": "mcp",
+      "symbols": [
+        "ReadInput",
+        "ReadLimitsInput",
+        "into_text_limits",
+        "execute_read",
+        "dispatch_read"
+      ]
+    },
+    "crates/resourcefs-sources/src/github/facts.rs": {
+      "maximum": 760,
+      "module": "facts",
+      "parent": "crates/resourcefs-sources/src/github/mod.rs",
+      "stage": "facts",
+      "symbols": []
+    },
+    "crates/resourcefs-sources/src/github/facts/collection.rs": {
+      "maximum": 700,
+      "module": "collection",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "collection",
+      "symbols": []
+    },
+    "crates/resourcefs-sources/src/github/facts/comment.rs": {
+      "maximum": 400,
+      "module": "comment",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "item",
+      "symbols": []
+    },
+    "crates/resourcefs-sources/src/github/facts/continuation.rs": {
+      "maximum": 320,
+      "module": "continuation",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "continuation",
+      "symbols": []
+    },
+    "crates/resourcefs-sources/src/github/facts/identity.rs": {
+      "maximum": 350,
+      "module": "identity",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "facts",
+      "symbols": [
+        "ValidatedIdentity",
+        "validate",
+        "required",
+        "sha",
+        "same_url",
+        "validate_observed_link",
+        "repository_link_identity",
+        "validate_repository"
+      ]
+    },
+    "crates/resourcefs-sources/src/github/facts/pull.rs": {
+      "maximum": 400,
+      "module": "pull",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "item",
+      "symbols": []
+    },
+    "crates/resourcefs-sources/src/github/fetch.rs": {
+      "maximum": 650,
+      "module": "fetch",
+      "parent": "crates/resourcefs-sources/src/github/mod.rs",
+      "stage": "fetch",
+      "symbols": [
+        "CacheMetadata",
+        "FetchedResponse",
+        "fetch",
+        "cache_key",
+        "cache"
+      ]
+    }
   },
-  "server_moves": ["ReadLimitsInput", "ReadInput", "into_text_limits", "execute_read", "dispatch_read", "cancelled_read_error"],
-  "server_imports": ["ReadRequest", "TextLimits"],
-  "protected_limits": {"crates/resourcefs-sources/src/github/mod.rs": 1498, "crates/resourcefs-mcp/src/server.rs": 1431},
-  "forbidden_dependencies": {
-    "crates/resourcefs-core/src/acquisition.rs": "serde|serde_json|rmcp|reqwest|tokio|Github|Jira|HttpSubstrate|Instant",
-    "crates/resourcefs-core/src/error.rs": "serde_json|rmcp|reqwest|tokio|GithubSource|AtlassianSource|HttpSubstrate|Deserialize|Serializer|Deserializer",
-    "crates/resourcefs-core/src/read.rs": "serde_json|rmcp|reqwest|GithubSource|AtlassianSource|GithubConfig|AtlassianSite|HttpSubstrate",
-    "crates/resourcefs-sources/src/github/facts.rs": "reqwest|ClientBuilder|HttpSubstrate|CacheMetadata|SessionCacheWrite|sleep|retry_available",
-    "crates/resourcefs-sources/src/github/facts/identity.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|Serialize|Serializer|Deserialize|Deserializer|serde_json|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",
-    "crates/resourcefs-sources/src/github/fetch.rs": "schemaVersion|unavailableFacts|PullRequestFacts|rmcp|schemars",
-    "crates/resourcefs-mcp/src/acquisition.rs": "reqwest|HttpSubstrate|Github|Jira",
-    "crates/resourcefs-mcp/src/server/read.rs": "reqwest|HttpSubstrate|Github|PullRequestFacts",
-    "crates/resourcefs-mcp/src/render/error.rs": "reqwest|HttpSubstrate|Github|PullRequestFacts"
+  "protected_limits": {
+    "crates/resourcefs-mcp/src/server.rs": 1431,
+    "crates/resourcefs-sources/src/github/mod.rs": 1498
+  },
+  "server_imports": [
+    "ReadRequest",
+    "TextLimits"
+  ],
+  "server_moves": [
+    "ReadLimitsInput",
+    "ReadInput",
+    "into_text_limits",
+    "execute_read",
+    "dispatch_read",
+    "cancelled_read_error"
+  ],
+  "stage": "live",
+  "stages": [
+    "baseline",
+    "core",
+    "configuration",
+    "transport",
+    "fetch",
+    "mcp",
+    "facts",
+    "grammar",
+    "item",
+    "collection",
+    "continuation",
+    "exposure",
+    "live"
+  ],
+  "test_children": {
+    "crates/resourcefs-sources/src/github/facts_tests.rs": {
+      "cfg_test": true,
+      "maximum": 650,
+      "module": "tests",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "facts"
+    },
+    "crates/resourcefs-sources/src/http/read_acquisition_tests.rs": {
+      "maximum": 650,
+      "module": "acquisition",
+      "parent": "crates/resourcefs-sources/src/http/read_tests.rs",
+      "stage": "transport"
+    }
   }
 }
