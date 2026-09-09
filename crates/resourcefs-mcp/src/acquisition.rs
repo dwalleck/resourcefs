@@ -62,6 +62,9 @@ pub(crate) fn describe_limit_rejection(error: &ResourceError) -> String {
         AcquisitionLimitKind::ResponseBodyBytes => "maxResponseBytes",
         AcquisitionLimitKind::AcceptedBodyBytes => "maxAcceptedBodyBytes",
         AcquisitionLimitKind::RepresentationBytes => "maxRepresentationBytes",
+        // A collection record ceiling is local policy, not a control the
+        // caller wrote, so there is no caller-facing field name to report.
+        AcquisitionLimitKind::CollectionRecords => return error.message().to_owned(),
     };
     let bound = limit.bound() / scale;
     match limit.observed() {

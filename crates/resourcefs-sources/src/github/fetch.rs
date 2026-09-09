@@ -31,11 +31,21 @@ struct CacheMetadata {
 }
 
 pub(super) struct FetchedResponse {
-    body: Arc<[u8]>,
-    link: Option<String>,
+    pub(super) body: Arc<[u8]>,
+    pub(super) link: Option<String>,
     pub(super) observation: BodyObservation,
     pub(super) revalidation: Option<BodyObservation>,
     pub(super) cache_generation: u64,
+}
+
+/// One controlled collection page: the accepted body, its provenance and the
+/// confined target of the next page, if the provider names one.
+pub(super) struct PageResponse {
+    pub(super) body: Arc<[u8]>,
+    pub(super) observation: BodyObservation,
+    pub(super) revalidation: Option<BodyObservation>,
+    pub(super) cache_generation: u64,
+    pub(super) next: Option<Url>,
 }
 
 impl FetchedResponse {
@@ -358,6 +368,29 @@ impl GithubSource {
         })
     }
 
+    /// Fetches one controlled collection page and resolves its next target
+    /// inside the same origin and repository endpoint family.
+    pub(super) async fn facts_page(
+        &self,
+        url: Url,
+        repository: &GithubRepositoryIdentity,
+        suffix: &str,
+        operation: BoundedRead<'_>,
+        budget: &mut HttpReadBudget,
+    ) -> Result<PageResponse, ResourceError> {
+        let response = self
+            .fetch_controlled(url, GITHUB_JSON, operation, Some(budget))
+            .await?;
+        let next = self.next_link(response.link.as_deref(), repository, suffix)?;
+        Ok(PageResponse {
+            body: response.body,
+            observation: response.observation,
+            revalidation: response.revalidation,
+            cache_generation: response.cache_generation,
+            next,
+        })
+    }
+
     /// Caches a validated response for conditional revalidation.
     ///
     /// A ceiling refusal is not a read failure: the substrate accepted the
@@ -441,6 +474,18 @@ impl GithubSource {
             return Ok(None);
         };
         let target = Url::parse(target).map_err(|_| malformed_link())?;
+        self.confine_next(target, repository, suffix).map(Some)
+    }
+
+    /// Confines a next target to the configured API origin and the same
+    /// repository endpoint family, whether it came from a Link header or from
+    /// an opaque continuation handle.
+    pub(super) fn confine_next(
+        &self,
+        target: Url,
+        repository: &GithubRepositoryIdentity,
+        suffix: &str,
+    ) -> Result<Url, ResourceError> {
         let repository_path = self.endpoint(repository, suffix)?.path().to_owned();
         let same_origin = target.scheme() == self.api_base.scheme()
             && target.host_str() == self.api_base.host_str()
@@ -453,7 +498,7 @@ impl GithubSource {
                 "GitHub pagination Link leaves its repository endpoint authority",
             ));
         }
-        Ok(Some(target))
+        Ok(target)
     }
 
     fn is_repository_id_path(&self, path: &str, suffix: &str) -> bool {

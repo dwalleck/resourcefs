@@ -11,6 +11,7 @@ use url::Url;
 use crate::{ErrorCategory, ResourceError};
 
 mod jira;
+mod pull;
 mod source_page;
 
 pub(crate) use jira::JIRA_PREFIX;
@@ -21,6 +22,8 @@ pub use jira::{
     JiraProjectKey, JiraQuery, MAX_JIRA_ISSUE_ID_BYTES, MAX_JIRA_PROJECT_ID_BYTES,
     MAX_JIRA_SEGMENT_BYTES,
 };
+pub use pull::PullRequestFact;
+use pull::parse_pull_request_reference;
 pub use source_page::{SourceCursor, SourceOffset};
 
 const WORKSPACE_PREFIX: &str = "rfs://workspace/";
@@ -558,7 +561,7 @@ pub enum PullRequestResource {
     Title,
     Body,
     /// Immutable, complete machine-readable pull-request facts.
-    Facts,
+    Facts(PullRequestFact),
     Comments,
     /// Write-only issue-style conversation-comment Creation Target.
     CommentsNew,
@@ -636,7 +639,13 @@ impl PullRequestAddress {
                     PullRequestResource::Aggregate => base,
                     PullRequestResource::Title => format!("{base}/title"),
                     PullRequestResource::Body => format!("{base}/body"),
-                    PullRequestResource::Facts => format!("{base}/facts"),
+                    PullRequestResource::Facts(fact) => match fact {
+                        PullRequestFact::Pull => format!("{base}/facts"),
+                        PullRequestFact::Comments => format!("{base}/comments/facts"),
+                        PullRequestFact::Comment(id) => {
+                            format!("{base}/comments/{}/facts", id.get())
+                        }
+                    },
                     PullRequestResource::Comments => format!("{base}/comments"),
                     PullRequestResource::CommentsNew => format!("{base}/comments/new"),
                     PullRequestResource::Comment(id) => {
@@ -992,13 +1001,7 @@ impl PathReference {
         }
 
         if requested.starts_with(PULL_REQUEST_PREFIX) {
-            let (base, projection) = projection_candidate_split(&requested).map_or_else(
-                || Ok((requested.as_str(), None)),
-                |(base, selector)| {
-                    ProjectionSelector::parse(selector).map(|selector| (base, Some(selector)))
-                },
-            )?;
-            let address = parse_pull_request_address(base)?;
+            let (address, projection) = parse_pull_request_reference(&requested)?;
             let canonical = address.canonical_reference();
             let requested = projection.as_ref().map_or(canonical.clone(), |selector| {
                 format!("{canonical}:{}", selector.as_str())
@@ -1327,7 +1330,7 @@ fn parse_pull_request_address(input: &str) -> Result<PullRequestAddress, Resourc
             let resource = match *resource {
                 "title" => PullRequestResource::Title,
                 "body" => PullRequestResource::Body,
-                "facts" => PullRequestResource::Facts,
+                "facts" => PullRequestResource::Facts(PullRequestFact::Pull),
                 "comments" => PullRequestResource::Comments,
                 "reviews" => PullRequestResource::Reviews,
                 "review-comments" => PullRequestResource::ReviewComments,
@@ -1348,6 +1351,18 @@ fn parse_pull_request_address(input: &str) -> Result<PullRequestAddress, Resourc
             repository: github_repository(owner, repository)?,
             number: PullRequestNumber::new(github_number(number, "GitHub pull request number")?)?,
             resource: PullRequestResource::CommentsNew,
+        }),
+        [owner, repository, number, "comments", "facts"] => Ok(PullRequestAddress::Item {
+            repository: github_repository(owner, repository)?,
+            number: PullRequestNumber::new(github_number(number, "GitHub pull request number")?)?,
+            resource: PullRequestResource::Facts(PullRequestFact::Comments),
+        }),
+        [owner, repository, number, "comments", id, "facts"] => Ok(PullRequestAddress::Item {
+            repository: github_repository(owner, repository)?,
+            number: PullRequestNumber::new(github_number(number, "GitHub pull request number")?)?,
+            resource: PullRequestResource::Facts(PullRequestFact::Comment(
+                ConversationCommentId::new(github_number(id, "GitHub conversation comment ID")?)?,
+            )),
         }),
         [owner, repository, number, collection, id] => {
             let repository = github_repository(owner, repository)?;

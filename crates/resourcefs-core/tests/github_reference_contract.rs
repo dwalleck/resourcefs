@@ -380,3 +380,107 @@ fn facts_canonical_grammar_does_not_reinterpret_legacy_projections() {
         );
     }
 }
+
+#[test]
+fn conversation_comment_facts_routes_and_cursor_scope() {
+    // Canonical spellings round-trip exactly.
+    for (input, canonical) in [
+        (
+            "pr://Owner/Repo/0007/comments/facts",
+            "pr://owner/repo/7/comments/facts",
+        ),
+        (
+            "pr://owner/repo/7/comments/9001/facts",
+            "pr://owner/repo/7/comments/9001/facts",
+        ),
+    ] {
+        let parsed =
+            PathReference::parse(input).unwrap_or_else(|error| panic!("{input} failed: {error}"));
+        assert_eq!(parsed.requested(), canonical, "{input}");
+        assert_eq!(
+            PathReference::parse(parsed.requested()),
+            Ok(parsed.clone()),
+            "{input} round trip"
+        );
+    }
+    assert!(matches!(
+        PathReference::parse("pr://owner/repo/7/comments/facts")
+            .expect("collection")
+            .address(),
+        ResourceAddress::PullRequest(PullRequestAddress::Item {
+            resource: PullRequestResource::Facts(resourcefs_core::PullRequestFact::Comments),
+            ..
+        })
+    ));
+    assert!(matches!(
+        PathReference::parse("pr://owner/repo/7/comments/9001/facts")
+            .expect("item")
+            .address(),
+        ResourceAddress::PullRequest(PullRequestAddress::Item {
+            resource: PullRequestResource::Facts(resourcefs_core::PullRequestFact::Comment(id)),
+            ..
+        }) if id.get() == 9_001
+    ));
+
+    // Malformed or reinterpreted spellings stay refusals.
+    for input in [
+        "pr://owner/repo/7/comments/facts/1",
+        "pr://owner/repo/7/comments/facts/facts",
+        "pr://owner/repo/7/comments/new/facts",
+        "pr://owner/repo/7/comments/0/facts",
+        "pr://owner/repo/7/comments/9001/facts/1",
+        "pr://owner/repo/0/comments/facts",
+        "issue://owner/repo/7/comments/facts",
+    ] {
+        assert_eq!(
+            PathReference::parse(input)
+                .expect_err("refused conversation-comment facts spelling")
+                .category(),
+            ErrorCategory::InvalidReference,
+            "{input}"
+        );
+    }
+
+    // The cursor belongs to the collection and nowhere else; every other
+    // pr:// route keeps the verdict it had before the split existed.
+    let collection = PathReference::parse("pr://owner/repo/7/comments/facts:cursor:e30")
+        .expect("collection cursor");
+    assert_eq!(
+        collection
+            .projection()
+            .and_then(resourcefs_core::ProjectionSelector::source_cursor)
+            .map(resourcefs_core::SourceCursor::as_str),
+        Some("e30")
+    );
+    for input in [
+        "pr://owner/repo/7/facts:cursor:e30",
+        "pr://owner/repo/7/comments/9001/facts:cursor:e30",
+        "pr://owner/repo:cursor:e30",
+        "pr://owner/repo/7/comments:cursor:e30",
+        "pr://owner/repo/7/reviews:cursor:e30",
+    ] {
+        assert_eq!(
+            PathReference::parse(input)
+                .expect_err("cursor outside the conversation-comment collection")
+                .category(),
+            ErrorCategory::InvalidReference,
+            "{input}"
+        );
+    }
+
+    // Native page and line selectors keep their existing parse behaviour; the
+    // adapter refuses them at read time.
+    for input in [
+        "pr://owner/repo/7/comments/facts:page:2",
+        "pr://owner/repo/7/comments/facts:raw",
+        "pr://owner/repo/7/comments/facts:2-4",
+    ] {
+        assert_eq!(
+            PathReference::parse(input)
+                .expect("parsed selector")
+                .requested(),
+            input,
+            "{input}"
+        );
+    }
+}

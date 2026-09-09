@@ -302,3 +302,116 @@ async fn live_github_facts_preserve_native_identity_and_links() {
     assert_eq!(facts["acquisition"]["restApiVersion"], "2022-11-28");
     assert!(resource.continuation().is_none());
 }
+
+#[tokio::test]
+#[ignore = "live GitHub smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
+async fn live_github_conversation_comment_facts_hold_up() {
+    let Some(token) = live_token() else { return };
+    // Independent observation of the same public collection.
+    let native = std::process::Command::new("gh")
+        .args([
+            "api",
+            "-H",
+            "X-GitHub-Api-Version: 2022-11-28",
+            &format!("repos/{REPOSITORY}/issues/{SMALL_PR}/comments?per_page=100&page=1"),
+        ])
+        .env("GH_TOKEN", &token)
+        .output()
+        .expect("independent native gh read");
+    assert!(native.status.success(), "native collection read failed");
+    let native: Vec<serde_json::Value> =
+        serde_json::from_slice(&native.stdout).expect("native comment page");
+    assert!(!native.is_empty(), "fixture PR must have comments");
+    let pull = std::process::Command::new("gh")
+        .args([
+            "api",
+            "-H",
+            "X-GitHub-Api-Version: 2022-11-28",
+            &format!("repos/{REPOSITORY}/pulls/{SMALL_PR}"),
+        ])
+        .env("GH_TOKEN", &token)
+        .output()
+        .expect("independent native pull read");
+    assert!(pull.status.success(), "native pull read failed");
+    let pull: serde_json::Value = serde_json::from_slice(&pull.stdout).expect("native pull JSON");
+
+    let source = live_source(token).await.expect("live source");
+    let resource = read(
+        &source,
+        &format!("pr://{REPOSITORY}/{SMALL_PR}/comments/facts"),
+    )
+    .await;
+    let facts: serde_json::Value =
+        serde_json::from_str(resource.content()).expect("collection JSON");
+    assert_eq!(facts["kind"], "github.conversation_comment_collection");
+    assert_eq!(facts["schemaVersion"]["major"], 1);
+    assert_eq!(facts["request"]["number"], SMALL_PR.to_string());
+    let records = facts["data"]["records"].as_array().expect("records");
+    assert!(
+        !records.is_empty(),
+        "the fixture PR has conversation comments"
+    );
+    assert_eq!(
+        facts["collection"]["acceptedCount"]
+            .as_u64()
+            .expect("count"),
+        records.len() as u64
+    );
+    // Coverage is honest: a truncated traversal must name a continuation.
+    let state = facts["collection"]["state"].as_str().expect("state");
+    assert!(
+        matches!(state, "complete" | "incomplete"),
+        "unexpected state {state}"
+    );
+    if state == "incomplete" {
+        assert!(
+            facts["collection"]["continuation"].is_string(),
+            "an incomplete collection names a continuation"
+        );
+    }
+    assert!(
+        facts["collection"].get("providerCap").is_none(),
+        "no provider cap is invented for this endpoint"
+    );
+
+    // The first provider record matches the independent observation exactly.
+    assert_eq!(
+        records[0]["id"],
+        native[0]["id"].as_u64().expect("id").to_string()
+    );
+    assert_eq!(records[0]["nodeId"], native[0]["node_id"]);
+    assert_eq!(
+        records[0]["parent"]["id"],
+        pull["id"].as_u64().expect("pull id").to_string()
+    );
+    assert_eq!(records[0]["parent"]["number"], SMALL_PR.to_string());
+    for record in records {
+        assert_eq!(record["kind"], "github.conversation_comment");
+        assert_eq!(record["parent"]["number"], SMALL_PR.to_string());
+        assert!(
+            record["links"]["issueUrl"]
+                .as_str()
+                .expect("issue url")
+                .ends_with(&format!("/issues/{SMALL_PR}")),
+            "every record names the verified parent"
+        );
+    }
+
+    // One comment read matches the same native record.
+    let id = native[0]["id"].as_u64().expect("id");
+    let single = read(
+        &source,
+        &format!("pr://{REPOSITORY}/{SMALL_PR}/comments/{id}/facts"),
+    )
+    .await;
+    let single: serde_json::Value = serde_json::from_str(single.content()).expect("comment JSON");
+    assert_eq!(single["data"]["id"], id.to_string());
+    assert_eq!(single["data"]["nodeId"], native[0]["node_id"]);
+    assert_eq!(single["data"]["body"], native[0]["body"]);
+    assert_eq!(single["data"]["parent"]["number"], SMALL_PR.to_string());
+    assert!(single.get("collection").is_none());
+    eprintln!(
+        "L7 conversation-comment facts: {} records, state {state}",
+        records.len()
+    );
+}

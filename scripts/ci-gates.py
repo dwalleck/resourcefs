@@ -23,6 +23,7 @@ BUDGETS = {
     "github_single_resource_render_budget",
     "github_cache_namespace_removal_budget",
     "github_facts_production_budget",
+    "github_collection_production_budget",
     "creation_document_budget",
     "github_wire_decode_budget",
     "http_mutation_request_budget",
@@ -31,8 +32,10 @@ BUDGETS = {
 EXCLUDED = {
     "live_stdio_profile_probe_serve_and_tools_hold_up": "live GitHub/stdio smoke",
     "live_stdio_github_facts_match_native_observation": "live GitHub Facts stdio smoke",
+    "live_stdio_github_comment_facts_match_native_observation": "live GitHub comment Facts stdio smoke",
     "live_github_reads_hold_up": "live GitHub smoke",
     "live_github_facts_preserve_native_identity_and_links": "live GitHub Facts smoke",
+    "live_github_conversation_comment_facts_hold_up": "live GitHub comment Facts smoke",
     "live_https_reads_hold_up": "live HTTPS smoke",
     "live_jira_issue_read": "live Jira smoke",
     "live_jira_project_browse": "live Jira project smoke",
@@ -132,7 +135,7 @@ def main():
     if sys.platform == "linux":
         gates.insert(0, (
             "Module placement",
-            [sys.executable, "scripts/module_shape.py"],
+            [sys.executable, "scripts/module_shape_bfwa.py"],
         ))
     failed = []
     for name, command in gates:

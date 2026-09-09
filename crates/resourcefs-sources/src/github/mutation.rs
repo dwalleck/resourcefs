@@ -101,7 +101,7 @@ impl GithubFieldTarget {
                     id: id.get(),
                 }),
                 PullRequestResource::Aggregate
-                | PullRequestResource::Facts
+                | PullRequestResource::Facts(_)
                 | PullRequestResource::Comments
                 | PullRequestResource::CommentsNew
                 | PullRequestResource::Reviews

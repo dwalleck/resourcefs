@@ -2,7 +2,8 @@
 use resourcefs_core::{ErrorReason, GithubRepositoryIdentity, ResourceError};
 use url::Url;
 
-use super::{Branch, NativeId, NativePull, Presence, Repository, failure};
+use super::pull::{Branch, NativePull};
+use super::{NativeId, Presence, Repository, failure};
 
 pub(super) struct ValidatedIdentity<'a> {
     pub(super) id: &'a NativeId,

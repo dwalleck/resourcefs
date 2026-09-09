@@ -372,3 +372,92 @@ fn live_stdio_github_facts_match_native_observation() {
     assert_eq!(facts["acquisition"]["restApiVersion"], "2022-11-28");
     assert!(!bytes.contains(&token));
 }
+
+#[test]
+#[ignore = "live full-stack smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
+fn live_stdio_github_comment_facts_match_native_observation() {
+    let Some(token) = live_token() else { return };
+    let temporary = TempDir::new().expect("temporary directory");
+    let profile = write_profile(temporary.path());
+    let native = Command::new("gh")
+        .args([
+            "api",
+            "-H",
+            "X-GitHub-Api-Version: 2022-11-28",
+            "repos/rust-lang/rust/issues/159232/comments?per_page=100&page=1",
+        ])
+        .env("GH_TOKEN", &token)
+        .output()
+        .expect("native gh observation");
+    assert!(native.status.success(), "native observation failed");
+    let native: Vec<Value> = serde_json::from_slice(&native.stdout).expect("native comments");
+    assert!(!native.is_empty(), "fixture PR must have comments");
+    let mut server = Server::start(&profile, &token);
+    server.initialize();
+    let mut result = server.call(
+        "rfs_read",
+        json!({"path": format!("{SMALL_PR}/comments/facts")}),
+    );
+    let mut bytes = String::new();
+    loop {
+        assert_eq!(result["isError"], false);
+        bytes.push_str(
+            result["structuredContent"]["content"]
+                .as_str()
+                .expect("facts page"),
+        );
+        let Some(next) = result["structuredContent"]["continuationReference"].as_str() else {
+            break;
+        };
+        result = server.call("rfs_read", json!({"path": next}));
+    }
+    let facts: Value = serde_json::from_str(&bytes).expect("complete collection");
+    assert_eq!(facts["kind"], "github.conversation_comment_collection");
+    assert_eq!(facts["request"]["number"], "159232");
+    let records = facts["data"]["records"].as_array().expect("records");
+    assert!(!records.is_empty());
+    assert_eq!(
+        facts["collection"]["acceptedCount"]
+            .as_u64()
+            .expect("count"),
+        records.len() as u64
+    );
+    assert_eq!(
+        records[0]["id"],
+        native[0]["id"].as_u64().expect("id").to_string()
+    );
+    assert_eq!(records[0]["nodeId"], native[0]["node_id"]);
+    assert_eq!(records[0]["body"], native[0]["body"]);
+    assert_eq!(records[0]["parent"]["number"], "159232");
+
+    // The single-comment read through the real binary matches the same record.
+    // A large comment body overflows the inline page, so recovery is followed
+    // before parsing exactly as a client must.
+    let id = native[0]["id"].as_u64().expect("id");
+    let mut result = server.call(
+        "rfs_read",
+        json!({"path": format!("{SMALL_PR}/comments/{id}/facts")}),
+    );
+    let mut single = String::new();
+    loop {
+        assert_eq!(result["isError"], false, "{result}");
+        single.push_str(
+            result["structuredContent"]["content"]
+                .as_str()
+                .expect("comment JSON page"),
+        );
+        let Some(next) = result["structuredContent"]["continuationReference"].as_str() else {
+            break;
+        };
+        result = server.call("rfs_read", json!({"path": next}));
+    }
+    let single: Value = serde_json::from_str(&single).expect("comment facts");
+    assert_eq!(single["data"]["id"], id.to_string());
+    assert_eq!(single["data"]["nodeId"], native[0]["node_id"]);
+    assert!(single.get("collection").is_none());
+    assert!(!bytes.contains(&token));
+    eprintln!(
+        "S-comment conversation-comment facts: {} records",
+        records.len()
+    );
+}

@@ -264,7 +264,12 @@ where
     let (status, content_type, body) = match responses {
         Responses::Html(body) => ("200 OK", "text/html; charset=utf-8", body.as_ref()),
         Responses::Native(responses) => match responses.get(sequence - 1) {
-            Some(response) if response.path == target && method == "GET" => {
+            // Collection reads carry a `per_page`/`page` query; the fixture
+            // names the endpoint, so compare the path only.
+            Some(response)
+                if response.path == target.split('?').next().unwrap_or(target)
+                    && method == "GET" =>
+            {
                 ("200 OK", "application/json", response.body.as_str())
             }
             _ => (
