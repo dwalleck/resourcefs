@@ -114,7 +114,7 @@ Without the gate both rows print an explicit skip and are never counted as passe
 
 | Obligation | Result |
 |---|---|
-| Complete repository gate `python scripts/ci-gates.py` | PASS — `All repository gates passed.` on `f4128c1d` (1,128 s): module placement (`C02 PASS stage=review`), formatting, clippy `-D warnings`, functional workspace tests, release workspace tests with `--test-threads=1`, every classified ignored production budget, and `cargo deny check` |
+| Complete repository gate `python scripts/ci-gates.py` | PASS — `All repository gates passed.` on `13d5e61` after the credential repair (1,745 s); the earlier run on `f4128c1d` (1,128 s) is superseded by the repair: module placement (`C02 PASS stage=review`), formatting, clippy `-D warnings`, functional workspace tests, release workspace tests with `--test-threads=1`, every classified ignored production budget, and `cargo deny check` |
 | Workspace tests `cargo test --workspace --all-features` | PASS — every suite `ok`, zero failures |
 | Clippy `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
 | `cargo fmt --all` | PASS (applied) |
@@ -135,6 +135,24 @@ The permanent gate `scripts/module_shape.py` + `scripts/module-ledger.json` is r
 `facts/comment.rs` keeps its family with the renamed protocol (`ValidatedComment`, `validate_comment`, `comment_id`, `comment_unavailable`, `project_comment`, `read_comment_item`) and no longer owns `ParentFacts`/`fetch_parent`. `facts/identity.rs` records the new entry points and `WebObjectRoute`. `scripts/module_shape_base.py` raises the `core/src/reference.rs` tripwire from 1,989 to 2,010 lines for the four added grammar arms.
 
 Result: `python3 scripts/module_shape.py` → `C02 PASS stage=review baseline=7de8d1477af6be825bada9015a6996b3f2917c7d`.
+
+### Bounded repair (2026-09-09): credential-bearing review/inline web links
+
+Advisor finding, confirmed against the code: `validate_optional_web_link` compared only `Url::origin()`, which ignores userinfo, so an `html_url` such as `https://user:secret@github.example/owner/repo/pull/7#discussion_r3826494362` was accepted and published in `links.htmlUrl`, while the conversation-comment path already refused it (`validate_optional_comment_link`). The approved contract determines the fix — spec §6 forbids exposing credentials, and the conversation validator is the existing obligation — so this is a bounded repair under the contract's approval semantics, not a design change.
+
+| Gate item | Result |
+|---|---|
+| Affected unit tests | PASS — `cargo test -p resourcefs-sources --test github_facts_contract` 47 passed |
+| Falsifiers | PASS — recognized credential URL refused, opaque credential URL refused, clean opaque same-origin value preserved verbatim |
+| Stress fixture | PASS — `inline_web_links_reject_credentials_and_keep_opaque_values` |
+| Implementation vs oracle | PASS — refusal category `source_unavailable` with reason `upstream_identity_mismatch`, matching the conversation path's verdict |
+| Module shape | PASS — `python3 scripts/module_shape.py` `C02 PASS stage=review`; `python3 .rfs-r31i/oracles/shape_fence.py` PASS; `clean_authority` recorded in the ledger |
+| Production-scale budget | PASS — `N/A — no new loop; two field reads per supplied link` |
+| Regression fence | PASS — the new contract row |
+| Named mutation | PASS — M6 (drop the credential clause from `clean_authority`) turns the fence red |
+| Fence restored | PASS — restored, 47 passed |
+
+The rule now has one owner: `clean_authority` is used by the conversation and review/inline link validators, `matches_object_url` and `validate_api_authority`, and it runs before route recognition so a credential-bearing opaque same-origin path is refused rather than published.
 
 ### Isolated design-conformance review (2026-09-09)
 

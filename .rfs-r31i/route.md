@@ -55,4 +55,4 @@ prove-it-prototype → falsifiable-design → budgeted-plan → checkpointed-bui
 
 Empirical — every empirical premise records PASS, every downstream artifact satisfies its owning stage's completion criterion, and checkpointed-build records no FAIL.
 
-Result: 2026-09-09 | `python scripts/ci-gates.py` on `f4128c1d` | PASS — `All repository gates passed.` P1/P2 PASS with an independent oracle; `spec.md` `N/A — behavior fully explicit`; `design.md` approved and its isolated conformance comparison PASS; `plan.md` slices 1-3 discharged with no `FAIL`; live adapter and stdio rows PASS on `7dfc8f1d` (revision before the gate-classification commit, which changes no production path).
+Result: 2026-09-09 | `python scripts/ci-gates.py` on `13d5e61` | PASS — `All repository gates passed.` P1/P2 PASS with an independent oracle; `spec.md` `N/A — behavior fully explicit`; `design.md` approved and its isolated conformance comparison PASS; `plan.md` slices 1-3 discharged with no `FAIL`; live adapter and stdio rows PASS on `13d5e61`.
