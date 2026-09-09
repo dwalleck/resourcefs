@@ -81,6 +81,7 @@ LEDGER_PATHS = {
     "crates/resourcefs-sources/src/github/facts/comment.rs",
     "crates/resourcefs-sources/src/github/facts/review.rs",
     "crates/resourcefs-sources/src/github/facts/inline.rs",
+    "crates/resourcefs-sources/src/github/facts/continuation.rs",
     "crates/resourcefs-sources/src/github/facts/identity.rs",
     "crates/resourcefs-sources/src/github/mod.rs",
 }
