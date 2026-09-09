@@ -194,16 +194,8 @@ pub(super) async fn read_item(
 ) -> Result<SourceResource, ResourceError> {
     let (pull, parent_endpoint, parent_generation) =
         parent::fetch(source, repository, number, ctx).await?;
-    super::establish_generation(ctx, parent_generation);
     let web = Url::parse(ctx.web_origin).map_err(|_| failure(ErrorReason::UpstreamUnavailable))?;
-    let identity = identity::validate(
-        &pull,
-        repository,
-        number,
-        &parent_endpoint,
-        &source.api_base,
-        &web,
-    )?;
+    let identity = parent::validate(&pull, repository, number, &parent_endpoint, source, ctx)?;
     let endpoint = source.endpoint(
         repository,
         &format!("pulls/{}/reviews/{}", number.get(), review_id.get()),

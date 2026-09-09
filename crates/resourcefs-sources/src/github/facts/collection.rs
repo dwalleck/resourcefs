@@ -1,4 +1,8 @@
-//! Bounded conversation-comment collection acquisition and honest coverage.
+//! Bounded discussion-collection acquisition and honest coverage.
+//!
+//! Conversation comments, review submissions and inline review comments share
+//! this one engine; `family` supplies the native decoding, validation and
+//! projection for whichever collection a read addressed.
 //!
 //! One logical read owns a single attempt/deadline/byte budget. A page is
 //! admitted only when its records and the resulting final representation both
@@ -492,16 +496,8 @@ pub(super) async fn read(
     let (pull, parent_endpoint, parent_generation) =
         parent::fetch(source, repository, number, ctx).await?;
     let parent_body_bytes = ctx.budget.accepted_body_bytes();
-    super::establish_generation(ctx, parent_generation);
     let web = Url::parse(ctx.web_origin).map_err(|_| failure(ErrorReason::UpstreamUnavailable))?;
-    let identity = identity::validate(
-        &pull,
-        repository,
-        number,
-        &parent_endpoint,
-        &source.api_base,
-        &web,
-    )?;
+    let identity = parent::validate(&pull, repository, number, &parent_endpoint, source, ctx)?;
     let resource = ctx.canonical.requested().to_owned();
     let web_origin = ctx.web_origin.to_owned();
     let view = CollectionView {

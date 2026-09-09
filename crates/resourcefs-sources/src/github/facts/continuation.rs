@@ -1,4 +1,7 @@
-//! Authenticated, bounded conversation-comment continuations.
+//! Authenticated, bounded discussion-collection continuations.
+//!
+//! One envelope serves every collection family; the canonical resource it
+//! binds is what keeps a handle from being replayed against another family.
 //!
 //! A handle contains the native next-page target and its routing context, but
 //! carries no credential.  The envelope is authenticated with a private key
