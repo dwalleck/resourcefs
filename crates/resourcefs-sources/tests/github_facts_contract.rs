@@ -3828,6 +3828,17 @@ async fn inline_facts_preserve_native_anchor_presence() {
         third["side"] = json!("BOTH");
         third["subject_type"] = json!("file");
         records.push(third);
+        // A LEFT-side multiline anchor keeps both its start and current
+        // coordinates instead of collapsing to a single line.
+        let mut fourth = inline_json(3854358001, api);
+        fourth["side"] = json!("LEFT");
+        fourth["start_side"] = json!("LEFT");
+        fourth["line"] = json!(10);
+        fourth["start_line"] = json!(5);
+        fourth["original_line"] = json!(9);
+        fourth["original_start_line"] = json!(4);
+        fourth["original_position"] = json!(7);
+        records.push(fourth);
         response(
             "200 OK",
             serde_json::to_string(&records).expect("inline page"),
@@ -3844,7 +3855,7 @@ async fn inline_facts_preserve_native_anchor_presence() {
     assert_eq!(facts["kind"], "github.review_comment_collection");
     assert_eq!(facts["schemaVersion"]["minor"], 1);
     let records = facts["data"]["records"].as_array().expect("records");
-    assert_eq!(records.len(), 3);
+    assert_eq!(records.len(), 4);
     let root = &records[0];
     assert_eq!(root["kind"], "github.review_comment");
     assert_eq!(root["id"], "3826494362");
@@ -3888,6 +3899,14 @@ async fn inline_facts_preserve_native_anchor_presence() {
     assert_eq!(unknown["side"], "BOTH", "unknown native value is verbatim");
     assert_eq!(unknown["subjectType"], "file");
     assert_eq!(unknown["line"], Value::Null);
+    let multiline = &records[3];
+    assert_eq!(multiline["side"], "LEFT");
+    assert_eq!(multiline["startSide"], "LEFT");
+    assert_eq!(multiline["line"], 10);
+    assert_eq!(multiline["startLine"], 5);
+    assert_eq!(multiline["originalLine"], 9);
+    assert_eq!(multiline["originalStartLine"], 4);
+    assert_eq!(multiline["originalPosition"], 7);
 
     let item = document(
         &read_reference(&source, INLINE_ITEM, None)
@@ -4243,4 +4262,76 @@ async fn inline_collection_cancellation_rejects_acquired_pages() {
         ErrorReason::Cancelled
     );
     assert_eq!(listener.requests().len(), 3, "parent plus two pages");
+}
+
+#[tokio::test]
+async fn colliding_ids_across_discussion_families_stay_distinct() {
+    const SHARED_ID: u64 = 4_242;
+    let (_, source, _session) = family_fixture(|target, api, _| {
+        if target.starts_with("/repos/owner/repo/issues/7/comments") {
+            return comment_page(&[SHARED_ID], api, None);
+        }
+        if target.starts_with("/repos/owner/repo/pulls/7/reviews") {
+            return review_page(&[SHARED_ID], api, None);
+        }
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/comments"),
+            "unexpected target {target}"
+        );
+        inline_page(&[SHARED_ID], api, None)
+    })
+    .await;
+    let conversation = document(
+        &read_reference(&source, "pr://owner/repo/7/comments/facts", None)
+            .await
+            .expect("conversation collection"),
+    );
+    let review = document(
+        &read_reference(&source, REVIEW_RESOURCE, None)
+            .await
+            .expect("review collection"),
+    );
+    let inline = document(
+        &read_reference(&source, INLINE_RESOURCE, None)
+            .await
+            .expect("inline collection"),
+    );
+    // The same native number names three unrelated records; each family keeps
+    // its own kind and document identity rather than collapsing into one.
+    for (facts, collection_kind, record_kind) in [
+        (
+            &conversation,
+            "github.conversation_comment_collection",
+            "github.conversation_comment",
+        ),
+        (
+            &review,
+            "github.review_submission_collection",
+            "github.review_submission",
+        ),
+        (
+            &inline,
+            "github.review_comment_collection",
+            "github.review_comment",
+        ),
+    ] {
+        assert_eq!(facts["kind"], collection_kind);
+        let record = &facts["data"]["records"][0];
+        assert_eq!(record["kind"], record_kind);
+        assert_eq!(record["id"], SHARED_ID.to_string());
+        assert_eq!(record["parent"]["number"], "7");
+    }
+    assert_eq!(
+        review["data"]["records"][0]["commitSha"],
+        "a8395d4c879b743dda521b3d3929b6819c8ad3b8"
+    );
+    assert_eq!(inline["data"]["records"][0]["side"], "RIGHT");
+    assert_ne!(
+        conversation["data"]["records"][0]["kind"],
+        review["data"]["records"][0]["kind"]
+    );
+    assert_ne!(
+        review["data"]["records"][0]["kind"],
+        inline["data"]["records"][0]["kind"]
+    );
 }
