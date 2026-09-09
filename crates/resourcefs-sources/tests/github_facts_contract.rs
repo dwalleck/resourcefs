@@ -4335,3 +4335,71 @@ async fn colliding_ids_across_discussion_families_stay_distinct() {
         inline["data"]["records"][0]["kind"]
     );
 }
+
+#[tokio::test]
+async fn inline_web_links_reject_credentials_and_keep_opaque_values() {
+    // A credential-bearing same-origin link is a contradiction on a recognized
+    // path: `Url::origin()` ignores userinfo, so origin alone would publish it.
+    let (_, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/comments"),
+            "unexpected target {target}"
+        );
+        let mut record = inline_json(3826494362, api);
+        record["html_url"] =
+            json!("https://user:secret@github.example/owner/repo/pull/7#discussion_r3826494362");
+        response("200 OK", json!([record]).to_string(), vec![])
+    })
+    .await;
+    let error = read_reference(&source, INLINE_RESOURCE, None)
+        .await
+        .expect_err("credential-bearing recognized web link");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    assert_eq!(
+        error.details().expect("typed refusal").reason(),
+        ErrorReason::UpstreamIdentityMismatch
+    );
+
+    // The rule is applied before route recognition, so an opaque same-origin
+    // path carrying credentials is refused too rather than published.
+    let (_, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/comments"),
+            "unexpected target {target}"
+        );
+        let mut record = inline_json(3826494362, api);
+        record["html_url"] = json!("https://user:secret@github.example/notes/42");
+        response("200 OK", json!([record]).to_string(), vec![])
+    })
+    .await;
+    let error = read_reference(&source, INLINE_RESOURCE, None)
+        .await
+        .expect_err("credential-bearing opaque web link");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    assert_eq!(
+        error.details().expect("typed refusal").reason(),
+        ErrorReason::UpstreamIdentityMismatch
+    );
+
+    // Positive control: a clean opaque same-origin value is not a route and
+    // stays a lossless provider observation.
+    let (_, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/comments"),
+            "unexpected target {target}"
+        );
+        let mut record = inline_json(3826494362, api);
+        record["html_url"] = json!("https://github.example/notes/42");
+        response("200 OK", json!([record]).to_string(), vec![])
+    })
+    .await;
+    let facts = document(
+        &read_reference(&source, INLINE_RESOURCE, None)
+            .await
+            .expect("clean opaque web link is preserved"),
+    );
+    assert_eq!(
+        facts["data"]["records"][0]["links"]["htmlUrl"],
+        "https://github.example/notes/42"
+    );
+}

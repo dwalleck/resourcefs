@@ -136,10 +136,7 @@ fn validate_optional_comment_link(
         return Ok(());
     };
     let expected = if api_link { api } else { web };
-    if parsed.origin() != expected.origin()
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-    {
+    if !clean_authority(&parsed, expected) {
         return Err(failure(ErrorReason::UpstreamIdentityMismatch));
     }
     if api_link {
@@ -178,12 +175,19 @@ pub(super) fn expected_object_url(
     .map_err(|_| failure(ErrorReason::UpstreamMalformed))
 }
 
+/// A supplied URL names this deployment's own authority only when its origin
+/// matches and it carries no credential. `Url::origin()` ignores userinfo, so
+/// every authority comparison must use this rule rather than origin alone:
+/// a credential-bearing URL is a contradiction, never an opaque value to
+/// publish.
+fn clean_authority(url: &Url, expected: &Url) -> bool {
+    url.origin() == expected.origin() && url.username().is_empty() && url.password().is_none()
+}
+
 fn matches_object_url(value: &str, expected: &Url) -> bool {
     Url::parse(value).is_ok_and(|actual| {
-        actual.origin() == expected.origin()
+        clean_authority(&actual, expected)
             && actual.path().eq_ignore_ascii_case(expected.path())
-            && actual.username().is_empty()
-            && actual.password().is_none()
             && actual.query().is_none()
             && actual.fragment().is_none()
     })
@@ -237,7 +241,7 @@ pub(super) fn validate_optional_web_link(
     let Ok(parsed) = Url::parse(value) else {
         return Ok(None);
     };
-    if parsed.origin() != web.origin() {
+    if !clean_authority(&parsed, web) {
         return Err(failure(ErrorReason::UpstreamIdentityMismatch));
     }
     let Some(route) = web_route(&parsed, web)? else {
@@ -266,7 +270,7 @@ pub(super) fn require_observed_id(
 }
 
 fn validate_api_authority(url: &Url, api: &Url) -> Result<(), ResourceError> {
-    if url.origin() != api.origin() || !url.username().is_empty() || url.password().is_some() {
+    if !clean_authority(url, api) {
         return Err(failure(ErrorReason::UpstreamIdentityMismatch));
     }
     Ok(())

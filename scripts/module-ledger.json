@@ -288,7 +288,8 @@
         "same_url",
         "validate_observed_link",
         "repository_link_identity",
-        "validate_repository"
+        "validate_repository",
+        "clean_authority"
       ]
     },
     "crates/resourcefs-sources/src/github/facts/inline.rs": {
