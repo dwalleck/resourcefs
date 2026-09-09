@@ -16,7 +16,9 @@ use super::super::GithubSource;
 use super::super::fetch::BodyObservation;
 use super::{
     Acquisition, Facts, FactsRead, NativeId, RepositoryName, Unavailable, Upstream, acquisition,
-    comment, continuation, failure, finish_facts, identity, pull, serialized_len,
+    continuation, failure,
+    family::{self, CollectionFamily, Record, RecordView},
+    finish_facts, identity, parent, pull, serialized_len,
 };
 
 #[derive(Clone, Copy, Serialize)]
@@ -164,12 +166,12 @@ struct CollectionRequest<'a> {
 
 #[derive(Serialize)]
 struct CollectionObserved<'a> {
-    parent: comment::ParentFacts<'a>,
+    parent: parent::ParentFacts<'a>,
 }
 
 #[derive(Serialize)]
 struct Records<'a> {
-    records: Vec<comment::CommentRecord<'a>>,
+    records: Vec<RecordView<'a>>,
 }
 
 #[derive(Serialize)]
@@ -264,10 +266,10 @@ fn is_representation_limit(error: &ResourceError) -> bool {
             .is_some_and(|limit| limit.kind() == AcquisitionLimitKind::RepresentationBytes)
 }
 
-fn unavailable_for(records: &[comment::ValidatedRecord]) -> Vec<Unavailable> {
+fn unavailable_for(records: &[Record]) -> Vec<Unavailable> {
     let mut unavailable = Vec::new();
     for record in records {
-        note_unavailable(&mut unavailable, record.unavailable());
+        note_unavailable(&mut unavailable, family::unavailable(record));
     }
     unavailable
 }
@@ -295,7 +297,7 @@ fn note_unavailable(into: &mut Vec<Unavailable>, from: &[Unavailable]) {
 /// Candidate records cannot be measured without their native observation.
 #[derive(Clone, Copy)]
 struct CandidatePage<'a> {
-    records: &'a [comment::ValidatedRecord],
+    records: &'a [Record],
     observation: &'a PageObservation,
 }
 
@@ -303,6 +305,7 @@ struct CollectionView<'a> {
     source: &'a GithubSource,
     repository: &'a GithubRepositoryIdentity,
     number: PullRequestNumber,
+    family: CollectionFamily,
     pull: &'a pull::NativePull,
     identity: &'a identity::ValidatedIdentity<'a>,
     scope: CollectionScope,
@@ -312,7 +315,7 @@ struct CollectionView<'a> {
 
 fn build_facts<'a>(
     view: &CollectionView<'a>,
-    records: &'a [comment::ValidatedRecord],
+    records: &'a [Record],
     pages: &'a [PageObservation],
     candidate: Option<CandidatePage<'a>>,
     unavailable: &[Unavailable],
@@ -325,12 +328,12 @@ fn build_facts<'a>(
     projected.extend(
         records
             .iter()
-            .map(|record| record.project(view.pull, view.identity)),
+            .map(|record| family::project(record, view.pull, view.identity)),
     );
     projected.extend(
         extra_records
             .iter()
-            .map(|record| record.project(view.pull, view.identity)),
+            .map(|record| family::project(record, view.pull, view.identity)),
     );
     let mut upstream = Vec::with_capacity(pages.len() + usize::from(extra_page.is_some()));
     upstream.extend(pages.iter().map(|page| Upstream {
@@ -346,7 +349,7 @@ fn build_facts<'a>(
     let requested_number = NativeId::from_positive(view.number.get());
     Facts {
         schema_version: super::SchemaVersion { major: 1, minor: 1 },
-        kind: "github.conversation_comment_collection",
+        kind: view.family.kind(),
         resource: view.resource,
         source: super::Source {
             source_id: view.source.config.id(),
@@ -370,7 +373,7 @@ fn build_facts<'a>(
                 number: requested_number,
             },
             observed: CollectionObserved {
-                parent: comment::parent_facts(view.pull, view.identity),
+                parent: parent::facts(view.pull, view.identity),
             },
             upstream: Pages { pages: upstream },
             data: Records { records: projected },
@@ -382,7 +385,7 @@ fn build_facts<'a>(
 
 fn measure_candidate<'a>(
     view: &CollectionView<'a>,
-    records: &'a [comment::ValidatedRecord],
+    records: &'a [Record],
     pages: &'a [PageObservation],
     candidate: Option<CandidatePage<'a>>,
     unavailable: &[Unavailable],
@@ -402,7 +405,7 @@ fn measure_candidate<'a>(
 
 fn observed_representation<'a>(
     view: &CollectionView<'a>,
-    records: &'a [comment::ValidatedRecord],
+    records: &'a [Record],
     pages: &'a [PageObservation],
     candidate: Option<CandidatePage<'a>>,
     unavailable: &[Unavailable],
@@ -467,10 +470,11 @@ pub(super) async fn read(
     source: &GithubSource,
     repository: &GithubRepositoryIdentity,
     number: PullRequestNumber,
+    family: CollectionFamily,
     cursor: Option<&resourcefs_core::SourceCursor>,
     ctx: &mut FactsRead<'_>,
 ) -> Result<SourceResource, ResourceError> {
-    let suffix = format!("issues/{}/comments", number.get());
+    let suffix = family.suffix(number);
     let owner = continuation::CursorOwner::new(ctx.canonical.clone(), source);
     let resumed = cursor
         .map(|cursor| {
@@ -486,7 +490,7 @@ pub(super) async fn read(
         CollectionScope::Initial
     };
     let (pull, parent_endpoint, parent_generation) =
-        comment::fetch_parent(source, repository, number, ctx).await?;
+        parent::fetch(source, repository, number, ctx).await?;
     let parent_body_bytes = ctx.budget.accepted_body_bytes();
     super::establish_generation(ctx, parent_generation);
     let web = Url::parse(ctx.web_origin).map_err(|_| failure(ErrorReason::UpstreamUnavailable))?;
@@ -504,6 +508,7 @@ pub(super) async fn read(
         source,
         repository,
         number,
+        family,
         pull: &pull,
         identity: &identity,
         scope,
@@ -563,7 +568,7 @@ pub(super) async fn read(
         }
         let response = page.response;
         let next = page.next;
-        let decoded: Vec<comment::NativeComment> = match serde_json::from_slice(response.body()) {
+        let decoded = match family.decode(response.body()) {
             Ok(decoded) => decoded,
             Err(_) => {
                 let error = failure(ErrorReason::UpstreamMalformed);
@@ -586,8 +591,7 @@ pub(super) async fn read(
         };
         let mut page_records = Vec::with_capacity(decoded.len());
         for native in decoded {
-            match comment::validate_record(native, repository, number, None, &source.api_base, &web)
-            {
+            match family::validate(native, repository, number, &source.api_base, &web) {
                 Ok(record) => page_records.push(record),
                 Err(error) if rejects_every_page(&error) => return Err(error),
                 Err(error) => {
@@ -605,16 +609,15 @@ pub(super) async fn read(
         }
         let mut candidate_unavailable = unavailable.clone();
         for record in &page_records {
-            note_unavailable(&mut candidate_unavailable, record.unavailable());
+            note_unavailable(&mut candidate_unavailable, family::unavailable(record));
         }
         if terminal.is_some() {
             break;
         }
         let mut page_ids = HashSet::new();
-        if page_records
-            .iter()
-            .any(|record| !page_ids.insert(record.id()) || seen_ids.contains(&record.id()))
-        {
+        if page_records.iter().any(|record| {
+            !page_ids.insert(family::id(record)) || seen_ids.contains(&family::id(record))
+        }) {
             if records.is_empty() {
                 return Err(failure(ErrorReason::UpstreamMalformed));
             }
@@ -701,7 +704,7 @@ pub(super) async fn read(
             break;
         }
         for record in &page_records {
-            seen_ids.insert(record.id());
+            seen_ids.insert(family::id(record));
         }
         unavailable = candidate_unavailable;
         page_observation.record_count = page_records.len();

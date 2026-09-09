@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 use resourcefs_core::{
     ConversationCommentId, DiffFileIndex, ErrorCategory, GithubRepositoryIdentity, IssueAddress,
     IssueNumber, IssueResource, MAX_PATH_REFERENCE_BYTES, PathReference, PullRequestAddress,
-    PullRequestNumber, PullRequestResource, ResourceAddress, ReviewCommentId, ReviewId,
+    PullRequestFact, PullRequestNumber, PullRequestResource, ResourceAddress, ReviewCommentId,
+    ReviewId,
 };
 
 #[test]
@@ -480,6 +481,155 @@ fn conversation_comment_facts_routes_and_cursor_scope() {
                 .expect("parsed selector")
                 .requested(),
             input,
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn review_and_inline_facts_routes_and_cursor_scope() {
+    // Canonical spellings round-trip exactly, including the collection/item
+    // split that shares a prefix with the human review routes.
+    for (input, canonical) in [
+        (
+            "pr://Owner/Repo/0007/reviews/facts",
+            "pr://owner/repo/7/reviews/facts",
+        ),
+        (
+            "pr://owner/repo/7/reviews/9001/facts",
+            "pr://owner/repo/7/reviews/9001/facts",
+        ),
+        (
+            "pr://Owner/Repo/0007/review-comments/facts",
+            "pr://owner/repo/7/review-comments/facts",
+        ),
+        (
+            "pr://owner/repo/7/review-comments/9001/facts",
+            "pr://owner/repo/7/review-comments/9001/facts",
+        ),
+    ] {
+        let parsed =
+            PathReference::parse(input).unwrap_or_else(|error| panic!("{input} failed: {error}"));
+        assert_eq!(parsed.requested(), canonical, "{input}");
+        assert_eq!(
+            PathReference::parse(parsed.requested()),
+            Ok(parsed.clone()),
+            "{input} round trip"
+        );
+    }
+    assert!(matches!(
+        PathReference::parse("pr://owner/repo/7/reviews/facts")
+            .expect("review collection")
+            .address(),
+        ResourceAddress::PullRequest(PullRequestAddress::Item {
+            resource: PullRequestResource::Facts(PullRequestFact::Reviews),
+            ..
+        })
+    ));
+    assert!(matches!(
+        PathReference::parse("pr://owner/repo/7/reviews/9001/facts")
+            .expect("review item")
+            .address(),
+        ResourceAddress::PullRequest(PullRequestAddress::Item {
+            resource: PullRequestResource::Facts(PullRequestFact::Review(id)),
+            ..
+        }) if id.get() == 9_001
+    ));
+    assert!(matches!(
+        PathReference::parse("pr://owner/repo/7/review-comments/facts")
+            .expect("inline collection")
+            .address(),
+        ResourceAddress::PullRequest(PullRequestAddress::Item {
+            resource: PullRequestResource::Facts(PullRequestFact::ReviewComments),
+            ..
+        })
+    ));
+    assert!(matches!(
+        PathReference::parse("pr://owner/repo/7/review-comments/9001/facts")
+            .expect("inline item")
+            .address(),
+        ResourceAddress::PullRequest(PullRequestAddress::Item {
+            resource: PullRequestResource::Facts(PullRequestFact::ReviewComment(id)),
+            ..
+        }) if id.get() == 9_001
+    ));
+
+    // Malformed, non-positive and reinterpreted spellings stay refusals.
+    for input in [
+        "pr://owner/repo/7/reviews/facts/1",
+        "pr://owner/repo/7/reviews/facts/facts",
+        "pr://owner/repo/7/reviews/0/facts",
+        "pr://owner/repo/7/reviews/9001/facts/1",
+        "pr://owner/repo/7/review-comments/facts/1",
+        "pr://owner/repo/7/review-comments/0/facts",
+        "pr://owner/repo/7/review-comments/9001/facts/1",
+        "pr://owner/repo/0/reviews/facts",
+        "pr://owner/repo/0/review-comments/facts",
+        "issue://owner/repo/7/reviews/facts",
+        "issue://owner/repo/7/review-comments/facts",
+    ] {
+        assert_eq!(
+            PathReference::parse(input)
+                .expect_err("refused review/inline facts spelling")
+                .category(),
+            ErrorCategory::InvalidReference,
+            "{input}"
+        );
+    }
+
+    // The human review routes keep their meaning and never become facts.
+    for (input, expected) in [
+        ("pr://owner/repo/7/reviews", PullRequestResource::Reviews),
+        (
+            "pr://owner/repo/7/reviews/9001",
+            PullRequestResource::Review(ReviewId::new(9_001).expect("review id")),
+        ),
+        (
+            "pr://owner/repo/7/review-comments",
+            PullRequestResource::ReviewComments,
+        ),
+        (
+            "pr://owner/repo/7/review-comments/9001",
+            PullRequestResource::ReviewComment(ReviewCommentId::new(9_001).expect("comment id")),
+        ),
+    ] {
+        let parsed = PathReference::parse(input).expect("human review route");
+        assert_eq!(parsed.requested(), input, "{input}");
+        let ResourceAddress::PullRequest(address) = parsed.address() else {
+            panic!("{input} is not a pull request address");
+        };
+        assert_eq!(address.resource(), Some(expected), "{input} human meaning");
+    }
+
+    // A source cursor belongs to the three discussion collections and to no
+    // item or human route.
+    for input in [
+        "pr://owner/repo/7/reviews/facts:cursor:e30",
+        "pr://owner/repo/7/review-comments/facts:cursor:e30",
+    ] {
+        let parsed = PathReference::parse(input).expect("collection cursor");
+        assert_eq!(
+            parsed
+                .projection()
+                .and_then(resourcefs_core::ProjectionSelector::source_cursor)
+                .map(resourcefs_core::SourceCursor::as_str),
+            Some("e30"),
+            "{input}"
+        );
+    }
+    for input in [
+        "pr://owner/repo/7/reviews/9001/facts:cursor:e30",
+        "pr://owner/repo/7/review-comments/9001/facts:cursor:e30",
+        "pr://owner/repo/7/reviews:cursor:e30",
+        "pr://owner/repo/7/review-comments:cursor:e30",
+        "pr://owner/repo/7/reviews/9001:cursor:e30",
+        "pr://owner/repo/7/review-comments/9001:cursor:e30",
+    ] {
+        assert_eq!(
+            PathReference::parse(input)
+                .expect_err("cursor outside a discussion collection")
+                .category(),
+            ErrorCategory::InvalidReference,
             "{input}"
         );
     }

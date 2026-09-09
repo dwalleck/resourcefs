@@ -645,6 +645,16 @@ impl PullRequestAddress {
                         PullRequestFact::Comment(id) => {
                             format!("{base}/comments/{}/facts", id.get())
                         }
+                        PullRequestFact::Reviews => format!("{base}/reviews/facts"),
+                        PullRequestFact::Review(id) => {
+                            format!("{base}/reviews/{}/facts", id.get())
+                        }
+                        PullRequestFact::ReviewComments => {
+                            format!("{base}/review-comments/facts")
+                        }
+                        PullRequestFact::ReviewComment(id) => {
+                            format!("{base}/review-comments/{}/facts", id.get())
+                        }
                     },
                     PullRequestResource::Comments => format!("{base}/comments"),
                     PullRequestResource::CommentsNew => format!("{base}/comments/new"),
@@ -1364,6 +1374,35 @@ fn parse_pull_request_address(input: &str) -> Result<PullRequestAddress, Resourc
                 ConversationCommentId::new(github_number(id, "GitHub conversation comment ID")?)?,
             )),
         }),
+        [owner, repository, number, "reviews", "facts"] => Ok(PullRequestAddress::Item {
+            repository: github_repository(owner, repository)?,
+            number: PullRequestNumber::new(github_number(number, "GitHub pull request number")?)?,
+            resource: PullRequestResource::Facts(PullRequestFact::Reviews),
+        }),
+        [owner, repository, number, "reviews", id, "facts"] => Ok(PullRequestAddress::Item {
+            repository: github_repository(owner, repository)?,
+            number: PullRequestNumber::new(github_number(number, "GitHub pull request number")?)?,
+            resource: PullRequestResource::Facts(PullRequestFact::Review(ReviewId::new(
+                github_number(id, "GitHub review ID")?,
+            )?)),
+        }),
+        [owner, repository, number, "review-comments", "facts"] => Ok(PullRequestAddress::Item {
+            repository: github_repository(owner, repository)?,
+            number: PullRequestNumber::new(github_number(number, "GitHub pull request number")?)?,
+            resource: PullRequestResource::Facts(PullRequestFact::ReviewComments),
+        }),
+        [owner, repository, number, "review-comments", id, "facts"] => {
+            Ok(PullRequestAddress::Item {
+                repository: github_repository(owner, repository)?,
+                number: PullRequestNumber::new(github_number(
+                    number,
+                    "GitHub pull request number",
+                )?)?,
+                resource: PullRequestResource::Facts(PullRequestFact::ReviewComment(
+                    ReviewCommentId::new(github_number(id, "GitHub review comment ID")?)?,
+                )),
+            })
+        }
         [owner, repository, number, collection, id] => {
             let repository = github_repository(owner, repository)?;
             let number =

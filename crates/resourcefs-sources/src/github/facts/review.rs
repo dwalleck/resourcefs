@@ -1,8 +1,8 @@
-//! Conversation-comment decoding and the owned record projection.
+//! Review-submission decoding and the owned record projection.
 use std::fmt;
 
 use resourcefs_core::{
-    ConversationCommentId, ErrorReason, GithubRepositoryIdentity, PullRequestNumber, ResourceError,
+    ErrorReason, GithubRepositoryIdentity, PullRequestNumber, ResourceError, ReviewId,
     SourceResource,
 };
 use serde::{
@@ -17,31 +17,33 @@ use super::{
     acquisition, failure, finish_facts, identity, parent, pull,
 };
 
-native!(NativeComment {
+native!(NativeReview {
     id: NativeId,
     node_id: String,
     url: String,
     html_url: String,
-    issue_url: String,
+    pull_request_url: String,
     body: String,
     user: Actor,
-    created_at: String,
-    updated_at: String,
+    state: String,
+    commit_id: String,
+    submitted_at: String,
 });
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CommentLinks<'a> {
+struct ReviewLinks<'a> {
     #[serde(skip_serializing_if = "Presence::omitted")]
     api_url: &'a Presence<String>,
     #[serde(skip_serializing_if = "Presence::omitted")]
     html_url: &'a Presence<String>,
     #[serde(skip_serializing_if = "Presence::omitted")]
-    issue_url: &'a Presence<String>,
+    pull_request_url: &'a Presence<String>,
 }
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct CommentRecord<'a> {
+pub(super) struct ReviewRecord<'a> {
     kind: &'static str,
     id: &'a NativeId,
     #[serde(skip_serializing_if = "Presence::omitted")]
@@ -52,45 +54,50 @@ pub(super) struct CommentRecord<'a> {
     #[serde(skip_serializing_if = "Presence::omitted")]
     author: &'a Presence<Actor>,
     #[serde(skip_serializing_if = "Presence::omitted")]
-    created_at: &'a Presence<String>,
+    state: &'a Presence<String>,
     #[serde(skip_serializing_if = "Presence::omitted")]
-    updated_at: &'a Presence<String>,
-    links: CommentLinks<'a>,
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CommentRequest<'a> {
-    repository: RepositoryName<'a>,
-    number: &'a NativeId,
-    comment_id: &'a NativeId,
-}
-#[derive(Serialize)]
-struct CommentObserved<'a> {
-    parent: parent::ParentFacts<'a>,
-}
-#[derive(Serialize)]
-struct CommentBody<'a> {
-    request: CommentRequest<'a>,
-    observed: CommentObserved<'a>,
-    upstream: Upstream<'a>,
-    data: CommentRecord<'a>,
+    commit_sha: &'a Presence<String>,
+    #[serde(skip_serializing_if = "Presence::omitted")]
+    submitted_at: &'a Presence<String>,
+    links: ReviewLinks<'a>,
 }
 
-/// A validated comment owns exactly the decoded native object and its
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewRequest<'a> {
+    repository: RepositoryName<'a>,
+    number: &'a NativeId,
+    review_id: &'a NativeId,
+}
+
+#[derive(Serialize)]
+struct ReviewObserved<'a> {
+    parent: parent::ParentFacts<'a>,
+}
+
+#[derive(Serialize)]
+struct ReviewBody<'a> {
+    request: ReviewRequest<'a>,
+    observed: ReviewObserved<'a>,
+    upstream: Upstream<'a>,
+    data: ReviewRecord<'a>,
+}
+
+/// A validated review owns exactly the decoded native object and its
 /// availability observations. Projection only borrows this value and cannot
 /// fail, so collection admission never repeats identity checks or availability
 /// bookkeeping.
 pub(super) struct ValidatedRecord {
-    comment: NativeComment,
+    review: NativeReview,
     unavailable: Vec<Unavailable>,
 }
 
 impl ValidatedRecord {
     pub(super) fn id(&self) -> u64 {
-        self.comment
+        self.review
             .id
             .value()
-            .expect("validated comment has an id")
+            .expect("validated review has an id")
             .0
     }
 
@@ -102,70 +109,87 @@ impl ValidatedRecord {
         &'a self,
         pull: &'a pull::NativePull,
         identity: &'a identity::ValidatedIdentity<'a>,
-    ) -> CommentRecord<'a> {
-        CommentRecord {
-            kind: "github.conversation_comment",
-            id: self
-                .comment
-                .id
-                .value()
-                .expect("validated comment has an id"),
-            node_id: &self.comment.node_id,
+    ) -> ReviewRecord<'a> {
+        ReviewRecord {
+            kind: "github.review_submission",
+            id: self.review.id.value().expect("validated review has an id"),
+            node_id: &self.review.node_id,
             parent: parent::facts(pull, identity),
-            body: &self.comment.body,
-            author: &self.comment.user,
-            created_at: &self.comment.created_at,
-            updated_at: &self.comment.updated_at,
-            links: CommentLinks {
-                api_url: &self.comment.url,
-                html_url: &self.comment.html_url,
-                issue_url: &self.comment.issue_url,
+            body: &self.review.body,
+            author: &self.review.user,
+            state: &self.review.state,
+            commit_sha: &self.review.commit_id,
+            submitted_at: &self.review.submitted_at,
+            links: ReviewLinks {
+                api_url: &self.review.url,
+                html_url: &self.review.html_url,
+                pull_request_url: &self.review.pull_request_url,
             },
         }
     }
 }
 
-/// Validate and own one conversation comment. The parent/link checks happen
+/// Validate and own one review submission. The parent/link checks happen
 /// before availability is recorded, so a contradictory identity can never be
 /// softened into an ordinary later-page prefix.
 pub(super) fn validate_record(
-    comment: NativeComment,
+    review: NativeReview,
     repository: &GithubRepositoryIdentity,
     number: PullRequestNumber,
-    comment_id: Option<ConversationCommentId>,
+    review_id: Option<ReviewId>,
     api: &Url,
     web: &Url,
 ) -> Result<ValidatedRecord, ResourceError> {
-    identity::validate_comment_links(repository, number, comment_id, &comment, api, web)?;
+    let observed = identity::require_observed_id(
+        review_id.map(ReviewId::get),
+        review.id.value().map(|id| id.0),
+    )?;
+    identity::require_object_link(
+        &review.pull_request_url,
+        &identity::expected_object_url(api, repository, &format!("pulls/{}", number.get()))?,
+    )?;
+    identity::validate_optional_object_link(
+        &review.url,
+        &identity::expected_object_url(
+            api,
+            repository,
+            &format!("pulls/{}/reviews/{observed}", number.get()),
+        )?,
+    )?;
+    if let Some(fragment) =
+        identity::validate_optional_web_link(&review.html_url, repository, number, web)?
+        && !matches!(fragment, identity::WebFragment::Review(id) if id.get() == observed)
+    {
+        return Err(failure(ErrorReason::UpstreamIdentityMismatch));
+    }
     let mut unavailable = Vec::new();
-    comment.node_id.unavailable("nodeId", &mut unavailable);
-    comment.body.unavailable("body", &mut unavailable);
-    comment.user.unavailable("author", &mut unavailable);
-    comment
-        .created_at
-        .unavailable("createdAt", &mut unavailable);
-    comment
-        .updated_at
-        .unavailable("updatedAt", &mut unavailable);
-    comment.url.unavailable("links.apiUrl", &mut unavailable);
-    comment
+    review.node_id.unavailable("nodeId", &mut unavailable);
+    review.body.unavailable("body", &mut unavailable);
+    review.user.unavailable("author", &mut unavailable);
+    review.state.unavailable("state", &mut unavailable);
+    review.commit_id.unavailable("commitSha", &mut unavailable);
+    review
+        .submitted_at
+        .unavailable("submittedAt", &mut unavailable);
+    review.url.unavailable("links.apiUrl", &mut unavailable);
+    review
         .html_url
         .unavailable("links.htmlUrl", &mut unavailable);
-    comment
-        .issue_url
-        .unavailable("links.issueUrl", &mut unavailable);
+    review
+        .pull_request_url
+        .unavailable("links.pullRequestUrl", &mut unavailable);
     Ok(ValidatedRecord {
-        comment,
+        review,
         unavailable,
     })
 }
 
-/// Reads one conversation comment beneath a verified pull request.
+/// Reads one review submission beneath a verified pull request.
 pub(super) async fn read_item(
     source: &GithubSource,
     repository: &GithubRepositoryIdentity,
     number: PullRequestNumber,
-    comment_id: ConversationCommentId,
+    review_id: ReviewId,
     ctx: &mut FactsRead<'_>,
 ) -> Result<SourceResource, ResourceError> {
     let (pull, parent_endpoint, parent_generation) =
@@ -180,29 +204,32 @@ pub(super) async fn read_item(
         &source.api_base,
         &web,
     )?;
-    let endpoint = source.endpoint(repository, &format!("issues/comments/{}", comment_id.get()))?;
+    let endpoint = source.endpoint(
+        repository,
+        &format!("pulls/{}/reviews/{}", number.get(), review_id.get()),
+    )?;
     let response = source
         .fetch_controlled(endpoint, GITHUB_JSON, ctx.read, Some(&mut ctx.budget))
         .await?;
     if response.cache_generation != parent_generation {
         return Err(failure(ErrorReason::UpstreamUnavailable));
     }
-    let comment: NativeComment = serde_json::from_slice(response.body())
+    let review: NativeReview = serde_json::from_slice(response.body())
         .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
     let validated = validate_record(
-        comment,
+        review,
         repository,
         number,
-        Some(comment_id),
+        Some(review_id),
         &source.api_base,
         &web,
     )?;
     let requested_number = NativeId::from_positive(number.get());
-    let requested_comment_id = NativeId::from_positive(comment_id.get());
+    let requested_review_id = NativeId::from_positive(review_id.get());
     let data = validated.project(&pull, &identity);
     let facts = Facts {
         schema_version: super::SchemaVersion { major: 1, minor: 0 },
-        kind: "github.conversation_comment",
+        kind: "github.review_submission",
         resource: ctx.canonical.requested(),
         source: super::Source {
             source_id: source.config.id(),
@@ -217,16 +244,16 @@ pub(super) async fn read_item(
             observed: &identity.base.repo,
         },
         acquisition: acquisition(ctx)?,
-        body: CommentBody {
-            request: CommentRequest {
+        body: ReviewBody {
+            request: ReviewRequest {
                 repository: RepositoryName {
                     owner: repository.owner(),
                     name: repository.repository(),
                 },
                 number: &requested_number,
-                comment_id: &requested_comment_id,
+                review_id: &requested_review_id,
             },
-            observed: CommentObserved {
+            observed: ReviewObserved {
                 parent: parent::facts(&pull, &identity),
             },
             upstream: Upstream {

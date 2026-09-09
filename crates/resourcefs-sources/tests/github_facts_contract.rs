@@ -3609,3 +3609,385 @@ async fn human_and_facts_comment_routes_share_identity_guards_not_partial_policy
         }
     }
 }
+
+// --- Review-submission and inline review-comment families -------------------
+
+const REVIEW_RESOURCE: &str = "pr://owner/repo/7/reviews/facts";
+const INLINE_RESOURCE: &str = "pr://owner/repo/7/review-comments/facts";
+const REVIEW_ITEM: &str = "pr://owner/repo/7/reviews/4988827796/facts";
+const INLINE_ITEM: &str = "pr://owner/repo/7/review-comments/3826494362/facts";
+
+fn actor_json(id: u64, login: &str) -> Value {
+    json!({
+        "id": id,
+        "node_id": format!("U_{login}"),
+        "login": login,
+        "url": format!("@API@users/{login}"),
+        "html_url": format!("https://github.example/{login}")
+    })
+}
+
+/// The native review shape observed at REST 2022-11-28: no top-level `url`,
+/// and a supplied `commit_id` that stays with the submission after a push.
+fn review_json(id: u64, api: &str, commit: &str) -> Value {
+    json!({
+        "id": id,
+        "node_id": format!("PRR_{id}"),
+        "user": actor_json(501, "reviewer"),
+        "body": format!("review {id}"),
+        "state": "COMMENTED",
+        "html_url": format!("https://github.example/owner/repo/pull/7#pullrequestreview-{id}"),
+        "pull_request_url": format!("{api}repos/owner/repo/pulls/7"),
+        "author_association": "CONTRIBUTOR",
+        "submitted_at": "2026-08-21T01:01:16Z",
+        "commit_id": commit
+    })
+}
+
+fn review_page(ids: &[u64], api: &str, next: Option<&str>) -> FixtureResponse {
+    let records: Vec<Value> = ids
+        .iter()
+        .map(|id| review_json(*id, api, "a8395d4c879b743dda521b3d3929b6819c8ad3b8"))
+        .collect();
+    let mut headers = Vec::new();
+    if let Some(next) = next {
+        headers.push(("Link".to_string(), format!("<{next}>; rel=\"next\"")));
+    }
+    response(
+        "200 OK",
+        serde_json::to_string(&records).expect("page JSON"),
+        headers,
+    )
+}
+
+/// The native inline shape observed at REST 2022-11-28: current `line` is
+/// supplied null while `original_line`/`original_position` survive, and a
+/// thread root omits `in_reply_to_id` entirely.
+fn inline_json(id: u64, api: &str) -> Value {
+    json!({
+        "id": id,
+        "node_id": format!("PRRC_{id}"),
+        "url": format!("{api}repos/owner/repo/pulls/comments/{id}"),
+        "html_url": format!("https://github.example/owner/repo/pull/7#discussion_r{id}"),
+        "pull_request_url": format!("{api}repos/owner/repo/pulls/7"),
+        "pull_request_review_id": 4988827796u64,
+        "body": format!("inline {id}"),
+        "user": actor_json(502, "reviewer"),
+        "created_at": "2026-08-21T01:01:16Z",
+        "updated_at": "2026-08-21T01:01:16Z",
+        "path": "compiler/rustc_middle/src/ty/print/pretty.rs",
+        "diff_hunk": "@@ -1,1 +1,1 @@\n-old\n+new",
+        "commit_id": "a8395d4c879b743dda521b3d3929b6819c8ad3b8",
+        "original_commit_id": "a8395d4c879b743dda521b3d3929b6819c8ad3b8",
+        "side": "RIGHT",
+        "line": null,
+        "start_side": null,
+        "start_line": null,
+        "original_line": 2741,
+        "original_start_line": null,
+        "position": 1,
+        "original_position": 20,
+        "subject_type": "line"
+    })
+}
+
+fn inline_page(ids: &[u64], api: &str, next: Option<&str>) -> FixtureResponse {
+    let records: Vec<Value> = ids.iter().map(|id| inline_json(*id, api)).collect();
+    let mut headers = Vec::new();
+    if let Some(next) = next {
+        headers.push(("Link".to_string(), format!("<{next}>; rel=\"next\"")));
+    }
+    response(
+        "200 OK",
+        serde_json::to_string(&records).expect("page JSON"),
+        headers,
+    )
+}
+
+/// Routes the exact pull-request parent, then hands every other target to the
+/// transform so each test declares the collection and item it serves.
+async fn family_fixture<F>(
+    transform: F,
+) -> (TlsListener, GithubSource, session_support::ScratchFixture)
+where
+    F: Fn(&str, &str, usize) -> FixtureResponse + Send + Sync + 'static,
+{
+    let count = AtomicUsize::new(0);
+    let listener = TlsListener::serve_request_router(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+        tls::match_cert(),
+        move |request| {
+            assert_eq!(request.method(), "GET", "facts cannot write");
+            let host = host_from_head(request.head());
+            let api = format!("https://{host}/");
+            let target = request.target().to_owned();
+            if target == "/repos/owner/repo/pulls/7" {
+                return response("200 OK", NATIVE.replace("@API@", &api), vec![]);
+            }
+            transform(&target, &api, count.fetch_add(1, Ordering::SeqCst))
+        },
+    )
+    .await;
+    let (source, session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
+    (listener, source, session)
+}
+
+fn fixture_api(listener: &TlsListener) -> String {
+    format!("https://{}:{}/", tls::FIXTURE_HOST, listener.address.port())
+}
+
+#[tokio::test]
+async fn review_facts_collection_and_item_preserve_native_facts() {
+    let (listener, source, _session) = family_fixture(|target, api, _| {
+        if target.starts_with("/repos/owner/repo/pulls/7/reviews/") {
+            return response(
+                "200 OK",
+                review_json(4988827796, api, "a8395d4c879b743dda521b3d3929b6819c8ad3b8")
+                    .to_string(),
+                vec![],
+            );
+        }
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/reviews"),
+            "unexpected target {target}"
+        );
+        review_page(&[4988827796, 5020553314], api, None)
+    })
+    .await;
+    let api = fixture_api(&listener);
+    let facts = document(
+        &read_reference(&source, REVIEW_RESOURCE, None)
+            .await
+            .expect("review collection"),
+    );
+    assert_eq!(facts["kind"], "github.review_submission_collection");
+    assert_eq!(facts["schemaVersion"]["minor"], 1);
+    assert_eq!(facts["collection"]["state"], "complete");
+    assert_eq!(facts["collection"]["acceptedCount"], 2);
+    assert_eq!(facts["observed"]["parent"]["number"], "7");
+    let records = facts["data"]["records"].as_array().expect("records");
+    assert_eq!(records.len(), 2);
+    let first = &records[0];
+    assert_eq!(first["kind"], "github.review_submission");
+    assert_eq!(first["id"], "4988827796");
+    assert_eq!(first["nodeId"], "PRR_4988827796");
+    assert_eq!(first["parent"]["number"], "7");
+    assert_eq!(first["body"], "review 4988827796");
+    assert_eq!(first["author"]["login"], "reviewer");
+    assert_eq!(first["state"], "COMMENTED");
+    assert_eq!(
+        first["commitSha"],
+        "a8395d4c879b743dda521b3d3929b6819c8ad3b8"
+    );
+    assert_eq!(first["submittedAt"], "2026-08-21T01:01:16Z");
+    assert_eq!(
+        first["links"]["pullRequestUrl"],
+        format!("{api}repos/owner/repo/pulls/7")
+    );
+    assert!(
+        first["links"].get("apiUrl").is_none(),
+        "an unsupplied native url must stay absent rather than become empty"
+    );
+    let unavailable = facts["unavailableFacts"].as_array().expect("unavailable");
+    assert!(
+        unavailable
+            .iter()
+            .any(|entry| entry["field"] == "links.apiUrl" && entry["reason"] == "omitted"),
+        "unsupplied api url is recorded: {unavailable:?}"
+    );
+
+    // The item read yields the same native record as the collection row.
+    let item = document(
+        &read_reference(&source, REVIEW_ITEM, None)
+            .await
+            .expect("review item"),
+    );
+    assert_eq!(item["kind"], "github.review_submission");
+    assert_eq!(item["schemaVersion"]["minor"], 0);
+    assert_eq!(item["request"]["reviewId"], "4988827796");
+    assert_eq!(item["data"], *first, "item and collection agree");
+}
+
+#[tokio::test]
+async fn inline_facts_preserve_native_anchor_presence() {
+    let (listener, source, _session) = family_fixture(|target, api, _| {
+        if target.starts_with("/repos/owner/repo/pulls/comments/") {
+            return response("200 OK", inline_json(3826494362, api).to_string(), vec![]);
+        }
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/comments"),
+            "unexpected target {target}"
+        );
+        let mut records = vec![inline_json(3826494362, api), inline_json(3854357897, api)];
+        // A reply carries the supplied thread relationship.
+        records[1]["in_reply_to_id"] = json!(3826494362u64);
+        // Unknown native values must survive verbatim, and a file-level comment
+        // keeps its null line instead of a fabricated coordinate.
+        let mut third = inline_json(3854357999, api);
+        third["side"] = json!("BOTH");
+        third["subject_type"] = json!("file");
+        records.push(third);
+        response(
+            "200 OK",
+            serde_json::to_string(&records).expect("inline page"),
+            vec![],
+        )
+    })
+    .await;
+    let api = fixture_api(&listener);
+    let facts = document(
+        &read_reference(&source, INLINE_RESOURCE, None)
+            .await
+            .expect("inline collection"),
+    );
+    assert_eq!(facts["kind"], "github.review_comment_collection");
+    assert_eq!(facts["schemaVersion"]["minor"], 1);
+    let records = facts["data"]["records"].as_array().expect("records");
+    assert_eq!(records.len(), 3);
+    let root = &records[0];
+    assert_eq!(root["kind"], "github.review_comment");
+    assert_eq!(root["id"], "3826494362");
+    assert_eq!(root["parent"]["number"], "7");
+    assert_eq!(root["reviewId"], "4988827796");
+    assert!(
+        root.get("replyToId").is_none(),
+        "a thread root omits the supplied reply relationship"
+    );
+    assert_eq!(root["side"], "RIGHT");
+    assert_eq!(root["line"], Value::Null, "supplied null stays null");
+    assert_eq!(root["startSide"], Value::Null);
+    assert_eq!(root["startLine"], Value::Null);
+    assert_eq!(root["originalLine"], 2741);
+    assert_eq!(root["originalStartLine"], Value::Null);
+    assert_eq!(root["position"], 1);
+    assert_eq!(root["originalPosition"], 20);
+    assert_eq!(root["subjectType"], "line");
+    assert_eq!(root["diffHunk"], "@@ -1,1 +1,1 @@\n-old\n+new");
+    assert_eq!(root["path"], "compiler/rustc_middle/src/ty/print/pretty.rs");
+    assert_eq!(root["commitSha"], root["originalCommitSha"]);
+    assert_eq!(
+        root["links"]["apiUrl"],
+        format!("{api}repos/owner/repo/pulls/comments/3826494362")
+    );
+    assert_eq!(
+        root["links"]["pullRequestUrl"],
+        format!("{api}repos/owner/repo/pulls/7")
+    );
+    let unavailable = facts["unavailableFacts"].as_array().expect("unavailable");
+    assert!(
+        unavailable
+            .iter()
+            .any(|entry| entry["field"] == "line" && entry["reason"] == "null"),
+        "a supplied null is recorded as null, not omitted: {unavailable:?}"
+    );
+
+    let reply = &records[1];
+    assert_eq!(reply["replyToId"], "3826494362");
+    let unknown = &records[2];
+    assert_eq!(unknown["side"], "BOTH", "unknown native value is verbatim");
+    assert_eq!(unknown["subjectType"], "file");
+    assert_eq!(unknown["line"], Value::Null);
+
+    let item = document(
+        &read_reference(&source, INLINE_ITEM, None)
+            .await
+            .expect("inline item"),
+    );
+    assert_eq!(item["kind"], "github.review_comment");
+    assert_eq!(item["request"]["commentId"], "3826494362");
+    assert_eq!(item["data"], *root, "item and collection agree");
+}
+
+#[tokio::test]
+async fn review_and_inline_identity_contradictions_reject_the_component() {
+    // A review naming another pull request is a not-found contradiction.
+    let (_, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/reviews"),
+            "unexpected target {target}"
+        );
+        let mut record = review_json(4988827796, api, "a8395d4c879b743dda521b3d3929b6819c8ad3b8");
+        record["pull_request_url"] = json!(format!("{api}repos/owner/repo/pulls/9"));
+        response("200 OK", json!([record]).to_string(), vec![])
+    })
+    .await;
+    assert_eq!(
+        read_reference(&source, REVIEW_RESOURCE, None)
+            .await
+            .expect_err("review parent contradiction")
+            .category(),
+        ErrorCategory::NotFound
+    );
+
+    // A review item served under a different native id is an identity mismatch.
+    let (_, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/reviews/4988827796"),
+            "unexpected target {target}"
+        );
+        response(
+            "200 OK",
+            review_json(5020553314, api, "a8395d4c879b743dda521b3d3929b6819c8ad3b8").to_string(),
+            vec![],
+        )
+    })
+    .await;
+    let error = read_reference(&source, REVIEW_ITEM, None)
+        .await
+        .expect_err("review id mismatch");
+    assert!(matches!(
+        error.details().expect("typed").reason(),
+        ErrorReason::UpstreamIdentityMismatch | ErrorReason::UpstreamMalformed
+    ));
+
+    // The repository-wide inline item endpoint must not serve a comment that
+    // belongs to another pull request.
+    let (_, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/comments/3826494362"),
+            "unexpected target {target}"
+        );
+        let mut record = inline_json(3826494362, api);
+        record["pull_request_url"] = json!(format!("{api}repos/owner/repo/pulls/9"));
+        response("200 OK", record.to_string(), vec![])
+    })
+    .await;
+    assert_eq!(
+        read_reference(&source, INLINE_ITEM, None)
+            .await
+            .expect_err("inline parent contradiction")
+            .category(),
+        ErrorCategory::NotFound
+    );
+
+    // A later page naming another pull request rejects the whole component,
+    // including the page that was already acquired.
+    let (listener, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/comments"),
+            "unexpected target {target}"
+        );
+        if target.contains("page=2") {
+            let mut record = inline_json(3854357897, api);
+            record["pull_request_url"] = json!(format!("{api}repos/owner/repo/pulls/9"));
+            return response("200 OK", json!([record]).to_string(), vec![]);
+        }
+        let next = format!("{api}repos/owner/repo/pulls/7/comments?per_page=100&page=2");
+        inline_page(&[3826494362], api, Some(&next))
+    })
+    .await;
+    assert_eq!(
+        read_reference(&source, INLINE_RESOURCE, None)
+            .await
+            .expect_err("later-page parent contradiction")
+            .category(),
+        ErrorCategory::NotFound
+    );
+    assert_eq!(
+        listener.requests().len(),
+        3,
+        "parent plus two pages; no document and no further request"
+    );
+}
+

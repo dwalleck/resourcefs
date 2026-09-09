@@ -2,7 +2,7 @@
 //! acquiring linked resources.
 use resourcefs_core::{
     ConversationCommentId, ErrorCategory, ErrorReason, GithubRepositoryIdentity, PullRequestNumber,
-    ResourceError, ResourceErrorDetails,
+    ResourceError, ResourceErrorDetails, ReviewCommentId, ReviewId,
 };
 use url::Url;
 
@@ -155,11 +155,114 @@ fn validate_optional_comment_link(
         && (!route.owner.eq_ignore_ascii_case(repository.owner())
             || !route.name.eq_ignore_ascii_case(repository.repository())
             || route.number != number
-            || route.comment_id.is_some_and(|id| id != comment_id))
+            || route
+                .fragment
+                .is_some_and(|fragment| !matches!(fragment, WebFragment::ConversationComment(id) if id == comment_id)))
     {
         return Err(failure(ErrorReason::UpstreamIdentityMismatch));
     }
     Ok(())
+}
+
+/// The deployment's own object URL for `suffix` below `repos/<owner>/<name>/`.
+pub(super) fn expected_object_url(
+    api: &Url,
+    repository: &GithubRepositoryIdentity,
+    suffix: &str,
+) -> Result<Url, ResourceError> {
+    api.join(&format!(
+        "repos/{}/{}/{suffix}",
+        repository.owner(),
+        repository.repository()
+    ))
+    .map_err(|_| failure(ErrorReason::UpstreamMalformed))
+}
+
+fn matches_object_url(value: &str, expected: &Url) -> bool {
+    Url::parse(value).is_ok_and(|actual| {
+        actual.origin() == expected.origin()
+            && actual.path().eq_ignore_ascii_case(expected.path())
+            && actual.username().is_empty()
+            && actual.password().is_none()
+            && actual.query().is_none()
+            && actual.fragment().is_none()
+    })
+}
+
+/// A required link must name exactly this deployment's own object. A
+/// contradiction is `not_found`, matching the conversation-comment family's
+/// verdict for a record that does not belong to the addressed pull request.
+pub(super) fn require_object_link(
+    link: &Presence<String>,
+    expected: &Url,
+) -> Result<(), ResourceError> {
+    match link.value() {
+        Some(value) if matches_object_url(value, expected) => Ok(()),
+        _ => Err(ResourceError::new(
+            ErrorCategory::NotFound,
+            "GitHub record does not belong to the addressed pull request",
+        )
+        .with_details(ResourceErrorDetails::new(
+            ErrorReason::UpstreamIdentityMismatch,
+        ))),
+    }
+}
+
+/// A supplied optional link, when it is a URL at all, must name this
+/// deployment's own object; opaque provider values stay lossless.
+pub(super) fn validate_optional_object_link(
+    link: &Presence<String>,
+    expected: &Url,
+) -> Result<(), ResourceError> {
+    match link.value() {
+        Some(value) if !matches_object_url(value, expected) => {
+            Err(failure(ErrorReason::UpstreamIdentityMismatch))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// A supplied optional web link, when it is a recognizable route, must name
+/// this repository and pull request. Returns the recognized fragment so the
+/// caller can require the family's own object id.
+pub(super) fn validate_optional_web_link(
+    link: &Presence<String>,
+    repository: &GithubRepositoryIdentity,
+    number: PullRequestNumber,
+    web: &Url,
+) -> Result<Option<WebFragment>, ResourceError> {
+    let Some(value) = link.value() else {
+        return Ok(None);
+    };
+    let Ok(parsed) = Url::parse(value) else {
+        return Ok(None);
+    };
+    if parsed.origin() != web.origin() {
+        return Err(failure(ErrorReason::UpstreamIdentityMismatch));
+    }
+    let Some(route) = web_route(&parsed, web)? else {
+        return Ok(None);
+    };
+    if !route.owner.eq_ignore_ascii_case(repository.owner())
+        || !route.name.eq_ignore_ascii_case(repository.repository())
+        || route.number != number
+    {
+        return Err(failure(ErrorReason::UpstreamIdentityMismatch));
+    }
+    Ok(route.fragment)
+}
+
+/// The native id every family record must carry, checked against a requested
+/// id when the read addressed one object.
+pub(super) fn require_observed_id(
+    expected: Option<u64>,
+    observed: Option<u64>,
+) -> Result<u64, ResourceError> {
+    let observed = observed.ok_or_else(|| failure(ErrorReason::UpstreamMalformed))?;
+    if expected.is_some_and(|expected| expected != observed) {
+        return Err(failure(ErrorReason::UpstreamIdentityMismatch));
+    }
+    Ok(observed)
 }
 
 fn validate_api_authority(url: &Url, api: &Url) -> Result<(), ResourceError> {
@@ -206,14 +309,21 @@ fn api_route<'a>(
     Ok(Some((owner, name, family, number)))
 }
 
-struct WebCommentRoute<'a> {
+/// A web link's recognized object fragment, when it carries one.
+pub(super) enum WebFragment {
+    ConversationComment(ConversationCommentId),
+    Review(ReviewId),
+    ReviewComment(ReviewCommentId),
+}
+
+struct WebObjectRoute<'a> {
     owner: &'a str,
     name: &'a str,
     number: PullRequestNumber,
-    comment_id: Option<ConversationCommentId>,
+    fragment: Option<WebFragment>,
 }
 
-fn web_route<'a>(url: &'a Url, web: &Url) -> Result<Option<WebCommentRoute<'a>>, ResourceError> {
+fn web_route<'a>(url: &'a Url, web: &Url) -> Result<Option<WebObjectRoute<'a>>, ResourceError> {
     if url.origin() != web.origin() {
         return Ok(None);
     }
@@ -231,22 +341,39 @@ fn web_route<'a>(url: &'a Url, web: &Url) -> Result<Option<WebCommentRoute<'a>>,
         .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
     let number = PullRequestNumber::new(number)
         .map_err(|_| failure(ErrorReason::UpstreamIdentityMismatch))?;
-    let fragment_id = url
+    let fragment = url
         .fragment()
-        .and_then(|fragment| fragment.strip_prefix("issuecomment-"))
-        .map(|value| {
+        .map(|fragment| {
+            let (kind, value) = if let Some(value) = fragment.strip_prefix("issuecomment-") {
+                ("issuecomment", value)
+            } else if let Some(value) = fragment.strip_prefix("pullrequestreview-") {
+                ("pullrequestreview", value)
+            } else if let Some(value) = fragment.strip_prefix("discussion_r") {
+                ("discussion_r", value)
+            } else {
+                return Ok(None);
+            };
             let id = value
                 .parse::<u64>()
                 .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
-            ConversationCommentId::new(id)
-                .map_err(|_| failure(ErrorReason::UpstreamIdentityMismatch))
+            let mismatch = || failure(ErrorReason::UpstreamIdentityMismatch);
+            match kind {
+                "issuecomment" => {
+                    ConversationCommentId::new(id).map(WebFragment::ConversationComment)
+                }
+                "pullrequestreview" => ReviewId::new(id).map(WebFragment::Review),
+                _ => ReviewCommentId::new(id).map(WebFragment::ReviewComment),
+            }
+            .map_err(|_| mismatch())
+            .map(Some)
         })
-        .transpose()?;
-    Ok(Some(WebCommentRoute {
+        .transpose()?
+        .flatten();
+    Ok(Some(WebObjectRoute {
         owner,
         name,
         number,
-        comment_id: fragment_id,
+        fragment,
     }))
 }
 
