@@ -27,7 +27,8 @@ READ = HTTP + "read.rs"
 QUERY = JIRA + "query.rs"
 WIRE_QUERY = WIRE + "query.rs"
 PARENTS = {
-    CORE + "reference.rs": 1989,
+    # rfs-r31i adds four pr:// facts grammar arms to the shared parser.
+    CORE + "reference.rs": 2010,
     CORE + "discovery.rs": 1367,
     SOURCES + "atlassian/jira.rs": 317,
     SOURCES + "atlassian/wire.rs": 601,
@@ -66,7 +67,7 @@ CONTROL = re.compile(r"\b(?:for|while|loop|unsafe)\b|\b(?:sort\w*|spawn\w*|sleep
 # evidence. Keep their original owners, stages, and responsibility checks here
 # so the active successor gate can run without importing an archived checkout.
 HISTORICAL_PARENTS = {
-    CORE + "reference.rs": (2089, 1989),
+    CORE + "reference.rs": (2089, 2010),
     CORE + "discovery.rs": (1342, 1367),
     SOURCES + "atlassian/jira.rs": (467, 317),
     SOURCES + "atlassian/wire.rs": (571, 601),

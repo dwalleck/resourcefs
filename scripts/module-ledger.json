@@ -32,6 +32,20 @@
         "parse_pull_request_address"
       ]
     },
+    "review": {
+      "crates/resourcefs-core/src/reference.rs": [
+        "canonical_reference",
+        "parse_pull_request_address"
+      ],
+      "crates/resourcefs-sources/src/github/facts.rs": [
+        "facts_resource"
+      ],
+      "crates/resourcefs-sources/src/github/facts/collection.rs": [
+        "read",
+        "build_facts",
+        "unavailable_for"
+      ]
+    },
     "transport": {
       "crates/resourcefs-sources/src/http/mod.rs": [
         "begin_read",
@@ -213,14 +227,12 @@
       "parent": "crates/resourcefs-sources/src/github/facts.rs",
       "stage": "item",
       "symbols": [
-        "ValidatedRecord",
-        "validate_record",
-        "id",
-        "unavailable",
-        "project",
-        "parent_facts",
-        "read_item",
-        "fetch_parent"
+        "ValidatedComment",
+        "validate_comment",
+        "comment_id",
+        "comment_unavailable",
+        "project_comment",
+        "read_comment_item"
       ]
     },
     "crates/resourcefs-sources/src/github/facts/continuation.rs": {
@@ -233,20 +245,44 @@
         "new_session_key"
       ]
     },
+    "crates/resourcefs-sources/src/github/facts/family.rs": {
+      "maximum": 220,
+      "module": "family",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "review",
+      "symbols": [
+        "Native",
+        "Record",
+        "RecordView",
+        "CollectionFamily",
+        "decode_page",
+        "validate_native",
+        "record_id",
+        "record_unavailable",
+        "project_record"
+      ]
+    },
     "crates/resourcefs-sources/src/github/facts/identity.rs": {
-      "maximum": 460,
+      "maximum": 620,
       "module": "identity",
       "parent": "crates/resourcefs-sources/src/github/facts.rs",
       "stage": "facts",
       "symbols": [
         "ValidatedIdentity",
-        "WebCommentRoute",
+        "WebObjectRoute",
+        "WebFragment",
         "validate",
         "validate_comment_links",
         "validate_optional_comment_link",
         "validate_api_authority",
         "api_route",
         "web_route",
+        "expected_object_url",
+        "matches_object_url",
+        "require_object_link",
+        "validate_optional_object_link",
+        "validate_optional_web_link",
+        "require_observed_id",
         "required",
         "sha",
         "same_url",
@@ -255,12 +291,62 @@
         "validate_repository"
       ]
     },
+    "crates/resourcefs-sources/src/github/facts/inline.rs": {
+      "maximum": 420,
+      "module": "inline",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "review",
+      "symbols": [
+        "ValidatedInline",
+        "validate_inline",
+        "inline_id",
+        "inline_unavailable",
+        "project_inline",
+        "InlineCommentRecord",
+        "InlineLinks",
+        "InlineRequest",
+        "InlineObserved",
+        "InlineBody",
+        "read_inline_item"
+      ]
+    },
+    "crates/resourcefs-sources/src/github/facts/parent.rs": {
+      "maximum": 130,
+      "module": "parent",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "review",
+      "symbols": [
+        "ParentFacts",
+        "parent_facts",
+        "fetch_parent",
+        "validate_parent"
+      ]
+    },
     "crates/resourcefs-sources/src/github/facts/pull.rs": {
       "maximum": 400,
       "module": "pull",
       "parent": "crates/resourcefs-sources/src/github/facts.rs",
       "stage": "item",
       "symbols": []
+    },
+    "crates/resourcefs-sources/src/github/facts/review.rs": {
+      "maximum": 330,
+      "module": "review",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "review",
+      "symbols": [
+        "ValidatedReview",
+        "validate_review",
+        "review_id",
+        "review_unavailable",
+        "project_review",
+        "ReviewRecord",
+        "ReviewLinks",
+        "ReviewRequest",
+        "ReviewObserved",
+        "ReviewBody",
+        "read_review_item"
+      ]
     },
     "crates/resourcefs-sources/src/github/fetch.rs": {
       "maximum": 650,
@@ -294,7 +380,7 @@
     "dispatch_read",
     "cancelled_read_error"
   ],
-  "stage": "live",
+  "stage": "review",
   "stages": [
     "baseline",
     "core",
@@ -308,7 +394,8 @@
     "collection",
     "continuation",
     "exposure",
-    "live"
+    "live",
+    "review"
   ],
   "test_children": {
     "crates/resourcefs-sources/src/github/facts_tests.rs": {

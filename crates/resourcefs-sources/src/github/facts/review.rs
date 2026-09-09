@@ -87,13 +87,13 @@ struct ReviewBody<'a> {
 /// availability observations. Projection only borrows this value and cannot
 /// fail, so collection admission never repeats identity checks or availability
 /// bookkeeping.
-pub(super) struct ValidatedRecord {
+pub(super) struct ValidatedReview {
     review: NativeReview,
     unavailable: Vec<Unavailable>,
 }
 
-impl ValidatedRecord {
-    pub(super) fn id(&self) -> u64 {
+impl ValidatedReview {
+    pub(super) fn review_id(&self) -> u64 {
         self.review
             .id
             .value()
@@ -101,11 +101,11 @@ impl ValidatedRecord {
             .0
     }
 
-    pub(super) fn unavailable(&self) -> &[Unavailable] {
+    pub(super) fn review_unavailable(&self) -> &[Unavailable] {
         &self.unavailable
     }
 
-    pub(super) fn project<'a>(
+    pub(super) fn project_review<'a>(
         &'a self,
         pull: &'a pull::NativePull,
         identity: &'a identity::ValidatedIdentity<'a>,
@@ -114,7 +114,7 @@ impl ValidatedRecord {
             kind: "github.review_submission",
             id: self.review.id.value().expect("validated review has an id"),
             node_id: &self.review.node_id,
-            parent: parent::facts(pull, identity),
+            parent: parent::parent_facts(pull, identity),
             body: &self.review.body,
             author: &self.review.user,
             state: &self.review.state,
@@ -132,14 +132,14 @@ impl ValidatedRecord {
 /// Validate and own one review submission. The parent/link checks happen
 /// before availability is recorded, so a contradictory identity can never be
 /// softened into an ordinary later-page prefix.
-pub(super) fn validate_record(
+pub(super) fn validate_review(
     review: NativeReview,
     repository: &GithubRepositoryIdentity,
     number: PullRequestNumber,
     review_id: Option<ReviewId>,
     api: &Url,
     web: &Url,
-) -> Result<ValidatedRecord, ResourceError> {
+) -> Result<ValidatedReview, ResourceError> {
     let observed = identity::require_observed_id(
         review_id.map(ReviewId::get),
         review.id.value().map(|id| id.0),
@@ -178,14 +178,14 @@ pub(super) fn validate_record(
     review
         .pull_request_url
         .unavailable("links.pullRequestUrl", &mut unavailable);
-    Ok(ValidatedRecord {
+    Ok(ValidatedReview {
         review,
         unavailable,
     })
 }
 
 /// Reads one review submission beneath a verified pull request.
-pub(super) async fn read_item(
+pub(super) async fn read_review_item(
     source: &GithubSource,
     repository: &GithubRepositoryIdentity,
     number: PullRequestNumber,
@@ -193,9 +193,10 @@ pub(super) async fn read_item(
     ctx: &mut FactsRead<'_>,
 ) -> Result<SourceResource, ResourceError> {
     let (pull, parent_endpoint, parent_generation) =
-        parent::fetch(source, repository, number, ctx).await?;
+        parent::fetch_parent(source, repository, number, ctx).await?;
     let web = Url::parse(ctx.web_origin).map_err(|_| failure(ErrorReason::UpstreamUnavailable))?;
-    let identity = parent::validate(&pull, repository, number, &parent_endpoint, source, ctx)?;
+    let identity =
+        parent::validate_parent(&pull, repository, number, &parent_endpoint, source, ctx)?;
     let endpoint = source.endpoint(
         repository,
         &format!("pulls/{}/reviews/{}", number.get(), review_id.get()),
@@ -208,7 +209,7 @@ pub(super) async fn read_item(
     }
     let review: NativeReview = serde_json::from_slice(response.body())
         .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
-    let validated = validate_record(
+    let validated = validate_review(
         review,
         repository,
         number,
@@ -218,7 +219,7 @@ pub(super) async fn read_item(
     )?;
     let requested_number = NativeId::from_positive(number.get());
     let requested_review_id = NativeId::from_positive(review_id.get());
-    let data = validated.project(&pull, &identity);
+    let data = validated.project_review(&pull, &identity);
     let facts = Facts {
         schema_version: super::SchemaVersion { major: 1, minor: 0 },
         kind: "github.review_submission",
@@ -246,7 +247,7 @@ pub(super) async fn read_item(
                 review_id: &requested_review_id,
             },
             observed: ReviewObserved {
-                parent: parent::facts(&pull, &identity),
+                parent: parent::parent_facts(&pull, &identity),
             },
             upstream: Upstream {
                 body: &response.observation,

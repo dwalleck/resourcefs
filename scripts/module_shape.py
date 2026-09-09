@@ -283,7 +283,11 @@ def check(root, repository, ledger, stage):
         entry_points = re.findall(
             r'\bpub\s*\(\s*super\s*\)\s+(?:async\s+)?fn\s+(\w+)',
             codes.get(identity_path, ''))
-        expected_entry_points = {'validate', 'validate_comment_links'}
+        expected_entry_points = {
+            'validate', 'validate_comment_links', 'expected_object_url',
+            'require_object_link', 'validate_optional_object_link',
+            'validate_optional_web_link', 'require_observed_id',
+        }
         if (len(entry_points) != len(expected_entry_points)
                 or set(entry_points) != expected_entry_points):
             fail(identity_path, 'identity validation must expose exactly validate and validate_comment_links')

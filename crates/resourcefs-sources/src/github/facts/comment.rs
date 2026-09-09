@@ -80,13 +80,13 @@ struct CommentBody<'a> {
 /// availability observations. Projection only borrows this value and cannot
 /// fail, so collection admission never repeats identity checks or availability
 /// bookkeeping.
-pub(super) struct ValidatedRecord {
+pub(super) struct ValidatedComment {
     comment: NativeComment,
     unavailable: Vec<Unavailable>,
 }
 
-impl ValidatedRecord {
-    pub(super) fn id(&self) -> u64 {
+impl ValidatedComment {
+    pub(super) fn comment_id(&self) -> u64 {
         self.comment
             .id
             .value()
@@ -94,11 +94,11 @@ impl ValidatedRecord {
             .0
     }
 
-    pub(super) fn unavailable(&self) -> &[Unavailable] {
+    pub(super) fn comment_unavailable(&self) -> &[Unavailable] {
         &self.unavailable
     }
 
-    pub(super) fn project<'a>(
+    pub(super) fn project_comment<'a>(
         &'a self,
         pull: &'a pull::NativePull,
         identity: &'a identity::ValidatedIdentity<'a>,
@@ -111,7 +111,7 @@ impl ValidatedRecord {
                 .value()
                 .expect("validated comment has an id"),
             node_id: &self.comment.node_id,
-            parent: parent::facts(pull, identity),
+            parent: parent::parent_facts(pull, identity),
             body: &self.comment.body,
             author: &self.comment.user,
             created_at: &self.comment.created_at,
@@ -128,14 +128,14 @@ impl ValidatedRecord {
 /// Validate and own one conversation comment. The parent/link checks happen
 /// before availability is recorded, so a contradictory identity can never be
 /// softened into an ordinary later-page prefix.
-pub(super) fn validate_record(
+pub(super) fn validate_comment(
     comment: NativeComment,
     repository: &GithubRepositoryIdentity,
     number: PullRequestNumber,
     comment_id: Option<ConversationCommentId>,
     api: &Url,
     web: &Url,
-) -> Result<ValidatedRecord, ResourceError> {
+) -> Result<ValidatedComment, ResourceError> {
     identity::validate_comment_links(repository, number, comment_id, &comment, api, web)?;
     let mut unavailable = Vec::new();
     comment.node_id.unavailable("nodeId", &mut unavailable);
@@ -154,14 +154,14 @@ pub(super) fn validate_record(
     comment
         .issue_url
         .unavailable("links.issueUrl", &mut unavailable);
-    Ok(ValidatedRecord {
+    Ok(ValidatedComment {
         comment,
         unavailable,
     })
 }
 
 /// Reads one conversation comment beneath a verified pull request.
-pub(super) async fn read_item(
+pub(super) async fn read_comment_item(
     source: &GithubSource,
     repository: &GithubRepositoryIdentity,
     number: PullRequestNumber,
@@ -169,9 +169,10 @@ pub(super) async fn read_item(
     ctx: &mut FactsRead<'_>,
 ) -> Result<SourceResource, ResourceError> {
     let (pull, parent_endpoint, parent_generation) =
-        parent::fetch(source, repository, number, ctx).await?;
+        parent::fetch_parent(source, repository, number, ctx).await?;
     let web = Url::parse(ctx.web_origin).map_err(|_| failure(ErrorReason::UpstreamUnavailable))?;
-    let identity = parent::validate(&pull, repository, number, &parent_endpoint, source, ctx)?;
+    let identity =
+        parent::validate_parent(&pull, repository, number, &parent_endpoint, source, ctx)?;
     let endpoint = source.endpoint(repository, &format!("issues/comments/{}", comment_id.get()))?;
     let response = source
         .fetch_controlled(endpoint, GITHUB_JSON, ctx.read, Some(&mut ctx.budget))
@@ -181,7 +182,7 @@ pub(super) async fn read_item(
     }
     let comment: NativeComment = serde_json::from_slice(response.body())
         .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
-    let validated = validate_record(
+    let validated = validate_comment(
         comment,
         repository,
         number,
@@ -191,7 +192,7 @@ pub(super) async fn read_item(
     )?;
     let requested_number = NativeId::from_positive(number.get());
     let requested_comment_id = NativeId::from_positive(comment_id.get());
-    let data = validated.project(&pull, &identity);
+    let data = validated.project_comment(&pull, &identity);
     let facts = Facts {
         schema_version: super::SchemaVersion { major: 1, minor: 0 },
         kind: "github.conversation_comment",
@@ -219,7 +220,7 @@ pub(super) async fn read_item(
                 comment_id: &requested_comment_id,
             },
             observed: CommentObserved {
-                parent: parent::facts(&pull, &identity),
+                parent: parent::parent_facts(&pull, &identity),
             },
             upstream: Upstream {
                 body: &response.observation,

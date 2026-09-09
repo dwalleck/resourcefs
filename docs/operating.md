@@ -209,6 +209,16 @@ A resumable truncated collection names `collection.continuation`, an opaque `pr:
 
 Artifact recovery and source traversal are different operations. When the current document exceeds the display limit, reconstruct that one document through `recoveryReference` and its artifact continuations, with no upstream reacquisition. A source continuation is surfaced as `sourceContinuationReference` on spilled output; on inline output it can occupy `continuationReference`. Do not concatenate a source-cursor result onto the previous document: it acquires a new segment with its own JSON envelope. Parse each recovered document separately.
 
+## GitHub review-submission and inline review-comment facts
+
+`pr://owner/repo/<number>/reviews/facts` returns the review-submission collection, `pr://owner/repo/<number>/reviews/<id>/facts` one review, `pr://owner/repo/<number>/review-comments/facts` the inline review-comment collection and `pr://owner/repo/<number>/review-comments/<id>/facts` one inline comment. All four use the shared envelope and `acquisition` controls; both collections are schema version 1.1 and both singular reads version 1.0. Record kinds are `github.review_submission` and `github.review_comment`; the collection kinds are `github.review_submission_collection` and `github.review_comment_collection`.
+
+A review preserves the native `id`, `nodeId`, parent identity and links, nullable `body`/`author`/`submittedAt`, supplied `state`, the review's own `commitSha` and original links. That commit names the revision the submission was made against, so an old review keeps its original commit after a later push; it is never retargeted to the current head.
+
+An inline comment preserves the supplied review/reply relationship (`reviewId`, `replyToId`), `path`, `diffHunk`, current and original commits, `side`/`line`/`startSide`/`startLine`, `originalLine`/`originalStartLine`, native `position`/`originalPosition`, `subjectType` and links. A supplied property stays present — including an explicit null such as the current `line` of an outdated comment — an unsupplied property stays absent, and unrecognized native values are emitted verbatim. Nothing is reconstructed from the diff hunk, substituted from output coordinates or auto-retargeted, and a file-level or null-line anchor keeps its null instead of a fabricated line.
+
+The parent pull request is read and verified first, and a supplied parent or object link that names another repository or pull request rejects the whole read, including a later page after verified earlier pages. Collections share the conversation-comment collection semantics above: whole-page admission against the record, accepted-body and serialized-document ceilings, honest `complete`/`incomplete`/`unknown` coverage, ordinary later-page prefix retention, cancellation/authority rejection, and the same opaque, credential-free, session- and resource-bound `:cursor:` continuation. The singular inline route addresses the provider's repository-wide comment endpoint, so its parent-link verification is what proves the comment belongs to the addressed pull request.
+
 ## Logging
 
 The default sink is `info` level on standard error. Configure bounded rotating files when stderr belongs to an MCP supervisor:

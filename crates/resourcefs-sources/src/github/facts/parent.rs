@@ -21,7 +21,7 @@ pub(super) struct ParentFacts<'a> {
     links: Links<'a>,
 }
 
-pub(super) fn facts<'a>(
+pub(super) fn parent_facts<'a>(
     pull: &'a pull::NativePull,
     identity: &'a identity::ValidatedIdentity<'a>,
 ) -> ParentFacts<'a> {
@@ -40,7 +40,7 @@ pub(super) fn facts<'a>(
 /// Fetches the pull-request parent that owns a fact family, with the endpoint
 /// it was read from and its generation baseline, and establishes that baseline
 /// for the rest of the read.
-pub(super) async fn fetch(
+pub(super) async fn fetch_parent(
     source: &GithubSource,
     repository: &GithubRepositoryIdentity,
     number: PullRequestNumber,
@@ -65,7 +65,7 @@ pub(super) async fn fetch(
 /// Validates the fetched parent against its own endpoint, the configured API
 /// authority and the configured web origin. Every discussion family composes
 /// this one policy instead of restating it.
-pub(super) fn validate<'a>(
+pub(super) fn validate_parent<'a>(
     pull: &'a pull::NativePull,
     repository: &GithubRepositoryIdentity,
     number: PullRequestNumber,

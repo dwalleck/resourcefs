@@ -31,9 +31,9 @@ pub(super) enum Native {
 /// Same layout rationale as [`Native`].
 #[allow(clippy::large_enum_variant)]
 pub(super) enum Record {
-    Conversation(comment::ValidatedRecord),
-    Review(review::ValidatedRecord),
-    Inline(inline::ValidatedRecord),
+    Conversation(comment::ValidatedComment),
+    Review(review::ValidatedReview),
+    Inline(inline::ValidatedInline),
 }
 
 /// One owned projection, serialized untagged so a collection body is a flat
@@ -112,7 +112,7 @@ fn decode_page<T: DeserializeOwned, N>(
 
 /// Validate and own one native record. The variant selects the family's
 /// validator, so a record can never be validated as the wrong family.
-pub(super) fn validate(
+pub(super) fn validate_native(
     native: Native,
     repository: &GithubRepositoryIdentity,
     number: PullRequestNumber,
@@ -121,42 +121,44 @@ pub(super) fn validate(
 ) -> Result<Record, ResourceError> {
     match native {
         Native::Conversation(comment) => {
-            comment::validate_record(comment, repository, number, None, api, web)
+            comment::validate_comment(comment, repository, number, None, api, web)
                 .map(Record::Conversation)
         }
         Native::Review(review) => {
-            review::validate_record(review, repository, number, None, api, web).map(Record::Review)
+            review::validate_review(review, repository, number, None, api, web).map(Record::Review)
         }
         Native::Inline(comment) => {
-            inline::validate_record(comment, repository, number, None, api, web).map(Record::Inline)
+            inline::validate_inline(comment, repository, number, None, api, web).map(Record::Inline)
         }
     }
 }
 
-pub(super) fn id(record: &Record) -> u64 {
+pub(super) fn record_id(record: &Record) -> u64 {
     match record {
-        Record::Conversation(record) => record.id(),
-        Record::Review(record) => record.id(),
-        Record::Inline(record) => record.id(),
+        Record::Conversation(record) => record.comment_id(),
+        Record::Review(record) => record.review_id(),
+        Record::Inline(record) => record.inline_id(),
     }
 }
 
-pub(super) fn unavailable(record: &Record) -> &[Unavailable] {
+pub(super) fn record_unavailable(record: &Record) -> &[Unavailable] {
     match record {
-        Record::Conversation(record) => record.unavailable(),
-        Record::Review(record) => record.unavailable(),
-        Record::Inline(record) => record.unavailable(),
+        Record::Conversation(record) => record.comment_unavailable(),
+        Record::Review(record) => record.review_unavailable(),
+        Record::Inline(record) => record.inline_unavailable(),
     }
 }
 
-pub(super) fn project<'a>(
+pub(super) fn project_record<'a>(
     record: &'a Record,
     pull: &'a pull::NativePull,
     identity: &'a identity::ValidatedIdentity<'a>,
 ) -> RecordView<'a> {
     match record {
-        Record::Conversation(record) => RecordView::Conversation(record.project(pull, identity)),
-        Record::Review(record) => RecordView::Review(record.project(pull, identity)),
-        Record::Inline(record) => RecordView::Inline(record.project(pull, identity)),
+        Record::Conversation(record) => {
+            RecordView::Conversation(record.project_comment(pull, identity))
+        }
+        Record::Review(record) => RecordView::Review(record.project_review(pull, identity)),
+        Record::Inline(record) => RecordView::Inline(record.project_inline(pull, identity)),
     }
 }

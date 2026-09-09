@@ -129,13 +129,13 @@ struct InlineBody<'a> {
 /// availability observations. Projection only borrows this value and cannot
 /// fail, so collection admission never repeats identity checks or availability
 /// bookkeeping.
-pub(super) struct ValidatedRecord {
+pub(super) struct ValidatedInline {
     comment: NativeInlineComment,
     unavailable: Vec<Unavailable>,
 }
 
-impl ValidatedRecord {
-    pub(super) fn id(&self) -> u64 {
+impl ValidatedInline {
+    pub(super) fn inline_id(&self) -> u64 {
         self.comment
             .id
             .value()
@@ -143,11 +143,11 @@ impl ValidatedRecord {
             .0
     }
 
-    pub(super) fn unavailable(&self) -> &[Unavailable] {
+    pub(super) fn inline_unavailable(&self) -> &[Unavailable] {
         &self.unavailable
     }
 
-    pub(super) fn project<'a>(
+    pub(super) fn project_inline<'a>(
         &'a self,
         pull: &'a pull::NativePull,
         identity: &'a identity::ValidatedIdentity<'a>,
@@ -160,7 +160,7 @@ impl ValidatedRecord {
                 .value()
                 .expect("validated inline comment has an id"),
             node_id: &self.comment.node_id,
-            parent: parent::facts(pull, identity),
+            parent: parent::parent_facts(pull, identity),
             review_id: &self.comment.pull_request_review_id,
             reply_to_id: &self.comment.in_reply_to_id,
             body: &self.comment.body,
@@ -192,14 +192,14 @@ impl ValidatedRecord {
 /// Validate and own one inline review comment. The parent/link checks happen
 /// before availability is recorded, so a contradictory identity can never be
 /// softened into an ordinary later-page prefix.
-pub(super) fn validate_record(
+pub(super) fn validate_inline(
     comment: NativeInlineComment,
     repository: &GithubRepositoryIdentity,
     number: PullRequestNumber,
     comment_id: Option<ReviewCommentId>,
     api: &Url,
     web: &Url,
-) -> Result<ValidatedRecord, ResourceError> {
+) -> Result<ValidatedInline, ResourceError> {
     let observed = identity::require_observed_id(
         comment_id.map(ReviewCommentId::get),
         comment.id.value().map(|id| id.0),
@@ -268,7 +268,7 @@ pub(super) fn validate_record(
     comment
         .pull_request_url
         .unavailable("links.pullRequestUrl", &mut unavailable);
-    Ok(ValidatedRecord {
+    Ok(ValidatedInline {
         comment,
         unavailable,
     })
@@ -277,7 +277,7 @@ pub(super) fn validate_record(
 /// Reads one inline review comment beneath a verified pull request. The
 /// provider serves this object by repository-wide id, so the parent link is
 /// the only proof that it belongs to the addressed pull request.
-pub(super) async fn read_item(
+pub(super) async fn read_inline_item(
     source: &GithubSource,
     repository: &GithubRepositoryIdentity,
     number: PullRequestNumber,
@@ -285,9 +285,10 @@ pub(super) async fn read_item(
     ctx: &mut FactsRead<'_>,
 ) -> Result<SourceResource, ResourceError> {
     let (pull, parent_endpoint, parent_generation) =
-        parent::fetch(source, repository, number, ctx).await?;
+        parent::fetch_parent(source, repository, number, ctx).await?;
     let web = Url::parse(ctx.web_origin).map_err(|_| failure(ErrorReason::UpstreamUnavailable))?;
-    let identity = parent::validate(&pull, repository, number, &parent_endpoint, source, ctx)?;
+    let identity =
+        parent::validate_parent(&pull, repository, number, &parent_endpoint, source, ctx)?;
     let endpoint = source.endpoint(repository, &format!("pulls/comments/{}", comment_id.get()))?;
     let response = source
         .fetch_controlled(endpoint, GITHUB_JSON, ctx.read, Some(&mut ctx.budget))
@@ -297,7 +298,7 @@ pub(super) async fn read_item(
     }
     let comment: NativeInlineComment = serde_json::from_slice(response.body())
         .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
-    let validated = validate_record(
+    let validated = validate_inline(
         comment,
         repository,
         number,
@@ -307,7 +308,7 @@ pub(super) async fn read_item(
     )?;
     let requested_number = NativeId::from_positive(number.get());
     let requested_comment_id = NativeId::from_positive(comment_id.get());
-    let data = validated.project(&pull, &identity);
+    let data = validated.project_inline(&pull, &identity);
     let facts = Facts {
         schema_version: super::SchemaVersion { major: 1, minor: 0 },
         kind: "github.review_comment",
@@ -335,7 +336,7 @@ pub(super) async fn read_item(
                 comment_id: &requested_comment_id,
             },
             observed: InlineObserved {
-                parent: parent::facts(&pull, &identity),
+                parent: parent::parent_facts(&pull, &identity),
             },
             upstream: Upstream {
                 body: &response.observation,

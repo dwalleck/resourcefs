@@ -615,13 +615,13 @@ impl GithubSource {
         match fact {
             PullRequestFact::Pull => pull::read(self, repository, *number, &mut ctx).await,
             PullRequestFact::Comment(id) => {
-                comment::read_item(self, repository, *number, id, &mut ctx).await
+                comment::read_comment_item(self, repository, *number, id, &mut ctx).await
             }
             PullRequestFact::Review(id) => {
-                review::read_item(self, repository, *number, id, &mut ctx).await
+                review::read_review_item(self, repository, *number, id, &mut ctx).await
             }
             PullRequestFact::ReviewComment(id) => {
-                inline::read_item(self, repository, *number, id, &mut ctx).await
+                inline::read_inline_item(self, repository, *number, id, &mut ctx).await
             }
             PullRequestFact::Comments
             | PullRequestFact::Reviews

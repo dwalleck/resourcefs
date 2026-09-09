@@ -273,7 +273,7 @@ fn is_representation_limit(error: &ResourceError) -> bool {
 fn unavailable_for(records: &[Record]) -> Vec<Unavailable> {
     let mut unavailable = Vec::new();
     for record in records {
-        note_unavailable(&mut unavailable, family::unavailable(record));
+        note_unavailable(&mut unavailable, family::record_unavailable(record));
     }
     unavailable
 }
@@ -332,12 +332,12 @@ fn build_facts<'a>(
     projected.extend(
         records
             .iter()
-            .map(|record| family::project(record, view.pull, view.identity)),
+            .map(|record| family::project_record(record, view.pull, view.identity)),
     );
     projected.extend(
         extra_records
             .iter()
-            .map(|record| family::project(record, view.pull, view.identity)),
+            .map(|record| family::project_record(record, view.pull, view.identity)),
     );
     let mut upstream = Vec::with_capacity(pages.len() + usize::from(extra_page.is_some()));
     upstream.extend(pages.iter().map(|page| Upstream {
@@ -377,7 +377,7 @@ fn build_facts<'a>(
                 number: requested_number,
             },
             observed: CollectionObserved {
-                parent: parent::facts(view.pull, view.identity),
+                parent: parent::parent_facts(view.pull, view.identity),
             },
             upstream: Pages { pages: upstream },
             data: Records { records: projected },
@@ -494,10 +494,11 @@ pub(super) async fn read(
         CollectionScope::Initial
     };
     let (pull, parent_endpoint, parent_generation) =
-        parent::fetch(source, repository, number, ctx).await?;
+        parent::fetch_parent(source, repository, number, ctx).await?;
     let parent_body_bytes = ctx.budget.accepted_body_bytes();
     let web = Url::parse(ctx.web_origin).map_err(|_| failure(ErrorReason::UpstreamUnavailable))?;
-    let identity = parent::validate(&pull, repository, number, &parent_endpoint, source, ctx)?;
+    let identity =
+        parent::validate_parent(&pull, repository, number, &parent_endpoint, source, ctx)?;
     let resource = ctx.canonical.requested().to_owned();
     let web_origin = ctx.web_origin.to_owned();
     let view = CollectionView {
@@ -587,7 +588,7 @@ pub(super) async fn read(
         };
         let mut page_records = Vec::with_capacity(decoded.len());
         for native in decoded {
-            match family::validate(native, repository, number, &source.api_base, &web) {
+            match family::validate_native(native, repository, number, &source.api_base, &web) {
                 Ok(record) => page_records.push(record),
                 Err(error) if rejects_every_page(&error) => return Err(error),
                 Err(error) => {
@@ -605,14 +606,18 @@ pub(super) async fn read(
         }
         let mut candidate_unavailable = unavailable.clone();
         for record in &page_records {
-            note_unavailable(&mut candidate_unavailable, family::unavailable(record));
+            note_unavailable(
+                &mut candidate_unavailable,
+                family::record_unavailable(record),
+            );
         }
         if terminal.is_some() {
             break;
         }
         let mut page_ids = HashSet::new();
         if page_records.iter().any(|record| {
-            !page_ids.insert(family::id(record)) || seen_ids.contains(&family::id(record))
+            !page_ids.insert(family::record_id(record))
+                || seen_ids.contains(&family::record_id(record))
         }) {
             if records.is_empty() {
                 return Err(failure(ErrorReason::UpstreamMalformed));
@@ -700,7 +705,7 @@ pub(super) async fn read(
             break;
         }
         for record in &page_records {
-            seen_ids.insert(family::id(record));
+            seen_ids.insert(family::record_id(record));
         }
         unavailable = candidate_unavailable;
         page_observation.record_count = page_records.len();
