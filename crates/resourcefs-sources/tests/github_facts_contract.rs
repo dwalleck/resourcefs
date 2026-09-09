@@ -3991,3 +3991,256 @@ async fn review_and_inline_identity_contradictions_reject_the_component() {
     );
 }
 
+#[tokio::test]
+async fn review_collection_ceiling_and_failure_outcomes_are_atomic() {
+    // Exactly 1,000 review records are admitted whole on one shared budget.
+    let (_, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/reviews"),
+            "unexpected target {target}"
+        );
+        review_page(&(1..=1000).collect::<Vec<_>>(), api, None)
+    })
+    .await;
+    let facts = document(
+        &read_reference(&source, REVIEW_RESOURCE, None)
+            .await
+            .expect("1,000 admitted"),
+    );
+    assert_eq!(facts["collection"]["state"], "complete");
+    assert_eq!(facts["collection"]["acceptedCount"], 1000);
+    assert_eq!(
+        facts["acquisition"]["usage"]["attemptedRequests"], 2,
+        "parent plus one page share the read budget"
+    );
+
+    // A 1,001-record first page is a typed limit, never a partial success.
+    let (_, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/reviews"),
+            "unexpected target {target}"
+        );
+        review_page(&(1..=1001).collect::<Vec<_>>(), api, None)
+    })
+    .await;
+    let error = read_reference(&source, REVIEW_RESOURCE, None)
+        .await
+        .expect_err("over the record ceiling");
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+    assert_eq!(
+        error
+            .details()
+            .expect("typed limit")
+            .limit()
+            .expect("limit detail")
+            .kind()
+            .as_str(),
+        "collection_records"
+    );
+
+    // A malformed first page is a typed failure, not an empty collection.
+    let (_, source, _session) =
+        family_fixture(|_, _, _| response("200 OK", "{malformed".into(), vec![])).await;
+    let error = read_reference(&source, REVIEW_RESOURCE, None)
+        .await
+        .expect_err("malformed first page");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    assert_eq!(
+        error.details().expect("typed refusal").reason(),
+        ErrorReason::UpstreamMalformed
+    );
+
+    // A malformed later page keeps the verified prefix and issues no cursor.
+    let (listener, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/reviews"),
+            "unexpected target {target}"
+        );
+        if target.contains("page=2") {
+            return response("200 OK", "{malformed".into(), vec![]);
+        }
+        let next = format!("{api}repos/owner/repo/pulls/7/reviews?per_page=100&page=2");
+        review_page(&[4988827796], api, Some(&next))
+    })
+    .await;
+    let resource = read_reference(&source, REVIEW_RESOURCE, None)
+        .await
+        .expect("prefix retained");
+    let facts = document(&resource);
+    assert_eq!(facts["collection"]["state"], "incomplete");
+    assert_eq!(facts["collection"]["acceptedCount"], 1);
+    assert_eq!(
+        facts["collection"]["failure"]["reason"],
+        "upstream_malformed"
+    );
+    assert!(facts["collection"].get("continuation").is_none());
+    assert!(resource.continuation().is_none());
+    assert_eq!(listener.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn inline_collection_inconsistency_and_representation_ceiling() {
+    // A later page repeating an acquired native id is an explicit
+    // inconsistency, not a complete read.
+    let (_, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/comments"),
+            "unexpected target {target}"
+        );
+        if target.contains("page=2") {
+            return inline_page(&[3826494362], api, None);
+        }
+        let next = format!("{api}repos/owner/repo/pulls/7/comments?per_page=100&page=2");
+        inline_page(&[3826494362], api, Some(&next))
+    })
+    .await;
+    let facts = document(
+        &read_reference(&source, INLINE_RESOURCE, None)
+            .await
+            .expect("duplicate ids across pages"),
+    );
+    assert_eq!(facts["collection"]["state"], "unknown");
+    assert_eq!(
+        facts["collection"]["inconsistency"]["reason"],
+        "duplicate_record_id"
+    );
+
+    // A repeated pagination target is the same kind of unknown coverage.
+    let (_, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/comments"),
+            "unexpected target {target}"
+        );
+        let next = format!("{api}repos/owner/repo/pulls/7/comments?per_page=100&page=1");
+        inline_page(&[3826494362], api, Some(&next))
+    })
+    .await;
+    let facts = document(
+        &read_reference(&source, INLINE_RESOURCE, None)
+            .await
+            .expect("repeated pagination"),
+    );
+    assert_eq!(facts["collection"]["state"], "unknown");
+    assert_eq!(
+        facts["collection"]["inconsistency"]["reason"],
+        "repeated_pagination"
+    );
+
+    // A candidate page that cannot fit the serialized ceiling is never partly
+    // admitted: the verified prefix survives with a continuation to it.
+    let controls = limits(None, None, Some(9_000));
+    let (listener, source, _session) = family_fixture(|target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/comments"),
+            "unexpected target {target}"
+        );
+        if target.contains("page=2") {
+            let mut records: Vec<Value> = (0..3)
+                .map(|index| inline_json(9_000_000 + index, api))
+                .collect();
+            for record in &mut records {
+                record["diff_hunk"] = json!("x".repeat(4_000));
+            }
+            return response(
+                "200 OK",
+                serde_json::to_string(&records).expect("oversized page"),
+                vec![],
+            );
+        }
+        let next = format!("{api}repos/owner/repo/pulls/7/comments?per_page=100&page=2");
+        inline_page(&[3826494362, 3854357897, 3854357999], api, Some(&next))
+    })
+    .await;
+    let resource = read_reference(&source, INLINE_RESOURCE, Some(&controls))
+        .await
+        .expect("prefix retained");
+    let facts = document(&resource);
+    assert_eq!(facts["collection"]["state"], "incomplete");
+    assert_eq!(facts["collection"]["acceptedCount"], 3);
+    assert_eq!(
+        facts["collection"]["localLimit"]["kind"],
+        "representation_bytes"
+    );
+    assert_eq!(
+        facts["data"]["records"].as_array().expect("records").len(),
+        3
+    );
+    let continuation = facts["collection"]["continuation"]
+        .as_str()
+        .expect("continuation to the rejected page");
+    assert_eq!(resource.continuation(), Some(continuation));
+
+    // A cursor issued by one discussion family is refused by another before
+    // any egress.
+    let handle = continuation.rsplit(":cursor:").next().expect("cursor");
+    let quiet = listener.requests().len();
+    let error = read_reference(
+        &source,
+        &format!("pr://owner/repo/7/reviews/facts:cursor:{handle}"),
+        None,
+    )
+    .await
+    .expect_err("foreign family cursor");
+    assert_eq!(error.category(), ErrorCategory::InvalidReference);
+    assert_eq!(
+        listener.requests().len(),
+        quiet,
+        "a foreign cursor acquires nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inline_collection_cancellation_rejects_acquired_pages() {
+    let arrived = Arc::new(tokio::sync::Notify::new());
+    let notify = Arc::clone(&arrived);
+    let (release, blocked) = std::sync::mpsc::channel();
+    let blocked = std::sync::Mutex::new(blocked);
+    let (listener, source, _session) = family_fixture(move |target, api, _| {
+        assert!(
+            target.starts_with("/repos/owner/repo/pulls/7/comments"),
+            "unexpected target {target}"
+        );
+        if target.contains("page=2") {
+            notify.notify_one();
+            match blocked.lock() {
+                Ok(receiver) => receiver
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("release barrier"),
+                Err(poisoned) => panic!("response barrier poisoned: {poisoned}"),
+            }
+            return inline_page(&[3854357897], api, None);
+        }
+        let next = format!("{api}repos/owner/repo/pulls/7/comments?per_page=100&page=2");
+        inline_page(&[3826494362], api, Some(&next))
+    })
+    .await;
+    let source = Arc::new(source);
+    let reading = Arc::clone(&source);
+    let operation = OperationGuard::new();
+    let worker_operation = operation.clone();
+    let task = tokio::spawn(async move {
+        reading
+            .read(
+                &PathReference::parse(INLINE_RESOURCE).expect("reference"),
+                &worker_operation,
+                None,
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), arrived.notified())
+        .await
+        .expect("page two request arrived after page one was acquired");
+    operation.cancel();
+    release.send(()).expect("release page two");
+    let error = tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("bounded response")
+        .expect("reader task")
+        .expect_err("cancellation rejects the acquired prefix");
+    assert_eq!(error.category(), ErrorCategory::Cancelled);
+    assert_eq!(
+        error.details().expect("typed refusal").reason(),
+        ErrorReason::Cancelled
+    );
+    assert_eq!(listener.requests().len(), 3, "parent plus two pages");
+}
