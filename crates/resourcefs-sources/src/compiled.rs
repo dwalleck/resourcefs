@@ -129,8 +129,12 @@ impl SourceAdapter for CompiledSources {
                     .read(reference, operation, acquisition)
                     .await
             }
-            ResourceAddress::Github(_) => Err(github_family_unreadable()),
-            ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
+            // Commit Facts exist from this increment: the family reaches its
+            // configured source again, while discovery and mutation keep the
+            // configuration-independent refusals they had before it.
+            ResourceAddress::Github(_)
+            | ResourceAddress::Issue(_)
+            | ResourceAddress::PullRequest(_) => {
                 self.github_source()?
                     .read(reference, operation, acquisition)
                     .await

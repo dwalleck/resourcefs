@@ -145,39 +145,23 @@ async fn explicit_acquisition_controls_are_refused_by_dispatch_and_direct_filesy
 }
 
 #[tokio::test]
-async fn unserved_github_family_is_refused_before_configuration() {
+async fn unmounted_github_family_refuses_reads_without_faking_a_projection() {
     let fixture = fixture().await;
     let reference = PathReference::parse(
         "github://owner/repo/commits/0123456789abcdef0123456789abcdef01234567/facts",
     )
     .expect("immutable commit reference");
-    // No GitHub source is mounted here; the answer must still be about the
-    // address family, not about the missing profile entry.
+    // Commit Facts exist in this increment, so an unmounted build reports the
+    // missing profile entry — the same answer every GitHub family gives — and
+    // never pretends the address family itself is unsupported.
     let error = fixture
         .compiled
         .read(&reference, &OperationGuard::new(), None)
         .await
-        .expect_err("no compiled source serves github://");
-    assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
-    assert!(error.details().is_none());
-    // Caller controls cannot reword the refusal: the family, not the control
-    // set, is what this build cannot serve.
-    let controlled = fixture
-        .compiled
-        .read(
-            &reference,
-            &OperationGuard::new(),
-            Some(&resourcefs_core::ReadAcquisitionLimits::default()),
-        )
-        .await
-        .expect_err("controls cannot change an unserved family");
-    assert_eq!(controlled.category(), ErrorCategory::UnsupportedProjection);
-    let mutation = fixture
-        .compiled
-        .resolve(&reference, MutationAccess::Update)
-        .await
-        .expect_err("immutable facts accept no mutation");
-    assert_eq!(mutation.category(), ErrorCategory::UnsupportedMutation);
+        .expect_err("no compiled source can acquire without configuration");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    // Discovery and mutation are refused by the family itself, so neither
+    // answer may change with the mount state or the caller's control set.
     let target = SearchTarget::resource(reference.clone());
     let search = fixture
         .compiled
@@ -190,6 +174,13 @@ async fn unserved_github_family_is_refused_before_configuration() {
         .await
         .expect_err("no compiled source discovers github://");
     assert_eq!(search.category(), ErrorCategory::UnsupportedProjection);
+    assert!(search.details().is_none());
+    let mutation = fixture
+        .compiled
+        .resolve(&reference, MutationAccess::Update)
+        .await
+        .expect_err("immutable facts accept no mutation");
+    assert_eq!(mutation.category(), ErrorCategory::UnsupportedMutation);
 }
 
 #[tokio::test]

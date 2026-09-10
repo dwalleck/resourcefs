@@ -733,10 +733,13 @@ async fn compiled_registry_mounts_dispatches_and_requires_github_grant() {
 }
 
 #[tokio::test]
-async fn mounted_registry_refuses_unserved_github_family_identically() {
-    // The paired unmounted assertion lives in compiled_sources_contract.rs;
-    // both must observe the same family refusal for the same address.
-    let (_listener, github) = fixture_source(|path| panic!("unserved family: {path}")).await;
+async fn mounted_registry_keeps_the_family_discovery_refusal() {
+    // The paired unmounted assertion lives in compiled_sources_contract.rs.
+    // Reads of the commit route are exercised by the immutable contracts; what
+    // this fence pins is that discovery on the family never consults
+    // configuration or reaches the network.
+    let (_listener, github) =
+        fixture_source(|path| panic!("discovery must not fetch: {path}")).await;
     let scratch = session_support::scratch_fixture().await;
     let session = scratch.path_session().clone();
     let compiled = CompiledSources::new(
@@ -753,12 +756,6 @@ async fn mounted_registry_refuses_unserved_github_family_identically() {
         "github://owner/repo/commits/0123456789abcdef0123456789abcdef01234567/facts",
     )
     .expect("immutable commit reference");
-    let error = compiled
-        .read(&reference, &OperationGuard::new(), None)
-        .await
-        .expect_err("no compiled source serves github:// yet");
-    assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
-    assert!(error.details().is_none());
     let target = SearchTarget::resource(reference.clone());
     let search = compiled
         .search(
@@ -770,6 +767,7 @@ async fn mounted_registry_refuses_unserved_github_family_identically() {
         .await
         .expect_err("no compiled source discovers github://");
     assert_eq!(search.category(), ErrorCategory::UnsupportedProjection);
+    assert!(search.details().is_none());
 }
 
 #[tokio::test]

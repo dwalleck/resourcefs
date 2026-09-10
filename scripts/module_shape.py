@@ -239,6 +239,30 @@ def check(root, repository, ledger, stage):
         for path, code in codes.items()
     }
 
+    def declaration_subject(source, symbol):
+        """Tokens and literals of the one declaration that owns `symbol`.
+
+        A type the `native!` macro generates has no declaration span the
+        scanner can see, so the invocation that generates it is the subject;
+        anything with several spans is not one declaration and has none.
+        """
+        spans = [span for (name, _), span in node_spans(source, inherited).items()
+                 if name == symbol]
+        if len(spans) == 1:
+            return fingerprint(source[slice(*spans[0])], inherited)
+        if spans:
+            return None
+        invocation = re.search(r'\bnative!\s*\(\s*' + re.escape(symbol) + r'\s*\{', source)
+        if invocation is None:
+            return None
+        depth, index = 0, invocation.end() - 1
+        while index < len(source):
+            depth += (source[index] == '{') - (source[index] == '}')
+            index += 1
+            if depth == 0:
+                break
+        return fingerprint(source[invocation.start():index], inherited)
+
     def check_parent_nodes(path, before, changes, moves=(), move_slots=(), claim='C02'):
         before_nodes = node_spans(before, inherited)
         after_nodes = node_spans(sources[path], inherited)
@@ -332,18 +356,15 @@ def check(root, repository, ledger, stage):
             # directory: a copied body anywhere in the workspace is the same
             # responsibility in two places, while a different function that
             # happens to share the name is not a duplicate at all.
-            owned = [span for (name, _), span in node_spans(sources[path], inherited).items()
-                     if name == symbol]
-            if len(owned) != 1:
+            subject = declaration_subject(sources[path], symbol)
+            if subject is None:
                 fail(path, f'owned symbol {symbol} must have exactly one declaration', claim)
                 continue
-            body = fingerprint(sources[path][slice(*owned[0])], inherited)
             for other in declarations:
                 if other == path or symbol not in declarations[other]:
                     continue
-                for (name, _), span in node_spans(sources[other], inherited).items():
-                    if name == symbol and fingerprint(sources[other][slice(*span)], inherited) == body:
-                        fail(other, f'symbol {symbol} belongs in {path}', claim)
+                if declaration_subject(sources[other], symbol) == subject:
+                    fail(other, f'symbol {symbol} belongs in {path}', claim)
 
     if 'facts' in policy.active:
         identity_path = SOURCES + 'github/facts/identity.rs'
