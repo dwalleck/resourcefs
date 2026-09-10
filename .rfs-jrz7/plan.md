@@ -261,4 +261,14 @@ Technical proof corrections preserve approved behavior, architecture and oracle 
 
 Local assembled quality is resolved through the completed runner and bounded repair, not an invented aggregate exit0: the original runner's only failed gate was Lints; full Clippy and all newly affected checks then passed. Exact final source state and disposition: qualification-source-state.json and qualification-s3.txt. Final live roster was rerun after cleanup:13 real network PASS,5 Jira environment SKIP; live-roster-results.txt. The glossary's existing Facts Resource and Version Tag definitions remain accurate, so CONTEXT.md is intentionally unchanged; DESIGN.md and the operating guide now describe source behavior. No existing changelog was found.
 
+### S3 review round 2 record
+
+The S1 review round 2 findings are dispositioned in `.rfs-jrz7/review-decisions.md`; this branch rebases onto the repaired S1 and S2 tips. What this increment carries itself:
+
+- The decoded control surface (core dimension and getter, `DecodedContentBytes` kind, MCP field/visitor/schema, generated profile fixture, docs row, transport forwarding, contract tests) is repartitioned here from S1 so that it lands with the code that compares a decoded byte count against it (`facts/source.rs`). Same approved interface; `mutation-c6-controls.txt` re-proves the intersection mutant red and restored green at this head.
+- `compiled.rs` routes the family to the configured source for both Facts kinds; discovery and mutation keep the configuration-independent refusals established in S1.
+- The placement gate's owner-uniqueness comparison recognizes the `native!` declaration form; a verbatim macro copy in another family fails, a differently shaped same-named declaration does not.
+
+Evidence disposition: the S3 falsifier/mutation set (C4-C8, C10, C11) is unchanged by the repartition; the decoded-bound rows in `github_source_contract.rs` and the production budget now exercise a dimension whose surface is published in the same commit. Later increments that change the decoded path must revalidate C6.
+
 This is the final planned independently mergeable draft increment, stacked on `feat/rfs-jrz7-commit`. Published-head platform CI remains a publication check; no merge or ticket closure is authorized.
