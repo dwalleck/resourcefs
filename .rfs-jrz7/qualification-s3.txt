@@ -26,3 +26,14 @@ EVIDENCE VALIDITY
 The complete runner's successful constituent results remain applicable to unchanged paths. The equivalent native arithmetic predicate is freshly exercised by the release source matrix, production budget and real GitHub adapter/stdio roster; no transport, profile, schema, dependency or other-family behavior changed. The changed C8 fence has renewed red/restored-green and release proof. Other named mutations and the independent Git corpus retain their inputs and failure mechanisms. Formatter-only import ordering changes have no semantic effect. All local gate obligations are now PASS by these fresh and retained results; no failed obligation is waived.
 
 Independent blind-first conformance: blind-module-map.md and design-conformance-review.json. Native/Git and enabled live comparison: evidence.md. No corporate/Jira live coverage claimed. Published-head platform CI is a separate publication obligation, not certified by this local record.
+
+=== Review round 2 re-verification (2026-09-10) ===
+Source state: the rebased increment plus the repartitioned decoded control (review round 2), on the repaired S1/S2 tips.
+Command: python3 scripts/ci-gates.py
+Result: All repository gates passed. (placement, formatting, clippy, all-feature debug and release functional legs, the registered ignored-budget roster and cargo-deny)
+Focused crates: 786 passed, 0 failed, 37 ignored across 79 suites (cargo test --locked -p resourcefs-core -p resourcefs-sources -p resourcefs-mcp).
+
+Affected proofs:
+- .rfs-jrz7/mutation-c6-controls.txt: the decoded-cap intersection mutant fails caller-versus-operator policy (exit 101) and restores green (exit 0) at this head, where the control is enforced by facts/source.rs and published by the same commit.
+- The S3 falsifier set (C4-C8, C10, C11) is unchanged: the repartition moved the control surface, not the traversal, integrity, retention or generation behavior.
+- Placement: python3 scripts/module_shape.py --stage immutable-source reports C02 PASS.

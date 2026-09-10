@@ -269,6 +269,8 @@ The S1 review round 2 findings are dispositioned in `.rfs-jrz7/review-decisions.
 - `compiled.rs` routes the family to the configured source for both Facts kinds; discovery and mutation keep the configuration-independent refusals established in S1.
 - The placement gate's owner-uniqueness comparison recognizes the `native!` declaration form; a verbatim macro copy in another family fails, a differently shaped same-named declaration does not.
 
+Review round 2 re-verification: PASS, `python3 scripts/ci-gates.py` reported "All repository gates passed." on this head; focused crates 786 passed / 0 failed / 37 ignored; mutation-c6-controls.txt re-proves the decoded-cap intersection red and restored green.
+
 Evidence disposition: the S3 falsifier/mutation set (C4-C8, C10, C11) is unchanged by the repartition; the decoded-bound rows in `github_source_contract.rs` and the production budget now exercise a dimension whose surface is published in the same commit. Later increments that change the decoded path must revalidate C6.
 
 This is the final planned independently mergeable draft increment, stacked on `feat/rfs-jrz7-commit`. Published-head platform CI remains a publication check; no merge or ticket closure is authorized.
