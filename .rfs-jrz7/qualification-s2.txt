@@ -44,3 +44,13 @@ Evidence reconciliation:
   All constituent gates are PASS after the narrow test-setup lint repair. The original aggregate runner exit remains 1; no aggregate exit 0 is claimed. Unchanged production behavior and other successful legs are retained rather than rerunning the full unrelated fixture-operator lifecycle suite.
   Shared fetch/cache/cancellation/final-publication regression legs remain inherited from the existing github_facts_contract suite. New source-chain C8 acceptance remains S3-owned, not claimed here.
   This checkpoint implements commit Facts only. Source object/bytes, final conformance, and S2/S3 platform CI are not inferred from these local results.
+
+=== Review round 2 re-verification (2026-09-10) ===
+Source state: the rebased increment plus its round-2 repair (family routing restored, paired refusal fences moved with the increment, macro-declaration form recognized by owner uniqueness).
+Command: python3 scripts/ci-gates.py
+Result: All repository gates passed. (placement, formatting, clippy, all-feature debug and release functional legs, the registered ignored-budget roster and cargo-deny)
+
+Affected behavior re-proven:
+- github:// reads reach the configured source again (commit Facts); the immutable adapter contracts and the real-binary stdio contract pass unchanged.
+- An unmounted compiled registry reports source_unavailable for a read and the family refusal for discovery and mutation; a mounted registry never fetches for discovery (compiled_sources_contract.rs, github_adapter_contract.rs).
+- A verbatim copy of a native!-declared owner type in another family fails the placement gate; a differently shaped same-named declaration does not.
