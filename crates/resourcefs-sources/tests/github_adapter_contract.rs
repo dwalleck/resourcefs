@@ -4,9 +4,9 @@ mod session_support;
 mod tls;
 
 use resourcefs_core::{
-    DiscoveryEngine, ErrorCategory, MutationAccess, MutationAdapter, OperationGuard, PathReference,
-    PathSession, SearchLimits, SearchOptions, SearchRequest, SearchTarget, ServerLimits,
-    ServerLimitsInput, SourceAdapter, StorageLimitInput,
+    DiscoveryAdapter, DiscoveryEngine, ErrorCategory, MutationAccess, MutationAdapter,
+    OperationGuard, PathReference, PathSession, SearchLimits, SearchOptions, SearchRequest,
+    SearchTarget, ServerLimits, ServerLimitsInput, SourceAdapter, StorageLimitInput,
 };
 use resourcefs_sources::{
     ArtifactSource, CompiledSources, GithubConfig, GithubRepository, GithubSource,
@@ -729,6 +729,46 @@ async fn compiled_registry_mounts_dispatches_and_requires_github_grant() {
         .await
         .expect_err("GitHub mutation requires repository update grant");
     assert_eq!(mutation.category(), ErrorCategory::PermissionDenied);
+}
+
+#[tokio::test]
+async fn mounted_registry_refuses_unserved_github_family_identically() {
+    // The paired unmounted assertion lives in compiled_sources_contract.rs;
+    // both must observe the same family refusal for the same address.
+    let (_listener, github) = fixture_source(|path| panic!("unserved family: {path}")).await;
+    let scratch = session_support::scratch_fixture().await;
+    let session = scratch.path_session().clone();
+    let compiled = CompiledSources::new(
+        scratch.filesystem.clone(),
+        ArtifactSource::new(session.clone()),
+        scratch.local.clone(),
+        None,
+        Some(github),
+        None,
+    )
+    .await
+    .expect("compiled GitHub source");
+    let reference = PathReference::parse(
+        "github://owner/repo/commits/0123456789abcdef0123456789abcdef01234567/facts",
+    )
+    .expect("immutable commit reference");
+    let error = compiled
+        .read(&reference, &OperationGuard::new(), None)
+        .await
+        .expect_err("no compiled source serves github:// yet");
+    assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
+    assert!(error.details().is_none());
+    let target = SearchTarget::resource(reference.clone());
+    let search = compiled
+        .search(
+            &target,
+            "needle",
+            SearchOptions::default(),
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("no compiled source discovers github://");
+    assert_eq!(search.category(), ErrorCategory::UnsupportedProjection);
 }
 
 #[tokio::test]
