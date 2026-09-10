@@ -2653,6 +2653,45 @@ fn reconstruct_with_limits(process: &mut McpProcess, path: &str, limits: Value, 
     );
 }
 
+/// Reconstruct one JSON document from artifact pages without following a
+/// source traversal cursor. A source cursor is returned separately so callers
+/// can consume that next segment as its own document.
+fn recover_artifact_document(
+    process: &mut McpProcess,
+    mut result: Value,
+    limits: Value,
+) -> (Value, String, Option<String>) {
+    let mut bytes = String::new();
+    let mut source_cursor = None;
+    let mut pages = 0_usize;
+    loop {
+        assert_eq!(result["isError"], false, "{result}");
+        let structured = &result["structuredContent"];
+        bytes.push_str(structured["content"].as_str().expect("JSON page"));
+        if source_cursor.is_none() {
+            source_cursor = structured
+                .get("sourceContinuationReference")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+        pages += 1;
+        assert!(pages < 1_000, "artifact recovery must progress");
+        let Some(next) = structured
+            .get("continuationReference")
+            .and_then(Value::as_str)
+        else {
+            break;
+        };
+        if !next.starts_with("artifact://") {
+            source_cursor = Some(next.to_owned());
+            break;
+        }
+        result = process.call_read_arguments(json!({"path": next, "limits": limits.clone()}));
+    }
+    let document = serde_json::from_str(&bytes).expect("one recovered JSON document");
+    (document, bytes, source_cursor)
+}
+
 #[test]
 fn catalog_reads_obey_common_limits_and_reconstruct() {
     let fixture = WorkspaceFixture::new();
@@ -3642,10 +3681,12 @@ fn github_profile_trust_reaches_real_stdio_reads_only_when_explicit() {
         profile_tls::NativeResponse {
             path: "/repos/owner/repo/pulls/7".into(),
             body: body.clone(),
+            headers: Vec::new(),
         },
         profile_tls::NativeResponse {
             path: "/repos/owner/repo/pulls/7".into(),
             body,
+            headers: Vec::new(),
         },
     ]);
     let profile = fixture.root.join("github-trust.json");
@@ -3901,6 +3942,7 @@ fn github_facts_stdio_reconstructs_native_json_without_reacquisition() {
             profile_tls::ProfileTlsServer::start_native(vec![profile_tls::NativeResponse {
                 path: "/repos/owner/repo/pulls/7".into(),
                 body: native.to_string(),
+                headers: Vec::new(),
             }]);
         let profile = fixture.root.join("github-facts.json");
         fs::write(
@@ -4090,6 +4132,9 @@ fn github_comment_facts_recover_without_reacquisition() {
         record["id"] = json!(id);
         record["url"] = json!(format!("@API@repos/owner/repo/issues/comments/{id}"));
         record["issue_url"] = json!("@API@repos/owner/repo/issues/7");
+        record["html_url"] = json!(format!(
+            "https://github.example/owner/repo/pull/7#issuecomment-{id}"
+        ));
         record["body"] = json!("雪 \"escaped\"\n".repeat(300));
         records.push(record);
     }
@@ -4097,10 +4142,12 @@ fn github_comment_facts_recover_without_reacquisition() {
         profile_tls::NativeResponse {
             path: "/repos/owner/repo/pulls/7".into(),
             body: include_str!("../../../.rfs-0n97/oracles/pr-native.json").into(),
+            headers: Vec::new(),
         },
         profile_tls::NativeResponse {
-            path: "/repos/owner/repo/issues/7/comments".into(),
+            path: "/repos/owner/repo/issues/7/comments?per_page=100&page=1".into(),
             body: serde_json::to_string(&records).expect("page body"),
+            headers: Vec::new(),
         },
     ]);
     let profile = fixture.root.join("github-comment-facts.json");
@@ -4121,36 +4168,27 @@ fn github_comment_facts_recover_without_reacquisition() {
         &[("RFS_GITHUB_TEST_TOKEN", "comment-facts-stdio-secret")],
     );
     process.initialize(VERSION_2026);
-    let mut result = process.call_read_arguments(json!({
+    let result = process.call_read_arguments(json!({
         "path":"pr://owner/repo/7/comments/facts","limits":{"bytes":4096}
     }));
-    let mut bytes = String::new();
-    let mut pages = 0;
-    let mut root = None;
-    loop {
-        assert_eq!(result["isError"], false, "{result}");
-        let output = &result["structuredContent"];
-        bytes.push_str(output["content"].as_str().expect("JSON page"));
-        pages += 1;
-        assert!(pages < 1000, "recovery must progress");
-        if root.is_none() {
-            root = output["recoveryReference"].as_str().map(str::to_owned);
-        }
-        let Some(next) = output["continuationReference"].as_str() else {
-            break;
-        };
-        assert_eq!(
-            server.recorded_requests().len(),
-            2,
-            "recovery cannot acquire again"
-        );
-        result = process.call_read_arguments(json!({"path":next,"limits":{"bytes":1024}}));
-    }
+    let root = result["structuredContent"]["recoveryReference"]
+        .as_str()
+        .expect("an oversized collection must name its recovery root")
+        .to_owned();
+    let (facts, bytes, source_cursor) =
+        recover_artifact_document(&mut process, result, json!({"bytes": 1024}));
     assert!(
-        pages > 1,
-        "an oversized collection is recovered across pages"
+        source_cursor.is_none(),
+        "the fixture has no source cursor to recover"
     );
-    let facts: Value = serde_json::from_str(&bytes).expect("reconstructed full JSON");
+    assert!(
+        bytes.len() > 4_096,
+        "the oversized collection must span artifact pages"
+    );
+    assert!(
+        server.recorded_requests().len() == 2,
+        "artifact recovery cannot acquire again"
+    );
     assert_eq!(facts["kind"], "github.conversation_comment_collection");
     assert_eq!(facts["collection"]["acceptedCount"], 8);
     assert_eq!(facts["data"]["records"][0]["id"], "9001");
@@ -4159,10 +4197,7 @@ fn github_comment_facts_recover_without_reacquisition() {
         facts["data"]["records"][0]["parent"]["number"], "7",
         "verified parent identity survives recovery"
     );
-    let root = root.expect("an oversized document must name its recovery root");
-    {
-        reconstruct_with_limits(&mut process, &root, json!({"bytes":4096}), &bytes);
-    }
+    reconstruct_with_limits(&mut process, &root, json!({"bytes": 1024}), &bytes);
     assert_eq!(
         server.recorded_requests().len(),
         2,
@@ -4172,11 +4207,233 @@ fn github_comment_facts_recover_without_reacquisition() {
 }
 
 #[cfg(feature = "test-support")]
+fn comment_fixture_record(template: &Value, id: u64, body: &str) -> Value {
+    let mut record = template.clone();
+    record["id"] = json!(id);
+    record["url"] = json!(format!("@API@repos/owner/repo/issues/comments/{id}"));
+    record["issue_url"] = json!("@API@repos/owner/repo/issues/7");
+    record["html_url"] = json!(format!(
+        "https://github.example/owner/repo/pull/7#issuecomment-{id}"
+    ));
+    record["body"] = json!(body);
+    record
+}
+
+#[cfg(feature = "test-support")]
+fn comment_facts_profile(
+    fixture: &WorkspaceFixture,
+    name: &str,
+    server: &profile_tls::ProfileTlsServer,
+    max_representation_bytes: usize,
+) -> PathBuf {
+    let profile = fixture.root.join(format!("{name}.json"));
+    fs::write(
+        &profile,
+        json!({"schemaVersion":1,"sources":[{
+            "kind":"github","id":"github","required":true,"apiBaseUrl":server.base_url(),
+            "webOrigin":"https://github.example","allowPrivateNetwork":true,
+            "credential":{"kind":"environment","name":"RFS_GITHUB_TEST_TOKEN"},
+            "repositories":[{"name":"owner/repo"}],
+            "acquisition":{"maxAttempts":2,"maxRepresentationBytes":max_representation_bytes}
+        }]})
+        .to_string(),
+    )
+    .expect("comment facts profile");
+    profile
+}
+
+#[cfg(feature = "test-support")]
 #[test]
-fn catalog_advertises_comment_facts() {
+fn github_comment_facts_inline_partial_keeps_source_cursor_separate() {
+    let fixture = WorkspaceFixture::new();
+    let template: Value = serde_json::from_str(include_str!(
+        "../../../.rfs-bfwa/oracles/comment-native.json"
+    ))
+    .expect("native comment fixture");
+    let first = comment_fixture_record(&template, 9_001, "first page");
+    let tail = comment_fixture_record(&template, 9_002, "tail page");
+    let first_page_body = serde_json::to_string(&vec![first]).expect("first page");
+    let tail_page_body = serde_json::to_string(&vec![tail]).expect("tail page");
+    let server = profile_tls::ProfileTlsServer::start_native(vec![
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body: include_str!("../../../.rfs-0n97/oracles/pr-native.json").into(),
+            headers: Vec::new(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/issues/7/comments?per_page=100&page=1".into(),
+            body: first_page_body.clone(),
+            headers: vec![(
+                "Link".into(),
+                "<@API@repos/owner/repo/issues/7/comments?per_page=100&page=2>; rel=\"next\""
+                    .into(),
+            )],
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body: include_str!("../../../.rfs-0n97/oracles/pr-native.json").into(),
+            headers: Vec::new(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/issues/7/comments?per_page=100&page=2".into(),
+            body: tail_page_body,
+            headers: Vec::new(),
+        },
+    ]);
+    let profile = comment_facts_profile(&fixture, "inline-partial", &server, 16_000_000);
+    let mut process = McpProcess::start_profile_with_https_root_and_env(
+        &profile,
+        &fixture.root,
+        &[("RFS_GITHUB_TEST_TOKEN", "inline-partial-secret")],
+    );
+    process.initialize(VERSION_2026);
+    let first_page = process.call_read_arguments(json!({
+        "path":"pr://owner/repo/7/comments/facts","limits":{"bytes":49152,"lines":3000}
+    }));
+    let structured = assert_tool_success(&first_page);
+    assert!(structured.get("recoveryReference").is_none());
+    let source_cursor = structured["continuationReference"]
+        .as_str()
+        .expect("inline partial source cursor")
+        .to_owned();
+    assert!(!source_cursor.starts_with("artifact://"));
+    let (document, _, recovered_source_cursor) = recover_artifact_document(
+        &mut process,
+        first_page,
+        json!({"bytes": 49_152, "lines": 3_000}),
+    );
+    assert_eq!(
+        recovered_source_cursor.as_deref(),
+        Some(source_cursor.as_str())
+    );
+    assert_eq!(document["collection"]["state"], "incomplete");
+    assert_eq!(
+        document["data"]["records"]
+            .as_array()
+            .expect("records")
+            .len(),
+        1
+    );
+    assert_eq!(server.recorded_requests().len(), 2);
+
+    let next = process.call_read(&source_cursor);
+    let (next_document, _, next_source_cursor) =
+        recover_artifact_document(&mut process, next, json!({"bytes": 49_152}));
+    assert!(next_source_cursor.is_none());
+    assert_eq!(
+        next_document["data"]["records"][0]["id"], "9002",
+        "the source cursor is independently consumable"
+    );
+    assert_eq!(server.recorded_requests().len(), 4);
+    process.finish();
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn github_comment_facts_spilled_partial_recovers_one_document_and_exposes_source_cursor() {
+    let fixture = WorkspaceFixture::new();
+    let template: Value = serde_json::from_str(include_str!(
+        "../../../.rfs-bfwa/oracles/comment-native.json"
+    ))
+    .expect("native comment fixture");
+    let first_records = (9_001..=9_008)
+        .map(|id| comment_fixture_record(&template, id, &"x".repeat(6_000)))
+        .collect::<Vec<_>>();
+    let tail = comment_fixture_record(&template, 9_009, &"z".repeat(80_000));
+    let first_page_body = serde_json::to_string(&first_records).expect("first page");
+    let tail_page_body = serde_json::to_string(&vec![tail]).expect("tail page");
+    let server = profile_tls::ProfileTlsServer::start_native(vec![
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body: include_str!("../../../.rfs-0n97/oracles/pr-native.json").into(),
+            headers: Vec::new(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/issues/7/comments?per_page=100&page=1".into(),
+            body: first_page_body,
+            headers: vec![(
+                "Link".into(),
+                "<@API@repos/owner/repo/issues/7/comments?per_page=100&page=2>; rel=\"next\""
+                    .into(),
+            )],
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body: include_str!("../../../.rfs-0n97/oracles/pr-native.json").into(),
+            headers: Vec::new(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/issues/7/comments?per_page=100&page=2".into(),
+            body: tail_page_body,
+            headers: Vec::new(),
+        },
+    ]);
+    let profile = comment_facts_profile(&fixture, "spilled-partial", &server, 16_000_000);
+    let mut process = McpProcess::start_profile_with_https_root_and_env(
+        &profile,
+        &fixture.root,
+        &[("RFS_GITHUB_TEST_TOKEN", "spilled-partial-secret")],
+    );
+    process.initialize(VERSION_2026);
+    let first_page = process.call_read_arguments(json!({
+        "path":"pr://owner/repo/7/comments/facts","limits":{"bytes":49152,"lines":3000}
+    }));
+    let structured = assert_tool_success(&first_page);
+    let source_cursor = structured["sourceContinuationReference"]
+        .as_str()
+        .expect("spilled partial source cursor")
+        .to_owned();
+    let recovery = structured["recoveryReference"]
+        .as_str()
+        .expect("spilled partial recovery root")
+        .to_owned();
+    assert!(
+        structured["continuationReference"]
+            .as_str()
+            .is_some_and(|reference| reference.starts_with("artifact://"))
+    );
+    let requests_after_acquisition = server.recorded_requests().len();
+    assert_eq!(requests_after_acquisition, 2);
+    let (document, bytes, recovered_source_cursor) =
+        recover_artifact_document(&mut process, first_page, json!({"bytes": 4_096}));
+    assert_eq!(
+        recovered_source_cursor.as_deref(),
+        Some(source_cursor.as_str())
+    );
+    assert!(bytes.len() > 49_152);
+    assert_eq!(document["collection"]["state"], "incomplete");
+    assert_eq!(
+        document["data"]["records"]
+            .as_array()
+            .expect("records")
+            .len(),
+        8
+    );
+    assert_eq!(
+        document["data"]["records"][0]["id"], "9001",
+        "artifact recovery retains the first source segment"
+    );
+    assert_eq!(
+        server.recorded_requests().len(),
+        requests_after_acquisition,
+        "artifact pages never reacquire the source"
+    );
+    let next = process.call_read(&source_cursor);
+    let (next_document, _, _) =
+        recover_artifact_document(&mut process, next, json!({"bytes": 4_096}));
+    assert_eq!(next_document["data"]["records"][0]["id"], "9009");
+    assert_eq!(server.recorded_requests().len(), 4);
+    assert!(!bytes.contains("spilled-partial-secret"));
+    assert!(recovery.starts_with("artifact://"));
+    process.finish();
+}
+#[cfg(feature = "test-support")]
+#[test]
+fn catalog_advertises_github_repository_and_comment_facts_routes() {
     let fixture = WorkspaceFixture::new();
     let server = profile_tls::ProfileTlsServer::start_native(vec![]);
     let profile = fixture.root.join("github-catalog.json");
+
     fs::write(
         &profile,
         json!({"schemaVersion":1,"sources":[{
@@ -4199,10 +4456,179 @@ fn catalog_advertises_comment_facts() {
     let catalog = result["structuredContent"]["content"]
         .as_str()
         .expect("catalog text");
-    for spelling in [
-        "pr://<owner>/<repository>/<number>",
-        "comments[/facts|/<id>/facts",
-    ] {
-        assert!(catalog.contains(spelling), "catalog lacks {spelling}");
-    }
+    let pull_request_route = catalog
+        .lines()
+        .find(|line| line.starts_with("pr://"))
+        .expect("GitHub pull-request catalog route");
+    assert!(
+        pull_request_route.contains("pr://<owner>/<repository>[/<number>"),
+        "repository listing is discoverable without requiring a number: {pull_request_route}"
+    );
+    assert!(
+        pull_request_route.contains("comments[/facts"),
+        "conversation-comment collection facts route is discoverable: {pull_request_route}"
+    );
+    assert!(
+        pull_request_route.contains("/<id>/facts"),
+        "singular comment facts route is discoverable: {pull_request_route}"
+    );
+    assert!(
+        pull_request_route.contains("reviews[/facts"),
+        "review-submission facts routes are discoverable: {pull_request_route}"
+    );
+    assert!(
+        pull_request_route.contains("review-comments[/facts"),
+        "inline review-comment facts routes are discoverable: {pull_request_route}"
+    );
+    process.finish();
+}
+
+#[cfg(feature = "test-support")]
+fn review_fixture_record(id: u64, commit: &str, body: &str) -> Value {
+    json!({
+        "id": id,
+        "node_id": format!("PRR_{id}"),
+        "user": {
+            "id": 501u64,
+            "node_id": "U_reviewer",
+            "login": "reviewer",
+            "url": "@API@users/reviewer",
+            "html_url": "https://github.example/reviewer"
+        },
+        "body": body,
+        "state": "COMMENTED",
+        "html_url": format!("https://github.example/owner/repo/pull/7#pullrequestreview-{id}"),
+        "pull_request_url": "@API@repos/owner/repo/pulls/7",
+        "submitted_at": "2026-08-21T01:01:16Z",
+        "commit_id": commit
+    })
+}
+
+#[cfg(feature = "test-support")]
+fn inline_fixture_record(id: u64, commit: &str, diff_hunk: &str) -> Value {
+    json!({
+        "id": id,
+        "node_id": format!("PRRC_{id}"),
+        "url": format!("@API@repos/owner/repo/pulls/comments/{id}"),
+        "html_url": format!("https://github.example/owner/repo/pull/7#discussion_r{id}"),
+        "pull_request_url": "@API@repos/owner/repo/pulls/7",
+        "pull_request_review_id": 4988827796u64,
+        "body": "inline body",
+        "user": {
+            "id": 502u64,
+            "node_id": "U_reviewer",
+            "login": "reviewer",
+            "url": "@API@users/reviewer",
+            "html_url": "https://github.example/reviewer"
+        },
+        "created_at": "2026-08-21T01:01:16Z",
+        "updated_at": "2026-08-21T01:01:16Z",
+        "path": "compiler/rustc_middle/src/ty/print/pretty.rs",
+        "diff_hunk": diff_hunk,
+        "commit_id": commit,
+        "original_commit_id": commit,
+        "side": "RIGHT",
+        "line": null,
+        "start_side": null,
+        "start_line": null,
+        "original_line": 2741,
+        "original_start_line": null,
+        "position": 1,
+        "original_position": 20,
+        "subject_type": "line"
+    })
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn github_review_and_inline_facts_recover_without_reacquisition() {
+    const COMMIT: &str = "a8395d4c879b743dda521b3d3929b6819c8ad3b8";
+    let fixture = WorkspaceFixture::new();
+    let reviews: Vec<Value> = (4_988_827_790..4_988_827_798_u64)
+        .map(|id| review_fixture_record(id, COMMIT, &"review body 雪 \"escaped\"\n".repeat(120)))
+        .collect();
+    let inline_hunk = "@@ -1,1 +1,1 @@\n-old\n+new\n".repeat(300);
+    let inline = inline_fixture_record(3_826_494_362, COMMIT, &inline_hunk);
+    let parent = include_str!("../../../.rfs-0n97/oracles/pr-native.json");
+    let server = profile_tls::ProfileTlsServer::start_native(vec![
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body: parent.into(),
+            headers: Vec::new(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7/reviews?per_page=100&page=1".into(),
+            body: serde_json::to_string(&reviews).expect("review page"),
+            headers: Vec::new(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/7".into(),
+            body: parent.into(),
+            headers: Vec::new(),
+        },
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo/pulls/comments/3826494362".into(),
+            body: inline.to_string(),
+            headers: Vec::new(),
+        },
+    ]);
+    let profile = comment_facts_profile(&fixture, "review-inline-facts", &server, 16_000_000);
+    let mut process = McpProcess::start_profile_with_https_root_and_env(
+        &profile,
+        &fixture.root,
+        &[("RFS_GITHUB_TEST_TOKEN", "review-inline-stdio-secret")],
+    );
+    process.initialize(VERSION_2026);
+
+    let result = process.call_read_arguments(json!({
+        "path":"pr://owner/repo/7/reviews/facts","limits":{"bytes":4096}
+    }));
+    let root = result["structuredContent"]["recoveryReference"]
+        .as_str()
+        .expect("an oversized review collection must name its recovery root")
+        .to_owned();
+    let (facts, bytes, source_cursor) =
+        recover_artifact_document(&mut process, result, json!({"bytes": 1024}));
+    assert!(
+        source_cursor.is_none(),
+        "the fixture has no source cursor to recover"
+    );
+    assert!(
+        bytes.len() > 4_096,
+        "the oversized collection must span artifact pages"
+    );
+    assert_eq!(facts["kind"], "github.review_submission_collection");
+    assert_eq!(facts["collection"]["acceptedCount"], 8);
+    assert_eq!(facts["data"]["records"][0]["id"], "4988827790");
+    assert_eq!(facts["data"]["records"][0]["commitSha"], COMMIT);
+    assert_eq!(
+        facts["data"]["records"][0]["parent"]["number"], "7",
+        "verified parent identity survives recovery"
+    );
+    reconstruct_with_limits(&mut process, &root, json!({"bytes": 1024}), &bytes);
+    assert_eq!(
+        server.recorded_requests().len(),
+        2,
+        "recovery adds no acquisition"
+    );
+
+    let result = process.call_read_arguments(json!({
+        "path":"pr://owner/repo/7/review-comments/3826494362/facts","limits":{"bytes":4096}
+    }));
+    let (facts, bytes, source_cursor) =
+        recover_artifact_document(&mut process, result, json!({"bytes": 1024}));
+    assert!(source_cursor.is_none());
+    assert_eq!(facts["kind"], "github.review_comment");
+    assert_eq!(facts["data"]["id"], "3826494362");
+    assert_eq!(facts["data"]["line"], Value::Null);
+    assert_eq!(facts["data"]["originalLine"], 2741);
+    assert_eq!(facts["data"]["side"], "RIGHT");
+    assert_eq!(facts["data"]["diffHunk"], inline_hunk);
+    assert!(!bytes.contains("review-inline-stdio-secret"));
+    assert_eq!(
+        server.recorded_requests().len(),
+        4,
+        "one acquisition per endpoint; recovery adds none"
+    );
+    process.finish();
 }

@@ -345,6 +345,56 @@ async fn offsite_redirect_never_requested() {
     );
 }
 
+#[tokio::test]
+async fn redirect_with_userinfo_never_requested() {
+    let probe = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("port probe binds");
+    let port = probe.local_addr().expect("port probe address").port();
+    drop(probe);
+    let location = format!(
+        "https://embedded:password@{}:{port}/target",
+        tls::FIXTURE_HOST
+    );
+    let listener = tls::TlsListener::serve_router(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        port,
+        tls::match_cert(),
+        move |path| {
+            if path == "/start" {
+                tls::FixtureResponse::Redirect(location.clone())
+            } else {
+                tls::FixtureResponse::Body("must-not-arrive".to_owned())
+            }
+        },
+    )
+    .await;
+    let origin = format!("https://{}:{port}/", tls::FIXTURE_HOST);
+    let substrate = tls::tls_substrate(
+        OriginAllowlist::new(vec![
+            AllowedOrigin::new(&origin, true).expect("origin is well formed"),
+        ]),
+        vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))],
+    );
+    let url = Url::parse(&format!("https://{}:{port}/start", tls::FIXTURE_HOST))
+        .expect("fixture URL is well formed");
+    let failure = substrate
+        .fetch(HttpRequest::get(url), &OperationGuard::new())
+        .await
+        .expect_err("userinfo redirect must be rejected");
+    tls::settle().await;
+    assert_eq!(failure.category(), ErrorCategory::PermissionDenied);
+    let received = listener.requests();
+    assert!(
+        received.iter().any(|line| line.contains("/start")),
+        "the initial allowlisted hop must be served, got: {received:?}"
+    );
+    assert!(
+        !received.iter().any(|line| line.contains("/target")),
+        "userinfo redirect target must never be requested, got: {received:?}"
+    );
+}
+
 /// C5 — the redirect chain is bounded, and the bound is observed server-side.
 ///
 /// The oracle is the redirecting listener's own request log, independent of

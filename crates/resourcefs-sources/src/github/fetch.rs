@@ -11,7 +11,7 @@ use url::Url;
 
 use crate::{
     HttpRequest,
-    http::{BoundedRead, HttpReadBudget},
+    http::{BoundedRead, HttpReadBudget, reject_url_userinfo},
 };
 
 use super::{
@@ -31,20 +31,17 @@ struct CacheMetadata {
 }
 
 pub(super) struct FetchedResponse {
-    pub(super) body: Arc<[u8]>,
-    pub(super) link: Option<String>,
+    body: Arc<[u8]>,
+    link: Option<String>,
     pub(super) observation: BodyObservation,
     pub(super) revalidation: Option<BodyObservation>,
     pub(super) cache_generation: u64,
 }
 
-/// One controlled collection page: the accepted body, its provenance and the
-/// confined target of the next page, if the provider names one.
+/// One controlled collection page: the accepted response and its confined
+/// target of the next page, if the provider names one.
 pub(super) struct PageResponse {
-    pub(super) body: Arc<[u8]>,
-    pub(super) observation: BodyObservation,
-    pub(super) revalidation: Option<BodyObservation>,
-    pub(super) cache_generation: u64,
+    pub(super) response: FetchedResponse,
     pub(super) next: Option<Url>,
 }
 
@@ -382,17 +379,8 @@ impl GithubSource {
             .fetch_controlled(url, GITHUB_JSON, operation, Some(budget))
             .await?;
         let next = self.next_link(response.link.as_deref(), repository, suffix)?;
-        Ok(PageResponse {
-            body: response.body,
-            observation: response.observation,
-            revalidation: response.revalidation,
-            cache_generation: response.cache_generation,
-            next,
-        })
+        Ok(PageResponse { response, next })
     }
-
-    /// Caches a validated response for conditional revalidation.
-    ///
     /// A ceiling refusal is not a read failure: the substrate accepted the
     /// bytes and they are returned to the caller uncached. Any previous entry
     /// under the key is dropped so a later `304` can never revive content the
@@ -486,6 +474,12 @@ impl GithubSource {
         repository: &GithubRepositoryIdentity,
         suffix: &str,
     ) -> Result<Url, ResourceError> {
+        reject_url_userinfo(&target).map_err(|_| {
+            ResourceError::new(
+                ErrorCategory::PermissionDenied,
+                "GitHub pagination Link must not contain URL userinfo",
+            )
+        })?;
         let repository_path = self.endpoint(repository, suffix)?.path().to_owned();
         let same_origin = target.scheme() == self.api_base.scheme()
             && target.host_str() == self.api_base.host_str()
@@ -629,7 +623,6 @@ fn split_first_outside_quotes(value: &str, delimiter: u8) -> (&str, Option<&str>
     }
     (value, None)
 }
-
 fn malformed_link() -> ResourceError {
     malformed_upstream("GitHub pagination Link is malformed")
 }

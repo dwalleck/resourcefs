@@ -119,6 +119,7 @@ pub struct GithubSource {
     api_base: Url,
     substrate: Arc<HttpSubstrate>,
     session: PathSession,
+    cursor_key: Arc<[u8; 32]>,
 }
 
 impl std::fmt::Debug for GithubSource {
@@ -159,16 +160,19 @@ impl GithubSource {
                 "GitHub API base URL is invalid",
             )
         })?;
+        crate::http::reject_url_userinfo(&api_base)?;
         if !api_base.path().ends_with('/') {
             let mut path = api_base.path().to_owned();
             path.push('/');
             api_base.set_path(&path);
         }
+        let cursor_key = facts::continuation::new_session_key()?;
         Ok(Self {
             config,
             api_base,
             substrate,
             session,
+            cursor_key,
         })
     }
 
@@ -880,7 +884,7 @@ impl SourceCatalogMetadata for GithubSource {
             )?,
             SourceCatalogEntry::new(
                 "pr://",
-                "pr://<owner>/<repository>/<number>[/title|body|facts|comments[/facts|/<id>/facts|/<id>|/new]|reviews|review-comments|diff][:selector]",
+                "pr://<owner>/<repository>[/<number>[/title|body|facts|comments[/facts|/<id>/facts|/<id>]|reviews[/facts|/<id>/facts]|review-comments[/facts|/<id>/facts]|diff]][:selector]",
                 "pr://owner/repository/42",
                 None,
             )?,

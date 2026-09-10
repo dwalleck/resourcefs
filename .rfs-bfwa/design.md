@@ -225,3 +225,60 @@ Approved risk acceptances: None — every claim carries a deterministic regressi
 
 Placement revision approval (verbatim): "Approve revised placement"
 Date: 2026-09-08
+
+## Approved PR10 review repair amendment
+
+Requester approval (verbatim): "Okay, lets address all the issues following your recommendations"
+
+This approves the per-finding assessment and remediation recommendations recorded in
+`review-decisions.md`, not the original review's refuted claims. Main owns integration.
+The existing C1–C20 obligations remain except for the explicit corrections below.
+No new risk waiver, publication authorization, or unrelated adapter redesign is implied.
+
+- C3/C4: replace editable URL envelopes with authenticated cursors using an independent,
+  private random key owned by a session-bound GithubSource and shared by its clones.
+  The public artifact SessionToken is not signing material. Bind source, API base,
+  canonical resource and native target; verify before parent acquisition and retain
+  confinement. Use the already-resolved aws-lc-rs HMAC primitive rather than bespoke
+  cryptography. Cursor format cutover rejects the previous unsigned format.
+- C5/C15: one actual final-context pretty serializer governs whole-page admission and
+  publication. Include actual provenance, revalidation, availability and continuation
+  metadata. A verified but unadmitted page retains its own target; a fetched malformed
+  page remains nonresumable. Numeric observed sizes must be measured, not estimated.
+  Final-outcome growth may roll back whole verified pages to a nonempty prefix;
+  recompute retained provenance/availability and resume at the first removed page.
+  Malformed/inconsistent traversal, authority, generation and expired acceptance
+  cannot be converted into a new recovery cursor by rollback.
+- C7/C14: preserve the original logical deadline through final acceptance. Actual
+  expiry rejects publication; an early acquisition stop may retain a prefix only while
+  final acceptance still succeeds. No fresh deadline or cancellation bypass. Parent
+  and child requests continue to consume separate attempts in one shared ledger.
+- C8: collection coverage explicitly identifies initial versus continuation traversal;
+  complete describes that segment, not a snapshot or proof of a full conversation on
+  resumed reads. Preserve the canonical collection identity. Collection schema minor
+  version becomes 1 for the explicit scope and lossless typed failure details.
+- C10/C11/C12: requested comment identity, recognizable link authority/identity and
+  per-read duplicate IDs are verified before publication. Empty actor fields remain
+  native facts. Authority/requested-identity contradictions reject the entire read;
+  ordinary malformed later records retain only the previously verified prefix.
+- C14: one parent-response generation baseline covers every participating response and
+  final serialization. Invalidation rejects the assembled read rather than blessing a
+  prefix with stale parent/record evidence.
+- C18: existing facts identity, projection, collection, continuation and fetch owners
+  remain. Private helper extraction may separate collection outcome/serialization
+  responsibilities under facts; no second HTTP client, core serde dependency, generic
+  cursor framework, or responsibility body in github/mod.rs. Its source key field,
+  constructor wiring and catalog correction are permitted. Common HTTP URL validation
+  owns rejection of implicit URL credentials. Permanent scripts own the placement gate,
+  with one ledger retaining old and new checks; frozen ticket evidence is not executable
+  gate infrastructure.
+
+Repair falsifiers are consumer-visible wrong-ID/off-origin/duplicate-page refusals;
+cursor target tampering and URL userinfo with zero egress; exact-cap nested documents
+with long metadata; local-stop continuation resuming the unadmitted page; malformed
+versus wrong-parent retention precedence; generation invalidation between acquisitions
+and before publication; scoped resumed coverage; byte-exact artifact recovery without
+source acquisition; and strict fixture query matching. Existing release budgets remain
+unchanged. Main must establish new/changed regression red and restored-green evidence,
+run the complete gate and real credential-gated live paths, and retain an independent
+assembled design/security review before declaring these repairs complete.

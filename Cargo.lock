@@ -1810,6 +1810,7 @@ name = "resourcefs-sources"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "base64 0.22.1",
  "bytes",
  "cap-std",

@@ -110,3 +110,78 @@ No push, pull request, merge or tracker closure was performed. The branch is a l
 Rebased gate: `python scripts/ci-gates.py` → `All repository gates passed.` (exit 0, 1,438 s, zero failing test results). Reference/facts/adapter/mutation/stdio suites, formatting, Clippy (`-D warnings`), the workspace all-target/all-feature check, the placement fence (stage `live`) and the live adapter/stdio rows all pass on the rebased tree. The only numeric plan correction is the `facts.rs` tripwire (750 → 760) for the intermediate S1 commit, recorded in `plan.md`.
 
 Primary checkout reconciliation (per the safe-reconcile procedure): `main` was 17 behind and 0 ahead, so it fast-forwarded to `340d08b`. No untracked path collided with a newly tracked upstream path. `.rivets/issues.jsonl` was the only tracked path modified on both sides; its local copy was backed up to `/tmp/bfwa-main-backup/issues.jsonl.local`, the upstream store was taken as the base (so `rfs-br1u` reads closed), and the nine unpublished local tickets (`rfs-0n97`, `rfs-3r0s`, `rfs-bfwa`, `rfs-e5cv`, `rfs-iktl`, `rfs-jrz7`, `rfs-kpgy`, `rfs-nchb`, `rfs-r31i`) were restored by id union — 93 tickets total. The eight modified Gilfoyle reference files and three untracked research/module-shape files are untouched.
+
+## PR10 review repair proof (2026-09-09)
+
+Repair tree: `fix/pr10-review`, base `70c6063`, isolated from the user's primary
+checkout. The earlier implementation/rebase results above are historical; they
+do not establish correctness of these repairs.
+
+### Deterministic runtime proof
+
+- New source regression corpus against original production: **23 passed,
+  14 failed, 2 ignored**. These are behavioral failures, not the earlier fixture
+  compilation mistakes; some cases fail first at the new schema assertion.
+- Repaired source corpus:
+  `cargo test -p resourcefs-sources --test github_facts_contract -- --nocapture`
+  → **39 passed, 2 ignored**. This includes an actual sibling human/facts
+  identity differential, cancellation on the second page after a verified
+  prefix, and final-failure growth that rolls back a verified page and resumes
+  that page rather than the later failed target.
+- `cargo test -p resourcefs-sources --lib github::facts::tests -- --nocapture`
+  → **3 passed**: independently encoded 100-record nested pretty bytes,
+  exact cap / one byte below / exact content hash, and cancellation/deadline
+  changes during serialization.
+- HTTP userinfo rows: **2 passed**, after both were behaviorally red against
+  the old request path. The redirect fixture uses its actual allowlisted port.
+- MCP `github_comment_facts_` rows: **3 passed**; catalog discovery row:
+  **1 passed**. Inline and spilled partials recover one JSON document and
+  follow source traversal separately. The established 1,024-byte artifact
+  continuation fence remains unchanged.
+- Compilable production mutations failed as intended: bypass MAC verification
+  (foreign-session read succeeds), switch the final serializer to compact JSON
+  (independent pretty-byte equality fails), disable duplicate detection (shared
+  identity corpus accepts duplicates), offer a per-response oversize cursor
+  (nonresumable-limit assertion fails), and disable final-outcome rollback
+  (a fitting earlier prefix becomes a representation-limit error).
+  Mutation restoration and final gate receipts are recorded in
+  `review-decisions.md`.
+- The permanent shape checker passed on a disposable copy containing current
+  source and permanent scripts but no frozen ticket directories. Invalid CLI
+  stage returns usage exit 2; an invalid ledger default fails closed with
+  exit 1. Old dependency, protected-parent, unauthorized-owner and generic-seam
+  mutation receipts are recorded in `review-decisions.md`.
+
+### Required real-upstream continuation
+
+Gate: `RFS_LIVE=1` and `GITHUB_TOKEN` obtained in memory from `gh auth token`.
+Public read-only target: `rust-lang/rust` PR **159628**. No credential is
+printed or stored by the runner.
+
+| Row | Exact selected Cargo test | Observed |
+|---|---|---|
+| L7 adapter | `cargo test -p resourcefs-sources --test github_live_smoke live_github_conversation_comment_facts_hold_up -- --ignored --exact --nocapture` | PASS — **100 + 22** records across two source segments, matched against independent native `gh api` observations; singular comment matched the same native record. |
+| S-comment stdio | `cargo test -p resourcefs-mcp --test stdio_live_smoke live_stdio_github_comment_facts_match_native_observation -- --ignored --exact --nocapture` | PASS — real `rfs serve` over stdio, **100 + 22** records across separately recovered/parsed source documents, independent native identity/body comparison and singular comment read. |
+
+Both rows actually consumed the native next target
+`https://api.github.com/repositories/724712/issues/159628/comments?per_page=100&page=2`.
+The counts above are run observations, not assertions pinned to mutable
+upstream state. Linux/public GitHub proof does not establish corporate
+`ghe.com`, native Windows, or Cyril acceptance.
+
+### Corrected complete gate
+
+`python scripts/ci-gates.py` → **All repository gates passed**, exit 0
+(supervised run `rfs-pr10-final-gate`, approximately 21m55s).
+All debug/release workspace suites, all 14 classified ignored production
+budgets, placement, formatting, all-target/all-feature Clippy and dependency
+vetting passed. No budget ceiling or structural restriction was relaxed.
+The earlier complete run's two test lints and assertion-message architecture
+marker were corrected; its failures and focused restoration are preserved in
+`review-decisions.md`.
+
+Verified code is recorded in local commits `2e3e615` (permanent gate),
+`df5da90` (source/contract/regressions) and `8a28dd0` (consumer/live proof)
+on `fix/pr10-review`. The final receipt commit adds no behavior. No push,
+pull request, merge, tracker closure or primary-checkout reconciliation was
+performed for this review repair.

@@ -33,9 +33,11 @@ EXCLUDED = {
     "live_stdio_profile_probe_serve_and_tools_hold_up": "live GitHub/stdio smoke",
     "live_stdio_github_facts_match_native_observation": "live GitHub Facts stdio smoke",
     "live_stdio_github_comment_facts_match_native_observation": "live GitHub comment Facts stdio smoke",
+    "live_stdio_github_review_and_inline_facts_match_native_observation": "live GitHub review/inline Facts stdio smoke",
     "live_github_reads_hold_up": "live GitHub smoke",
     "live_github_facts_preserve_native_identity_and_links": "live GitHub Facts smoke",
     "live_github_conversation_comment_facts_hold_up": "live GitHub comment Facts smoke",
+    "live_github_review_and_inline_facts_hold_up": "live GitHub review/inline Facts smoke",
     "live_https_reads_hold_up": "live HTTPS smoke",
     "live_jira_issue_read": "live Jira smoke",
     "live_jira_project_browse": "live Jira project smoke",
@@ -135,7 +137,7 @@ def main():
     if sys.platform == "linux":
         gates.insert(0, (
             "Module placement",
-            [sys.executable, "scripts/module_shape_bfwa.py"],
+            [sys.executable, "scripts/module_shape.py"],
         ))
     failed = []
     for name, command in gates:

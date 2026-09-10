@@ -79,12 +79,33 @@ impl<F: Fn()> Serialize for AfterSerialize<'_, F> {
 async fn final_facts_measured_bytes_and_hash_fit_cap_but_one_less_refuses() {
     let substrate = no_network_substrate();
     let operation = OperationGuard::new();
-    let value = literal_facts();
+    let records = (1..=100)
+        .map(|id| {
+            serde_json::json!({
+                "id": id.to_string(),
+                "parent": {"number":"7","links":{"apiUrl":"https://api.github.example/pulls/7"}},
+                "body": "雪 λ \"quote\" \\ slash\nline\t\u{0001}",
+                "author": null
+            })
+        })
+        .collect::<Vec<_>>();
+    let value = serde_json::json!({
+        "schemaVersion": {"major":1,"minor":1},
+        "kind": "github.conversation_comment_collection",
+        "data": {"records": records},
+        "upstream": {"pages": [
+            {"body":{"status":200,"etag":"e".repeat(8192)},"revalidation":{"status":304}},
+            {"body":{"status":200}}
+        ]},
+        "unavailableFacts": [{"field":"author","reason":"null"}]
+    });
+    let independent_bytes = serde_json::to_vec_pretty(&value).expect("independent encoding");
     let read = substrate.begin_read(&operation).expect("logical deadline");
-    let completed = finish_facts(&value, GENEROUS_REPRESENTATION_CAP, facts_reference(), read)
+    let completed = finish_facts(&value, independent_bytes.len() + 1, facts_reference(), read)
         .expect("generous cap allows complete representation");
-    assert_literal_facts_content(completed.content());
-    let measured_bytes = completed.content().len();
+    assert_eq!(completed.content().as_bytes(), independent_bytes);
+    let measured_bytes = serialized_len(&value).expect("actual admission byte count");
+    assert_eq!(measured_bytes, completed.content().len());
     let independent_hash = format!(
         "sha256:{:x}",
         Sha256::digest(completed.content().as_bytes())

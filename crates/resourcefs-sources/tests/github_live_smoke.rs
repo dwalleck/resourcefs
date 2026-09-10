@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use resourcefs_core::{
     AllowedOrigin, DiscoveryEngine, ErrorCategory, HttpCeilings, OperationGuard, OriginAllowlist,
-    PathReference, SearchLimits, SearchOptions, SearchRequest, SearchTarget, Secret, ServerLimits,
-    SourceAdapter, SourceResource,
+    PathReference, ReadAcquisitionLimits, SearchLimits, SearchOptions, SearchRequest, SearchTarget,
+    Secret, ServerLimits, SourceAdapter, SourceResource,
 };
 use resourcefs_sources::{
     GithubConfig, GithubRepository, GithubSource, GithubSourceMount, HttpSubstrate, MutationGrants,
@@ -28,6 +28,8 @@ use resourcefs_sources::{
 const REPOSITORY: &str = "rust-lang/rust";
 /// Evidence P1–P6 fixture: 7 conversation comments, 6 inline comments, 4 files.
 const SMALL_PR: u64 = 159_232;
+/// A public PR with more than one page of conversation comments.
+const MULTIPAGE_PR: u64 = 159_628;
 /// 56 changed files at the time of writing — past the endpoint's 30-row default.
 const WIDE_PR: u64 = 161_878;
 
@@ -66,7 +68,7 @@ fn native_gh(token: &str, endpoint: &str) -> Option<serde_json::Value> {
     Some(serde_json::from_slice(&native.stdout).expect("native JSON"))
 }
 
-async fn live_source(token: String) -> Option<GithubSource> {
+async fn live_source(token: String) -> (session_support::ScratchFixture, GithubSource) {
     let origin = AllowedOrigin::new("https://api.github.com/", false).expect("origin");
     let secret = Secret::new(token).expect("token is a valid secret");
     let credential =
@@ -90,11 +92,10 @@ async fn live_source(token: String) -> Option<GithubSource> {
     )
     .expect("GitHub config");
     let session = session_support::scratch_fixture().await;
-    Some(
-        GithubSourceMount::new(config, Arc::new(substrate))
-            .bind(session.path_session().clone())
-            .expect("GitHub source"),
-    )
+    let source = GithubSourceMount::new(config, Arc::new(substrate))
+        .bind(session.path_session().clone())
+        .expect("GitHub source");
+    (session, source)
 }
 
 async fn read(source: &GithubSource, reference: &str) -> SourceResource {
@@ -103,6 +104,21 @@ async fn read(source: &GithubSource, reference: &str) -> SourceResource {
             &PathReference::parse(reference).expect("reference"),
             &OperationGuard::new(),
             None,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{reference}: {:?} {}", error.category(), error.message()))
+}
+
+async fn read_with_limits(
+    source: &GithubSource,
+    reference: &str,
+    limits: &ReadAcquisitionLimits,
+) -> SourceResource {
+    source
+        .read(
+            &PathReference::parse(reference).expect("reference"),
+            &OperationGuard::new(),
+            Some(limits),
         )
         .await
         .unwrap_or_else(|error| panic!("{reference}: {:?} {}", error.category(), error.message()))
@@ -138,7 +154,7 @@ fn first_reference_id(listing: &str, prefix: &str) -> u64 {
 #[ignore = "live GitHub smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
 async fn live_github_reads_hold_up() {
     let Some(token) = live_token() else { return };
-    let source = live_source(token).await.expect("live source");
+    let (_session, source) = live_source(token).await;
 
     // L1 — a >1,000-issue collection paginates through GitHub's real
     // `/repositories/{id}?…&after=…` Link targets and names page 11.
@@ -286,7 +302,7 @@ async fn live_github_facts_preserve_native_identity_and_links() {
     let Some(native) = native_gh(&token, &format!("repos/{REPOSITORY}/pulls/{SMALL_PR}")) else {
         return;
     };
-    let source = live_source(token).await.expect("live source");
+    let (_session, source) = live_source(token).await;
     let resource = read(&source, &format!("pr://{REPOSITORY}/{SMALL_PR}/facts")).await;
     let facts: serde_json::Value = serde_json::from_str(resource.content()).expect("facts JSON");
     assert_eq!(facts["schemaVersion"]["major"], 1);
@@ -302,116 +318,324 @@ async fn live_github_facts_preserve_native_identity_and_links() {
     assert_eq!(facts["acquisition"]["restApiVersion"], "2022-11-28");
     assert!(resource.continuation().is_none());
 }
-
 #[tokio::test]
 #[ignore = "live GitHub smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
 async fn live_github_conversation_comment_facts_hold_up() {
     let Some(token) = live_token() else { return };
-    // Independent observation of the same public collection.
-    let native = std::process::Command::new("gh")
-        .args([
-            "api",
-            "-H",
-            "X-GitHub-Api-Version: 2022-11-28",
-            &format!("repos/{REPOSITORY}/issues/{SMALL_PR}/comments?per_page=100&page=1"),
-        ])
-        .env("GH_TOKEN", &token)
-        .output()
-        .expect("independent native gh read");
-    assert!(native.status.success(), "native collection read failed");
-    let native: Vec<serde_json::Value> =
-        serde_json::from_slice(&native.stdout).expect("native comment page");
-    assert!(!native.is_empty(), "fixture PR must have comments");
-    let pull = std::process::Command::new("gh")
-        .args([
-            "api",
-            "-H",
-            "X-GitHub-Api-Version: 2022-11-28",
-            &format!("repos/{REPOSITORY}/pulls/{SMALL_PR}"),
-        ])
-        .env("GH_TOKEN", &token)
-        .output()
-        .expect("independent native pull read");
-    assert!(pull.status.success(), "native pull read failed");
-    let pull: serde_json::Value = serde_json::from_slice(&pull.stdout).expect("native pull JSON");
+    let Some(native_first_value) = native_gh(
+        &token,
+        &format!("repos/{REPOSITORY}/issues/{MULTIPAGE_PR}/comments?per_page=100&page=1"),
+    ) else {
+        return;
+    };
+    let Some(native_second_value) = native_gh(
+        &token,
+        &format!("repos/{REPOSITORY}/issues/{MULTIPAGE_PR}/comments?per_page=100&page=2"),
+    ) else {
+        return;
+    };
+    let native_first = native_first_value
+        .as_array()
+        .expect("native first comment page");
+    let native_second = native_second_value
+        .as_array()
+        .expect("native second comment page");
+    assert!(
+        !native_first.is_empty(),
+        "fixture PR must have first-page comments"
+    );
+    assert!(
+        !native_second.is_empty(),
+        "fixture PR must have second-page comments"
+    );
+    let native_ids = |page: &[serde_json::Value]| {
+        page.iter()
+            .map(|comment| {
+                comment["id"]
+                    .as_u64()
+                    .expect("native comment id")
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+    };
 
-    let source = live_source(token).await.expect("live source");
-    let resource = read(
+    let (_session, source) = live_source(token).await;
+    let limits =
+        ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("two-attempt limit");
+    let first = read_with_limits(
         &source,
-        &format!("pr://{REPOSITORY}/{SMALL_PR}/comments/facts"),
+        &format!("pr://{REPOSITORY}/{MULTIPAGE_PR}/comments/facts"),
+        &limits,
     )
     .await;
-    let facts: serde_json::Value =
-        serde_json::from_str(resource.content()).expect("collection JSON");
-    assert_eq!(facts["kind"], "github.conversation_comment_collection");
-    assert_eq!(facts["schemaVersion"]["major"], 1);
-    assert_eq!(facts["request"]["number"], SMALL_PR.to_string());
-    let records = facts["data"]["records"].as_array().expect("records");
+    let first_facts: serde_json::Value =
+        serde_json::from_str(first.content()).expect("first collection JSON");
+    assert_eq!(
+        first_facts["kind"],
+        "github.conversation_comment_collection"
+    );
+    assert_eq!(first_facts["schemaVersion"]["major"], 1);
+    assert_eq!(first_facts["request"]["number"], MULTIPAGE_PR.to_string());
+    assert_eq!(first_facts["collection"]["scope"], "initial");
+    assert_eq!(first_facts["collection"]["state"], "incomplete");
     assert!(
-        !records.is_empty(),
-        "the fixture PR has conversation comments"
+        first_facts["collection"]["continuation"].is_string(),
+        "the initial segment names its source continuation"
+    );
+    let first_records = first_facts["data"]["records"]
+        .as_array()
+        .expect("first records");
+    assert_eq!(
+        first_records.len(),
+        native_first.len(),
+        "first facts segment preserves the native page count"
     );
     assert_eq!(
-        facts["collection"]["acceptedCount"]
-            .as_u64()
-            .expect("count"),
-        records.len() as u64
+        first_facts["collection"]["acceptedCount"],
+        first_records.len()
     );
-    // Coverage is honest: a truncated traversal must name a continuation.
-    let state = facts["collection"]["state"].as_str().expect("state");
-    assert!(
-        matches!(state, "complete" | "incomplete"),
-        "unexpected state {state}"
+    assert_eq!(
+        first_records
+            .iter()
+            .map(|record| record["id"].as_str().expect("fact comment id").to_owned())
+            .collect::<Vec<_>>(),
+        native_ids(native_first),
+        "first facts segment preserves native comment identities"
     );
-    if state == "incomplete" {
-        assert!(
-            facts["collection"]["continuation"].is_string(),
-            "an incomplete collection names a continuation"
-        );
-    }
-    assert!(
-        facts["collection"].get("providerCap").is_none(),
-        "no provider cap is invented for this endpoint"
+    let continuation = first
+        .continuation()
+        .expect("maxAttempts=2 leaves a source continuation")
+        .to_owned();
+
+    let second = read_with_limits(&source, &continuation, &limits).await;
+    let second_facts: serde_json::Value =
+        serde_json::from_str(second.content()).expect("continued collection JSON");
+    assert_eq!(
+        second_facts["kind"],
+        "github.conversation_comment_collection"
+    );
+    assert_eq!(second_facts["request"]["number"], MULTIPAGE_PR.to_string());
+    assert_eq!(second_facts["collection"]["scope"], "continuation");
+    assert_eq!(second_facts["collection"]["state"], "complete");
+    assert!(second.continuation().is_none());
+    let second_records = second_facts["data"]["records"]
+        .as_array()
+        .expect("second records");
+    assert_eq!(
+        second_records.len(),
+        native_second.len(),
+        "continued facts segment preserves the native page count"
+    );
+    assert_eq!(
+        second_records
+            .iter()
+            .map(|record| record["id"].as_str().expect("fact comment id").to_owned())
+            .collect::<Vec<_>>(),
+        native_ids(native_second),
+        "continued facts segment preserves native comment identities"
     );
 
-    // The first provider record matches the independent observation exactly.
-    assert_eq!(
-        records[0]["id"],
-        native[0]["id"].as_u64().expect("id").to_string()
-    );
-    assert_eq!(records[0]["nodeId"], native[0]["node_id"]);
-    assert_eq!(
-        records[0]["parent"]["id"],
-        pull["id"].as_u64().expect("pull id").to_string()
-    );
-    assert_eq!(records[0]["parent"]["number"], SMALL_PR.to_string());
-    for record in records {
+    for record in first_records.iter().chain(second_records) {
         assert_eq!(record["kind"], "github.conversation_comment");
-        assert_eq!(record["parent"]["number"], SMALL_PR.to_string());
+        assert_eq!(record["parent"]["number"], MULTIPAGE_PR.to_string());
         assert!(
             record["links"]["issueUrl"]
                 .as_str()
                 .expect("issue url")
-                .ends_with(&format!("/issues/{SMALL_PR}")),
+                .ends_with(&format!("/issues/{MULTIPAGE_PR}")),
             "every record names the verified parent"
         );
     }
 
-    // One comment read matches the same native record.
-    let id = native[0]["id"].as_u64().expect("id");
+    let id = native_first[0]["id"].as_u64().expect("native comment id");
     let single = read(
         &source,
-        &format!("pr://{REPOSITORY}/{SMALL_PR}/comments/{id}/facts"),
+        &format!("pr://{REPOSITORY}/{MULTIPAGE_PR}/comments/{id}/facts"),
     )
     .await;
     let single: serde_json::Value = serde_json::from_str(single.content()).expect("comment JSON");
     assert_eq!(single["data"]["id"], id.to_string());
-    assert_eq!(single["data"]["nodeId"], native[0]["node_id"]);
-    assert_eq!(single["data"]["body"], native[0]["body"]);
-    assert_eq!(single["data"]["parent"]["number"], SMALL_PR.to_string());
+    assert_eq!(single["data"]["nodeId"], native_first[0]["node_id"]);
+    assert_eq!(single["data"]["body"], native_first[0]["body"]);
+    assert_eq!(single["data"]["parent"]["number"], MULTIPAGE_PR.to_string());
     assert!(single.get("collection").is_none());
     eprintln!(
-        "L7 conversation-comment facts: {} records, state {state}",
-        records.len()
+        "L7 conversation-comment facts: {} + {} records across source segments",
+        first_records.len(),
+        second_records.len()
     );
+}
+
+/// Native review/inline facts must survive as supplied, including the
+/// null-versus-omitted anchor split the fake upstream cannot be trusted to
+/// imitate. Counts move upstream; identities and anchors are asserted instead.
+#[tokio::test]
+#[ignore = "live GitHub smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
+async fn live_github_review_and_inline_facts_hold_up() {
+    let Some(token) = live_token() else { return };
+    let Some(native_reviews) = native_gh(
+        &token,
+        &format!("repos/{REPOSITORY}/pulls/{SMALL_PR}/reviews?per_page=100"),
+    ) else {
+        return;
+    };
+    let Some(native_inline) = native_gh(
+        &token,
+        &format!("repos/{REPOSITORY}/pulls/{SMALL_PR}/comments?per_page=100"),
+    ) else {
+        return;
+    };
+    let native_reviews = native_reviews.as_array().expect("native review page");
+    let native_inline = native_inline.as_array().expect("native inline page");
+    assert!(
+        !native_reviews.is_empty() && !native_inline.is_empty(),
+        "the evidence PR must still carry reviews and inline comments"
+    );
+
+    let (_session, source) = live_source(token).await;
+    let reviews = read(
+        &source,
+        &format!("pr://{REPOSITORY}/{SMALL_PR}/reviews/facts"),
+    )
+    .await;
+    let review_facts: serde_json::Value =
+        serde_json::from_str(reviews.content()).expect("review collection JSON");
+    assert_eq!(review_facts["kind"], "github.review_submission_collection");
+    assert_eq!(review_facts["schemaVersion"]["major"], 1);
+    assert_eq!(review_facts["acquisition"]["restApiVersion"], "2022-11-28");
+    assert_eq!(
+        review_facts["observed"]["parent"]["number"],
+        SMALL_PR.to_string()
+    );
+    let review_records = review_facts["data"]["records"]
+        .as_array()
+        .expect("review records");
+    for native in native_reviews {
+        let id = native["id"].as_u64().expect("native review id").to_string();
+        let record = review_records
+            .iter()
+            .find(|record| record["id"] == serde_json::json!(id))
+            .unwrap_or_else(|| panic!("review {id} missing from facts"));
+        assert_eq!(record["kind"], "github.review_submission");
+        assert_eq!(record["commitSha"], native["commit_id"]);
+        assert_eq!(record["state"], native["state"]);
+        assert_eq!(record["submittedAt"], native["submitted_at"]);
+        assert_eq!(
+            record["links"]["pullRequestUrl"],
+            native["pull_request_url"]
+        );
+        assert_eq!(
+            record["parent"]["number"],
+            SMALL_PR.to_string(),
+            "a review names the verified pull request"
+        );
+    }
+
+    // The item read reproduces the collection row for the same native review.
+    let first_review = native_reviews[0]["id"]
+        .as_u64()
+        .expect("native review id")
+        .to_string();
+    let item = read(
+        &source,
+        &format!("pr://{REPOSITORY}/{SMALL_PR}/reviews/{first_review}/facts"),
+    )
+    .await;
+    let item_facts: serde_json::Value =
+        serde_json::from_str(item.content()).expect("review item JSON");
+    assert_eq!(item_facts["kind"], "github.review_submission");
+    let collection_row = review_records
+        .iter()
+        .find(|record| record["id"] == serde_json::json!(first_review))
+        .expect("review row");
+    assert_eq!(item_facts["data"], *collection_row);
+
+    let inline = read(
+        &source,
+        &format!("pr://{REPOSITORY}/{SMALL_PR}/review-comments/facts"),
+    )
+    .await;
+    let inline_facts: serde_json::Value =
+        serde_json::from_str(inline.content()).expect("inline collection JSON");
+    assert_eq!(inline_facts["kind"], "github.review_comment_collection");
+    let inline_records = inline_facts["data"]["records"]
+        .as_array()
+        .expect("inline records");
+    for native in native_inline {
+        let id = native["id"].as_u64().expect("native inline id").to_string();
+        let record = inline_records
+            .iter()
+            .find(|record| record["id"] == serde_json::json!(id))
+            .unwrap_or_else(|| panic!("inline comment {id} missing from facts"));
+        assert_eq!(record["kind"], "github.review_comment");
+        assert_eq!(record["path"], native["path"]);
+        assert_eq!(record["diffHunk"], native["diff_hunk"]);
+        assert_eq!(record["commitSha"], native["commit_id"]);
+        assert_eq!(record["originalCommitSha"], native["original_commit_id"]);
+        assert_eq!(record["side"], native["side"]);
+        assert_eq!(record["subjectType"], native["subject_type"]);
+        // A supplied null stays null; an unsupplied property stays absent.
+        for field in [
+            "line",
+            "startSide",
+            "startLine",
+            "originalLine",
+            "originalStartLine",
+            "position",
+            "originalPosition",
+        ] {
+            let native_key = match field {
+                "startSide" => "start_side",
+                "startLine" => "start_line",
+                "originalLine" => "original_line",
+                "originalStartLine" => "original_start_line",
+                "originalPosition" => "original_position",
+                other => other,
+            };
+            match native.get(native_key) {
+                None => assert!(
+                    record.get(field).is_none(),
+                    "{field} must stay absent when upstream omits it"
+                ),
+                Some(value) => assert_eq!(
+                    record.get(field),
+                    Some(value),
+                    "{field} must keep the supplied value (including null)"
+                ),
+            }
+        }
+        match native.get("in_reply_to_id") {
+            None => assert!(record.get("replyToId").is_none()),
+            Some(value) => assert_eq!(
+                record["replyToId"],
+                value.as_u64().expect("reply id").to_string()
+            ),
+        }
+        assert_eq!(
+            record["reviewId"],
+            native["pull_request_review_id"]
+                .as_u64()
+                .expect("review id")
+                .to_string()
+        );
+    }
+
+    // The repository-wide inline item endpoint must agree with the listing.
+    let first_inline = native_inline[0]["id"]
+        .as_u64()
+        .expect("native inline id")
+        .to_string();
+    let item = read(
+        &source,
+        &format!("pr://{REPOSITORY}/{SMALL_PR}/review-comments/{first_inline}/facts"),
+    )
+    .await;
+    let item_facts: serde_json::Value =
+        serde_json::from_str(item.content()).expect("inline item JSON");
+    assert_eq!(item_facts["kind"], "github.review_comment");
+    let collection_row = inline_records
+        .iter()
+        .find(|record| record["id"] == serde_json::json!(first_inline))
+        .expect("inline row");
+    assert_eq!(item_facts["data"], *collection_row);
 }

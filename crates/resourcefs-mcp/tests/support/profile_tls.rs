@@ -46,8 +46,10 @@ pub struct RecordedRequest {
 }
 
 pub struct NativeResponse {
+    /// Exact request target, including any query string.
     pub path: String,
     pub body: String,
+    pub headers: Vec<(String, String)>,
 }
 
 enum Responses {
@@ -264,12 +266,7 @@ where
     let (status, content_type, body) = match responses {
         Responses::Html(body) => ("200 OK", "text/html; charset=utf-8", body.as_ref()),
         Responses::Native(responses) => match responses.get(sequence - 1) {
-            // Collection reads carry a `per_page`/`page` query; the fixture
-            // names the endpoint, so compare the path only.
-            Some(response)
-                if response.path == target.split('?').next().unwrap_or(target)
-                    && method == "GET" =>
-            {
+            Some(response) if response.path == target && method == "GET" => {
                 ("200 OK", "application/json", response.body.as_str())
             }
             _ => (
@@ -292,6 +289,13 @@ where
             ("200 OK", "application/json", body.as_str())
         }
     };
+    let response_headers = match responses {
+        Responses::Native(responses) => responses
+            .get(sequence - 1)
+            .map(|response| response.headers.clone())
+            .unwrap_or_default(),
+        Responses::Html(_) | Responses::BlockedNative { .. } => Vec::new(),
+    };
     // Native identity operands name this actual listener, not a guessed API.
     let host = request
         .lines()
@@ -302,11 +306,17 @@ where
         })
         .unwrap_or("");
     let body = body.replace("@API@", &format!("https://{host}/"));
-
-    let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+    let mut response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n",
         body.len()
     );
+    for (name, value) in response_headers {
+        response.push_str(&format!(
+            "{name}: {}\r\n",
+            value.replace("@API@", &format!("https://{host}/"))
+        ));
+    }
+    response.push_str("Connection: close\r\n\r\n");
     let sent = async {
         tls.write_all(response.as_bytes()).await?;
         tls.write_all(body.as_bytes()).await?;

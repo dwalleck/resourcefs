@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""C02 staged successor to the nae2/h212 placement census (not a Rust parser).
+"""Permanent module-placement gate (not a Rust parser).
 
 No feature-presence inference: the checked-in ledger chooses the default stage.
 --stage overrides that choice for an explicit preparatory checkpoint. --root is
@@ -21,20 +21,17 @@ SERVER = MCP + "server.rs"
 GITHUB = SOURCES + "github/mod.rs"
 
 
-def load_inherited():
-    """The shared placement machinery, vendored beside this gate.
+def load_base():
+    """Load the permanent shared placement machinery beside this command.
 
-    This runs from `scripts/ci-gates.py` on every branch, so it resolves a
-    sibling rather than reaching into a ticket directory: the ticket trees are
-    frozen evidence, and a permanent gate that imports one breaks whenever that
-    evidence is archived.
+    The command and its support module are repository policy. They intentionally
+    do not reach into historical evidence or another checkout's policy tree.
     """
     spec = importlib.util.spec_from_file_location(
         "module_shape_base", HERE / "module_shape_base.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
 
 def node_spans(source, inherited):
     """Named declaration spans including attributes; preserve overload ordinals."""
@@ -183,7 +180,7 @@ class Transition:
 
 
 def check(root, repository, ledger, stage):
-    inherited = load_inherited()
+    inherited = load_base()
     policy = Transition(ledger, stage, inherited)
     failures, observations = inherited.check(root, repository, 'query', policy)
     failures = ['C02 inherited ' + failure for failure in failures]
@@ -286,8 +283,14 @@ def check(root, repository, ledger, stage):
         entry_points = re.findall(
             r'\bpub\s*\(\s*super\s*\)\s+(?:async\s+)?fn\s+(\w+)',
             codes.get(identity_path, ''))
-        if entry_points != ['validate']:
-            fail(identity_path, 'identity validation must expose exactly one function: validate')
+        expected_entry_points = {
+            'validate', 'validate_comment_links', 'expected_object_url',
+            'require_object_link', 'validate_optional_object_link',
+            'validate_optional_web_link', 'require_observed_id',
+        }
+        if (len(entry_points) != len(expected_entry_points)
+                or set(entry_points) != expected_entry_points):
+            fail(identity_path, 'identity validation must expose exactly validate and validate_comment_links')
 
     # ErrorCategory already has a stable Serialize contract. Preserve it without
     # admitting serialization responsibilities into the new operational details.
@@ -391,20 +394,27 @@ def check(root, repository, ledger, stage):
 
 
 def main():
+    # Load policy before parsing so argparse retains its usage-error contract
+    # for an invalid explicit stage while the ledger remains authoritative.
+    try:
+        ledger = json.loads((HERE / 'module-ledger.json').read_text(encoding='utf-8'))
+        stages = tuple(ledger['stages'])
+    except (OSError, UnicodeError, ValueError, KeyError) as error:
+        print(f'C02 FAIL oracle input: {error}', file=sys.stderr)
+        return 1
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--stage', choices=('baseline', 'core', 'configuration', 'transport', 'fetch', 'mcp', 'facts'))
+    parser.add_argument('--stage', choices=stages)
     parser.add_argument('--root', type=Path, help='disposable source tree')
     parser.add_argument('--repository', type=Path, default=HERE.parent, help='Git baseline provider')
     args = parser.parse_args()
     try:
         repository = args.repository.resolve(strict=True)
-        inherited = load_inherited()
+        inherited = load_base()
         repository = Path(inherited.git(repository, 'rev-parse', '--show-toplevel'))
         root = args.root.resolve(strict=True) if args.root else repository
         # Policy is trusted checker input, not mutable fixture/source content.
-        ledger = json.loads((HERE / 'module-ledger.json').read_text(encoding='utf-8'))
         stage = args.stage or ledger['stage']
-        if stage not in ledger['stages']:
+        if stage not in stages:
             raise ValueError(f'invalid explicit policy stage {stage!r}')
         failures, observations = check(root, repository, ledger, stage)
     except (OSError, UnicodeError, ValueError, ImportError, KeyError) as error:
