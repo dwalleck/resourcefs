@@ -1571,9 +1571,11 @@ fn immutable_reference_with_size(total_bytes: usize) -> String {
 
 #[test]
 #[ignore = "checkpointed-build parser and control budget"]
-fn immutable_reference_parse_budget() {
+fn immutable_reference_parse_budget() -> Result<(), &'static str> {
+    // The runner executes this row in release only. A debug run must say so
+    // rather than pass a bound this profile cannot reach.
     if cfg!(debug_assertions) {
-        return;
+        return Err("run this budget in release mode");
     }
     const EXACT_BYTES: usize = 65_536;
     const ITERATIONS: usize = 100;
@@ -1592,8 +1594,11 @@ fn immutable_reference_parse_budget() {
         .load(Ordering::Acquire)
         .saturating_sub(baseline);
     let average = elapsed / ITERATIONS as u32;
+    // Release measurement at this revision: 225_837ns average for a 65_536-byte
+    // reference with 1_024 segments. The sibling `reference_parse_budget`
+    // allows 1ms for a 183-byte input; 5ms is ~70x tighter per byte.
     assert!(
-        average <= Duration::from_secs(1),
+        average <= Duration::from_millis(5),
         "average parser wall time {average:?}"
     );
     assert!(
@@ -1631,14 +1636,18 @@ fn immutable_reference_parse_budget() {
         black_box(operator.intersect(caller));
     }
     let average = started.elapsed() / CONTROL_ITERATIONS as u32;
+    // Release measurement at this revision: 14ns average. One microsecond is
+    // ~70x headroom and still catches an accidental per-intersection
+    // allocation, which is what this phase exists to bound.
     assert!(
-        average <= Duration::from_millis(1),
+        average <= Duration::from_micros(1),
         "average control construction/intersection time {average:?}"
     );
     println!(
         "immutable_reference_budget phase=controls iterations={CONTROL_ITERATIONS} average_wall_ns={}",
         average.as_nanos()
     );
+    Ok(())
 }
 
 const COMMENT_NATIVE: &str = include_str!("../../../.rfs-bfwa/oracles/comment-native.json");
