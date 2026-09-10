@@ -1,0 +1,67 @@
+Target: crates/resourcefs-sources/src/github/facts/source.rs
+Command: ['cargo', 'test', '-p', 'resourcefs-sources', '--features', 'test-support', '--test', 'github_source_contract', 'source_facts_verify_tree_and_blob_identity_before_retention', '--', '--exact']
+Mutation: '    let content = match object::validate_blob(native, &terminal.object_sha, terminal.size_bytes, ctx.limits.max_decoded_bytes())? {' -> '    let validated = match object::validate_blob(native, &terminal.object_sha, terminal.size_bytes, ctx.limits.max_decoded_bytes()) {\n        Ok(value) => value,\n        Err(error) => return Ok((SourceContent::AcquisitionFailed(collection::failure_facts(&error)), None)),\n    };\n    let content = match validated {'
+RED exit=101
+
+running 1 test
+test source_facts_verify_tree_and_blob_identity_before_retention ... FAILED
+
+failures:
+
+---- source_facts_verify_tree_and_blob_identity_before_retention stdout ----
+
+thread 'source_facts_verify_tree_and_blob_identity_before_retention' (3274296) panicked at crates/resourcefs-sources/tests/github_source_contract.rs:420:14:
+contradictory fixture must fail: SourceResource { canonical_reference: "github://owner/repo/source/0aa2a666a7286bba34bec5fdc47252b93c0db651/docs/%CE%BB%20space%252F%3Araw.bin/facts", content_type: "application/json; charset=utf-8", version_tag: VersionTag("sha256:fa7a265a1a3212f7bcdaa30ed7a7f29bf9e260ef21f1ca894182d1f44108e139"), mutable: false, backing_file_uri: None, artifact_identity: false, artifact_origin: None, content: "{\n  \"schemaVersion\": {\n    \"major\": 1,\n    \"minor\": 0\n  },\n  \"kind\": \"github.source\",\n  \"resource\": \"github://owner/repo/source/0aa2a666a7286bba34bec5fdc47252b93c0db651/docs/%CE%BB%20space%252F%3Araw.bin/facts\",\n  \"source\": {\n    \"sourceId\": \"github-immutable-source\",\n    \"deployment\": {\n      \"webOrigin\": \"https://github.example\",\n      \"apiOrigin\": \"https://tls.invalid:40137\"\n    }\n  },\n  \"repository\": {\n    \"owner\": \"owner\",\n    \"name\": \"repo\",\n    \"observed\": {\n      \"id\": \"1\",\n      \"name\": \"repo\",\n      \"fullName\": \"owner/repo\",\n      \"owner\": {\n        \"id\": \"2\",\n        \"login\": \"owner\",\n        \"links\": {\n          \"apiUrl\": \"https://tls.invalid:40137/users/owner\",\n          \"htmlUrl\": \"https://github.example/owner\"\n        }\n      },\n      \"links\": {\n        \"apiUrl\": \"https://tls.invalid:40137/repos/owner/repo\",\n        \"htmlUrl\": \"https://github.example/owner/repo\"\n      }\n    }\n  },\n  \"acquisition\": {\n    \"startedAtUnixMs\": 1789025885309,\n    \"completedAtUnixMs\": 1789025885315,\n    \"elapsedMs\": 6,\n    \"restApiVersion\": \"2022-11-28\",\n    \"limits\": {\n      \"maxAttempts\": 10,\n      \"timeoutMs\": 30000,\n      \"maxResponseBytes\": 8388608,\n      \"maxAcceptedBodyBytes\": 16777216,\n      \"maxRepresentationBytes\": 16777216,\n      \"maxDecodedBytes\": 4194304\n    },\n    \"usage\": {\n      \"attemptedRequests\": 5,\n      \"acceptedBodyBytes\": 5280\n    }\n  },\n  \"request\": {\n    \"repository\": {\n      \"owner\": \"owner\",\n      \"name\": \"repo\"\n    },\n    \"commitSha\": \"0aa2a666a7286bba34bec5fdc47252b93c0db651\",\n    \"path\": \"docs/λ space%2F:raw.bin\"\n  },\n  \"observed\": {\n    \"commitSha\": \"0aa2a666a7286bba34bec5fdc47252b93c0db651\",\n    \"treeSha\": \"5fca21cdbcbb9a9afada355222eacd9457d7c3eb\",\n    \"containingTreeSha\": \"d9cf1e2c10ed61b36c812e36c3f79acd6971126c\",\n    \"path\": \"docs/λ space%2F:raw.bin\",\n    \"mode\": \"100644\",\n    \"objectType\": \"blob\",\n    \"objectSha\": \"967e0f5bca40b1c9bdf4875861bda015755374f4\"\n  },\n  \"upstream\": {\n    \"repository\": {\n      \"body\": {\n        \"status\": 200,\n        \"etag\": \"\\\"/repos/owner/repo\\\"\",\n        \"observedAtUnixMs\": 1789025885310\n      }\n    },\n    \"commit\": {\n      \"body\": {\n        \"status\": 200,\n        \"etag\": \"\\\"/repos/owner/repo/commits/0aa2a666a7286bba34bec5fdc47252b93c0db651\\\"\",\n        \"observedAtUnixMs\": 1789025885311\n      }\n    },\n    \"trees\": {\n      \"5fca21cdbcbb9a9afada355222eacd9457d7c3eb\": {\n        \"body\": {\n          \"status\": 200,\n          \"etag\": \"\\\"/repos/owner/repo/git/trees/5fca21cdbcbb9a9afada355222eacd9457d7c3eb\\\"\",\n          \"observedAtUnixMs\": 1789025885312\n        }\n      },\n      \"d9cf1e2c10ed61b36c812e36c3f79acd6971126c\": {\n        \"body\": {\n          \"status\": 200,\n          \"etag\": \"\\\"/repos/owner/repo/git/trees/d9cf1e2c10ed61b36c812e36c3f79acd6971126c\\\"\",\n          \"observedAtUnixMs\": 1789025885314\n        }\n      }\n    }\n  },\n  \"data\": {\n    \"commitSha\": \"0aa2a666a7286bba34bec5fdc47252b93c0db651\",\n    \"treeSha\": \"5fca21cdbcbb9a9afada355222eacd9457d7c3eb\",\n    \"containingTreeSha\": \"d9cf1e2c10ed61b36c812e36c3f79acd6971126c\",\n    \"path\": \"docs/λ space%2F:raw.bin\",\n    \"mode\": \"100644\",\n    \"objectType\": \"blob\",\n    \"objectSha\": \"967e0f5bca40b1c9bdf4875861bda015755374f4\",\n    \"sizeBytes\": 13,\n    \"content\": {\n      \"state\": \"unavailable\",\n      \"reason\": \"acquisition_failed\",\n      \"failure\": {\n        \"category\": \"source_unavailable\",\n        \"reason\": \"upstream_identity_mismatch\"\n      }\n    }\n  },\n  \"unavailableFacts\": []\n}", projection: ProjectionMetadata { spans: [ProjectionSpan { output_start: 0, output_end: 3437, start_line: 1, end_line: 122, reaches_eof: true }], source_eof: true }, continuation: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    source_facts_verify_tree_and_blob_identity_before_retention
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.36s
+
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources)
+warning: constant `EXACT_TREE_SHA` is never used
+  --> crates/resourcefs-sources/tests/github_source_contract.rs:23:7
+   |
+23 | const EXACT_TREE_SHA: &str = "57aa38224969817610e34c19ee783ae3285aeb6e";
+   |       ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `OVER_TREE_SHA` is never used
+  --> crates/resourcefs-sources/tests/github_source_contract.rs:26:7
+   |
+26 | const OVER_TREE_SHA: &str = "6be8aafeb85eb4b2ed37b97dcaddb9d660a029f6";
+   |       ^^^^^^^^^^^^^
+
+warning: `resourcefs-sources` (test "github_source_contract") generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.27s
+     Running tests/github_source_contract.rs (target/debug/deps/github_source_contract-a7dab37356e70fb0)
+error: test failed, to rerun pass `-p resourcefs-sources --test github_source_contract`
+
+RESTORED GREEN exit=0
+
+running 1 test
+test source_facts_verify_tree_and_blob_identity_before_retention ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.63s
+
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources)
+warning: constant `EXACT_TREE_SHA` is never used
+  --> crates/resourcefs-sources/tests/github_source_contract.rs:23:7
+   |
+23 | const EXACT_TREE_SHA: &str = "57aa38224969817610e34c19ee783ae3285aeb6e";
+   |       ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `OVER_TREE_SHA` is never used
+  --> crates/resourcefs-sources/tests/github_source_contract.rs:26:7
+   |
+26 | const OVER_TREE_SHA: &str = "6be8aafeb85eb4b2ed37b97dcaddb9d660a029f6";
+   |       ^^^^^^^^^^^^^
+
+warning: `resourcefs-sources` (test "github_source_contract") generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.03s
+     Running tests/github_source_contract.rs (target/debug/deps/github_source_contract-a7dab37356e70fb0)

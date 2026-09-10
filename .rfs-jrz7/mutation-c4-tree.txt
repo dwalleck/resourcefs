@@ -1,0 +1,39 @@
+Initial fence stayed green under this mutation; repaired oracle changes only an unselected valid tree entry name, preserving all SHA/link metadata. Initial restored baseline passed.
+
+Target: crates/resourcefs-sources/src/github/facts/object.rs
+Command: ['cargo', 'test', '-p', 'resourcefs-sources', '--all-features', '--test', 'github_source_contract', 'source_facts_verify_tree_and_blob_identity_before_retention', '--', '--exact']
+Mutation: 'if actual != observed_id {' -> 'if false && actual != observed_id {'
+RED exit=101
+
+running 1 test
+test source_facts_verify_tree_and_blob_identity_before_retention ... FAILED
+
+failures:
+
+---- source_facts_verify_tree_and_blob_identity_before_retention stdout ----
+
+thread 'source_facts_verify_tree_and_blob_identity_before_retention' (3299247) panicked at crates/resourcefs-sources/tests/github_source_contract.rs:551:14:
+contradictory fixture must fail: SourceResource { canonical_reference: "github://owner/repo/source/0aa2a666a7286bba34bec5fdc47252b93c0db651/docs/%CE%BB%20space%252F%3Araw.bin/facts", content_type: "application/json; charset=utf-8", version_tag: VersionTag("sha256:8ddc5755130268b856b698a74fa39b724297c5ff181a48fec45b251617c8e6f7"), mutable: false, backing_file_uri: None, artifact_identity: false, artifact_origin: None, content: "{\n  \"schemaVersion\": {\n    \"major\": 1,\n    \"minor\": 0\n  },\n  \"kind\": \"github.source\",\n  \"resource\": \"github://owner/repo/source/0aa2a666a7286bba34bec5fdc47252b93c0db651/docs/%CE%BB%20space%252F%3Araw.bin/facts\",\n  \"source\": {\n    \"sourceId\": \"github-immutable-source\",\n    \"deployment\": {\n      \"webOrigin\": \"https://github.example\",\n      \"apiOrigin\": \"https://tls.invalid:37149\"\n    }\n  },\n  \"repository\": {\n    \"owner\": \"owner\",\n    \"name\": \"repo\",\n    \"observed\": {\n      \"id\": \"1\",\n      \"name\": \"repo\",\n      \"fullName\": \"owner/repo\",\n      \"owner\": {\n        \"id\": \"2\",\n        \"login\": \"owner\",\n        \"links\": {\n          \"apiUrl\": \"https://tls.invalid:37149/users/owner\",\n          \"htmlUrl\": \"https://github.example/owner\"\n        }\n      },\n      \"links\": {\n        \"apiUrl\": \"https://tls.invalid:37149/repos/owner/repo\",\n        \"htmlUrl\": \"https://github.example/owner/repo\"\n      }\n    }\n  },\n  \"acquisition\": {\n    \"startedAtUnixMs\": 1789027509586,\n    \"completedAtUnixMs\": 1789027509594,\n    \"elapsedMs\": 8,\n    \"restApiVersion\": \"2022-11-28\",\n    \"limits\": {\n      \"maxAttempts\": 10,\n      \"timeoutMs\": 30000,\n      \"maxResponseBytes\": 8388608,\n      \"maxAcceptedBodyBytes\": 16777216,\n      \"maxRepresentationBytes\": 16777216,\n      \"maxDecodedBytes\": 4194304\n    },\n    \"usage\": {\n      \"attemptedRequests\": 5,\n      \"acceptedBodyBytes\": 5288\n    }\n  },\n  \"request\": {\n    \"repository\": {\n      \"owner\": \"owner\",\n      \"name\": \"repo\"\n    },\n    \"commitSha\": \"0aa2a666a7286bba34bec5fdc47252b93c0db651\",\n    \"path\": \"docs/λ space%2F:raw.bin\"\n  },\n  \"observed\": {\n    \"commitSha\": \"0aa2a666a7286bba34bec5fdc47252b93c0db651\",\n    \"treeSha\": \"5fca21cdbcbb9a9afada355222eacd9457d7c3eb\",\n    \"containingTreeSha\": \"d9cf1e2c10ed61b36c812e36c3f79acd6971126c\",\n    \"path\": \"docs/λ space%2F:raw.bin\",\n    \"mode\": \"100644\",\n    \"objectType\": \"blob\",\n    \"objectSha\": \"967e0f5bca40b1c9bdf4875861bda015755374f4\"\n  },\n  \"upstream\": {\n    \"repository\": {\n      \"body\": {\n        \"status\": 200,\n        \"etag\": \"\\\"/repos/owner/repo\\\"\",\n        \"observedAtUnixMs\": 1789027509588\n      }\n    },\n    \"commit\": {\n      \"body\": {\n        \"status\": 200,\n        \"etag\": \"\\\"/repos/owner/repo/commits/0aa2a666a7286bba34bec5fdc47252b93c0db651\\\"\",\n        \"observedAtUnixMs\": 1789027509589\n      }\n    },\n    \"trees\": {\n      \"5fca21cdbcbb9a9afada355222eacd9457d7c3eb\": {\n        \"body\": {\n          \"status\": 200,\n          \"etag\": \"\\\"/repos/owner/repo/git/trees/5fca21cdbcbb9a9afada355222eacd9457d7c3eb\\\"\",\n          \"observedAtUnixMs\": 1789027509591\n        }\n      },\n      \"d9cf1e2c10ed61b36c812e36c3f79acd6971126c\": {\n        \"body\": {\n          \"status\": 200,\n          \"etag\": \"\\\"/repos/owner/repo/git/trees/d9cf1e2c10ed61b36c812e36c3f79acd6971126c\\\"\",\n          \"observedAtUnixMs\": 1789027509593\n        }\n      }\n    },\n    \"blobs\": {\n      \"967e0f5bca40b1c9bdf4875861bda015755374f4\": {\n        \"body\": {\n          \"status\": 200,\n          \"etag\": \"\\\"/repos/owner/repo/git/blobs/967e0f5bca40b1c9bdf4875861bda015755374f4\\\"\",\n          \"observedAtUnixMs\": 1789027509594\n        }\n      }\n    }\n  },\n  \"data\": {\n    \"commitSha\": \"0aa2a666a7286bba34bec5fdc47252b93c0db651\",\n    \"treeSha\": \"5fca21cdbcbb9a9afada355222eacd9457d7c3eb\",\n    \"containingTreeSha\": \"d9cf1e2c10ed61b36c812e36c3f79acd6971126c\",\n    \"path\": \"docs/λ space%2F:raw.bin\",\n    \"mode\": \"100644\",\n    \"objectType\": \"blob\",\n    \"objectSha\": \"967e0f5bca40b1c9bdf4875861bda015755374f4\",\n    \"sizeBytes\": 13,\n    \"content\": {\n      \"state\": \"available\",\n      \"encoding\": \"base64\",\n      \"decodedSizeBytes\": 13,\n      \"bytesBase64\": \"AP+AbGluZQ0KZW5kAA==\"\n    }\n  },\n  \"unavailableFacts\": []\n}", projection: ProjectionMetadata { spans: [ProjectionSpan { output_start: 0, output_end: 3656, start_line: 1, end_line: 129, reaches_eof: true }], source_eof: true }, continuation: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    source_facts_verify_tree_and_blob_identity_before_retention
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.41s
+
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.54s
+     Running tests/github_source_contract.rs (target/debug/deps/github_source_contract-a7dab37356e70fb0)
+error: test failed, to rerun pass `-p resourcefs-sources --test github_source_contract`
+
+RESTORED GREEN exit=0
+
+running 1 test
+test source_facts_verify_tree_and_blob_identity_before_retention ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.71s
+
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.37s
+     Running tests/github_source_contract.rs (target/debug/deps/github_source_contract-a7dab37356e70fb0)

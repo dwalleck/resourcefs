@@ -42,11 +42,11 @@ enum CoverageState {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LocalLimit {
-    kind: &'static str,
-    bound: u64,
+pub(super) struct LocalLimit {
+    pub(super) kind: &'static str,
+    pub(super) bound: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    observed: Option<u64>,
+    pub(super) observed: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -58,7 +58,7 @@ enum RetryGuidanceFacts {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FailureFacts {
+pub(super) struct FailureFacts {
     category: &'static str,
     reason: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -186,7 +186,7 @@ struct CollectionBody<'a> {
     data: Records<'a>,
     collection: Collection<'a>,
 }
-fn failure_facts(error: &ResourceError) -> FailureFacts {
+pub(super) fn failure_facts(error: &ResourceError) -> FailureFacts {
     let details = error.details();
     FailureFacts {
         category: error.category().as_str(),
@@ -244,7 +244,7 @@ fn retryable(error: &ResourceError, ctx: &FactsRead<'_>, parent_body_bytes: usiz
     error.category() == ErrorCategory::SourceUnavailable
 }
 
-fn rejects_every_page(error: &ResourceError) -> bool {
+pub(super) fn invalidates_retention(error: &ResourceError) -> bool {
     matches!(
         error.category(),
         ErrorCategory::Cancelled | ErrorCategory::PermissionDenied
@@ -543,7 +543,7 @@ pub(super) async fn read(
         {
             Ok(page) => page,
             Err(error) => {
-                if records.is_empty() || rejects_every_page(&error) {
+                if records.is_empty() || invalidates_retention(&error) {
                     return Err(error);
                 }
                 let continuation = if retryable(&error, ctx, parent_body_bytes) {
@@ -590,7 +590,7 @@ pub(super) async fn read(
         for native in decoded {
             match family::validate_native(native, repository, number, &source.api_base, &web) {
                 Ok(record) => page_records.push(record),
-                Err(error) if rejects_every_page(&error) => return Err(error),
+                Err(error) if invalidates_retention(&error) => return Err(error),
                 Err(error) => {
                     if records.is_empty() {
                         return Err(error);

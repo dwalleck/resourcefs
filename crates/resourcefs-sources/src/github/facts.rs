@@ -308,6 +308,8 @@ struct Limits {
     max_response_bytes: usize,
     max_accepted_body_bytes: usize,
     max_representation_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_decoded_bytes: Option<usize>,
 }
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -361,16 +363,17 @@ pub(super) struct FactsRead<'a> {
     pub(super) started: tokio::time::Instant,
     pub(super) cache_generation: Option<u64>,
 }
-
 mod collection;
 mod comment;
 mod commit;
 pub(super) mod continuation;
 mod family;
 mod inline;
+mod object;
 mod parent;
 mod pull;
 mod review;
+mod source;
 
 /// One acquisition observation shared by measurement and final emission.
 pub(super) fn acquisition_at(
@@ -392,6 +395,7 @@ pub(super) fn acquisition_at(
             max_response_bytes: limits.max_response_bytes(),
             max_accepted_body_bytes: limits.max_accepted_body_bytes(),
             max_representation_bytes: limits.max_representation_bytes(),
+            max_decoded_bytes: None,
         },
         usage: Usage {
             attempted_requests,
@@ -587,11 +591,14 @@ impl GithubSource {
                     repository,
                 )
             }
-            ResourceAddress::Github(address @ GithubAddress::Commit { repository, .. }) => {
+            ResourceAddress::Github(address) => {
                 if reference.projection().is_some() {
                     return Err(super::unsupported_github_projection());
                 }
-                (PathReference::github(address.clone(), None)?, repository)
+                (
+                    PathReference::github(address.clone(), None)?,
+                    address.repository(),
+                )
             }
             _ => return Err(super::unsupported_github_projection()),
         };
@@ -661,6 +668,11 @@ impl GithubSource {
             ResourceAddress::Github(GithubAddress::Commit { repository, commit }) => {
                 commit::read(self, repository, commit, &mut ctx).await
             }
+            ResourceAddress::Github(GithubAddress::Source {
+                repository,
+                commit,
+                path,
+            }) => source::read(self, repository, commit, path, &mut ctx).await,
             _ => Err(super::unsupported_github_projection()),
         }
     }

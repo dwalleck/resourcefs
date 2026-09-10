@@ -94,6 +94,47 @@ fn enforces_dependency_direction() {
 }
 
 #[test]
+fn git_object_dependencies_stay_in_source_adapter() {
+    let metadata = MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .expect("workspace cargo metadata");
+    let packages: BTreeMap<_, _> = metadata
+        .workspace_packages()
+        .into_iter()
+        .map(|package| (package.name.as_str(), package))
+        .collect();
+    let core = dependency_names(packages["resourcefs-core"]);
+    let sources = dependency_names(packages["resourcefs-sources"]);
+    let mcp = dependency_names(packages["resourcefs-mcp"]);
+
+    for dependency in ["gix-object", "gix-hash"] {
+        assert!(
+            sources.contains(dependency),
+            "Git object format dependency {dependency} belongs to resourcefs-sources"
+        );
+        assert!(
+            !core.contains(dependency) && !mcp.contains(dependency),
+            "Git object format dependency {dependency} must not enter core or MCP"
+        );
+    }
+
+    let workspace = metadata.workspace_root.as_std_path();
+    let core_source = workspace.join("crates/resourcefs-core/src");
+    let mcp_source = workspace.join("crates/resourcefs-mcp/src");
+    for token in ["gix_object", "gix_hash"] {
+        assert!(
+            files_containing_token(&core_source, token).is_empty(),
+            "{token} implementation leaked into resourcefs-core"
+        );
+        assert!(
+            files_containing_token(&mcp_source, token).is_empty(),
+            "{token} implementation leaked into resourcefs-mcp"
+        );
+    }
+}
+
+#[test]
 fn mutation_engine_dependency_direction() {
     let metadata = MetadataCommand::new()
         .no_deps()

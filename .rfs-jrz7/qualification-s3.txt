@@ -1,0 +1,28 @@
+rfs-jrz7 S3 local qualification — 2026-09-10
+Source: feat/rfs-jrz7-source based on d8d61ba; exact final source/configuration/fixture/documentation SHA-256 inventory in qualification-source-state.json.
+Environment: Linux x86_64; Rust/Clippy 1.95 toolchain. Repository package MSRV remains 1.88.
+
+FULL RUNNER
+Command: python scripts/ci-gates.py
+Completed all legs in 1156.63s. Original aggregate EXIT 1, Failed gates: Lints. This run is NOT relabeled exit 0.
+PASS: module placement, formatting, workspace/all-feature functional tests in debug and release, complete ignored production-budget inventory and execution, cargo deny check (advisories/bans/licenses/sources).
+Initial lint: manual_is_multiple_of in native base64 length guard. The next full Clippy pass exposed four test-only style findings: redundant bool assertion, needless lifetime, single bool match and let-and-return.
+
+BOUNDED QUALIFICATION REPAIR
+- Equivalent production guard: encoded.len() % 4 != 0 -> !encoded.len().is_multiple_of(4). The method is available under the declared MSRV. No accepted input, branch outcome, bound, ownership or interface changed.
+- Deleted a redundant live-fixture is_string assertion immediately before as_str().expect; native identity and byte-equality assertions remain.
+- Elided an inferable fixture lifetime; changed the C8 controller's bool match to if and removed its redundant let-return. No changed allocation callback, channel protocol or invalidation timing.
+- cargo fmt --all; cargo clippy --workspace --all-targets --all-features -- -D warnings: PASS (5.74s combined command).
+- cargo fmt --all -- --check && python scripts/module_shape.py --root . --stage immutable-source: PASS.
+- cargo test --release --config profile.release.debug-assertions=false -p resourcefs-sources --all-features --test github_source_contract --test github_immutable_contract: 21 PASS.
+- Fresh C8 remove-final-check and move-check-before-serialization mutants: RED; exact-restored GREEN after the controller rewrite. Current receipts: mutation-c8-generation.txt and mutation-c8-position.txt.
+- cargo test --release --config profile.release.debug-assertions=false -p resourcefs-sources --all-features --test github_facts_contract immutable_source -- --include-ignored --nocapture --test-threads=1: 2 PASS (final serialization race and production budget).
+  native_response_bytes=5594189 output_bytes=5595590
+  elapsed_ns=25132893 wall_limit_ns=3000000000
+  incremental_heap_bytes=22407536 heap_limit_bytes=167772160
+- scripts/live-smoke.sh rerun after all corrections: successful completion, 13 actual network PASS; 5 Jira environment SKIP, not live PASS. Exact rows: live-roster-results.txt.
+
+EVIDENCE VALIDITY
+The complete runner's successful constituent results remain applicable to unchanged paths. The equivalent native arithmetic predicate is freshly exercised by the release source matrix, production budget and real GitHub adapter/stdio roster; no transport, profile, schema, dependency or other-family behavior changed. The changed C8 fence has renewed red/restored-green and release proof. Other named mutations and the independent Git corpus retain their inputs and failure mechanisms. Formatter-only import ordering changes have no semantic effect. All local gate obligations are now PASS by these fresh and retained results; no failed obligation is waived.
+
+Independent blind-first conformance: blind-module-map.md and design-conformance-review.json. Native/Git and enabled live comparison: evidence.md. No corporate/Jira live coverage claimed. Published-head platform CI is a separate publication obligation, not certified by this local record.

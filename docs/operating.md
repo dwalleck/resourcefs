@@ -210,7 +210,26 @@ Replace the sample ID with a real full lowercase commit SHA from the allowed rep
 
 The inner schema is version 1.0, `kind: "github.commit"`. Requested and observed commit IDs are separate; `data` preserves the provider's message, native Git author/committer, ordered parents and optional/null GitHub accounts. Repository and commit responses have separate `upstream` observations. This is neither a commit diff nor raw Git object bytes. The ResourceFS Version Tag includes acquisition provenance and is not the native commit SHA.
 
-Use the normal artifact recovery references when the complete JSON exceeds display limits; recovery does not fetch GitHub again. The `github://` catalog entry advertises commit Facts. Exact source-file acquisition is not yet advertised by this increment.
+Use the normal artifact recovery references when the complete JSON exceeds display limits; recovery does not fetch GitHub again. The `github://` catalog entry advertises both commit and exact source Facts.
+
+## GitHub immutable source Facts
+
+Use the same readable repository allowlist to acquire one exact path at a full lowercase commit SHA:
+
+```json
+{
+  "path": "github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/docs/guide.txt/facts",
+  "acquisition": { "maxDecodedBytes": 1048576 }
+}
+```
+
+Encode each path component independently: `docs/λ space%2F:raw.bin` becomes `docs/%CE%BB%20space%252F%3Araw.bin`. Literal encoded-looking text is not decoded twice. Empty components, dot segments, absolute paths and encoded separators are rejected; selectors are not supported. A terminal directory, symlink or submodule returns verified metadata with `content.state: "unsupported"`; ResourceFS never follows it.
+
+The inner schema is version 1.0, `kind: "github.source"`. `data.content.state: "available"` provides `encoding: "base64"`, `decodedSizeBytes` and `bytesBase64`. Decoding that string yields exact blob bytes, including binary content; it is not a text projection. Requested and observed commit/path identities are separate. Every traversed non-recursive tree and accepted blob is checked against its native Git SHA. The Version Tag instead names the complete Facts JSON, including acquisition provenance.
+
+`maxDecodedBytes` lowers the decoded-content ceiling (4 MiB by default), not the HTTP-body or final-JSON budgets. Repository, commit, every traversed tree and any blob request share one acquisition budget; deeper paths may require a larger lower-only attempt allowance within the hard ceiling. A decoded-size limit or ordinary blob acquisition failure can return verified metadata with `content.state: "unavailable"` and a bounded reason, without stale bytes. Identity/integrity failures, cancellation, deadline expiration and cache-generation changes refuse the whole read. Intermediate traversal failure cannot return a verified terminal object.
+
+Display overflow uses the normal artifact recovery references for the complete JSON. Reading or paging those references never reacquires GitHub. Do not confuse the absence of displayable bytes with `content.state`; inspect the recovered JSON when necessary.
 
 ## GitHub conversation-comment facts
 

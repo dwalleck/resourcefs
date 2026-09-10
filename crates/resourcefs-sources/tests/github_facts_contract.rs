@@ -3,6 +3,7 @@ mod session_support;
 #[path = "support/tls.rs"]
 mod tls;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use resourcefs_core::{
     AllowedOrigin, ErrorCategory, ErrorReason, HttpCeilings, OperationGuard, PathReference,
     ReadAcquisitionLimits, ReadRequest, Secret, SourceAdapter, SourceResource, TextLimits,
@@ -36,6 +37,63 @@ static FACTS_PEAK_HEAP: AtomicUsize = AtomicUsize::new(0);
 const ALLOCATION_OVERHEAD: usize = 32;
 #[global_allocator]
 static FACTS_ALLOCATOR: FactsCountingAllocator = FactsCountingAllocator;
+// C8 uses the existing facts-binary allocator as a deterministic serialization
+// window. The native blob content String has a unique, fixture-derived length;
+// the first larger reallocation after that String exists is the final facts
+// Vec growing. The allocator pauses there while a helper thread changes the
+// cache generation, so no earlier acquisition check can explain the refusal.
+// These two cells are deliberately thread-local. The source read runs on an
+// explicit single-thread runtime, so fixture-server/controller allocations
+// cannot accidentally arm the fence.
+thread_local! {
+    static C8_NATIVE_CONTENT_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static C8_NATIVE_CONTENT_SEEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+static C8_RACE_TRIGGERED: AtomicBool = AtomicBool::new(false);
+static C8_CALLBACK_FAILED: AtomicBool = AtomicBool::new(false);
+static C8_RACE_TRIGGER_SIZE: AtomicUsize = AtomicUsize::new(0);
+static C8_RACE_TRIGGER: OnceLock<std::sync::mpsc::Sender<bool>> = OnceLock::new();
+static C8_RACE_RELEASE: OnceLock<std::sync::Mutex<std::sync::mpsc::Receiver<()>>> = OnceLock::new();
+static C8_SERIALIZATION_WINDOW: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+fn observe_c8_native_content(size: usize) {
+    C8_NATIVE_CONTENT_BYTES.with(|target| {
+        if target.get() != 0 && size == target.get() {
+            C8_NATIVE_CONTENT_SEEN.with(|seen| seen.set(true));
+        }
+    });
+}
+
+fn pause_c8_serialization(new_size: usize) {
+    let should_pause = C8_NATIVE_CONTENT_BYTES.with(|target| {
+        let target = target.get();
+        target != 0 && new_size > target && C8_NATIVE_CONTENT_SEEN.with(|seen| seen.get())
+    });
+    if !should_pause
+        || C8_RACE_TRIGGERED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return;
+    }
+    C8_RACE_TRIGGER_SIZE.store(new_size, Ordering::Release);
+    // Disarm before signaling: the helper and the resumed serializer allocate.
+    C8_NATIVE_CONTENT_BYTES.with(|target| target.set(0));
+    // GlobalAlloc must not unwind. Report controller failures through an
+    // atomic flag and assert them outside the allocator callback.
+    let released = match (C8_RACE_TRIGGER.get(), C8_RACE_RELEASE.get()) {
+        (Some(trigger), Some(release)) if trigger.send(true).is_ok() => match release.lock() {
+            Ok(receiver) => receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_ok(),
+            Err(_) => false,
+        },
+        _ => false,
+    };
+    if !released {
+        C8_CALLBACK_FAILED.store(true, Ordering::Release);
+    }
+}
 
 fn record_facts_allocation(bytes: usize) {
     let current = FACTS_CURRENT_HEAP.fetch_add(bytes, Ordering::AcqRel) + bytes;
@@ -47,6 +105,7 @@ unsafe impl GlobalAlloc for FactsCountingAllocator {
         // SAFETY: forward the exact layout to the system allocator.
         let pointer = unsafe { System.alloc(layout) };
         if !pointer.is_null() {
+            observe_c8_native_content(layout.size());
             record_facts_allocation(layout.size() + ALLOCATION_OVERHEAD);
         }
         pointer
@@ -64,6 +123,7 @@ unsafe impl GlobalAlloc for FactsCountingAllocator {
         if !replacement.is_null() {
             if new_size >= layout.size() {
                 record_facts_allocation(new_size - layout.size());
+                pause_c8_serialization(new_size);
             } else {
                 FACTS_CURRENT_HEAP.fetch_sub(layout.size() - new_size, Ordering::AcqRel);
             }
@@ -4668,5 +4728,318 @@ async fn inline_web_links_reject_credentials_and_keep_opaque_values() {
     assert_eq!(
         facts["data"]["records"][0]["links"]["htmlUrl"],
         "https://github.example/notes/42"
+    );
+}
+struct ImmutableSourceBudgetOracle {
+    commit_sha: String,
+    tree_sha: String,
+    object_sha: String,
+    decoded_size: usize,
+    expected_base64: String,
+}
+
+/// Build the maximum regular-file source at runtime from the independently
+/// recorded Git identities in the shared fixture. The four-megabyte payload is
+/// deliberately not committed: only its byte recipe and native object IDs are
+/// source-controlled.
+async fn immutable_source_budget_fixture() -> (
+    TlsListener,
+    GithubSource,
+    session_support::ScratchFixture,
+    ImmutableSourceBudgetOracle,
+) {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/github_immutable.json"))
+        .expect("immutable fixture JSON");
+    let exact = &fixture["decodedBoundary"]["exact"];
+    let oracle = ImmutableSourceBudgetOracle {
+        commit_sha: exact["commitSha"]
+            .as_str()
+            .expect("exact commit SHA")
+            .to_owned(),
+        tree_sha: exact["treeSha"]
+            .as_str()
+            .expect("exact tree SHA")
+            .to_owned(),
+        object_sha: exact["objectSha"]
+            .as_str()
+            .expect("exact blob SHA")
+            .to_owned(),
+        decoded_size: exact["decodedSizeBytes"]
+            .as_u64()
+            .expect("exact decoded size") as usize,
+        expected_base64: String::new(),
+    };
+    let byte_value = exact["byteValue"].as_u64().expect("exact byte value") as u8;
+    let payload: Vec<u8> = std::iter::repeat_n(byte_value, oracle.decoded_size).collect();
+    let expected_base64 = STANDARD.encode(&payload);
+    assert_eq!(
+        expected_base64.len(),
+        exact["encodedLength"]
+            .as_u64()
+            .expect("exact encoded length") as usize
+    );
+    let oracle = ImmutableSourceBudgetOracle {
+        expected_base64,
+        ..oracle
+    };
+
+    let repository_template = fixture["repository"].to_string();
+    let commit_template = exact["commit"].to_string();
+    let tree_template = json!({
+        "sha": oracle.tree_sha.as_str(),
+        "url": format!("@API@repos/owner/repo/git/trees/{}", oracle.tree_sha),
+        "tree": [{
+            "mode": "100644",
+            "path": "payload",
+            "sha": oracle.object_sha.as_str(),
+            "size": oracle.decoded_size,
+            "type": "blob",
+            "url": format!("@API@repos/owner/repo/git/blobs/{}", oracle.object_sha)
+        }],
+        "truncated": false
+    })
+    .to_string();
+    let native_content = format!("{}\n", oracle.expected_base64.as_str());
+    let blob_template = json!({
+        "sha": oracle.object_sha.as_str(),
+        "url": format!("@API@repos/owner/repo/git/blobs/{}", oracle.object_sha),
+        "size": oracle.decoded_size,
+        "content": native_content,
+        "encoding": "base64"
+    })
+    .to_string();
+    let commit_target = format!("/repos/owner/repo/commits/{}", oracle.commit_sha);
+    let tree_target = format!("/repos/owner/repo/git/trees/{}", oracle.tree_sha);
+    let blob_target = format!("/repos/owner/repo/git/blobs/{}", oracle.object_sha);
+
+    let listener = TlsListener::serve_request_router(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+        tls::match_cert(),
+        move |request| {
+            assert_eq!(request.method(), "GET", "immutable source is read-only");
+            let host = host_from_head(request.head());
+            let template = match request.target() {
+                "/repos/owner/repo" => &repository_template,
+                target if target == commit_target => &commit_template,
+                target if target == tree_target => &tree_template,
+                target if target == blob_target => &blob_template,
+                target => panic!("unexpected immutable source budget request: {target}"),
+            };
+            response(
+                "200 OK",
+                template.replace("@API@", &format!("https://{host}/")),
+                vec![("ETag".into(), "\"immutable-source-budget\"".into())],
+            )
+        },
+    )
+    .await;
+    let (source, session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
+    (listener, source, session, oracle)
+}
+
+#[tokio::test]
+#[ignore = "checkpointed-build immutable source production-scale budget"]
+async fn immutable_source_production_budget() -> Result<(), &'static str> {
+    if cfg!(debug_assertions) {
+        return Err("run this budget in release mode");
+    }
+    const EXPECTED_DECODED_BYTES: usize = 4 * 1024 * 1024;
+    const WALL_LIMIT: Duration = Duration::from_secs(3);
+    const HEAP_LIMIT: usize = 160 * 1024 * 1024;
+
+    for measure_heap in [false, true] {
+        let (listener, source, _session, oracle) = immutable_source_budget_fixture().await;
+        assert_eq!(oracle.decoded_size, EXPECTED_DECODED_BYTES);
+        let reference = PathReference::parse(format!(
+            "github://owner/repo/source/{}/payload/facts",
+            oracle.commit_sha
+        ))
+        .expect("immutable source budget reference");
+        let operation = OperationGuard::new();
+        let baseline = FACTS_CURRENT_HEAP.load(Ordering::Acquire);
+        FACTS_PEAK_HEAP.store(baseline, Ordering::Release);
+        let started = Instant::now();
+        let result = source.read(&reference, &operation, None).await;
+        let elapsed = started.elapsed();
+        let incremental_heap = FACTS_PEAK_HEAP
+            .load(Ordering::Acquire)
+            .saturating_sub(baseline);
+
+        let resource = result.expect("maximum immutable source through SourceAdapter");
+        let native_response_bytes = listener.flushed();
+        let output_bytes = resource.content().len();
+        let facts = document(&resource);
+        assert_eq!(
+            listener.requests().len(),
+            4,
+            "repository/commit/tree/blob GETs"
+        );
+        assert_eq!(
+            native_response_bytes,
+            facts["acquisition"]["usage"]["acceptedBodyBytes"]
+                .as_u64()
+                .expect("accepted native response bytes") as usize
+        );
+        assert_eq!(facts["kind"], "github.source");
+        assert_eq!(facts["data"]["objectSha"], oracle.object_sha);
+        assert_eq!(facts["data"]["treeSha"], oracle.tree_sha);
+        assert_eq!(facts["observed"]["treeSha"], oracle.tree_sha);
+        assert_eq!(
+            facts["data"]["content"]["decodedSizeBytes"],
+            oracle.decoded_size
+        );
+        assert_eq!(
+            facts["data"]["content"]["bytesBase64"].as_str(),
+            Some(oracle.expected_base64.as_str())
+        );
+        assert_eq!(facts["data"]["content"]["state"], "available");
+        assert_eq!(facts["observed"]["commitSha"], oracle.commit_sha);
+        assert_eq!(
+            facts["acquisition"]["limits"]["maxDecodedBytes"],
+            oracle.decoded_size
+        );
+        assert!(
+            output_bytes > oracle.expected_base64.len(),
+            "complete owned JSON output"
+        );
+
+        if measure_heap {
+            println!(
+                "immutable_source_budget phase=heap native_response_bytes={native_response_bytes} output_bytes={output_bytes} incremental_heap_bytes={incremental_heap} heap_limit_bytes={HEAP_LIMIT}"
+            );
+            assert!(
+                incremental_heap <= HEAP_LIMIT,
+                "incremental heap {incremental_heap}"
+            );
+        } else {
+            println!(
+                "immutable_source_budget phase=wall native_response_bytes={native_response_bytes} output_bytes={output_bytes} elapsed_ns={} wall_limit_ns={}",
+                elapsed.as_nanos(),
+                WALL_LIMIT.as_nanos()
+            );
+            assert!(elapsed <= WALL_LIMIT, "source read wall time {elapsed:?}");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn immutable_source_final_generation_change_refuses_publication() {
+    // A successful control proves the exact boundary fixture and SourceAdapter
+    // route are live before the serialization race is armed.
+    let (control_listener, control_source, _control_session, control_oracle) =
+        immutable_source_budget_fixture().await;
+    let control_reference = PathReference::parse(format!(
+        "github://owner/repo/source/{}/payload/facts",
+        control_oracle.commit_sha
+    ))
+    .expect("control source reference");
+    let control_resource = control_source
+        .read(&control_reference, &OperationGuard::new(), None)
+        .await
+        .expect("control source read");
+    assert_eq!(control_listener.requests().len(), 4);
+    assert_eq!(
+        document(&control_resource)["data"]["content"]["state"],
+        "available"
+    );
+
+    let (listener, source, session_fixture, oracle) = immutable_source_budget_fixture().await;
+    let (trigger_tx, trigger_rx) = std::sync::mpsc::channel::<bool>();
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+    let stop_tx = trigger_tx.clone();
+    assert!(
+        C8_RACE_TRIGGER.set(trigger_tx).is_ok(),
+        "C8 trigger channel is initialized once"
+    );
+    assert!(
+        C8_RACE_RELEASE
+            .set(std::sync::Mutex::new(release_rx))
+            .is_ok(),
+        "C8 release channel is initialized once"
+    );
+    C8_RACE_TRIGGERED.store(false, Ordering::Release);
+    C8_CALLBACK_FAILED.store(false, Ordering::Release);
+    C8_RACE_TRIGGER_SIZE.store(0, Ordering::Release);
+
+    let native_content_bytes = oracle.expected_base64.len() + 1;
+    let generation_session = session_fixture.path_session().clone();
+    let helper = std::thread::spawn(move || {
+        if trigger_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("C8 serialization trigger")
+        {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("C8 helper runtime");
+            runtime.block_on(async {
+                generation_session
+                    .cache_remove_namespace("github-http")
+                    .await
+                    .expect("C8 namespace invalidation");
+            });
+            C8_SERIALIZATION_WINDOW.notify_one();
+        }
+    });
+
+    let reference = PathReference::parse(format!(
+        "github://owner/repo/source/{}/payload/facts",
+        oracle.commit_sha
+    ))
+    .expect("racing source reference");
+    let notification = C8_SERIALIZATION_WINDOW.notified();
+    let source_thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("C8 source runtime");
+        let operation = OperationGuard::new();
+        runtime.block_on(async {
+            C8_NATIVE_CONTENT_BYTES.with(|target| target.set(native_content_bytes));
+            C8_NATIVE_CONTENT_SEEN.with(|seen| seen.set(false));
+            let result = source.read(&reference, &operation, None).await;
+            let seen = C8_NATIVE_CONTENT_SEEN.with(|seen| seen.get());
+            C8_NATIVE_CONTENT_BYTES.with(|target| target.set(0));
+            (result, seen)
+        })
+    });
+    let observed = tokio::time::timeout(Duration::from_secs(5), notification).await;
+    if observed.is_err() {
+        stop_tx.send(false).expect("stop C8 helper");
+        let (result, seen) = source_thread.join().expect("racing source thread");
+        helper.join().expect("C8 helper thread");
+        panic!(
+            "serialization window did not trigger (native content allocation seen: {seen}, source succeeded: {})",
+            result.is_ok()
+        );
+    }
+    release_tx.send(()).expect("release serializer");
+    let (result, native_content_seen) = source_thread.join().expect("racing source thread");
+    helper.join().expect("C8 helper thread");
+
+    assert!(
+        !C8_CALLBACK_FAILED.load(Ordering::Acquire),
+        "allocator controller failed"
+    );
+    assert!(native_content_seen, "native content allocation calibration");
+    assert!(
+        C8_RACE_TRIGGERED.load(Ordering::Acquire),
+        "allocator race trigger was not reached"
+    );
+    assert!(
+        C8_RACE_TRIGGER_SIZE.load(Ordering::Acquire) > native_content_bytes,
+        "race trigger must be a larger reallocation"
+    );
+    assert_eq!(listener.requests().len(), 4, "no request after final race");
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("source was published after the serialization-time generation change"),
+    };
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    assert_eq!(
+        error.details().expect("typed C8 refusal").reason(),
+        ErrorReason::UpstreamUnavailable
     );
 }

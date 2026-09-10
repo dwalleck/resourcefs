@@ -11,11 +11,22 @@ use serde::{
 };
 use url::Url;
 
+use super::super::fetch::BodyObservation;
 use super::super::{GITHUB_JSON, GithubSource};
 use super::{
     Actor, Facts, FactsRead, Presence, Repository, RepositoryName, RequestedRepository, Source,
     Upstream, acquisition, failure, finish_facts, identity,
 };
+
+pub(super) struct AcquiredCommit {
+    pub(super) repository: Presence<Repository>,
+    pub(super) commit: NativeCommit,
+    pub(super) parent_indices: Vec<usize>,
+    pub(super) repository_observation: BodyObservation,
+    pub(super) repository_revalidation: Option<BodyObservation>,
+    pub(super) commit_observation: BodyObservation,
+    pub(super) commit_revalidation: Option<BodyObservation>,
+}
 
 native!(NativePerson {
     name: String,
@@ -139,12 +150,12 @@ struct CommitBody<'a> {
     data: Data<'a>,
 }
 
-pub(super) async fn read(
+pub(super) async fn acquire(
     source: &GithubSource,
     repository: &GithubRepositoryIdentity,
     commit_id: &GithubCommitId,
     ctx: &mut FactsRead<'_>,
-) -> Result<SourceResource, ResourceError> {
+) -> Result<AcquiredCommit, ResourceError> {
     let web = Url::parse(ctx.web_origin).map_err(|_| failure(ErrorReason::UpstreamUnavailable))?;
     let repository_endpoint = source
         .api_base
@@ -194,7 +205,7 @@ pub(super) async fn read(
     accept_generation(ctx, commit_response.cache_generation)?;
     let commit: NativeCommit = serde_json::from_slice(commit_response.body())
         .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
-    let (details, observed_sha, tree_sha, parents) = validate_commit(
+    let (_, _, _, parent_indices) = validate_commit(
         &commit,
         repository,
         commit_id,
@@ -202,7 +213,29 @@ pub(super) async fn read(
         &source.api_base,
         &web,
     )?;
+    Ok(AcquiredCommit {
+        repository: observed_repository,
+        commit,
+        parent_indices,
+        repository_observation: repository_response.observation,
+        repository_revalidation: repository_response.revalidation,
+        commit_observation: commit_response.observation,
+        commit_revalidation: commit_response.revalidation,
+    })
+}
 
+pub(super) async fn read(
+    source: &GithubSource,
+    repository: &GithubRepositoryIdentity,
+    commit_id: &GithubCommitId,
+    ctx: &mut FactsRead<'_>,
+) -> Result<SourceResource, ResourceError> {
+    let acquired = acquire(source, repository, commit_id, ctx).await?;
+    let observed_repository = &acquired.repository;
+    let commit = &acquired.commit;
+    let details = identity::required(&commit.commit)?;
+    let observed_sha = identity::sha(&commit.sha)?;
+    let tree_sha = identity::sha(&identity::required(&details.tree)?.sha)?;
     let mut unavailable_facts = Vec::new();
     macro_rules! missing {
         ($($field:expr => $name:literal),* $(,)?) => { $(
@@ -218,10 +251,23 @@ pub(super) async fn read(
         commit.author => "authorAccount",
         commit.committer => "committerAccount"
     );
-    // Nested native-person fields retain their own absent/null/value
-    // distinction through Presence serialization. Dynamic parent indexes are
-    // intentionally not flattened into the stable unavailable vocabulary.
-
+    let parent_values = identity::required(&commit.parents)?;
+    let parents = acquired
+        .parent_indices
+        .iter()
+        .map(|&index| {
+            let parent = parent_values
+                .get(index)
+                .ok_or_else(|| failure(ErrorReason::UpstreamMalformed))?;
+            Ok(CommitParentFacts {
+                sha: identity::sha(&parent.sha)?,
+                links: ParentLinks {
+                    api_url: &parent.url,
+                    html_url: &parent.html_url,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, ResourceError>>()?;
     let body = CommitBody {
         request: Request {
             repository: RepositoryName {
@@ -236,12 +282,12 @@ pub(super) async fn read(
         },
         upstream: CommitUpstream {
             repository: Upstream {
-                body: &repository_response.observation,
-                revalidation: &repository_response.revalidation,
+                body: &acquired.repository_observation,
+                revalidation: &acquired.repository_revalidation,
             },
             commit: Upstream {
-                body: &commit_response.observation,
-                revalidation: &commit_response.revalidation,
+                body: &acquired.commit_observation,
+                revalidation: &acquired.commit_revalidation,
             },
         },
         data: Data {
@@ -274,7 +320,7 @@ pub(super) async fn read(
         repository: RequestedRepository {
             owner: repository.owner(),
             name: repository.repository(),
-            observed: &observed_repository,
+            observed: observed_repository,
         },
         acquisition: acquisition(ctx)?,
         body,
@@ -291,7 +337,10 @@ pub(super) async fn read(
     Ok(resource)
 }
 
-fn accept_generation(ctx: &mut FactsRead<'_>, generation: u64) -> Result<(), ResourceError> {
+pub(super) fn accept_generation(
+    ctx: &mut FactsRead<'_>,
+    generation: u64,
+) -> Result<(), ResourceError> {
     if ctx
         .cache_generation
         .is_some_and(|expected| expected != generation)
@@ -320,15 +369,7 @@ fn validate_commit<'a>(
     endpoint: &Url,
     api: &Url,
     web: &Url,
-) -> Result<
-    (
-        &'a NativeCommitData,
-        &'a str,
-        &'a str,
-        Vec<CommitParentFacts<'a>>,
-    ),
-    ResourceError,
-> {
+) -> Result<(&'a NativeCommitData, &'a str, &'a str, Vec<usize>), ResourceError> {
     let observed_sha = identity::sha(&commit.sha)?;
     if observed_sha != requested.as_str() {
         return Err(failure(ErrorReason::UpstreamIdentityMismatch));
@@ -355,23 +396,17 @@ fn validate_commit<'a>(
         identity::expected_object_url(api, repository, &format!("git/trees/{tree_sha}"))?;
     identity::validate_optional_object_link(&tree.url, &expected_tree)?;
     let parent_values = identity::required(&commit.parents)?;
-    let mut parents = Vec::with_capacity(parent_values.len());
-    for parent in parent_values {
+    let mut parent_indices = Vec::with_capacity(parent_values.len());
+    for (index, parent) in parent_values.iter().enumerate() {
         let sha = identity::sha(&parent.sha)?;
         let expected_api =
             identity::expected_object_url(api, repository, &format!("commits/{sha}"))?;
         let expected_html = expected_web_commit_url(web, repository, sha)?;
         identity::validate_optional_object_link(&parent.url, &expected_api)?;
         identity::validate_optional_object_link(&parent.html_url, &expected_html)?;
-        parents.push(CommitParentFacts {
-            sha,
-            links: ParentLinks {
-                api_url: &parent.url,
-                html_url: &parent.html_url,
-            },
-        });
+        parent_indices.push(index);
     }
-    Ok((details, observed_sha, tree_sha, parents))
+    Ok((details, observed_sha, tree_sha, parent_indices))
 }
 
 fn validate_account(account: &Presence<Actor>, api: &Url, web: &Url) -> Result<(), ResourceError> {

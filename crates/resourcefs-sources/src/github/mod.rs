@@ -822,7 +822,7 @@ impl SourceAdapter for GithubSource {
     ) -> Result<SourceResource, ResourceError> {
         let is_facts = matches!(
             reference.address(),
-            ResourceAddress::Github(GithubAddress::Commit { .. })
+            ResourceAddress::Github(GithubAddress::Commit { .. } | GithubAddress::Source { .. })
                 | ResourceAddress::PullRequest(PullRequestAddress::Item {
                     resource: PullRequestResource::Facts(_),
                     ..
@@ -888,7 +888,7 @@ impl SourceCatalogMetadata for GithubSource {
             )?,
             SourceCatalogEntry::new(
                 "github://",
-                "github://<owner>/<repository>/commits/<40 lowercase hex SHA>/facts",
+                "github://<owner>/<repository>/commits/<40 lowercase hex SHA>/facts | github://<owner>/<repository>/source/<40 lowercase hex SHA>/<encoded path>/facts",
                 "github://owner/repository/commits/635ab170ab57542c18272921298d575da2f8b08a/facts",
                 None,
             )?,

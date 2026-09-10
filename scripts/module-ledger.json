@@ -4,7 +4,8 @@
       "baseline": "635ab170ab57542c18272921298d575da2f8b08a",
       "stage": "immutable-grammar",
       "changes": {
-        "immutable-commit": ["read_facts", "facts_resource"]
+        "immutable-commit": ["read_facts", "facts_resource"],
+        "immutable-source": ["read_facts", "facts_resource", "Limits", "acquisition_at"]
       }
     }
   },
@@ -39,6 +40,13 @@
   },
   "baseline": "7de8d1477af6be825bada9015a6996b3f2917c7d",
   "body_changes": {
+    "immutable-source": {
+      "crates/resourcefs-sources/src/github/facts.rs": [
+        "read_facts",
+        "facts_resource",
+        "acquisition_at"
+      ]
+    },
     "immutable-commit": {
       "crates/resourcefs-sources/src/github/facts.rs": [
         "read_facts",
@@ -110,6 +118,8 @@
     "crates/resourcefs-sources/src/github/facts/collection.rs": "reqwest|ClientBuilder|CacheMetadata|SessionCacheWrite|sleep|retry_available|sha2",
     "crates/resourcefs-sources/src/github/facts/comment.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference",
     "crates/resourcefs-sources/src/github/facts/commit.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference|gix_object|gix_hash|base64",
+    "crates/resourcefs-sources/src/github/facts/object.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|BodyObservation|tokio|Instant|SystemTime|sleep|fetch_controlled|SourceCursor|PathReference|SourceResource",
+    "crates/resourcefs-sources/src/github/facts/source.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|sleep|retry_available|SourceCursor|gix_object|gix_hash|base64::",
     "crates/resourcefs-sources/src/github/facts/continuation.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",
     "crates/resourcefs-sources/src/github/facts/identity.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|Serialize|Serializer|Deserialize|Deserializer|serde_json|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",
     "crates/resourcefs-sources/src/github/facts/pull.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference",
@@ -117,6 +127,10 @@
     "crates/resourcefs-sources/src/github/mod.rs": "aws_lc_rs|aws-lc-rs|hmac|Hmac"
   },
   "github_changes": {
+    "immutable-source": [
+      "read",
+      "catalog_entries"
+    ],
     "immutable-commit": [
       "read",
       "catalog_entries"
@@ -173,12 +187,46 @@
     "GITHUB_CACHE_NAMESPACE"
   ],
   "owners": {
+    "crates/resourcefs-sources/src/github/facts/object.rs": {
+      "maximum": 550,
+      "module": "object",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "immutable-source",
+      "symbols": [
+        "NativeGitTree",
+        "NativeTreeEntry",
+        "NativeBlob",
+        "EntryDisposition",
+        "VerifiedEntry",
+        "VerifiedTree",
+        "VerifiedBlob",
+        "OversizedBlob",
+        "BlobResult"
+      ]
+    },
+    "crates/resourcefs-sources/src/github/facts/source.rs": {
+      "maximum": 550,
+      "module": "source",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "immutable-source",
+      "symbols": [
+        "SourceRequest",
+        "SourceObserved",
+        "SourceData",
+        "SourceContent",
+        "ObjectUpstream",
+        "SourceUpstream",
+        "SourceBody",
+        "Terminal"
+      ]
+    },
     "crates/resourcefs-sources/src/github/facts/commit.rs": {
       "maximum": 500,
       "module": "commit",
       "parent": "crates/resourcefs-sources/src/github/facts.rs",
       "stage": "immutable-commit",
       "symbols": [
+        "AcquiredCommit",
         "NativeCommit",
         "NativeCommitData",
         "NativePerson",
@@ -285,7 +333,7 @@
         "unavailable_for",
         "rollback_allowed",
         "retryable",
-        "rejects_every_page",
+        "invalidates_retention",
         "local_limit_error",
         "note_unavailable",
         "build_facts",
@@ -462,7 +510,7 @@
     "dispatch_read",
     "cancelled_read_error"
   ],
-  "stage": "immutable-commit",
+  "stage": "immutable-source",
   "stages": [
     "baseline",
     "core",
@@ -479,7 +527,8 @@
     "live",
     "review",
     "immutable-grammar",
-    "immutable-commit"
+    "immutable-commit",
+    "immutable-source"
   ],
   "test_children": {
     "crates/resourcefs-sources/src/github/facts_tests.rs": {
