@@ -62,3 +62,12 @@ Verified against `origin/feat/rfs-jrz7` (5d941fb) before any edit; every row was
 S2 integration corrections also removed an independently duplicated SHA validator in favor of `identity::sha`, corrected native Presence field accesses and macro imports, confined hostile native login text to URL path segments, validated supplied nested Git Data commit links, and removed the unnecessary parent-ID uniqueness restriction and mirror dispatch enum. The existing parent/owner census now recognizes the existing `native!` declaration macro and explicitly permits only the three additional reused identity helper entry points at the immutable-commit stage.
 
 Source immutable contracts: ten pass after S2-F1/F2 repair. Real-binary stdio overflow/recovery contract passes. Credential-gated adapter and stdio commit rows both ran against the pinned public commit and passed without skipping. C3 and C9 compiled mutants fail; exact source restoration passes. Final full-gate and S2 publication judgment remain in plan.md.
+
+## S2 review round 2 record (2026-09-10)
+
+This branch rebases onto the repaired S1 tip, so the S1 round-2 decision table above applies unchanged. Only what this increment's own changes carry is recorded here.
+
+| finding-id | finding | reviewer | evidence-state | evidence | decision | fix | note |
+|---|---|---|---|---|---|---|---|
+| S1-R2-F8, S1-R2-F10 | The unserved-family refusal belongs to the increment that has no implementation; this one has commit Facts | code review (max) | Verified at S1, resolved here | Commit Facts read through the compiled registry and the real binary; `.rfs-jrz7/mutation-c3-commit.txt` and the stdio contract cover the served route. | Accept | Route `ResourceAddress::Github(_)` reads to the configured source again; keep the discovery and mutation refusals configuration-independent | The paired fences move with the increment: an unmounted build reports the missing profile entry for a read and the family refusal for discovery and mutation; a mounted registry never fetches for discovery. S3 adds the source route with no change here. |
+| S1-R2-F6 (macro form) | Owner uniqueness must recognize the declaration form this increment introduced | code review (max) | Verified | `native!(NativePerson {..})` generates a type with no declaration span; the workspace-wide comparison now takes the macro invocation as the subject. | Modify | Compare macro invocations like declarations | Probe: a verbatim copy of `native!(NativePerson {..})` in another family fails; a differently shaped same-named invocation stays green. |
