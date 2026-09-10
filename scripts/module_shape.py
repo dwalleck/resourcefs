@@ -40,7 +40,7 @@ def node_spans(source, inherited):
     code = inherited.mask(source)
     counts = Counter()
     result = {}
-    pattern = re.compile(r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|const|unsafe)\s+)?(fn|struct|enum|const|type)\s+(\w+)\b")
+    pattern = re.compile(r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|const|unsafe)\s+)?(fn|struct|enum|trait|const|type)\s+(\w+)\b")
     for match in pattern.finditer(code):
         kind, name = match.groups()
         opening = code.find("{", match.end())
@@ -143,7 +143,6 @@ class Transition:
                                if row['stage'] in self.active}
         self.changed_bodies = {}
         self.added_functions = {}
-        self.wiring_calls = {}
         self.relocated_symbols = {}
         self.test_children = {path: row for path, row in ledger.get('test_children', {}).items()
                               if row['stage'] in self.active}
@@ -152,8 +151,6 @@ class Transition:
                 self.changed_bodies.setdefault(path, set()).update(symbols)
             for path, symbols in ledger.get('added_functions', {}).get(name, {}).items():
                 self.added_functions.setdefault(path, set()).update(symbols)
-            for path, symbols in ledger.get('wiring_calls', {}).get(name, {}).items():
-                self.wiring_calls.setdefault(path, set()).update(symbols)
             self.relocated_symbols.update(ledger.get('relocated_symbols', {}).get(name, {}))
 
     def server_projection(self, source):
@@ -201,27 +198,16 @@ def check(root, repository, ledger, stage):
     # never of which stages happen to be active.
     ledger_path = 'scripts/module-ledger.json'
     known_stages = set(ledger['stages'])
-    for section in ('body_changes', 'added_functions', 'wiring_calls', 'github_changes',
+    for section in ('body_changes', 'added_functions', 'github_changes',
                     'relocated_symbols'):
         for name in ledger.get(section, {}):
             if name not in known_stages:
                 fail(ledger_path, f'{section} names unknown stage {name!r}')
-    for path, row in ledger.get('test_children', {}).items():
-        if row['stage'] not in known_stages:
-            fail(ledger_path, f'test child {path} names unknown stage {row["stage"]!r}')
-    for path, row in ledger['owners'].items():
-        if row['stage'] not in known_stages:
-            fail(ledger_path, f'owner {path} names unknown stage {row["stage"]!r}')
-    for path, row in ledger.get('protected_parents', {}).items():
-        if row['stage'] not in known_stages:
-            fail(ledger_path, f'protected parent {path} names unknown stage {row["stage"]!r}')
-    for name, calls in ledger.get('wiring_calls', {}).items():
-        for path, symbols in calls.items():
-            if path not in inherited.PARENTS:
-                fail(ledger_path, f'wiring_calls names unmanaged parent {path}')
-            for symbol in symbols:
-                if not re.fullmatch(r'[A-Za-z_]\w*', symbol):
-                    fail(ledger_path, f'wiring_calls entry {symbol!r} is not an identifier')
+    for section, label in (('test_children', 'test child'), ('owners', 'owner'),
+                           ('protected_parents', 'protected parent')):
+        for path, row in ledger.get(section, {}).items():
+            if row['stage'] not in known_stages:
+                fail(ledger_path, f'{label} {path} names unknown stage {row["stage"]!r}')
 
     baseline = ledger['baseline']
     inherited.git(repository, 'cat-file', '-e', baseline + '^{commit}')
@@ -252,7 +238,7 @@ def check(root, repository, ledger, stage):
                 new = sources[path][slice(*after_nodes[key])]
                 if fingerprint(old, inherited) != fingerprint(new, inherited):
                     fail(path, f'untouched body/declaration changed: {slot}', claim)
-        return before_nodes, after_nodes
+        return after_nodes
 
     if 'transport' in policy.active:
         path = SOURCES + 'http/mod.rs'
@@ -295,6 +281,18 @@ def check(root, repository, ledger, stage):
             if len(inherited.TOKEN.findall(retained[0])) > 250:
                 fail(path, 'retained_observation exceeds its bounded metadata-helper shape')
 
+    # Declaration spans over production code: an inline test module is not an
+    # ownership census site, and re-parsing one file per symbol pair is the
+    # cost this memo removes.
+    production_spans = {}
+
+    def production_nodes(path):
+        if path not in production_spans:
+            production_spans[path] = (
+                node_spans(codes[path], inherited) if codes.get(path) else {}
+            )
+        return production_spans[path]
+
     for path, row in ledger['owners'].items():
         # Ledger conformance for the immutable-grammar increment is the C11
         # claim; every other owner row keeps the census label it had.
@@ -321,25 +319,33 @@ def check(root, repository, ledger, stage):
         mount = rf'(?m)^(?:pub\s*\(\s*(?:crate|super)\s*\)\s+)?mod\s+{row["module"]}\s*;'
         if not re.search(mount, codes.get(row['parent'], '')):
             fail(row['parent'], f"missing private declaration for {path}", claim)
+        namespace = str(Path(path).parent) + '/'
         for symbol in row['symbols']:
+            # Namespace placement is a property of the name: the owner's own
+            # directory may hold no second declaration of it, whatever the body
+            # looks like, and the diagnostic names where the symbol belongs even
+            # when the owner no longer declares it at all.
+            for other, names in declarations.items():
+                if other != path and other.startswith(namespace) and symbol in names:
+                    fail(other, f'symbol {symbol} belongs in {path}', claim)
             if symbol not in declarations[path]:
                 fail(path, f'required owned symbol {symbol} is missing', claim)
                 continue
-            # Owner uniqueness is a property of the declaration, not of its
+            # Duplication is a property of the declaration, not of its
             # directory: a copied body anywhere in the workspace is the same
             # responsibility in two places, while a different function that
             # happens to share the name is not a duplicate at all.
-            owned = [span for (name, _), span in node_spans(sources[path], inherited).items()
+            owned = [span for (name, _), span in production_nodes(path).items()
                      if name == symbol]
             if len(owned) != 1:
                 fail(path, f'owned symbol {symbol} must have exactly one declaration', claim)
                 continue
-            body = fingerprint(sources[path][slice(*owned[0])], inherited)
+            body = fingerprint(codes[path][slice(*owned[0])], inherited)
             for other in declarations:
                 if other == path or symbol not in declarations[other]:
                     continue
-                for (name, _), span in node_spans(sources[other], inherited).items():
-                    if name == symbol and fingerprint(sources[other][slice(*span)], inherited) == body:
+                for (name, _), span in production_nodes(other).items():
+                    if name == symbol and fingerprint(codes[other][slice(*span)], inherited) == body:
                         fail(other, f'symbol {symbol} belongs in {path}', claim)
 
     if 'facts' in policy.active:
@@ -431,7 +437,7 @@ def check(root, repository, ledger, stage):
         changes = {symbol for name in policy.active for symbol in ledger['github_changes'].get(name, [])}
         moves = set(ledger['github_moves']) if 'fetch' in policy.active else set()
         move_slots = ledger.get('github_move_slots', {}) if 'fetch' in policy.active else {}
-        before_nodes, after_nodes = check_parent_nodes(
+        after_nodes = check_parent_nodes(
             GITHUB, before_github, changes, moves, move_slots)
         if 'fetch' in policy.active:
             for symbol in ledger['owners'][SOURCES + 'github/fetch.rs']['symbols']:
@@ -466,7 +472,13 @@ def check(root, repository, ledger, stage):
         except ValueError as error:
             fail(path, f'protected parent baseline {pin} is unresolved: {error}', 'C11')
             continue
-        before = inherited.git(repository, 'show', f'{pin}:{path}')
+        # The pin and the commit object are ledger-supplied, so the path read
+        # from it is checked here too: an absent path must fail this row, not
+        # abort every other check as an oracle-input error.
+        before = inherited.git(repository, 'show', f'{pin}:{path}', optional=True)
+        if before is None:
+            fail(path, f'protected parent is absent at its pinned baseline {pin}', 'C11')
+            continue
         changes = {symbol for name in policy.active for symbol in row['changes'].get(name, [])}
         check_parent_nodes(path, before, changes, claim='C11')
     return failures, observations

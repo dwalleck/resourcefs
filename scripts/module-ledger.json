@@ -6,16 +6,6 @@
       "changes": {}
     }
   },
-  "wiring_calls": {
-    "immutable-grammar": {
-      "crates/resourcefs-core/src/discovery.rs": [
-        "Github"
-      ],
-      "crates/resourcefs-core/src/reference.rs": [
-        "Github"
-      ]
-    }
-  },
   "added_functions": {
     "immutable-grammar": {
       "crates/resourcefs-core/src/reference.rs": [
