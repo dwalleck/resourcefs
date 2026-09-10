@@ -166,13 +166,13 @@ impl MutationAdapter for CompiledSources {
                 ErrorCategory::UnsupportedMutation,
                 "jira:// Resources are read-only; Jira mutation is not supported",
             )),
-            // Read-only family whose own refusal precedes configuration: an
-            // unmounted source must not explain a route that never accepts
-            // writes, and no build mounts an increment that does not exist.
-            ResourceAddress::Github(_) => Err(ResourceError::new(
-                ErrorCategory::UnsupportedMutation,
-                "github:// Resources are read-only; immutable GitHub facts accept no mutation",
-            )),
+            // Unserved family whose refusal precedes configuration: an unmounted
+            // source must not explain a route that never accepts writes, and no
+            // build mounts an increment that does not exist. It names the same
+            // fact the read and search arms name — this build serves no
+            // github:// route — instead of promising a read-only family whose
+            // reads this build cannot serve either.
+            ResourceAddress::Github(_) => Err(github_family_unreadable()),
             ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
                 self.github_source()?.resolve(reference, access).await
             }

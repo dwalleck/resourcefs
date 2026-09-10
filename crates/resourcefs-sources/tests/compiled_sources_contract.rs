@@ -176,8 +176,11 @@ async fn unserved_github_family_is_refused_before_configuration() {
         .compiled
         .resolve(&reference, MutationAccess::Update)
         .await
-        .expect_err("immutable facts accept no mutation");
-    assert_eq!(mutation.category(), ErrorCategory::UnsupportedMutation);
+        .expect_err("no compiled route serves an unserved family's writes either");
+    // One address, one claim: writing must not promise a read this build
+    // cannot serve, so the mutation refusal names the same fact as the read.
+    assert_eq!(mutation.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(mutation.message(), error.message());
     let target = SearchTarget::resource(reference.clone());
     let search = fixture
         .compiled
@@ -190,6 +193,7 @@ async fn unserved_github_family_is_refused_before_configuration() {
         .await
         .expect_err("no compiled source discovers github://");
     assert_eq!(search.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(search.message(), error.message());
 }
 
 #[tokio::test]

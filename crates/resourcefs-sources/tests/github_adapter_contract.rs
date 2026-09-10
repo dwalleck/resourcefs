@@ -734,7 +734,11 @@ async fn compiled_registry_mounts_dispatches_and_requires_github_grant() {
 #[tokio::test]
 async fn mounted_registry_refuses_unserved_github_family_identically() {
     // The paired unmounted assertion lives in compiled_sources_contract.rs;
-    // both must observe the same family refusal for the same address.
+    // both must observe the same family refusal for the same address. Both
+    // refusals are `unsupported_projection` with no details, so the message is
+    // what distinguishes the compiled registry's family refusal from the
+    // adapter's projection refusal: folding `Github` back into the served
+    // record arms would answer with the adapter's message and fail here.
     let (_listener, github) = fixture_source(|path| panic!("unserved family: {path}")).await;
     let scratch = session_support::scratch_fixture().await;
     let session = scratch.path_session().clone();
@@ -758,6 +762,30 @@ async fn mounted_registry_refuses_unserved_github_family_identically() {
         .expect_err("no compiled source serves github:// yet");
     assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
     assert!(error.details().is_none());
+    assert!(
+        error
+            .message()
+            .contains("not served by the compiled sources"),
+        "{error}"
+    );
+    // Caller controls cannot reword the refusal: the family, not the control
+    // set, is what this build cannot serve.
+    let controlled = compiled
+        .read(
+            &reference,
+            &OperationGuard::new(),
+            Some(&resourcefs_core::ReadAcquisitionLimits::default()),
+        )
+        .await
+        .expect_err("controls cannot change an unserved family");
+    assert_eq!(controlled.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(controlled.message(), error.message());
+    // The mutation route makes the same claim, on a mounted build too.
+    let mutation = MutationAdapter::resolve(&compiled, &reference, MutationAccess::Update)
+        .await
+        .expect_err("an unserved family has no compiled write route");
+    assert_eq!(mutation.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(mutation.message(), error.message());
     let target = SearchTarget::resource(reference.clone());
     let search = compiled
         .search(
@@ -769,6 +797,7 @@ async fn mounted_registry_refuses_unserved_github_family_identically() {
         .await
         .expect_err("no compiled source discovers github://");
     assert_eq!(search.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(search.message(), error.message());
 }
 
 #[tokio::test]
