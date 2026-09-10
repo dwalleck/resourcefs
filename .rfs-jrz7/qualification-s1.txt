@@ -1,0 +1,87 @@
+=== Module placement ===
+=== Formatting ===
++ cargo fmt --all -- --check
+=== Lints ===
++ cargo clippy --workspace --all-targets --all-features -- -D warnings
+=== Functional tests ===
++ cargo test --workspace --all-features --no-fail-fast
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.48s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 22 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.27s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.63s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.64s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.39s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.14s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.99s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.10s
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+=== Ignored production budgets ===
++ cargo test --release --config profile.release.debug-assertions=false --workspace --all-features --no-run --message-format=json
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-core#1.0.0 --all-features --test github_reference_contract -- --ignored --exact reference_parse_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.01s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-core#1.0.0 --all-features --test mutation_engine_contract -- --ignored --exact operation_journal_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.10s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources#1.0.0 --all-features --lib -- --ignored --exact http::tests::retry_policy_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.01s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources#1.0.0 --all-features --test github_wire_contract -- --ignored --exact github_wire_decode_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources#1.0.0 --all-features --test github_adapter_contract -- --ignored --exact github_pagination_cache_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.27s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources#1.0.0 --all-features --test github_adapter_contract -- --ignored --exact github_search_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.06s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources#1.0.0 --all-features --test github_adapter_contract -- --ignored --exact github_single_resource_render_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources#1.0.0 --all-features --test github_mutation_contract -- --ignored --exact creation_document_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.05s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources#1.0.0 --all-features --test github_mutation_contract -- --ignored --exact github_cache_namespace_removal_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.04s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-mcp#1.0.0 --all-features --lib -- --ignored --exact profile::model::tests::github_profile_validation_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources#1.0.0 --all-features --test github_facts_contract -- --ignored --exact github_collection_production_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 0.10s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources#1.0.0 --all-features --test github_facts_contract -- --ignored --exact github_facts_production_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 0.11s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources#1.0.0 --all-features --test github_facts_contract -- --ignored --exact immutable_reference_parse_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 0.02s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources#1.0.0 --all-features --test http_substrate_contract -- --ignored --exact http_metadata_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
++ cargo test --release --config profile.release.debug-assertions=false -p path+file:///home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources#1.0.0 --all-features --test http_substrate_contract -- --ignored --exact http_mutation_request_budget --test-threads=1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.06s
+=== Dependency vetting ===
++ cargo deny check
+advisories ok, bans ok, licenses ok, sources ok
+Failed gates: Formatting
+Wall time: 1141.43 seconds
+
+Resolution: the sole failed gate was Formatting (import ordering after F1 removal).
+Ran cargo fmt --all && cargo fmt --all -- --check: exit0.
+All other gates above are retained: import formatting changes no compiled semantics, test inputs, dependency graph or budgets.
+No claim that the original full runner exited0. All constituent gates are reconciled PASS.

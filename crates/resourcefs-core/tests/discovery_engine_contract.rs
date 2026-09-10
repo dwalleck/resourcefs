@@ -285,6 +285,7 @@ fn artifact_address(reference: &str) -> resourcefs_core::ArtifactAddress {
         | ResourceAddress::Workspace(_)
         | ResourceAddress::Local(_)
         | ResourceAddress::Https(_)
+        | ResourceAddress::Github(_)
         | ResourceAddress::Issue(_)
         | ResourceAddress::Jira(_)
         | ResourceAddress::PullRequest(_) => {

@@ -122,6 +122,7 @@ impl ReadEngine {
             | ResourceAddress::Workspace(_)
             | ResourceAddress::Local(_)
             | ResourceAddress::Https(_)
+            | ResourceAddress::Github(_)
             | ResourceAddress::Issue(_)
             | ResourceAddress::Jira(_)
             | ResourceAddress::PullRequest(_) => None,

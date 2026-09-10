@@ -14,6 +14,7 @@ use resourcefs_sources::{
 use serde_json::{Value, json};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
+    hint::black_box,
     net::{IpAddr, Ipv4Addr},
     sync::{
         Arc, OnceLock,
@@ -192,7 +193,7 @@ fn limits(
     accepted: Option<usize>,
     representation: Option<usize>,
 ) -> ReadAcquisitionLimits {
-    ReadAcquisitionLimits::new(None, None, response, accepted, representation)
+    ReadAcquisitionLimits::new(None, None, response, accepted, representation, None)
         .expect("valid limits")
 }
 
@@ -667,7 +668,7 @@ async fn facts_errors_are_status_derived_and_sanitized() {
             ReadAcquisitionLimits::default(),
         )
         .await;
-        let one = ReadAcquisitionLimits::new(Some(1), None, None, None, None).unwrap();
+        let one = ReadAcquisitionLimits::new(Some(1), None, None, None, None, None).unwrap();
         let error = read(&source, Some(&one)).await.expect_err(status);
         assert_eq!(error.category(), category, "{status}");
         let details = error.details().expect("machine details");
@@ -747,6 +748,7 @@ async fn facts_inflight_cancel_and_deadline_refuse_barrier_delayed_response() {
                 } else {
                     Some(Duration::from_millis(100))
                 },
+                None,
                 None,
                 None,
                 None,
@@ -868,6 +870,7 @@ async fn facts_operator_intersection_is_observed_for_each_independent_dimension(
         Some(20000),
         Some(30000),
         Some(40000),
+        None,
     )
     .unwrap();
     for (caller, expected) in [
@@ -878,6 +881,7 @@ async fn facts_operator_intersection_is_observed_for_each_independent_dimension(
                 Some(19000),
                 Some(31000),
                 Some(39000),
+                None,
             )
             .unwrap(),
             [1.0, 4000.0, 19000.0, 30000.0, 39000.0],
@@ -889,6 +893,7 @@ async fn facts_operator_intersection_is_observed_for_each_independent_dimension(
                 Some(21000),
                 Some(29000),
                 Some(41000),
+                None,
             )
             .unwrap(),
             [2.0, 3000.0, 20000.0, 29000.0, 40000.0],
@@ -900,6 +905,7 @@ async fn facts_operator_intersection_is_observed_for_each_independent_dimension(
                 Some(20000),
                 Some(30000),
                 Some(40000),
+                None,
             )
             .unwrap(),
             [2.0, 4000.0, 20000.0, 30000.0, 40000.0],
@@ -1047,7 +1053,8 @@ async fn facts_retry_attempts_and_redirects_are_observed_not_inferred() {
             ReadAcquisitionLimits::default(),
         )
         .await;
-        let control = ReadAcquisitionLimits::new(Some(attempts), None, None, None, None).unwrap();
+        let control =
+            ReadAcquisitionLimits::new(Some(attempts), None, None, None, None, None).unwrap();
         let result = read(&source, Some(&control)).await;
         if attempts == 1 {
             let error = result.expect_err("parent does not retry beyond the attempt bound");
@@ -1548,6 +1555,98 @@ async fn github_facts_production_budget() -> Result<(), &'static str> {
         }
     }
     Ok(())
+}
+
+fn immutable_reference_with_size(total_bytes: usize) -> String {
+    const SEGMENT_COUNT: usize = 1_024;
+    let prefix = format!("github://owner/repo/source/{}/", "a".repeat(40));
+    let suffix = "/facts";
+    let separator_bytes = 2 * (SEGMENT_COUNT - 1);
+    let first_segment_len = total_bytes - prefix.len() - suffix.len() - separator_bytes;
+    assert!(first_segment_len > 0);
+    let mut reference = String::with_capacity(total_bytes);
+    reference.push_str(&prefix);
+    reference.push_str(&"x".repeat(first_segment_len));
+    for _ in 1..SEGMENT_COUNT {
+        reference.push_str("/x");
+    }
+    reference.push_str(suffix);
+    assert_eq!(reference.len(), total_bytes);
+    reference
+}
+
+#[test]
+#[ignore = "checkpointed-build parser and control budget"]
+fn immutable_reference_parse_budget() {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    const EXACT_BYTES: usize = 65_536;
+    const ITERATIONS: usize = 100;
+    let exact = immutable_reference_with_size(EXACT_BYTES);
+    let baseline = FACTS_CURRENT_HEAP.load(Ordering::Acquire);
+    FACTS_PEAK_HEAP.store(baseline, Ordering::Release);
+    let started = Instant::now();
+    for _ in 0..ITERATIONS {
+        let parsed = PathReference::parse(&exact).expect("exact maximum reference");
+        assert_eq!(parsed.requested(), exact);
+        black_box(&parsed);
+        drop(parsed);
+    }
+    let elapsed = started.elapsed();
+    let incremental_heap = FACTS_PEAK_HEAP
+        .load(Ordering::Acquire)
+        .saturating_sub(baseline);
+    let average = elapsed / ITERATIONS as u32;
+    assert!(
+        average <= Duration::from_secs(1),
+        "average parser wall time {average:?}"
+    );
+    assert!(
+        incremental_heap <= 16 * EXACT_BYTES + 1_048_576,
+        "incremental parser heap {incremental_heap}"
+    );
+    println!(
+        "immutable_reference_budget phase=parse exact_bytes={EXACT_BYTES} segments=1024 iterations={ITERATIONS} average_wall_ns={} incremental_heap_bytes={incremental_heap}",
+        average.as_nanos()
+    );
+
+    let over = immutable_reference_with_size(EXACT_BYTES + 1);
+    let error = PathReference::parse(&over).expect_err("reference above hard ceiling");
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+
+    const CONTROL_ITERATIONS: usize = 10_000;
+    let operator = ReadAcquisitionLimits::new(
+        Some(10),
+        Some(Duration::from_secs(30)),
+        Some(8_388_608),
+        Some(16_777_216),
+        Some(16_777_216),
+        Some(4_194_304),
+    )
+    .expect("operator limits");
+    let started = Instant::now();
+    for _ in 0..CONTROL_ITERATIONS {
+        let caller = ReadAcquisitionLimits::new(
+            Some(5),
+            Some(Duration::from_secs(10)),
+            Some(4_000_000),
+            Some(8_000_000),
+            Some(8_000_000),
+            Some(2_000_000),
+        )
+        .expect("caller limits");
+        black_box(operator.intersect(caller));
+    }
+    let average = started.elapsed() / CONTROL_ITERATIONS as u32;
+    assert!(
+        average <= Duration::from_millis(1),
+        "average control construction/intersection time {average:?}"
+    );
+    println!(
+        "immutable_reference_budget phase=controls iterations={CONTROL_ITERATIONS} average_wall_ns={}",
+        average.as_nanos()
+    );
 }
 
 const COMMENT_NATIVE: &str = include_str!("../../../.rfs-bfwa/oracles/comment-native.json");
@@ -2526,7 +2625,7 @@ async fn collection_final_failure_rolls_back_last_verified_page() {
     .await;
 
     let wide_controls =
-        ReadAcquisitionLimits::new(Some(4), None, None, None, None).expect("four attempts");
+        ReadAcquisitionLimits::new(Some(4), None, None, None, None, None).expect("four attempts");
     let first = read_reference(&source, COLLECTION_RESOURCE, Some(&wide_controls))
         .await
         .expect("two verified pages plus final failure");
@@ -2607,8 +2706,8 @@ async fn collection_final_failure_rolls_back_last_verified_page() {
         cap < full_failure_bytes.saturating_sub(64),
         "derived cap leaves the required failure-growth margin"
     );
-    let controls =
-        ReadAcquisitionLimits::new(Some(4), None, None, None, Some(cap)).expect("derived cap");
+    let controls = ReadAcquisitionLimits::new(Some(4), None, None, None, Some(cap), None)
+        .expect("derived cap");
 
     let limited = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
@@ -2784,7 +2883,7 @@ async fn one_budget_covers_parent_and_pages() {
     })
     .await;
     let controls =
-        ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("two attempts");
+        ReadAcquisitionLimits::new(Some(2), None, None, None, None, None).expect("two attempts");
     let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
         .expect("parent plus one page fit the budget");
@@ -2817,8 +2916,9 @@ async fn collection_early_retry_does_not_fit_publishes_prefix_while_deadline_rem
         comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
     })
     .await;
-    let controls = ReadAcquisitionLimits::new(None, Some(Duration::from_secs(5)), None, None, None)
-        .expect("deadline controls");
+    let controls =
+        ReadAcquisitionLimits::new(None, Some(Duration::from_secs(5)), None, None, None, None)
+            .expect("deadline controls");
     let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
         .expect("retry that cannot fit publishes verified prefix");
@@ -2908,7 +3008,7 @@ async fn collection_response_and_aggregate_limits_keep_distinct_full_details() {
             ),
         };
         let controls =
-            ReadAcquisitionLimits::new(None, None, response_bound, aggregate_bound, None)
+            ReadAcquisitionLimits::new(None, None, response_bound, aggregate_bound, None, None)
                 .expect("native-byte-derived limit");
         let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
             .await
@@ -3047,7 +3147,8 @@ async fn representation_ceiling_includes_outcome_overhead() {
     // while leaving a large margin for the first 100-record pretty document.
     let cap = revalidated.content().len().saturating_sub(8 * 1024);
     assert!(cap > 100_000, "cap must leave room for one full page");
-    let controls = ReadAcquisitionLimits::new(None, None, None, None, Some(cap)).expect("cap");
+    let controls =
+        ReadAcquisitionLimits::new(None, None, None, None, Some(cap), None).expect("cap");
     let limited = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
         .expect("whole first page under measured lower ceiling");
@@ -3242,7 +3343,8 @@ async fn truncated_collection() -> (TlsListener, GithubSource, session_support::
 #[tokio::test]
 async fn continuation_encoding_is_canonical_and_bounded() {
     let (listener, source, _session) = truncated_collection().await;
-    let controls = ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("budget");
+    let controls =
+        ReadAcquisitionLimits::new(Some(2), None, None, None, None, None).expect("budget");
     let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
         .expect("truncated collection");
@@ -3312,7 +3414,8 @@ async fn continuation_is_session_and_authority_bound() {
     use sha2::{Digest, Sha256};
 
     let (listener, source, session_fixture) = truncated_collection().await;
-    let controls = ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("budget");
+    let controls =
+        ReadAcquisitionLimits::new(Some(2), None, None, None, None, None).expect("budget");
     let first = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
         .expect("first read");

@@ -360,8 +360,8 @@ async fn live_github_conversation_comment_facts_hold_up() {
     };
 
     let (_session, source) = live_source(token).await;
-    let limits =
-        ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("two-attempt limit");
+    let limits = ReadAcquisitionLimits::new(Some(2), None, None, None, None, None)
+        .expect("two-attempt limit");
     let first = read_with_limits(
         &source,
         &format!("pr://{REPOSITORY}/{MULTIPAGE_PR}/comments/facts"),

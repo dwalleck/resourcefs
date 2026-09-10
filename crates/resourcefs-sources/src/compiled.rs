@@ -129,7 +129,9 @@ impl SourceAdapter for CompiledSources {
                     .read(reference, operation, acquisition)
                     .await
             }
-            ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
+            ResourceAddress::Github(_)
+            | ResourceAddress::Issue(_)
+            | ResourceAddress::PullRequest(_) => {
                 self.github_source()?
                     .read(reference, operation, acquisition)
                     .await
@@ -165,7 +167,9 @@ impl MutationAdapter for CompiledSources {
                 ErrorCategory::UnsupportedMutation,
                 "jira:// Resources are read-only; Jira mutation is not supported",
             )),
-            ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
+            ResourceAddress::Github(_)
+            | ResourceAddress::Issue(_)
+            | ResourceAddress::PullRequest(_) => {
                 self.github_source()?.resolve(reference, access).await
             }
         }
@@ -316,7 +320,9 @@ impl DiscoveryAdapter for CompiledSources {
                     .search(target, pattern, options, operation)
                     .await
             }
-            Some(ResourceAddress::Issue(_)) | Some(ResourceAddress::PullRequest(_)) => {
+            Some(ResourceAddress::Github(_))
+            | Some(ResourceAddress::Issue(_))
+            | Some(ResourceAddress::PullRequest(_)) => {
                 self.github_source()?
                     .search(target, pattern, options, operation)
                     .await

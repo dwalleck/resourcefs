@@ -3635,6 +3635,11 @@ fn read_acquisition_validates_before_roots_and_reports_unsupported() {
         json!({"maxAttempts": -1}),
         json!({"maxAttempts": 1.5}),
         json!({"maxAttempts": 11}),
+        json!({"maxDecodedBytes": null}),
+        json!({"maxDecodedBytes": 0}),
+        json!({"maxDecodedBytes": -1}),
+        json!({"maxDecodedBytes": 1.5}),
+        json!({"maxDecodedBytes": 4_194_305}),
     ] {
         let response = process.request(
             "tools/call",
@@ -4010,6 +4015,7 @@ fn github_facts_stdio_reconstructs_native_json_without_reacquisition() {
             ("maxResponseBytes", 8388608),
             ("maxAcceptedBodyBytes", 16777216),
             ("maxRepresentationBytes", 16777216),
+            ("maxDecodedBytes", 4194304),
         ] {
             for invalid in [
                 Value::Null,

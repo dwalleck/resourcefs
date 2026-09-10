@@ -231,7 +231,7 @@ def functions(source):
     return result
 
 
-def check_historical(root, stage):
+def check_historical(root, stage, transition=None):
     """Run the retained historical C1 checks from the permanent policy."""
     failures = []
     observations = []
@@ -252,6 +252,8 @@ def check_historical(root, stage):
             fail(relative, "required published owner is missing")
 
     for relative, (before, maximum) in HISTORICAL_PARENTS.items():
+        if transition is not None:
+            maximum = transition.parent_limits.get(relative, maximum)
         path = root / relative
         if not path.is_file():
             fail(relative, "protected parent is missing")
@@ -266,6 +268,18 @@ def check_historical(root, stage):
         root / SOURCES / "atlassian",
         root / SOURCES / "http",
     )
+    historical_owners = dict(HISTORICAL_OWNERS)
+    if transition is not None:
+        for old, relocation in transition.relocated_symbols.items():
+            if old not in historical_owners:
+                raise ValueError(f"unknown historical owner symbol {old!r}")
+            del historical_owners[old]
+            historical_owners[relocation['name']] = relocation['owner']
+    relocated_counts = {
+        row['name']: 0 for row in (
+            transition.relocated_symbols.values() if transition is not None else ()
+        )
+    }
     paths = {path for directory in watched for path in directory.rglob("*.rs")}
     paths.add(root / CORE / "reference.rs")
     for path in sorted(paths):
@@ -277,7 +291,11 @@ def check_historical(root, stage):
             if lines > maximum:
                 fail(relative, f"{lines} lines exceeds child tripwire {maximum}")
         for name in HISTORICAL_DECLARATION.findall(source):
-            owner = HISTORICAL_OWNERS.get(name)
+            owner = historical_owners.get(name)
+            if name in relocated_counts:
+                relocated_counts[name] += 1
+            if transition is not None and name in transition.relocated_symbols:
+                fail(relative, f"obsolete shared helper {name} must migrate to its approved owner")
             if relative.startswith(SOURCES + "atlassian/jira") and name in HISTORICAL_JIRA_TRANSPORT:
                 owner = SOURCES + "atlassian/jira/transport.rs"
             if owner is not None and relative != owner:
@@ -287,6 +305,10 @@ def check_historical(root, stage):
                 fail(relative, "provider/protocol infrastructure reached core reference grammar")
         if relative != SOURCES + "http/mod.rs" and re.search(r"\breqwest\b", source):
             fail(relative, "HTTP client must remain in the existing substrate module")
+
+    for name, count in relocated_counts.items():
+        if count != 1:
+            fail(historical_owners[name], f"shared helper {name} requires one owner, found {count}")
 
     for path in (root / "crates/resourcefs-mcp/src").rglob("*.rs"):
         source = path.read_text(encoding="utf-8")
@@ -311,7 +333,7 @@ def check(root, repository, stage, transition=None):
     # The final successor policy always includes all three historical stages.
     # Run that retained check on every explicit successor checkpoint, as the
     # former active gate did, while transition controls newer owners.
-    inherited_failures, inherited_observations = check_historical(root, "issues")
+    inherited_failures, inherited_observations = check_historical(root, "issues", transition)
     failures.extend(inherited_failures)
     observations.extend("C1 " + item for item in inherited_observations)
     git(repository, "cat-file", "-e", BASELINE + "^{commit}")
@@ -389,7 +411,8 @@ def check(root, repository, stage, transition=None):
         server_tokens = TOKEN.findall if transition is None else transition.server_tokens
         if server_tokens(without_mount) != server_tokens(production(before_server)):
             fail(mcp_parent, "MCP query proof permits only a cfg(test) child declaration, not new production constructors/visibility/profile wiring")
-    for path, maximum in sorted({**PARENTS, **limits}.items()):
+    parent_limits = {} if transition is None else transition.parent_limits
+    for path, maximum in sorted({**PARENTS, **limits, **parent_limits}.items()):
         if path not in sources:
             fail(path, "required ledger owner is missing")
             continue
@@ -514,6 +537,8 @@ def check(root, repository, stage, transition=None):
             additions = " ".join(added)
             new_calls = set(CALL.findall(body)) - set(CALL.findall(old_body))
             allowed_calls = {"read_query", "Query"} if path == SOURCES + "atlassian/jira.rs" else {"Query"}
+            if transition is not None:
+                allowed_calls.update(transition.wiring_calls.get(path, set()))
             forbidden_calls = new_calls - allowed_calls
             if CONTROL.search(additions) or forbidden_calls:
                 fail(path, f"non-wiring body change in {symbol}; new_calls={sorted(forbidden_calls)} added={additions[:160]!r}; delta={delta:+d}")

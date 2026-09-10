@@ -141,6 +141,9 @@ class Transition:
                                if row['stage'] in self.active}
         self.changed_bodies = {}
         self.added_functions = {}
+        self.wiring_calls = {}
+        self.parent_limits = {}
+        self.relocated_symbols = {}
         self.test_children = {path: row for path, row in ledger.get('test_children', {}).items()
                               if row['stage'] in self.active}
         for name in self.active:
@@ -148,6 +151,10 @@ class Transition:
                 self.changed_bodies.setdefault(path, set()).update(symbols)
             for path, symbols in ledger.get('added_functions', {}).get(name, {}).items():
                 self.added_functions.setdefault(path, set()).update(symbols)
+            for path, symbols in ledger.get('wiring_calls', {}).get(name, {}).items():
+                self.wiring_calls.setdefault(path, set()).update(symbols)
+            self.parent_limits.update(ledger.get('parent_limits', {}).get(name, {}))
+            self.relocated_symbols.update(ledger.get('relocated_symbols', {}).get(name, {}))
 
     def server_projection(self, source):
         inherited = self.inherited
@@ -186,7 +193,8 @@ def check(root, repository, ledger, stage):
     failures = ['C02 inherited ' + failure for failure in failures]
 
     def fail(path, message):
-        failures.append(f'C02 FAIL {path}: {message}')
+        claim = 'C11' if 'immutable-grammar' in policy.active else 'C02'
+        failures.append(f'{claim} FAIL {path}: {message}')
 
     baseline = ledger['baseline']
     inherited.git(repository, 'cat-file', '-e', baseline + '^{commit}')
@@ -200,6 +208,25 @@ def check(root, repository, ledger, stage):
         if path in codes:
             codes[path] = ''
     declarations = {path: inherited.DECL.findall(code) for path, code in codes.items()}
+
+    def check_parent_nodes(path, before, changes, moves=(), move_slots=()):
+        before_nodes = node_spans(before, inherited)
+        after_nodes = node_spans(sources[path], inherited)
+        for key in sorted(set(before_nodes) | set(after_nodes)):
+            symbol, ordinal = key
+            slot = f'{symbol}#{ordinal}'
+            if key not in before_nodes:
+                fail(path, f'new parent responsibility declaration {slot}')
+            elif key not in after_nodes:
+                if symbol not in moves and slot not in move_slots:
+                    fail(path, f'unapproved removed declaration {slot}')
+            elif symbol not in changes and slot not in changes:
+                old = before[slice(*before_nodes[key])]
+                new = sources[path][slice(*after_nodes[key])]
+                if fingerprint(old, inherited) != fingerprint(new, inherited):
+                    fail(path, f'untouched body/declaration changed: {slot}')
+        return before_nodes, after_nodes
+
     if 'transport' in policy.active:
         path = SOURCES + 'http/mod.rs'
         before = inherited.git(repository, 'show', f'{baseline}:{path}')
@@ -360,23 +387,11 @@ def check(root, repository, ledger, stage):
 
     before_github = inherited.git(repository, 'show', f'{baseline}:{GITHUB}')
     if GITHUB in sources:
-        before_nodes = node_spans(before_github, inherited)
-        after_nodes = node_spans(sources[GITHUB], inherited)
         changes = {symbol for name in policy.active for symbol in ledger['github_changes'].get(name, [])}
         moves = set(ledger['github_moves']) if 'fetch' in policy.active else set()
         move_slots = ledger.get('github_move_slots', {}) if 'fetch' in policy.active else {}
-        for key in sorted(set(before_nodes) | set(after_nodes)):
-            symbol = key[0]
-            if key not in before_nodes:
-                fail(GITHUB, f'new parent responsibility declaration {symbol}#{key[1]}')
-            elif key not in after_nodes:
-                if symbol not in moves and f'{symbol}#{key[1]}' not in move_slots:
-                    fail(GITHUB, f'unapproved removed declaration {symbol}#{key[1]}')
-            elif symbol not in changes and f'{symbol}#{key[1]}' not in changes:
-                old = before_github[slice(*before_nodes[key])]
-                new = sources[GITHUB][slice(*after_nodes[key])]
-                if fingerprint(old, inherited) != fingerprint(new, inherited):
-                    fail(GITHUB, f'untouched body/declaration changed: {symbol}#{key[1]}')
+        before_nodes, after_nodes = check_parent_nodes(
+            GITHUB, before_github, changes, moves, move_slots)
         if 'fetch' in policy.active:
             for symbol in ledger['owners'][SOURCES + 'github/fetch.rs']['symbols']:
                 if symbol in declarations[GITHUB]:
@@ -390,6 +405,15 @@ def check(root, repository, ledger, stage):
                     fail(GITHUB, f'extracted slot {source_slot} belongs in {fetch_path}')
                 if target_slot not in fetch_slots:
                     fail(fetch_path, f'required extracted slot {target_slot} from {source_slot} is missing')
+    for path, row in ledger.get('protected_parents', {}).items():
+        if row['stage'] not in policy.active:
+            continue
+        if path not in sources:
+            fail(path, 'protected parent is missing')
+            continue
+        before = inherited.git(repository, 'show', f'{row["baseline"]}:{path}')
+        changes = {symbol for name in policy.active for symbol in row['changes'].get(name, [])}
+        check_parent_nodes(path, before, changes)
     return failures, observations
 
 

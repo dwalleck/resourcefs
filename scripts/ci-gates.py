@@ -15,6 +15,7 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 BUDGETS = {
     "reference_parse_budget",
+    "immutable_reference_parse_budget",
     "operation_journal_budget",
     "profile::model::tests::github_profile_validation_budget",
     "http::tests::retry_policy_budget",

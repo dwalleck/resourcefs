@@ -1,0 +1,45 @@
+Target: .rfs-jrz7/falsify_grammar.py
+Command: ['python', '.rfs-jrz7/falsify_grammar.py']
+Mutation: '    return result\n' -> '    return result.replace("%2F", "/")\n'
+RED exit=1
+C1 roundtrip PASS 'facts' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/facts/facts
+C1 roundtrip PASS 'a/facts' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/a/facts/facts
+C1 roundtrip PASS 'café/日本語.txt' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/caf%C3%A9/%E6%97%A5%E6%9C%AC%E8%AA%9E.txt/facts
+C1 roundtrip PASS 'a b/%:?#' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/a%20b/%25%3A%3F%23/facts
+Traceback (most recent call last):
+  File "/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/.rfs-jrz7/falsify_grammar.py", line 45, in <module>
+    assert read_path(ref) == path, ("C1", path, ref)
+           ^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ('C1', '%2F', 'github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/%252F/facts')
+
+RESTORED GREEN exit=0
+C1 roundtrip PASS 'facts' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/facts/facts
+C1 roundtrip PASS 'a/facts' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/a/facts/facts
+C1 roundtrip PASS 'café/日本語.txt' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/caf%C3%A9/%E6%97%A5%E6%9C%AC%E8%AA%9E.txt/facts
+C1 roundtrip PASS 'a b/%:?#' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/a%20b/%25%3A%3F%23/facts
+C1 roundtrip PASS '%2F' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/%252F/facts
+C1 roundtrip PASS 'back\\slash' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/back%5Cslash/facts
+C1 roundtrip PASS 'line\nname' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/line%0Aname/facts
+C1 roundtrip PASS 'plain' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/plain/facts
+C1 roundtrip PASS 'a/facts/facts' -> github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/a/facts/facts/facts
+C1 refusal PASS ''
+C1 refusal PASS '.'
+C1 refusal PASS '..'
+C1 refusal PASS '%2E'
+C1 refusal PASS '%2e%2E'
+C1 refusal PASS '%2F'
+C1 refusal PASS 'a%2fb'
+C1 refusal PASS '%00'
+C1 refusal PASS '%FF'
+C1 refusal PASS '%C0%AF'
+C1 refusal PASS '%'
+C1 refusal PASS '%2'
+C1 refusal PASS '%GG'
+C1 refusal PASS 'a//b'
+C1 refusal PASS '/a'
+C1 refusal PASS 'a/'
+C1 refusal PASS 'a?b'
+C1 refusal PASS 'a#b'
+C1 refusal PASS 'a:b'
+C1 selector distinction PASS
+C1 PASS: 9 roundtrips, 19 refusals, selector distinction; no ResourceFS implementation claim

@@ -136,6 +136,7 @@ pub enum AcquisitionLimitKind {
     ResponseBodyBytes,
     AcceptedBodyBytes,
     RepresentationBytes,
+    DecodedContentBytes,
     CollectionRecords,
 }
 
@@ -147,6 +148,7 @@ impl AcquisitionLimitKind {
             Self::ResponseBodyBytes => "response_body_bytes",
             Self::AcceptedBodyBytes => "accepted_body_bytes",
             Self::RepresentationBytes => "representation_bytes",
+            Self::DecodedContentBytes => "decoded_content_bytes",
             Self::CollectionRecords => "collection_records",
         }
     }

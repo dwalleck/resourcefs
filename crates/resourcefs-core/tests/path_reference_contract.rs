@@ -315,6 +315,7 @@ fn classify(input: &str) -> GrammarExpectation {
             ResourceAddress::Workspace(_) => GrammarExpectation::OtherFamily("workspace"),
             ResourceAddress::Artifact(_) => GrammarExpectation::OtherFamily("artifact"),
             ResourceAddress::Catalog(_) => GrammarExpectation::OtherFamily("catalog"),
+            ResourceAddress::Github(_) => GrammarExpectation::OtherFamily("github"),
             ResourceAddress::Issue(_) => GrammarExpectation::OtherFamily("issue"),
             ResourceAddress::Jira(_) => GrammarExpectation::OtherFamily("jira"),
             ResourceAddress::PullRequest(_) => GrammarExpectation::OtherFamily("pullRequest"),
