@@ -1,0 +1,36 @@
+Initial review falsifier: removing the equality guard left the original WrongSha test GREEN because optional SHA-bearing links rejected independently. Fixture repaired by omitting only those optional links in WrongSha and adding a matching valid MinimalLinks control. Original required API link remains correct.
+
+Target: crates/resourcefs-sources/src/github/facts/commit.rs
+Command: ['cargo', 'test', '--locked', '--all-features', '-p', 'resourcefs-sources', '--test', 'github_immutable_contract', 'immutable_commit_facts_refuse_wrong_observed_sha_even_with_correct_links', '--', '--exact', '--nocapture']
+Mutation: 'if observed_sha != requested.as_str() {' -> 'if false && observed_sha != requested.as_str() {'
+RED exit=101
+
+running 1 test
+test immutable_commit_facts_refuse_wrong_observed_sha_even_with_correct_links ... FAILED
+
+failures:
+
+failures:
+    immutable_commit_facts_refuse_wrong_observed_sha_even_with_correct_links
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.07s
+
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.41s
+     Running tests/github_immutable_contract.rs (target/debug/deps/github_immutable_contract-87bce5586dd53a5f)
+
+thread 'immutable_commit_facts_refuse_wrong_observed_sha_even_with_correct_links' (2494152) panicked at crates/resourcefs-sources/tests/github_immutable_contract.rs:295:10:
+wrong SHA fixture must refuse: SourceResource { canonical_reference: "github://owner/repo/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/facts", content_type: "application/json; charset=utf-8", version_tag: VersionTag("sha256:ca2bf2c684f7e3efe0240dbd13c30ad1c191e76f8577be334c022e76148573b8"), mutable: false, backing_file_uri: None, artifact_identity: false, artifact_origin: None, content: "{\n  \"schemaVersion\": {\n    \"major\": 1,\n    \"minor\": 0\n  },\n  \"kind\": \"github.commit\",\n  \"resource\": \"github://owner/repo/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/facts\",\n  \"source\": {\n    \"sourceId\": \"github-immutable-commit\",\n    \"deployment\": {\n      \"webOrigin\": \"https://github.example\",\n      \"apiOrigin\": \"https://tls.invalid:34683\"\n    }\n  },\n  \"repository\": {\n    \"owner\": \"owner\",\n    \"name\": \"repo\",\n    \"observed\": {\n      \"id\": \"1\",\n      \"nodeId\": \"R_node\",\n      \"name\": \"repo\",\n      \"fullName\": \"owner/repo\",\n      \"owner\": {\n        \"id\": \"2\",\n        \"nodeId\": \"owner_node\",\n        \"login\": \"owner\",\n        \"links\": {\n          \"apiUrl\": \"https://tls.invalid:34683/users/owner\",\n          \"htmlUrl\": \"https://github.example/owner\"\n        }\n      },\n      \"links\": {\n        \"apiUrl\": \"https://tls.invalid:34683/repos/owner/repo\",\n        \"htmlUrl\": \"https://github.example/owner/repo\"\n      }\n    }\n  },\n  \"acquisition\": {\n    \"startedAtUnixMs\": 1789017666264,\n    \"completedAtUnixMs\": 1789017666269,\n    \"elapsedMs\": 4,\n    \"restApiVersion\": \"2022-11-28\",\n    \"limits\": {\n      \"maxAttempts\": 10,\n      \"timeoutMs\": 30000,\n      \"maxResponseBytes\": 8388608,\n      \"maxAcceptedBodyBytes\": 16777216,\n      \"maxRepresentationBytes\": 16777216\n    },\n    \"usage\": {\n      \"attemptedRequests\": 2,\n      \"acceptedBodyBytes\": 1593\n    }\n  },\n  \"request\": {\n    \"repository\": {\n      \"owner\": \"owner\",\n      \"name\": \"repo\"\n    },\n    \"commitSha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n  },\n  \"observed\": {\n    \"commitSha\": \"dddddddddddddddddddddddddddddddddddddddd\",\n    \"treeSha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n  },\n  \"upstream\": {\n    \"repository\": {\n      \"body\": {\n        \"status\": 200,\n        \"etag\": \"\\\"/repos/owner/repo\\\"\",\n        \"observedAtUnixMs\": 1789017666267\n      }\n    },\n    \"commit\": {\n      \"body\": {\n        \"status\": 200,\n        \"etag\": \"\\\"/repos/owner/repo/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\\"\",\n        \"observedAtUnixMs\": 1789017666268\n      }\n    }\n  },\n  \"data\": {\n    \"sha\": \"dddddddddddddddddddddddddddddddddddddddd\",\n    \"treeSha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n    \"parents\": [\n      {\n        \"sha\": \"cccccccccccccccccccccccccccccccccccccccc\",\n        \"links\": {\n          \"apiUrl\": \"https://tls.invalid:34683/repos/owner/repo/commits/cccccccccccccccccccccccccccccccccccccccc\",\n          \"htmlUrl\": \"https://github.example/owner/repo/commit/cccccccccccccccccccccccccccccccccccccccc\"\n        }\n      },\n      {\n        \"sha\": \"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\n        \"links\": {\n          \"apiUrl\": \"https://tls.invalid:34683/repos/owner/repo/commits/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\n          \"htmlUrl\": \"https://github.example/owner/repo/commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"\n        }\n      }\n    ],\n    \"message\": \"immutable commit\\nwith exact message\",\n    \"author\": {\n      \"name\": \"Native Author\",\n      \"email\": \"author@example.test\",\n      \"date\": \"2026-01-02T03:04:05Z\"\n    },\n    \"committer\": {\n      \"name\": \"Native Committer\",\n      \"email\": \"committer@example.test\",\n      \"date\": \"2026-01-02T03:05:06Z\"\n    },\n    \"authorAccount\": {\n      \"id\": \"3\",\n      \"nodeId\": \"author-login_node\",\n      \"login\": \"author-login\",\n      \"links\": {\n        \"apiUrl\": \"https://tls.invalid:34683/users/author-login\",\n        \"htmlUrl\": \"https://github.example/author-login\"\n      }\n    },\n    \"committerAccount\": null,\n    \"links\": {\n      \"apiUrl\": \"https://tls.invalid:34683/repos/owner/repo/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n    }\n  },\n  \"unavailableFacts\": [\n    {\n      \"field\": \"links.htmlUrl\",\n      \"reason\": \"omitted\"\n    },\n    {\n      \"field\": \"links.commentsUrl\",\n      \"reason\": \"omitted\"\n    },\n    {\n      \"field\": \"committerAccount\",\n      \"reason\": \"null\"\n    }\n  ]\n}", projection: ProjectionMetadata { spans: [ProjectionSpan { output_start: 0, output_end: 3830, start_line: 1, end_line: 140, reaches_eof: true }], source_eof: true }, continuation: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p resourcefs-sources --test github_immutable_contract`
+
+RESTORED GREEN exit=0
+
+running 1 test
+test immutable_commit_facts_refuse_wrong_observed_sha_even_with_correct_links ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.07s
+
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.25s
+     Running tests/github_immutable_contract.rs (target/debug/deps/github_immutable_contract-87bce5586dd53a5f)

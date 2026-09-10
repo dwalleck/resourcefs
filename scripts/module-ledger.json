@@ -3,7 +3,9 @@
     "crates/resourcefs-sources/src/github/facts.rs": {
       "baseline": "635ab170ab57542c18272921298d575da2f8b08a",
       "stage": "immutable-grammar",
-      "changes": {}
+      "changes": {
+        "immutable-commit": ["read_facts", "facts_resource"]
+      }
     }
   },
   "wiring_calls": {
@@ -37,6 +39,12 @@
   },
   "baseline": "7de8d1477af6be825bada9015a6996b3f2917c7d",
   "body_changes": {
+    "immutable-commit": {
+      "crates/resourcefs-sources/src/github/facts.rs": [
+        "read_facts",
+        "facts_resource"
+      ]
+    },
     "immutable-grammar": {
       "crates/resourcefs-core/src/reference.rs": [
         "parse",
@@ -101,6 +109,7 @@
     "crates/resourcefs-sources/src/github/facts.rs": "reqwest|ClientBuilder|HttpSubstrate|CacheMetadata|SessionCacheWrite|sleep|retry_available",
     "crates/resourcefs-sources/src/github/facts/collection.rs": "reqwest|ClientBuilder|CacheMetadata|SessionCacheWrite|sleep|retry_available|sha2",
     "crates/resourcefs-sources/src/github/facts/comment.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference",
+    "crates/resourcefs-sources/src/github/facts/commit.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference|gix_object|gix_hash|base64",
     "crates/resourcefs-sources/src/github/facts/continuation.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",
     "crates/resourcefs-sources/src/github/facts/identity.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|Serialize|Serializer|Deserialize|Deserializer|serde_json|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",
     "crates/resourcefs-sources/src/github/facts/pull.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference",
@@ -108,6 +117,10 @@
     "crates/resourcefs-sources/src/github/mod.rs": "aws_lc_rs|aws-lc-rs|hmac|Hmac"
   },
   "github_changes": {
+    "immutable-commit": [
+      "read",
+      "catalog_entries"
+    ],
     "configuration": [
       "new#2",
       "GithubSource"
@@ -160,6 +173,23 @@
     "GITHUB_CACHE_NAMESPACE"
   ],
   "owners": {
+    "crates/resourcefs-sources/src/github/facts/commit.rs": {
+      "maximum": 500,
+      "module": "commit",
+      "parent": "crates/resourcefs-sources/src/github/facts.rs",
+      "stage": "immutable-commit",
+      "symbols": [
+        "NativeCommit",
+        "NativeCommitData",
+        "NativePerson",
+        "NativeTree",
+        "NativeParent",
+        "CommitLinks",
+        "CommitParentFacts",
+        "CommitUpstream",
+        "CommitBody"
+      ]
+    },
     "crates/resourcefs-core/src/reference/github.rs": {
       "maximum": 450,
       "module": "github",
@@ -432,7 +462,7 @@
     "dispatch_read",
     "cancelled_read_error"
   ],
-  "stage": "immutable-grammar",
+  "stage": "immutable-commit",
   "stages": [
     "baseline",
     "core",
@@ -448,7 +478,8 @@
     "exposure",
     "live",
     "review",
-    "immutable-grammar"
+    "immutable-grammar",
+    "immutable-commit"
   ],
   "test_children": {
     "crates/resourcefs-sources/src/github/facts_tests.rs": {

@@ -1,0 +1,13 @@
+{
+  "sha": "635ab170ab57542c18272921298d575da2f8b08a",
+  "tree": "c440246484e340dfe1d43fda5dcc31ea6b03a89a",
+  "parents": [
+    "0dae3b64af3e249dd4ef35b43e8c4641adc750ca",
+    "04ddca391d6b1530e57aba509d12459ac59fa84e"
+  ],
+  "messageBytes": 69,
+  "result": "PASS",
+  "provider": "GET repos/dwalleck/resourcefs/commits/635ab170ab57542c18272921298d575da2f8b08a; X-GitHub-Api-Version: 2022-11-28",
+  "oracle": "git cat-file commit 635ab170ab57542c18272921298d575da2f8b08a; exact tree, ordered parents and message bytes",
+  "scope": "Native GitHub metadata versus independent local Git object; not ResourceFS implementation proof."
+}

@@ -51,3 +51,14 @@ Verified against `origin/feat/rfs-jrz7` (5d941fb) before any edit; every row was
 - **Repair E — budget honesty (F21).** Release-only by refusal instead of silence, with bounds at 5 ms/1 µs against measured 225837 ns/14 ns.
 - **Repair F — diff hygiene (F11).** The whitespace-only hunk in the protected parent is gone.
 - Evidence disposition: C1/C2 parser mutations remain applicable (the segment decoder and its refusals are unchanged); the decoded-control mutation moved to S3 with the dimension; the placement mutation is re-proved against the repaired gate in mutation-review2.txt; the routing, ceiling and duplicate-ownership mutants are new and recorded there. Final S2/S3 integration, platform and live proof remain Main-owned and pending.
+
+## S2 incremental review decisions
+
+| finding-id | finding | reviewer | evidence-state | evidence | decision | fix | note |
+|---|---|---|---|---|---|---|---|
+| S2-F1 | Account URL construction retains an empty Enterprise API path segment | CommitBoundaryReview | Verified | Real SourceAdapter fixture under `/api/v3/` failed with `upstream_identity_mismatch`; the other nine immutable cases passed. | Accept | Remove the trailing empty segment before appending encoded path components; append the entire account route with one URL clone. | The Enterprise fixture now passes with exact prefixed HTTP targets and returned account URL. LSP could not index this sibling-worktree helper; scoped reference search found only its local definition/calls before the rename. |
+| S2-F2 | Optional links mask the named requested-SHA equality mutation | CommitBoundaryReview | Verified | The compiled equality mutant left the original WrongSha test green. | Accept | Omit optional SHA-bearing commit links only in the wrong-SHA fixture and its valid-SHA positive control; retain the required correct API URL. | The same equality mutant now fails and restored source passes; `mutation-c3-commit.txt`. This repairs oracle isolation, not the production expectation. |
+
+S2 integration corrections also removed an independently duplicated SHA validator in favor of `identity::sha`, corrected native Presence field accesses and macro imports, confined hostile native login text to URL path segments, validated supplied nested Git Data commit links, and removed the unnecessary parent-ID uniqueness restriction and mirror dispatch enum. The existing parent/owner census now recognizes the existing `native!` declaration macro and explicitly permits only the three additional reused identity helper entry points at the immutable-commit stage.
+
+Source immutable contracts: ten pass after S2-F1/F2 repair. Real-binary stdio overflow/recovery contract passes. Credential-gated adapter and stdio commit rows both ran against the pinned public commit and passed without skipping. C3 and C9 compiled mutants fail; exact source restoration passes. Final full-gate and S2 publication judgment remain in plan.md.

@@ -195,6 +195,23 @@ One logical deadline covers the acquisition, retry waits, and final acceptance, 
 
 Failures retain the ordinary error category and may include bounded structured `details`. In particular, a 404 has reason `upstream_not_found_or_hidden` and `accessAmbiguity: "missing_or_access_hidden"`: it is not proof that a private PR does not exist. Rate-limit errors may carry numeric retry guidance/reset time; limit errors may name the effective bound and observed value. Provider error prose, response bodies and arbitrary headers are not exposed in these details. Inspect the category/reason rather than matching human-readable messages.
 
+## GitHub immutable commit Facts
+
+The same GitHub source profile and readable repository allowlist also serve exact commit metadata; no additional source kind or MCP tool is needed:
+
+```json
+{
+  "path": "github://owner/repo/commits/0123456789abcdef0123456789abcdef01234567/facts",
+  "acquisition": { "maxAttempts": 2 }
+}
+```
+
+Replace the sample ID with a real full lowercase commit SHA from the allowed repository. Branches, tags, abbreviated IDs and selectors such as `:raw` are rejected. Two attempts cover repository and commit acquisition without retries; use the default attempt budget if retries must remain possible. Enterprise API prefixes such as `/api/v3/` are preserved.
+
+The inner schema is version 1.0, `kind: "github.commit"`. Requested and observed commit IDs are separate; `data` preserves the provider's message, native Git author/committer, ordered parents and optional/null GitHub accounts. Repository and commit responses have separate `upstream` observations. This is neither a commit diff nor raw Git object bytes. The ResourceFS Version Tag includes acquisition provenance and is not the native commit SHA.
+
+Use the normal artifact recovery references when the complete JSON exceeds display limits; recovery does not fetch GitHub again. The `github://` catalog entry advertises commit Facts. Exact source-file acquisition is not yet advertised by this increment.
+
 ## GitHub conversation-comment facts
 
 `pr://owner/repo/<number>/comments/facts` returns the conversation-comment collection and `pr://owner/repo/<number>/comments/<id>/facts` returns one comment, as owned read-only JSON with the shared envelope and `acquisition` controls. The collection schema is version 1.1; singular comment Facts remain version 1.0. The parent pull request is read and verified first. A singular read also verifies the returned comment ID against the addressed ID, and recognizable record links must agree with the deployment and record identity. A wrong parent, wrong requested identity or invalid link authority rejects the whole read, not merely the offending record.

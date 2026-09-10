@@ -54,3 +54,23 @@ Date: 2026-09-09. Checked source and upstream revision: `635ab170ab57542c1827292
 ## Hand-off
 
 P1 PASS with retained runnable probe and independent comparison; P2/P3 are classified non-premises. No production code or feature tests changed. Hand off to falsifiable-design; exact grammar/schema/placement still require requester approval.
+
+## S2 implementation evidence — 2026-09-10
+
+The preceding hand-off records the historical pre-design probe, not current implementation status. S1 is committed as `5d941fb`, draft PR #12; both Actions runs passed. S2 implements only immutable commit Facts; exact source content remains S3.
+
+- Independent native/Git comparison rerun: `commit-oracle-result.json`. At `635ab170ab57542c18272921298d575da2f8b08a`, exact tree, ordered parents and all 69 provider message bytes agree with `git cat-file commit`; this is the external oracle, not production proof by itself.
+- Ten immutable SourceAdapter contracts pass, including correct/contradictory identities, malformed native metadata, zero native ID, absent/null accounts, hostile account text, separate response ETags, and an Enterprise `/api/v3/` deployment.
+- Real `resourcefs` binary over MCP stdio: repository then commit under two attempts, owned schema and native values, selector/mutable-operand refusal, catalog exposure, and byte-exact artifact recovery without further acquisition all pass.
+- C3/C9: compiled red and exact-restored green; receipts in `mutation-c3-commit.txt` and `mutation-c9-commit.txt`. S2-F2's initially masked mutant is explicitly recorded, not counted as successful proof.
+
+### Live commit rows
+
+Both rows were explicitly enabled with `RFS_LIVE=1` and a nonempty credential obtained from `gh auth token`; credentials were not written to evidence. Both used `dwalleck/resourcefs` at the exact pinned commit above. No row skipped.
+
+| Row | Exercised surface | Result |
+|---|---|---|
+| `live_github_immutable_commit_facts_hold_up` | Real configured SourceAdapter against GitHub, comparing native repository/commit observations | PASS; 1.97s test time |
+| `live_stdio_github_commit_facts_match_native_observation` | Actual `resourcefs check --probe`, actual server binary and MCP read/recovery against GitHub, native metadata comparison | PASS; 2.09s test time |
+
+Raw nonsecret row output: `live-commit-results.txt`. These results prove commit acquisition only; no source-file byte or object-validation claim is made here.

@@ -1,0 +1,46 @@
+S2 immutable commit Facts checkpoint qualification
+
+Complete runner:
+  python scripts/ci-gates.py
+  duration: 1135.01 seconds
+  aggregate exit: 1
+  only failed gate: Lints
+  diagnostic: needless_borrows_for_generic_args in the new commit budget fixture's PathReference::parse(&format!(...)) setup.
+
+Retained successful runner legs:
+  Module placement: PASS, immutable-commit stage.
+  Formatting: PASS.
+  All-feature functional workspace: PASS.
+  All-feature release workspace: PASS.
+  Compiled ignored-test inventory and all production-budget executions: PASS, including immutable_commit_production_budget.
+  Dependency vetting: advisories ok, bans ok, licenses ok, sources ok.
+
+Atomic repair:
+  Pass the owned formatted reference to PathReference::parse rather than borrowing and unnecessarily cloning it. Production code, fixture payloads and assertions are unchanged.
+  cargo fmt --all && cargo fmt --all -- --check
+  cargo clippy --workspace --all-targets --all-features -- -D warnings
+  cargo test --locked --release --config profile.release.debug-assertions=false -p resourcefs-sources --test github_facts_contract immutable_commit_production_budget -- --ignored --exact --nocapture
+  combined exit: 0; duration 23.71 seconds.
+  Release environment: CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=false.
+
+Latest measured commit budget:
+  native commit response: 8388608 bytes
+  owned output: 8390709 bytes
+  wall phase: 16245553 ns, bound 2000000000 ns
+  heap phase: 33575607 incremental bytes, bound 134217728 bytes
+  Both phases PASS. Setup-only ownership repair occurs before measurement.
+
+Targeted behavior and independent evidence:
+  github_immutable_contract: 10 passed.
+  github_adapter_contract: 24 passed, 3 production budgets ignored in the focused run; complete runner repeated adapter coverage and executed those budgets separately.
+  Real-binary stdio commit read, catalog and byte-exact recovery without reacquisition: PASS.
+  Native REST commit versus independent git cat-file tree/ordered parents/exact message: PASS; commit-oracle-result.json.
+  C3 requested-SHA mutant: compiled RED / exact-restored GREEN; initial masked fixture repaired, mutation-c3-commit.txt.
+  C9 absent-to-null account mutant: compiled RED / exact-restored GREEN; mutation-c9-commit.txt.
+  Enterprise /api/v3/ account URL defect: runtime RED before pop_if_empty repair, GREEN afterward with exact prefixed targets.
+  Live SourceAdapter commit and real check --probe/stdio commit rows: both enabled and PASS, no skips; live-commit-results.txt and evidence.md.
+
+Evidence reconciliation:
+  All constituent gates are PASS after the narrow test-setup lint repair. The original aggregate runner exit remains 1; no aggregate exit 0 is claimed. Unchanged production behavior and other successful legs are retained rather than rerunning the full unrelated fixture-operator lifecycle suite.
+  Shared fetch/cache/cancellation/final-publication regression legs remain inherited from the existing github_facts_contract suite. New source-chain C8 acceptance remains S3-owned, not claimed here.
+  This checkpoint implements commit Facts only. Source object/bytes, final conformance, and S2/S3 platform CI are not inferred from these local results.

@@ -234,7 +234,10 @@ def check(root, repository, ledger, stage):
     for path in policy.test_children:
         if path in codes:
             codes[path] = ''
-    declarations = {path: inherited.DECL.findall(code) for path, code in codes.items()}
+    declarations = {
+        path: inherited.DECL.findall(code) + re.findall(r'\bnative!\s*\(\s*(\w+)\s*\{', code)
+        for path, code in codes.items()
+    }
 
     def check_parent_nodes(path, before, changes, moves=(), move_slots=(), claim='C02'):
         before_nodes = node_spans(before, inherited)
@@ -356,9 +359,11 @@ def check(root, repository, ledger, stage):
             'require_object_link', 'validate_optional_object_link',
             'validate_optional_web_link', 'require_observed_id',
         }
+        if 'immutable-commit' in policy.active:
+            expected_entry_points.update({'required', 'sha', 'validate_repository'})
         if (len(entry_points) != len(expected_entry_points)
                 or set(entry_points) != expected_entry_points):
-            fail(identity_path, 'identity validation must expose exactly validate and validate_comment_links')
+            fail(identity_path, f'identity validation must expose exactly {", ".join(sorted(expected_entry_points))}')
 
     # ErrorCategory already has a stable Serialize contract. Preserve it without
     # admitting serialization responsibilities into the new operational details.

@@ -11,10 +11,11 @@ use std::{collections::HashSet, fmt::Write as _, io::Cursor, sync::Arc};
 
 use async_trait::async_trait;
 use resourcefs_core::{
-    DiscoveryAdapter, ErrorCategory, GithubRepositoryIdentity, GlobOptions, GlobTarget,
-    IssueAddress, IssueResource, OperationGuard, PathReference, PathSession, ProjectionSelector,
-    PullRequestAddress, PullRequestResource, ResourceAddress, ResourceError, SearchOptions,
-    SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult, SourceResource, select_utf8,
+    DiscoveryAdapter, ErrorCategory, GithubAddress, GithubRepositoryIdentity, GlobOptions,
+    GlobTarget, IssueAddress, IssueResource, OperationGuard, PathReference, PathSession,
+    ProjectionSelector, PullRequestAddress, PullRequestResource, ResourceAddress, ResourceError,
+    SearchOptions, SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult,
+    SourceResource, select_utf8,
 };
 use url::Url;
 
@@ -819,14 +820,15 @@ impl SourceAdapter for GithubSource {
         operation: &OperationGuard,
         acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
-        let fact = match reference.address() {
-            ResourceAddress::PullRequest(PullRequestAddress::Item {
-                resource: PullRequestResource::Facts(fact),
-                ..
-            }) => Some(*fact),
-            _ => None,
-        };
-        if fact.is_none() {
+        let is_facts = matches!(
+            reference.address(),
+            ResourceAddress::Github(GithubAddress::Commit { .. })
+                | ResourceAddress::PullRequest(PullRequestAddress::Item {
+                    resource: PullRequestResource::Facts(_),
+                    ..
+                })
+        );
+        if !is_facts {
             resourcefs_core::reject_acquisition(acquisition)?;
         }
         // The operator's configured ceiling bounds every read from this
@@ -848,15 +850,11 @@ impl SourceAdapter for GithubSource {
             .min(limits.timeout())
             .saturating_add(std::time::Duration::from_secs(1));
         let pending = async {
-            match fact {
-                Some(fact) => {
-                    self.read_facts(reference, fact, operation, acquisition)
-                        .await
-                }
-                None => {
-                    let operation = self.substrate.begin_read_with_limits(operation, &limits)?.0;
-                    self.read_resource(reference, operation).await
-                }
+            if is_facts {
+                self.read_facts(reference, operation, acquisition).await
+            } else {
+                let operation = self.substrate.begin_read_with_limits(operation, &limits)?.0;
+                self.read_resource(reference, operation).await
             }
         };
         tokio::time::timeout(wall, pending).await.map_err(|_| {
@@ -886,6 +884,12 @@ impl SourceCatalogMetadata for GithubSource {
                 "pr://",
                 "pr://<owner>/<repository>[/<number>[/title|body|facts|comments[/facts|/<id>/facts|/<id>]|reviews[/facts|/<id>/facts]|review-comments[/facts|/<id>/facts]|diff]][:selector]",
                 "pr://owner/repository/42",
+                None,
+            )?,
+            SourceCatalogEntry::new(
+                "github://",
+                "github://<owner>/<repository>/commits/<40 lowercase hex SHA>/facts",
+                "github://owner/repository/commits/635ab170ab57542c18272921298d575da2f8b08a/facts",
                 None,
             )?,
         ])

@@ -716,6 +716,7 @@ async fn compiled_registry_mounts_dispatches_and_requires_github_grant() {
         .expect("catalog read");
     assert!(catalog.content().contains("issue://"));
     assert!(catalog.content().contains("pr://"));
+    assert!(catalog.content().contains("github://"));
     let title_reference = PathReference::parse("issue://owner/repo/42/title").expect("title");
     assert_eq!(
         compiled
