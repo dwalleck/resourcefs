@@ -1,6 +1,6 @@
 use resourcefs_core::{
-    GithubAddress, GithubCommitId, GithubSourcePath, MAX_PATH_REFERENCE_BYTES, PathReference,
-    ResourceAddress,
+    GithubAddress, GithubCommitId, GithubRepositoryIdentity, GithubSourcePath,
+    MAX_PATH_REFERENCE_BYTES, PathReference, ResourceAddress,
 };
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -133,6 +133,37 @@ fn immutable_segment_constructors_preserve_git_filename_bytes() {
     assert!(GithubSourcePath::new(vec![".".into()]).is_err());
     assert!(GithubSourcePath::new(vec!["a/b".into()]).is_err());
     assert!(GithubCommitId::new("0123456789abcdef0123456789abcdef0123456").is_err());
+}
+
+#[test]
+fn typed_immutable_addresses_round_trip_through_the_public_constructor() {
+    let path = GithubSourcePath::new(vec!["a b".into(), "%2F".into()]).expect("decoded segments");
+    let address = GithubAddress::Source {
+        repository: GithubRepositoryIdentity::new("Owner", "Repo").expect("repository"),
+        commit: GithubCommitId::new(COMMIT).expect("commit id"),
+        path,
+    };
+    let reference = PathReference::github(address.clone(), None).expect("typed address");
+    assert_eq!(reference.requested(), address.canonical_reference());
+    assert_eq!(
+        reference.requested(),
+        format!("github://owner/repo/source/{COMMIT}/a%20b/%252F/facts")
+    );
+    assert!(reference.projection().is_none());
+}
+
+#[test]
+fn typed_source_paths_stay_within_the_reference_ceiling() {
+    let exact = GithubSourcePath::new(vec!["a".repeat(MAX_PATH_REFERENCE_BYTES)])
+        .expect("exact ceiling is inclusive");
+    assert_eq!(exact.as_str().len(), MAX_PATH_REFERENCE_BYTES);
+
+    let over = GithubSourcePath::new(vec!["a".repeat(MAX_PATH_REFERENCE_BYTES + 1)])
+        .expect_err("a typed path that cannot fit a Path Reference must not exist");
+    assert_eq!(
+        over.category(),
+        resourcefs_core::ErrorCategory::InvalidReference
+    );
 }
 
 #[test]

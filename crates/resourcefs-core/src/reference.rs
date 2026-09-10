@@ -1044,8 +1044,9 @@ impl PathReference {
         }
 
         if let Some(raw_name) = requested.strip_prefix(LOCAL_PREFIX) {
-            // Filesystem-backed family: escapes must be validated before
-            // `percent_decode`, whose contract assumes prior validation.
+            // Filesystem-backed family: an encoded separator must not survive
+            // into a path component. `percent_decode` rejects its own malformed
+            // escapes; only the separator rule needs this prior pass.
             validate_percent_encoding(&requested)?;
             if raw_name.is_empty() {
                 return Ok(Self {
@@ -1600,9 +1601,10 @@ fn validate_reference_input(input: &str) -> Result<(), ResourceError> {
 
 fn parse_workspace_address(input: &str) -> Result<WorkspaceAddress, ResourceError> {
     // Filesystem containment: an encoded separator must never survive into a
-    // path component, and every downstream `percent_decode` assumes escapes were
-    // validated here. Non-filesystem families (`https://`, `artifact://`,
-    // catalogs) never reach this function and own their own syntax.
+    // path component. `percent_decode` rejects its own malformed escapes, so
+    // this pass exists for that separator rule. Families that carry their own
+    // syntax (`https://`, `artifact://`, catalogs, `jira://`, `issue://`,
+    // `pr://`, `github://`) never reach this function.
     validate_percent_encoding(input)?;
     let delimiter_input = input.strip_prefix("\\\\?\\").unwrap_or(input);
     if delimiter_input.contains('?') || delimiter_input.contains('#') {
@@ -1796,9 +1798,16 @@ fn percent_decode(input: &str) -> Result<String, ResourceError> {
     Ok(decoded)
 }
 
+/// The RFC3986 unreserved alphabet, in the one place both the encoder and the
+/// segment parser read it: a family that accepts literal bytes must accept
+/// exactly what this crate emits for them.
+fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+}
+
 fn encode_rfc3986_segment(segment: &str, output: &mut String) {
     for byte in segment.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+        if is_unreserved(byte) {
             output.push(char::from(byte));
         } else {
             write!(output, "%{byte:02X}").expect("writing to a String cannot fail");

@@ -1,6 +1,6 @@
 use super::{
-    GithubRepositoryIdentity, ProjectionSelector, encode_rfc3986_segment, invalid_reference,
-    percent_decode, projection_candidate_split,
+    GithubRepositoryIdentity, MAX_PATH_REFERENCE_BYTES, ProjectionSelector, encode_rfc3986_segment,
+    invalid_reference, is_unreserved, percent_decode, projection_candidate_split,
 };
 use crate::ResourceError;
 
@@ -52,12 +52,21 @@ impl GithubSourcePath {
         for segment in &segments {
             validate_decoded_segment(segment)?;
         }
-        let mut canonical = String::new();
+        let decoded_bytes = segments.iter().map(String::len).sum::<usize>() + segments.len() - 1;
+        let mut canonical = String::with_capacity(decoded_bytes);
         for (index, segment) in segments.iter().enumerate() {
             if index != 0 {
                 canonical.push('/');
             }
             encode_rfc3986_segment(segment, &mut canonical);
+        }
+        // One ceiling for every family, enforced where the value is built: a
+        // typed path that cannot fit a Path Reference must not exist, or the
+        // full-reference parser would refuse a value this type accepted.
+        if canonical.len() > MAX_PATH_REFERENCE_BYTES {
+            return Err(invalid_reference(
+                "GitHub source path must fit the reference ceiling",
+            ));
         }
         Ok(Self {
             segments,
@@ -213,8 +222,4 @@ fn validate_decoded_segment(segment: &str) -> Result<(), ResourceError> {
         return Err(invalid_reference("GitHub source path must not contain NUL"));
     }
     Ok(())
-}
-
-fn is_unreserved(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
 }
