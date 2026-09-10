@@ -7,9 +7,15 @@ async fn controlled_retry_uses_one_shared_physical_attempt_ledger() {
             TlsListener::serve_router(loopback(), 0, match_cert(), |_| unavailable("0")).await;
         let substrate = substrate(&listener);
         let operation = OperationGuard::new();
-        let limits =
-            resourcefs_core::ReadAcquisitionLimits::new(Some(allowed), None, None, None, None)
-                .expect("limits");
+        let limits = resourcefs_core::ReadAcquisitionLimits::new(
+            Some(allowed),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("limits");
         let (read, effective) = substrate
             .begin_read_with_limits(&operation, &limits)
             .expect("read");
@@ -59,8 +65,9 @@ async fn verified_http_bodies_share_cumulative_admission_without_reset() {
         .await;
         let substrate = substrate(&listener);
         let operation = OperationGuard::new();
-        let limits = resourcefs_core::ReadAcquisitionLimits::new(None, None, None, Some(cap), None)
-            .expect("limits");
+        let limits =
+            resourcefs_core::ReadAcquisitionLimits::new(None, None, None, Some(cap), None, None)
+                .expect("limits");
         let (read, effective) = substrate
             .begin_read_with_limits(&operation, &limits)
             .expect("read");
@@ -124,7 +131,7 @@ async fn effective_response_cap_bounds_stream_and_reused_body_admission() {
     .await;
     let substrate = substrate(&listener);
     let operation = OperationGuard::new();
-    let limits = resourcefs_core::ReadAcquisitionLimits::new(None, None, Some(7), None, None)
+    let limits = resourcefs_core::ReadAcquisitionLimits::new(None, None, Some(7), None, None, None)
         .expect("limits");
     let (read, effective) = substrate
         .begin_read_with_limits(&operation, &limits)
@@ -193,6 +200,7 @@ async fn controlled_deadline_spans_body_retry_wait_and_final_acceptance() {
     let limits = resourcefs_core::ReadAcquisitionLimits::new(
         None,
         Some(Duration::from_millis(250)),
+        None,
         None,
         None,
         None,
@@ -310,11 +318,14 @@ async fn substrate_ceilings_lower_effective_limits_and_send_uses_that_deadline()
     )
     .expect("substrate");
     let operation = OperationGuard::new();
-    let limits = resourcefs_core::ReadAcquisitionLimits::default();
+    let limits =
+        resourcefs_core::ReadAcquisitionLimits::new(None, None, None, None, None, Some(123))
+            .expect("caller decoded cap");
     let (read, effective) = substrate
         .begin_read_with_limits(&operation, &limits)
         .expect("read");
     assert_eq!(effective.max_response_bytes(), 3);
+    assert_eq!(effective.max_decoded_bytes(), 123);
     assert_eq!(effective.timeout(), Duration::from_millis(200));
     let mut budget = HttpReadBudget::with_limits(&effective);
     let response = read
@@ -368,6 +379,7 @@ async fn controlled_deadline_interrupts_delayed_headers_with_reachable_control()
         None,
         None,
         None,
+        None,
     )
     .expect("control limits");
     let (read, effective) = substrate
@@ -384,6 +396,7 @@ async fn controlled_deadline_interrupts_delayed_headers_with_reachable_control()
     let limits = resourcefs_core::ReadAcquisitionLimits::new(
         None,
         Some(Duration::from_millis(150)),
+        None,
         None,
         None,
         None,

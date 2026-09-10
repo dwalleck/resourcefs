@@ -303,6 +303,7 @@ fn github_profile_acquisition_presence_types_and_hard_boundaries() {
         ("maxResponseBytes", 8_388_608),
         ("maxAcceptedBodyBytes", 16_777_216),
         ("maxRepresentationBytes", 16_777_216),
+        ("maxDecodedBytes", 4_194_304),
     ] {
         for value in [1, hard] {
             let mut acquisition = json!({});

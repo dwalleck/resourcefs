@@ -238,6 +238,7 @@ fn retryable(error: &ResourceError, ctx: &FactsRead<'_>, parent_body_bytes: usiz
                 .is_some_and(|fresh_read_bytes| fresh_read_bytes <= limit.bound()),
             AcquisitionLimitKind::ResponseBodyBytes
             | AcquisitionLimitKind::RepresentationBytes
+            | AcquisitionLimitKind::DecodedContentBytes
             | AcquisitionLimitKind::CollectionRecords => false,
         };
     }
