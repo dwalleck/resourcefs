@@ -791,7 +791,6 @@ impl GithubSource {
             }
             _ => return Err(unsupported_github_projection()),
         };
-
         let mutable = self.field_mutability(&canonical)?;
         let Rendered {
             content,
