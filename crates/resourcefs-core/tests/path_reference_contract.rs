@@ -586,18 +586,18 @@ fn maximum_reference_parses_within_boundary_budget() {
 }
 
 /// C19 — the encoded-separator guard covers exactly the forms that reach
-/// `percent_decode`, and reaching it unvalidated would be a panic.
+/// `percent_decode`, and each of them answers with a typed outcome.
 ///
 /// The guard is deliberately **not** asserted as a family list. `percent_decode`
-/// indexes `bytes[index + 1]` under an `expect("percent escapes were
-/// validated")`, so a form that reaches it without prior validation aborts the
-/// process rather than returning `invalid_reference`. A family-list assertion
-/// would still pass in that world; this table cannot, because every row that
-/// decodes carries a **malformed trailing escape** whose only two honest
-/// outcomes are a clean rejection or no decoding at all.
+/// rejects its own malformed escapes (`reference.rs`), so a form that reaches it
+/// without the filesystem pre-pass is refused rather than decoded; the rows
+/// below are selected by form, and every row that decodes carries a **malformed
+/// trailing escape** whose only two honest outcomes are a clean rejection or no
+/// decoding at all.
 ///
-/// Each row therefore pins one of three outcomes, and the test completing at
-/// all is itself the evidence that no form panicked.
+/// Each row therefore pins one of three outcomes for the family that owns it,
+/// and the table fails if a family starts or stops decoding a form it did not
+/// before — the property a family list cannot express.
 #[test]
 fn encoded_separator_guard_scope() {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -633,8 +633,16 @@ fn encoded_separator_guard_scope() {
             Outcome::PreservesEncoding,
         ),
         ("https://example.com/a%5Cb", Outcome::PreservesEncoding),
-        // A trailing escape is the panic case if HTTPS ever started decoding.
+        // A trailing escape is the former decode panic if HTTPS ever started
+        // decoding.
         ("https://example.com/a%", Outcome::PreservesEncoding),
+        // `github://` decodes its own segments and enforces no filesystem
+        // separator rule, so it reaches `percent_decode` without the pre-pass;
+        // a malformed escape there is still a clean refusal.
+        (
+            "github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/notes%.md/facts",
+            Outcome::RejectsMalformed,
+        ),
     ];
 
     for (input, expected) in table {
