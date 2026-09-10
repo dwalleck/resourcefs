@@ -26,9 +26,6 @@ pub(crate) struct AcquisitionInput {
     #[serde(default)]
     #[schemars(with = "usize", range(min = 1, max = 16_777_216))]
     max_representation_bytes: Option<usize>,
-    #[serde(default)]
-    #[schemars(with = "usize", range(min = 1, max = 4_194_304))]
-    max_decoded_bytes: Option<usize>,
 }
 
 const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;
@@ -41,7 +38,6 @@ impl AcquisitionInput {
             self.max_response_bytes,
             self.max_accepted_body_bytes,
             self.max_representation_bytes,
-            self.max_decoded_bytes,
         )
     }
 }
@@ -50,7 +46,7 @@ impl AcquisitionInput {
 ///
 /// Core names the failing dimension only in the machine-readable detail, in
 /// its own vocabulary and — for the deadline — in nanoseconds. Its message is
-/// identical for all six dimensions, so relaying that alone tells an operator
+/// identical for all five dimensions, so relaying that alone tells an operator
 /// a limit is wrong without telling them which one or what the ceiling is.
 pub(crate) fn describe_limit_rejection(error: &ResourceError) -> String {
     let Some(limit) = error.details().and_then(|details| details.limit()) else {
@@ -66,7 +62,6 @@ pub(crate) fn describe_limit_rejection(error: &ResourceError) -> String {
         AcquisitionLimitKind::ResponseBodyBytes => "maxResponseBytes",
         AcquisitionLimitKind::AcceptedBodyBytes => "maxAcceptedBodyBytes",
         AcquisitionLimitKind::RepresentationBytes => "maxRepresentationBytes",
-        AcquisitionLimitKind::DecodedContentBytes => "maxDecodedBytes",
         // A collection record ceiling is local policy, not a control the
         // caller wrote, so there is no caller-facing field name to report.
         AcquisitionLimitKind::CollectionRecords => return error.message().to_owned(),
@@ -91,7 +86,6 @@ enum AcquisitionField {
     MaxResponseBytes,
     MaxAcceptedBodyBytes,
     MaxRepresentationBytes,
-    MaxDecodedBytes,
 }
 
 struct AcquisitionObject;
@@ -126,9 +120,6 @@ impl<'de> Visitor<'de> for AcquisitionObject {
                     &mut map,
                     "maxRepresentationBytes",
                 )?,
-                AcquisitionField::MaxDecodedBytes => {
-                    read_field(&mut input.max_decoded_bytes, &mut map, "maxDecodedBytes")?
-                }
             }
         }
         Ok(input)

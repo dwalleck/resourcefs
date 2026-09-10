@@ -330,7 +330,6 @@ impl HttpSubstrate {
             Some(self.ceilings.fetch_bytes().min(limits.max_response_bytes())),
             Some(limits.max_accepted_body_bytes()),
             Some(limits.max_representation_bytes()),
-            Some(limits.max_decoded_bytes()),
         )?;
         Ok((
             BoundedRead {

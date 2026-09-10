@@ -183,9 +183,8 @@ async fn final_facts_cancellation_after_serialization_prevents_publication() {
 async fn final_facts_deadline_advanced_after_serialization_prevents_publication() {
     let substrate = no_network_substrate();
     let operation = OperationGuard::new();
-    let controls =
-        ReadAcquisitionLimits::new(None, Some(Duration::from_secs(1)), None, None, None, None)
-            .expect("one-second logical deadline");
+    let controls = ReadAcquisitionLimits::new(None, Some(Duration::from_secs(1)), None, None, None)
+        .expect("one-second logical deadline");
     let value = literal_facts();
     let (read, _) = substrate
         .begin_read_with_limits(&operation, &controls)
