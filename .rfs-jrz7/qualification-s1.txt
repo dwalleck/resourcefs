@@ -85,3 +85,15 @@ Resolution: the sole failed gate was Formatting (import ordering after F1 remova
 Ran cargo fmt --all && cargo fmt --all -- --check: exit0.
 All other gates above are retained: import formatting changes no compiled semantics, test inputs, dependency graph or budgets.
 No claim that the original full runner exited0. All constituent gates are reconciled PASS.
+
+=== Review round 2 re-verification (2026-09-10) ===
+Source state: the six repair commits on top of 5d941fb (latest: 22ed7313), worktree resourcefs-wt-jrz7-fix.
+Command: python3 scripts/ci-gates.py
+Result: All repository gates passed. (no failed gate; placement, formatting, clippy, all-feature debug and release functional legs, the registered ignored-budget roster and cargo-deny all passed)
+
+Affected named mutations: .rfs-jrz7/mutation-review2.txt
+- routing mutant (family folded back into the GitHub-record arm): unmounted refusal test FAILED; restored PASS.
+- typed-path ceiling mutant (check removed): ceiling test FAILED; restored PASS.
+- budget honesty: debug run FAILED with "run this budget in release mode"; release run PASS with average_wall_ns=193534 (parse) and 11 (controls) against 5ms/1us bounds.
+- placement gate: transport mutant reports C02 (was C11 before the repair); protected-parent mutant reports C11; a verbatim owner-declaration copy in another crate reports C11; branch-name baseline, dangling baseline, mistyped stage and non-identifier wiring_calls entry each fail closed; every restoration is green.
+- The decoded-control mutation (.rfs-jrz7/mutation-c6-controls.txt) travels with the dimension to the increment that enforces it.
