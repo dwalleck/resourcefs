@@ -8,13 +8,11 @@ existing calls plus the named dispatch seam. Review still owns semantic meaning,
 macro expansion, module depth, allocation cost, and behavioral bounds.
 """
 
-import argparse
 from collections import Counter
 import difflib
 from pathlib import Path
 import re
 import subprocess
-import sys
 
 BASELINE = "fad4cf2c11ec27f4272355c9e741badc9be0920e"
 CORE = "crates/resourcefs-core/src/"
@@ -27,8 +25,12 @@ READ = HTTP + "read.rs"
 QUERY = JIRA + "query.rs"
 WIRE_QUERY = WIRE + "query.rs"
 PARENTS = {
-    # rfs-r31i adds four pr:// facts grammar arms to the shared parser.
-    CORE + "reference.rs": 2010,
+    # rfs-r31i adds four pr:// facts grammar arms to the shared parser;
+    # rfs-jrz7 adds the immutable github:// grammar arm and its bounded path
+    # type, which raises this tripwire from 2,010 as that increment's plan
+    # records. Any later increment raises it here, in the pinned policy, not
+    # through a ledger relaxation.
+    CORE + "reference.rs": 2080,
     CORE + "discovery.rs": 1367,
     SOURCES + "atlassian/jira.rs": 317,
     SOURCES + "atlassian/wire.rs": 601,
@@ -67,7 +69,7 @@ CONTROL = re.compile(r"\b(?:for|while|loop|unsafe)\b|\b(?:sort\w*|spawn\w*|sleep
 # evidence. Keep their original owners, stages, and responsibility checks here
 # so the active successor gate can run without importing an archived checkout.
 HISTORICAL_PARENTS = {
-    CORE + "reference.rs": (2089, 2010),
+    CORE + "reference.rs": (2089, 2080),
     CORE + "discovery.rs": (1342, 1367),
     SOURCES + "atlassian/jira.rs": (467, 317),
     SOURCES + "atlassian/wire.rs": (571, 601),
@@ -252,8 +254,6 @@ def check_historical(root, stage, transition=None):
             fail(relative, "required published owner is missing")
 
     for relative, (before, maximum) in HISTORICAL_PARENTS.items():
-        if transition is not None:
-            maximum = transition.parent_limits.get(relative, maximum)
         path = root / relative
         if not path.is_file():
             fail(relative, "protected parent is missing")
@@ -411,8 +411,7 @@ def check(root, repository, stage, transition=None):
         server_tokens = TOKEN.findall if transition is None else transition.server_tokens
         if server_tokens(without_mount) != server_tokens(production(before_server)):
             fail(mcp_parent, "MCP query proof permits only a cfg(test) child declaration, not new production constructors/visibility/profile wiring")
-    parent_limits = {} if transition is None else transition.parent_limits
-    for path, maximum in sorted({**PARENTS, **limits, **parent_limits}.items()):
+    for path, maximum in sorted({**PARENTS, **limits}.items()):
         if path not in sources:
             fail(path, "required ledger owner is missing")
             continue
@@ -548,26 +547,13 @@ def check(root, repository, stage, transition=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=("http", "query"), required=True)
-    parser.add_argument("--root", type=Path, help="source tree; may be a disposable copy")
-    parser.add_argument("--repository", type=Path, default=Path(__file__).resolve().parents[1],
-                        help="Git checkout providing pinned baseline")
-    args = parser.parse_args()
-    try:
-        repository = Path(git(args.repository.resolve(strict=True), "rev-parse", "--show-toplevel"))
-        root = args.root.resolve(strict=True) if args.root else repository
-        failures, observations = check(root, repository, args.stage)
-    except (OSError, UnicodeError, ValueError, ImportError) as error:
-        print(f"C12 FAIL oracle input: {error}", file=sys.stderr)
-        return 1
-    print("\n".join(observations))
-    if failures:
-        print("\n".join(failures), file=sys.stderr)
-        return 1
-    print(f"C1/C12 PASS stage={args.stage} baseline={BASELINE}")
-    return 0
+    raise SystemExit(
+        "module_shape_base.py is the shared placement policy, not an entry point: "
+        "run scripts/module_shape.py, which loads the pinned ledger and passes this "
+        "module its transition. The standalone entry was pinned to a superseded "
+        "baseline and could not express any later stage's policy."
+    )
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

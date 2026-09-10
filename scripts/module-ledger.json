@@ -8,15 +8,20 @@
   },
   "wiring_calls": {
     "immutable-grammar": {
-      "crates/resourcefs-core/src/discovery.rs": ["Github"],
-      "crates/resourcefs-core/src/reference.rs": ["Github"]
+      "crates/resourcefs-core/src/discovery.rs": [
+        "Github"
+      ],
+      "crates/resourcefs-core/src/reference.rs": [
+        "Github"
+      ]
     }
   },
   "added_functions": {
     "immutable-grammar": {
       "crates/resourcefs-core/src/reference.rs": [
         "github",
-        "encode_rfc3986_segment"
+        "encode_rfc3986_segment",
+        "is_unreserved"
       ]
     },
     "transport": {
@@ -401,11 +406,6 @@
         "cache",
         "confine_next"
       ]
-    }
-  },
-  "parent_limits": {
-    "immutable-grammar": {
-      "crates/resourcefs-core/src/reference.rs": 2080
     }
   },
   "relocated_symbols": {
