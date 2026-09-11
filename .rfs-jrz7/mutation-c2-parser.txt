@@ -1,0 +1,53 @@
+Target: crates/resourcefs-core/src/reference/github.rs
+Command: ['cargo', 'test', '--locked', '-p', 'resourcefs-core', '--test', 'github_immutable_reference_contract']
+Mutation: '    percent_decode(encoded)\n' -> '    percent_decode(encoded).and_then(|decoded| percent_decode(&decoded))\n'
+RED exit=101
+
+running 6 tests
+test immutable_addresses_expose_typed_commit_and_decoded_source_identity ... FAILED
+test immutable_segment_canonicalization_is_single_pass_and_uppercase ... ok
+test immutable_grammar_rejects_aliases_and_unrepresentable_operands ... ok
+test immutable_segment_constructors_preserve_git_filename_bytes ... ok
+test immutable_source_references_keep_encoded_path_identity ... FAILED
+test immutable_reference_retains_existing_64k_boundary ... ok
+
+failures:
+
+---- immutable_addresses_expose_typed_commit_and_decoded_source_identity stdout ----
+
+thread 'immutable_addresses_expose_typed_commit_and_decoded_source_identity' (177198) panicked at crates/resourcefs-core/tests/github_immutable_reference_contract.rs:48:6:
+immutable source syntax: ResourceError { category: InvalidReference, message: "GitHub source path segments must be nonempty and must not be dot or slash aliases", details: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- immutable_source_references_keep_encoded_path_identity stdout ----
+
+thread 'immutable_source_references_keep_encoded_path_identity' (177203) panicked at crates/resourcefs-core/tests/github_immutable_reference_contract.rs:21:14:
+immutable source syntax must be addressable: ResourceError { category: InvalidReference, message: "malformed percent escape", details: None }
+
+
+failures:
+    immutable_addresses_expose_typed_commit_and_decoded_source_identity
+    immutable_source_references_keep_encoded_path_identity
+
+test result: FAILED. 4 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+     Running tests/github_immutable_reference_contract.rs (target/debug/deps/github_immutable_reference_contract-e2d0ac4ea6caed20)
+error: test failed, to rerun pass `-p resourcefs-core --test github_immutable_reference_contract`
+
+RESTORED GREEN exit=0
+
+running 6 tests
+test immutable_addresses_expose_typed_commit_and_decoded_source_identity ... ok
+test immutable_segment_canonicalization_is_single_pass_and_uppercase ... ok
+test immutable_segment_constructors_preserve_git_filename_bytes ... ok
+test immutable_grammar_rejects_aliases_and_unrepresentable_operands ... ok
+test immutable_source_references_keep_encoded_path_identity ... ok
+test immutable_reference_retains_existing_64k_boundary ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling resourcefs-core v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+     Running tests/github_immutable_reference_contract.rs (target/debug/deps/github_immutable_reference_contract-e2d0ac4ea6caed20)

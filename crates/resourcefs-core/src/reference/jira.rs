@@ -1,10 +1,8 @@
-use std::fmt::Write as _;
-
 use crate::ResourceError;
 
 use super::{
-    AtlassianSiteId, PathReference, ProjectionSelector, invalid_reference, percent_decode,
-    projection_candidate_split, validate_percent_encoding,
+    AtlassianSiteId, PathReference, ProjectionSelector, encode_rfc3986_segment, invalid_reference,
+    percent_decode, projection_candidate_split, validate_percent_encoding,
 };
 
 pub(crate) const JIRA_PREFIX: &str = "jira://";
@@ -224,7 +222,7 @@ impl JiraAddress {
         match self {
             Self::Query { site, query } => {
                 let mut reference = format!("{JIRA_PREFIX}{}/search/", site.as_str());
-                encode_jira_segment(query.as_str(), &mut reference);
+                encode_rfc3986_segment(query.as_str(), &mut reference);
                 reference
             }
             Self::Projects { site } => format!("{JIRA_PREFIX}{}/projects", site.as_str()),
@@ -245,7 +243,7 @@ impl JiraAddress {
             }
             Self::ProjectKeyAlias { site, project_key } => {
                 let mut reference = format!("{JIRA_PREFIX}{}/project-keys/", site.as_str());
-                encode_jira_segment(project_key.as_str(), &mut reference);
+                encode_rfc3986_segment(project_key.as_str(), &mut reference);
                 reference
             }
             Self::Issue {
@@ -263,14 +261,14 @@ impl JiraAddress {
                     JiraIssueResource::Fields => format!("{base}/fields"),
                     JiraIssueResource::Field(field_id) => {
                         let mut reference = format!("{base}/fields/");
-                        encode_jira_segment(field_id.as_str(), &mut reference);
+                        encode_rfc3986_segment(field_id.as_str(), &mut reference);
                         reference
                     }
                 }
             }
             Self::IssueKeyAlias { site, issue_key } => {
                 let mut reference = format!("{JIRA_PREFIX}{}/issue-keys/", site.as_str());
-                encode_jira_segment(issue_key.as_str(), &mut reference);
+                encode_rfc3986_segment(issue_key.as_str(), &mut reference);
                 reference
             }
         }
@@ -359,7 +357,7 @@ fn parse_jira_query(input: &str) -> Result<JiraQuery, ResourceError> {
     let decoded = String::from_utf8(decoded)
         .map_err(|_| invalid_reference("Jira query must decode to UTF-8"))?;
     let mut canonical = String::with_capacity(input.len());
-    encode_jira_segment(&decoded, &mut canonical);
+    encode_rfc3986_segment(&decoded, &mut canonical);
     if canonical != input {
         return Err(invalid_reference(
             "Jira query must use canonical percent encoding",
@@ -372,23 +370,13 @@ fn parse_canonical_jira_segment(input: &str, label: &str) -> Result<String, Reso
     validate_percent_encoding(input)?;
     let decoded = percent_decode(input)?;
     let mut canonical = String::with_capacity(input.len());
-    encode_jira_segment(&decoded, &mut canonical);
+    encode_rfc3986_segment(&decoded, &mut canonical);
     if canonical != input {
         return Err(invalid_reference(format!(
             "{label} must use canonical percent encoding"
         )));
     }
     Ok(decoded)
-}
-
-fn encode_jira_segment(segment: &str, output: &mut String) {
-    for byte in segment.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            output.push(char::from(byte));
-        } else {
-            write!(output, "%{byte:02X}").expect("writing to a String cannot fail");
-        }
-    }
 }
 
 pub(super) fn parse_jira_reference(

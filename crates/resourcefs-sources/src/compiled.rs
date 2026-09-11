@@ -129,6 +129,7 @@ impl SourceAdapter for CompiledSources {
                     .read(reference, operation, acquisition)
                     .await
             }
+            ResourceAddress::Github(_) => Err(github_family_unreadable()),
             ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
                 self.github_source()?
                     .read(reference, operation, acquisition)
@@ -165,6 +166,13 @@ impl MutationAdapter for CompiledSources {
                 ErrorCategory::UnsupportedMutation,
                 "jira:// Resources are read-only; Jira mutation is not supported",
             )),
+            // Unserved family whose refusal precedes configuration: an unmounted
+            // source must not explain a route that never accepts writes, and no
+            // build mounts an increment that does not exist. It names the same
+            // fact the read and search arms name — this build serves no
+            // github:// route — instead of promising a read-only family whose
+            // reads this build cannot serve either.
+            ResourceAddress::Github(_) => Err(github_family_unreadable()),
             ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
                 self.github_source()?.resolve(reference, access).await
             }
@@ -270,6 +278,20 @@ fn github_source_unavailable() -> ResourceError {
     )
 }
 
+/// Refuses an address family this build does not serve.
+///
+/// Distinct from [`github_source_unavailable`]: that one says no repository
+/// authority is declared, and it must never be the answer for a family no
+/// configured source could serve. Commit and source Facts are registered by
+/// the increments that acquire them; until then the same refusal answers on
+/// every build.
+fn github_family_unreadable() -> ResourceError {
+    ResourceError::new(
+        ErrorCategory::UnsupportedProjection,
+        "github:// Resources are not served by the compiled sources",
+    )
+}
+
 fn atlassian_source_unavailable() -> ResourceError {
     ResourceError::new(
         ErrorCategory::SourceUnavailable,
@@ -316,6 +338,9 @@ impl DiscoveryAdapter for CompiledSources {
                     .search(target, pattern, options, operation)
                     .await
             }
+            // No discovery for the immutable family in this increment: the
+            // refusal must not depend on whether a GitHub source is mounted.
+            Some(ResourceAddress::Github(_)) => Err(github_family_unreadable()),
             Some(ResourceAddress::Issue(_)) | Some(ResourceAddress::PullRequest(_)) => {
                 self.github_source()?
                     .search(target, pattern, options, operation)

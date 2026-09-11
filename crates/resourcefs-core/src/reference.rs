@@ -10,10 +10,13 @@ use url::Url;
 
 use crate::{ErrorCategory, ResourceError};
 
+mod github;
 mod jira;
 mod pull;
 mod source_page;
 
+pub(crate) use github::parse_github_reference;
+pub use github::{GithubAddress, GithubCommitId, GithubSourcePath};
 pub(crate) use jira::JIRA_PREFIX;
 pub(crate) use jira::canonical_record_identity as jira_record_identity;
 use jira::parse_jira_reference;
@@ -685,6 +688,7 @@ pub enum ResourceAddress {
     Artifact(ArtifactAddress),
     Local(LocalAddress),
     Https(HttpsAddress),
+    Github(GithubAddress),
     Issue(IssueAddress),
     PullRequest(PullRequestAddress),
     Jira(JiraAddress),
@@ -975,6 +979,19 @@ impl PathReference {
             });
         }
 
+        if requested.starts_with(github::GITHUB_PREFIX) {
+            let (address, projection) = parse_github_reference(&requested)?;
+            let requested = remote_requested(address.canonical_reference(), projection.as_ref());
+            return Ok(Self {
+                requested,
+                address: ResourceAddress::Github(address),
+                projection,
+                selector_candidate: None,
+                selector_error: None,
+                local_candidate: None,
+            });
+        }
+
         if requested.starts_with(JIRA_PREFIX) {
             let (address, projection) = parse_jira_reference(&requested)?;
             let requested = remote_requested(address.canonical_reference(), projection.as_ref());
@@ -1027,8 +1044,9 @@ impl PathReference {
         }
 
         if let Some(raw_name) = requested.strip_prefix(LOCAL_PREFIX) {
-            // Filesystem-backed family: escapes must be validated before
-            // `percent_decode`, whose contract assumes prior validation.
+            // Filesystem-backed family: an encoded separator must not survive
+            // into a path component. `percent_decode` rejects its own malformed
+            // escapes; only the separator rule needs this prior pass.
             validate_percent_encoding(&requested)?;
             if raw_name.is_empty() {
                 return Ok(Self {
@@ -1167,6 +1185,16 @@ impl PathReference {
         ))
     }
 
+    pub fn github(
+        address: GithubAddress,
+        projection: Option<ProjectionSelector>,
+    ) -> Result<Self, ResourceError> {
+        Self::parse(remote_requested(
+            address.canonical_reference(),
+            projection.as_ref(),
+        ))
+    }
+
     pub fn jira(
         address: JiraAddress,
         projection: Option<ProjectionSelector>,
@@ -1209,6 +1237,7 @@ impl PathReference {
             | ResourceAddress::Artifact(_)
             | ResourceAddress::Local(_)
             | ResourceAddress::Https(_)
+            | ResourceAddress::Github(_)
             | ResourceAddress::Issue(_)
             | ResourceAddress::Jira(_)
             | ResourceAddress::PullRequest(_) => None,
@@ -1572,9 +1601,10 @@ fn validate_reference_input(input: &str) -> Result<(), ResourceError> {
 
 fn parse_workspace_address(input: &str) -> Result<WorkspaceAddress, ResourceError> {
     // Filesystem containment: an encoded separator must never survive into a
-    // path component, and every downstream `percent_decode` assumes escapes were
-    // validated here. Non-filesystem families (`https://`, `artifact://`,
-    // catalogs) never reach this function and own their own syntax.
+    // path component. `percent_decode` rejects its own malformed escapes, so
+    // this pass exists for that separator rule. Families that carry their own
+    // syntax (`https://`, `artifact://`, catalogs, `jira://`, `issue://`,
+    // `pr://`, `github://`) never reach this function.
     validate_percent_encoding(input)?;
     let delimiter_input = input.strip_prefix("\\\\?\\").unwrap_or(input);
     if delimiter_input.contains('?') || delimiter_input.contains('#') {
@@ -1745,8 +1775,14 @@ fn percent_decode(input: &str) -> Result<String, ResourceError> {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' {
-            let high = decode_hex(bytes[index + 1]).expect("percent escapes were validated");
-            let low = decode_hex(bytes[index + 2]).expect("percent escapes were validated");
+            let high = bytes
+                .get(index + 1)
+                .and_then(|byte| decode_hex(*byte))
+                .ok_or_else(|| invalid_reference("malformed percent escape"))?;
+            let low = bytes
+                .get(index + 2)
+                .and_then(|byte| decode_hex(*byte))
+                .ok_or_else(|| invalid_reference("malformed percent escape"))?;
             decoded.push(high << 4 | low);
             index += 3;
         } else {
@@ -1760,6 +1796,23 @@ fn percent_decode(input: &str) -> Result<String, ResourceError> {
         return Err(invalid_reference("Path Reference must not decode to NUL"));
     }
     Ok(decoded)
+}
+
+/// The RFC3986 unreserved alphabet, in the one place both the encoder and the
+/// segment parser read it: a family that accepts literal bytes must accept
+/// exactly what this crate emits for them.
+fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+}
+
+fn encode_rfc3986_segment(segment: &str, output: &mut String) {
+    for byte in segment.bytes() {
+        if is_unreserved(byte) {
+            output.push(char::from(byte));
+        } else {
+            write!(output, "%{byte:02X}").expect("writing to a String cannot fail");
+        }
+    }
 }
 
 fn decode_hex(byte: u8) -> Option<u8> {

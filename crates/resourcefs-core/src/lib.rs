@@ -56,15 +56,16 @@ pub use probe::{
 pub use read::{ReadEngine, ReadRequest, TextLimits};
 pub use reference::{
     ArtifactAddress, AtlassianSiteId, CatalogAddress, ConversationCommentId, DiffFileIndex,
-    GithubRepositoryIdentity, HttpsAddress, IssueAddress, IssueNumber, IssueResource, JiraAddress,
-    JiraFieldId, JiraIssueId, JiraIssueKey, JiraIssueResource, JiraProjectId, JiraProjectKey,
-    JiraQuery, LineRange, LineSelector, LocalAddress, LocalName, MAX_ATLASSIAN_SITE_ID_BYTES,
-    MAX_JIRA_ISSUE_ID_BYTES, MAX_JIRA_PROJECT_ID_BYTES, MAX_JIRA_SEGMENT_BYTES,
-    MAX_LOCAL_NAME_BYTES, MAX_PATH_REFERENCE_BYTES, MAX_WORKSPACE_ROOTS, PathReference,
-    ProjectionSelector, PullRequestAddress, PullRequestFact, PullRequestNumber,
-    PullRequestResource, ResourceAddress, ReviewCommentId, ReviewId, SelectedLocalAddress,
-    SelectedWorkspaceAddress, SourceCursor, SourceOffset, WorkspaceAddress, WorkspacePath,
-    WorkspaceRoot, WorkspaceRootId, WorkspaceRootSet,
+    GithubAddress, GithubCommitId, GithubRepositoryIdentity, GithubSourcePath, HttpsAddress,
+    IssueAddress, IssueNumber, IssueResource, JiraAddress, JiraFieldId, JiraIssueId, JiraIssueKey,
+    JiraIssueResource, JiraProjectId, JiraProjectKey, JiraQuery, LineRange, LineSelector,
+    LocalAddress, LocalName, MAX_ATLASSIAN_SITE_ID_BYTES, MAX_JIRA_ISSUE_ID_BYTES,
+    MAX_JIRA_PROJECT_ID_BYTES, MAX_JIRA_SEGMENT_BYTES, MAX_LOCAL_NAME_BYTES,
+    MAX_PATH_REFERENCE_BYTES, MAX_WORKSPACE_ROOTS, PathReference, ProjectionSelector,
+    PullRequestAddress, PullRequestFact, PullRequestNumber, PullRequestResource, ResourceAddress,
+    ReviewCommentId, ReviewId, SelectedLocalAddress, SelectedWorkspaceAddress, SourceCursor,
+    SourceOffset, WorkspaceAddress, WorkspacePath, WorkspaceRoot, WorkspaceRootId,
+    WorkspaceRootSet,
 };
 pub use resource::{
     ArtifactProjectionOrigin, BEHAVIOR_CONTRACT_VERSION, DisplayedLineRange, MAX_ARTIFACT_BYTES,

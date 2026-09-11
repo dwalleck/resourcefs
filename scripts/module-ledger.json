@@ -1,5 +1,19 @@
 {
+  "protected_parents": {
+    "crates/resourcefs-sources/src/github/facts.rs": {
+      "baseline": "635ab170ab57542c18272921298d575da2f8b08a",
+      "stage": "immutable-grammar",
+      "changes": {}
+    }
+  },
   "added_functions": {
+    "immutable-grammar": {
+      "crates/resourcefs-core/src/reference.rs": [
+        "github",
+        "encode_rfc3986_segment",
+        "is_unreserved"
+      ]
+    },
     "transport": {
       "crates/resourcefs-sources/src/http/mod.rs": [
         "last_modified",
@@ -13,6 +27,12 @@
   },
   "baseline": "7de8d1477af6be825bada9015a6996b3f2917c7d",
   "body_changes": {
+    "immutable-grammar": {
+      "crates/resourcefs-core/src/reference.rs": [
+        "parse",
+        "percent_decode"
+      ]
+    },
     "core": {
       "crates/resourcefs-sources/src/atlassian/jira.rs": [
         "read",
@@ -61,6 +81,7 @@
   },
   "forbidden_dependencies": {
     "crates/resourcefs-core/src/acquisition.rs": "serde|serde_json|rmcp|reqwest|tokio|Github|Jira|HttpSubstrate|Instant",
+    "crates/resourcefs-core/src/reference/github.rs": "serde|serde_json|rmcp|reqwest|tokio|HttpSubstrate|PathBuf|aws_lc_rs|base64",
     "crates/resourcefs-core/src/error.rs": "serde_json|rmcp|reqwest|tokio|GithubSource|AtlassianSource|HttpSubstrate|Deserialize|Serializer|Deserializer",
     "crates/resourcefs-core/src/read.rs": "serde_json|rmcp|reqwest|GithubSource|AtlassianSource|GithubConfig|AtlassianSite|HttpSubstrate",
     "crates/resourcefs-core/src/reference/pull.rs": "serde|serde_json|rmcp|reqwest|tokio|Github|Jira|HttpSubstrate",
@@ -129,6 +150,18 @@
     "GITHUB_CACHE_NAMESPACE"
   ],
   "owners": {
+    "crates/resourcefs-core/src/reference/github.rs": {
+      "maximum": 450,
+      "module": "github",
+      "parent": "crates/resourcefs-core/src/reference.rs",
+      "stage": "immutable-grammar",
+      "symbols": [
+        "GithubCommitId",
+        "GithubSourcePath",
+        "GithubAddress",
+        "parse_github_reference"
+      ]
+    },
     "crates/resourcefs-core/src/acquisition.rs": {
       "maximum": 300,
       "module": "acquisition",
@@ -365,6 +398,14 @@
       ]
     }
   },
+  "relocated_symbols": {
+    "immutable-grammar": {
+      "encode_jira_segment": {
+        "name": "encode_rfc3986_segment",
+        "owner": "crates/resourcefs-core/src/reference.rs"
+      }
+    }
+  },
   "protected_limits": {
     "crates/resourcefs-mcp/src/server.rs": 1431,
     "crates/resourcefs-sources/src/github/mod.rs": 1498
@@ -381,7 +422,7 @@
     "dispatch_read",
     "cancelled_read_error"
   ],
-  "stage": "review",
+  "stage": "immutable-grammar",
   "stages": [
     "baseline",
     "core",
@@ -396,7 +437,8 @@
     "continuation",
     "exposure",
     "live",
-    "review"
+    "review",
+    "immutable-grammar"
   ],
   "test_children": {
     "crates/resourcefs-sources/src/github/facts_tests.rs": {

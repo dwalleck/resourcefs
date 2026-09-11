@@ -1,0 +1,50 @@
+=== routing: the unserved family must not be gated on the GitHub mount (F8) ===
+Mutation: fold the family back into the GitHub-record read arm
+  [mutant] thread 'unserved_github_family_is_refused_before_configuration' (669722) panicked at crates/resourcefs-sources/tests/compiled_sources_contract.rs:161:5:
+  [mutant] test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+  [restored] test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.04s
+
+=== typed path ceiling: a path that cannot fit a reference must not exist (F15, F22) ===
+Mutation: remove the typed reference-ceiling check
+  [mutant] thread 'typed_source_paths_stay_within_the_reference_ceiling' (670542) panicked at crates/resourcefs-core/tests/github_immutable_reference_contract.rs:162:10:
+  [mutant] test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+  [restored] test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+=== budget honesty: a debug run must refuse, not pass silently (F21) ===
+  [debug] Error: "run this budget in release mode"
+  [debug] test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 49 filtered out; finished in 0.00s
+  [debug] expected: FAILED with "run this budget in release mode"
+  [release] immutable_reference_budget phase=parse exact_bytes=65536 segments=1024 iterations=100 average_wall_ns=193534 incremental_heap_bytes=449657
+  [release] immutable_reference_budget phase=controls iterations=10000 average_wall_ns=11
+  [release] test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 0.02s
+  [release] bounds: 5ms parse average and 1us control average; heap bound unchanged
+
+=== placement gate: claims, baselines, ledger shape, ownership ===
+  [pristine] exit=0
+  [pristine] expected GREEN
+Mutation: transport-stage responsibility change (the claim must read C02, not C11)
+  [transport mutant] exit=1
+    C02 FAIL crates/resourcefs-sources/src/http/mod.rs: last_modified must remain a pure bounded-response field getter
+  [restored] exit=0
+Mutation: new declaration in a protected parent (C11)
+  [protected parent mutant] exit=1
+    C11 FAIL crates/resourcefs-sources/src/github/facts.rs: new parent responsibility declaration decode_git_tree#1
+  [restored] exit=0
+Mutation: verbatim copy of an owner declaration in another crate (C11 uniqueness)
+  [duplicate ownership mutant] exit=1
+    C11 FAIL crates/resourcefs-mcp/src/acquisition.rs: symbol parse_github_reference belongs in crates/resourcefs-core/src/reference/github.rs
+  [restored] exit=0
+Mutation: protected-parent baseline replaced by a moving branch name
+  [branch baseline mutant] exit=1
+    C11 FAIL crates/resourcefs-sources/src/github/facts.rs: protected parent baseline 'main' is not a full commit id
+Mutation: protected-parent baseline names an absent object
+  [dangling baseline mutant] exit=1
+    C11 FAIL crates/resourcefs-sources/src/github/facts.rs: protected parent baseline 0000000000000000000000000000000000000000 is unresolved: git cat-file -e 0000000000000000000000000000000000000000^{commit} failed (exit 128)
+Mutation: protected-parent stage name mistyped (would silently skip the row)
+  [stage typo mutant] exit=1
+    C02 FAIL scripts/module-ledger.json: protected parent crates/resourcefs-sources/src/github/facts.rs names unknown stage 'immutablegrammar'
+Mutation: wiring_calls entry is not an identifier
+  [wiring shape mutant] exit=1
+    inherited C12 FAIL crates/resourcefs-core/src/reference.rs: non-wiring body change in workspace_address; new_calls=['Github'] added='Github ( _ ) | ResourceAddress ::'; delta=+103
+    C02 FAIL scripts/module-ledger.json: wiring_calls entry 'Github.*' is not an identifier
+  [restored] exit=0

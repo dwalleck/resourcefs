@@ -381,10 +381,12 @@ impl GlobEntry {
             ResourceAddress::Local(_) => matches!(kind, GlobKind::LocalScratch),
             // Remote families are never filesystem-style glob entries.
             ResourceAddress::Https(_)
+            | ResourceAddress::Github(_)
             | ResourceAddress::Issue(_)
             | ResourceAddress::Jira(_)
             | ResourceAddress::PullRequest(_) => false,
         };
+
         if !kind_matches_source {
             return Err(ResourceError::new(
                 ErrorCategory::InvalidReference,
@@ -1252,6 +1254,10 @@ fn canonical_identity(reference: &PathReference) -> Result<String, ResourceError
         }
         ResourceAddress::Https(address) => {
             reference.projection().is_none() && reference.requested() == address.as_str()
+        }
+        ResourceAddress::Github(address) => {
+            reference.projection().is_none()
+                && reference.requested() == address.canonical_reference()
         }
         // A typed `:page:<n>` continuation names a distinct bounded upstream
         // page, not a byte offset into one Resource, so a hit inside it is

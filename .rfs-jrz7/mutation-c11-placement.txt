@@ -1,0 +1,222 @@
+Target: crates/resourcefs-sources/src/github/facts.rs
+Command: ['python', '-c', "import subprocess, sys; subprocess.run(['cargo','check','--locked','-p','resourcefs-sources'], check=True); sys.exit(subprocess.call(['python','scripts/module_shape.py','--root','.','--stage','immutable-grammar']))"]
+Mutation: 'mod identity;\n' -> 'mod identity;\n\nfn decode_git_tree(bytes: &[u8]) -> serde_json::Result<serde_json::Value> {\n    serde_json::from_slice(bytes)\n}\n'
+RED exit=1
+C1 crates/resourcefs-core/src/reference.rs: 2089 -> 2044, maximum 2080
+C1 crates/resourcefs-core/src/discovery.rs: 1342 -> 1347, maximum 1367
+C1 crates/resourcefs-sources/src/atlassian/jira.rs: 467 -> 294, maximum 317
+C1 crates/resourcefs-sources/src/atlassian/wire.rs: 571 -> 585, maximum 601
+C1 crates/resourcefs-sources/src/atlassian/render.rs: 480 -> 482, maximum 488
+C1 crates/resourcefs-sources/src/http/mod.rs: 1759 -> 1592, maximum 1679
+C12 baseline=fad4cf2c11ec27f4272355c9e741badc9be0920e upstream=refs/remotes/origin/main
+C12 crates/resourcefs-core/src/discovery.rs: lines=1347 maximum=1367
+C12 crates/resourcefs-core/src/reference.rs: lines=2044 maximum=2080
+C12 crates/resourcefs-core/src/reference/jira.rs: lines=442 maximum=650
+C12 crates/resourcefs-core/src/reference/source_page.rs: lines=97 maximum=160
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: lines=294 maximum=317
+C12 crates/resourcefs-sources/src/atlassian/jira/browse.rs: lines=334 maximum=600
+C12 crates/resourcefs-sources/src/atlassian/jira/cursor.rs: lines=157 maximum=250
+C12 crates/resourcefs-sources/src/atlassian/jira/query.rs: lines=104 maximum=400
+C12 crates/resourcefs-sources/src/atlassian/jira/transport.rs: lines=333 maximum=400
+C12 crates/resourcefs-sources/src/atlassian/render.rs: lines=482 maximum=488
+C12 crates/resourcefs-sources/src/atlassian/render/collections.rs: lines=173 maximum=350
+C12 crates/resourcefs-sources/src/atlassian/wire.rs: lines=585 maximum=601
+C12 crates/resourcefs-sources/src/atlassian/wire/collections.rs: lines=551 maximum=600
+C12 crates/resourcefs-sources/src/atlassian/wire/query.rs: lines=127 maximum=200
+C12 crates/resourcefs-sources/src/http/mod.rs: lines=1592 maximum=1679
+C12 crates/resourcefs-sources/src/http/read.rs: lines=350 maximum=350
+C12 crates/resourcefs-sources/src/http/request.rs: lines=228 maximum=280
+C12 crates/resourcefs-core/src/discovery.rs: baseline-delta=+6
+C12 crates/resourcefs-core/src/discovery.rs: wiring body new changed; semantic placement review still required
+C12 crates/resourcefs-core/src/discovery.rs: wiring body canonical_identity changed; semantic placement review still required
+C12 crates/resourcefs-core/src/reference.rs: baseline-delta=+103
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta canonical_reference
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta parse
+C12 crates/resourcefs-core/src/reference.rs: wiring body workspace_address changed; semantic placement review still required
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta parse_pull_request_address
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta percent_decode
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: baseline-delta=+9
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body read_resource changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: successor-owned body delta read
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body catalog_entries changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: successor-owned body delta search
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body unsupported_jira_projection changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/render.rs: baseline-delta=+0
+C12 crates/resourcefs-sources/src/atlassian/wire.rs: baseline-delta=+1
+C12 crates/resourcefs-sources/src/http/mod.rs: baseline-delta=-74
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta new
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta fetch_attempt
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta header_within_ceiling
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta read_bounded
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta redirect_policy
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta cancelled_mid_request
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta policy_error_or
+C02 stage=immutable-grammar baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main
+    Checking resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources)
+warning: unused import: `AllowedOrigin`
+ --> crates/resourcefs-sources/src/atlassian/render.rs:4:5
+  |
+4 |     AllowedOrigin, AtlassianSiteId, ErrorCategory, JiraAddress, JiraIssueResource, PathReference,
+  |     ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `id`, `canonical_json`, and `content_type` are never read
+  --> crates/resourcefs-sources/src/atlassian/render.rs:25:16
+   |
+24 | pub(crate) struct RenderedField {
+   |                   ------------- fields in this struct
+25 |     pub(crate) id: String,
+   |                ^^
+26 |     pub(crate) canonical_json: String,
+   |                ^^^^^^^^^^^^^^
+27 |     pub(crate) content_type: &'static str,
+   |                ^^^^^^^^^^^^
+   |
+   = note: `RenderedField` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `canonical_reference`, `field_index`, `fields`, and `warnings` are never read
+  --> crates/resourcefs-sources/src/atlassian/render.rs:32:16
+   |
+31 | pub(crate) struct RenderedIssue {
+   |                   ------------- fields in this struct
+32 |     pub(crate) canonical_reference: String,
+   |                ^^^^^^^^^^^^^^^^^^^
+33 |     pub(crate) aggregate: String,
+34 |     pub(crate) field_index: String,
+   |                ^^^^^^^^^^^
+35 |     pub(crate) fields: Vec<RenderedField>,
+   |                ^^^^^^
+36 |     pub(crate) warnings: Vec<ProjectionWarning>,
+   |                ^^^^^^^^
+   |
+   = note: `RenderedIssue` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `self_url` is never read
+   --> crates/resourcefs-sources/src/atlassian/wire.rs:391:16
+    |
+388 | pub(crate) struct JiraIssue {
+    |                   --------- field in this struct
+...
+391 |     pub(crate) self_url: String,
+    |                ^^^^^^^^
+    |
+    = note: `JiraIssue` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: function `decode_git_tree` is never used
+ --> crates/resourcefs-sources/src/github/facts.rs:5:4
+  |
+5 | fn decode_git_tree(bytes: &[u8]) -> serde_json::Result<serde_json::Value> {
+  |    ^^^^^^^^^^^^^^^
+
+warning: `resourcefs-sources` (lib) generated 5 warnings (run `cargo fix --lib -p resourcefs-sources` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.52s
+C11 FAIL crates/resourcefs-sources/src/github/facts.rs: new parent responsibility declaration decode_git_tree#1
+
+RESTORED GREEN exit=0
+C1 crates/resourcefs-core/src/reference.rs: 2089 -> 2044, maximum 2080
+C1 crates/resourcefs-core/src/discovery.rs: 1342 -> 1347, maximum 1367
+C1 crates/resourcefs-sources/src/atlassian/jira.rs: 467 -> 294, maximum 317
+C1 crates/resourcefs-sources/src/atlassian/wire.rs: 571 -> 585, maximum 601
+C1 crates/resourcefs-sources/src/atlassian/render.rs: 480 -> 482, maximum 488
+C1 crates/resourcefs-sources/src/http/mod.rs: 1759 -> 1592, maximum 1679
+C12 baseline=fad4cf2c11ec27f4272355c9e741badc9be0920e upstream=refs/remotes/origin/main
+C12 crates/resourcefs-core/src/discovery.rs: lines=1347 maximum=1367
+C12 crates/resourcefs-core/src/reference.rs: lines=2044 maximum=2080
+C12 crates/resourcefs-core/src/reference/jira.rs: lines=442 maximum=650
+C12 crates/resourcefs-core/src/reference/source_page.rs: lines=97 maximum=160
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: lines=294 maximum=317
+C12 crates/resourcefs-sources/src/atlassian/jira/browse.rs: lines=334 maximum=600
+C12 crates/resourcefs-sources/src/atlassian/jira/cursor.rs: lines=157 maximum=250
+C12 crates/resourcefs-sources/src/atlassian/jira/query.rs: lines=104 maximum=400
+C12 crates/resourcefs-sources/src/atlassian/jira/transport.rs: lines=333 maximum=400
+C12 crates/resourcefs-sources/src/atlassian/render.rs: lines=482 maximum=488
+C12 crates/resourcefs-sources/src/atlassian/render/collections.rs: lines=173 maximum=350
+C12 crates/resourcefs-sources/src/atlassian/wire.rs: lines=585 maximum=601
+C12 crates/resourcefs-sources/src/atlassian/wire/collections.rs: lines=551 maximum=600
+C12 crates/resourcefs-sources/src/atlassian/wire/query.rs: lines=127 maximum=200
+C12 crates/resourcefs-sources/src/http/mod.rs: lines=1592 maximum=1679
+C12 crates/resourcefs-sources/src/http/read.rs: lines=350 maximum=350
+C12 crates/resourcefs-sources/src/http/request.rs: lines=228 maximum=280
+C12 crates/resourcefs-core/src/discovery.rs: baseline-delta=+6
+C12 crates/resourcefs-core/src/discovery.rs: wiring body new changed; semantic placement review still required
+C12 crates/resourcefs-core/src/discovery.rs: wiring body canonical_identity changed; semantic placement review still required
+C12 crates/resourcefs-core/src/reference.rs: baseline-delta=+103
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta canonical_reference
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta parse
+C12 crates/resourcefs-core/src/reference.rs: wiring body workspace_address changed; semantic placement review still required
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta parse_pull_request_address
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta percent_decode
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: baseline-delta=+9
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body read_resource changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: successor-owned body delta read
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body catalog_entries changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: successor-owned body delta search
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body unsupported_jira_projection changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/render.rs: baseline-delta=+0
+C12 crates/resourcefs-sources/src/atlassian/wire.rs: baseline-delta=+1
+C12 crates/resourcefs-sources/src/http/mod.rs: baseline-delta=-74
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta new
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta fetch_attempt
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta header_within_ceiling
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta read_bounded
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta redirect_policy
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta cancelled_mid_request
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta policy_error_or
+C02 stage=immutable-grammar baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main
+C02 PASS stage=immutable-grammar baseline=7de8d1477af6be825bada9015a6996b3f2917c7d
+    Checking resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources)
+warning: unused import: `AllowedOrigin`
+ --> crates/resourcefs-sources/src/atlassian/render.rs:4:5
+  |
+4 |     AllowedOrigin, AtlassianSiteId, ErrorCategory, JiraAddress, JiraIssueResource, PathReference,
+  |     ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `id`, `canonical_json`, and `content_type` are never read
+  --> crates/resourcefs-sources/src/atlassian/render.rs:25:16
+   |
+24 | pub(crate) struct RenderedField {
+   |                   ------------- fields in this struct
+25 |     pub(crate) id: String,
+   |                ^^
+26 |     pub(crate) canonical_json: String,
+   |                ^^^^^^^^^^^^^^
+27 |     pub(crate) content_type: &'static str,
+   |                ^^^^^^^^^^^^
+   |
+   = note: `RenderedField` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `canonical_reference`, `field_index`, `fields`, and `warnings` are never read
+  --> crates/resourcefs-sources/src/atlassian/render.rs:32:16
+   |
+31 | pub(crate) struct RenderedIssue {
+   |                   ------------- fields in this struct
+32 |     pub(crate) canonical_reference: String,
+   |                ^^^^^^^^^^^^^^^^^^^
+33 |     pub(crate) aggregate: String,
+34 |     pub(crate) field_index: String,
+   |                ^^^^^^^^^^^
+35 |     pub(crate) fields: Vec<RenderedField>,
+   |                ^^^^^^
+36 |     pub(crate) warnings: Vec<ProjectionWarning>,
+   |                ^^^^^^^^
+   |
+   = note: `RenderedIssue` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `self_url` is never read
+   --> crates/resourcefs-sources/src/atlassian/wire.rs:391:16
+    |
+388 | pub(crate) struct JiraIssue {
+    |                   --------- field in this struct
+...
+391 |     pub(crate) self_url: String,
+    |                ^^^^^^^^
+    |
+    = note: `JiraIssue` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: `resourcefs-sources` (lib) generated 4 warnings (run `cargo fix --lib -p resourcefs-sources` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.69s

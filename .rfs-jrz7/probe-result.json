@@ -1,0 +1,82 @@
+{
+  "sourceRevision": "635ab170ab57542c18272921298d575da2f8b08a",
+  "repository": "dwalleck/resourcefs",
+  "oracle": "git cat-file / git ls-tree against local object database",
+  "requests": [
+    {
+      "method": "GET",
+      "path": "commits/635ab170ab57542c18272921298d575da2f8b08a",
+      "restApiVersion": "2022-11-28"
+    },
+    {
+      "method": "GET",
+      "path": "git/trees/c440246484e340dfe1d43fda5dcc31ea6b03a89a",
+      "restApiVersion": "2022-11-28"
+    },
+    {
+      "method": "GET",
+      "path": "git/trees/3970e21fe17460acbbb7e51fbe7ebbce621cd2a2",
+      "restApiVersion": "2022-11-28"
+    },
+    {
+      "method": "GET",
+      "path": "git/trees/560584718bd3ad724703d9612a49692dab774646",
+      "restApiVersion": "2022-11-28"
+    },
+    {
+      "method": "GET",
+      "path": "git/blobs/8b57d630ab71fbc6daa17d949b311029362ff5aa",
+      "restApiVersion": "2022-11-28"
+    }
+  ],
+  "comparisons": [
+    {
+      "premise": "P1",
+      "case": "commit",
+      "sha": "635ab170ab57542c18272921298d575da2f8b08a",
+      "tree": "c440246484e340dfe1d43fda5dcc31ea6b03a89a",
+      "parents": [
+        "0dae3b64af3e249dd4ef35b43e8c4641adc750ca",
+        "04ddca391d6b1530e57aba509d12459ac59fa84e"
+      ],
+      "messageTrailingNewlines": {
+        "provider": 0,
+        "git": 0
+      },
+      "result": "PASS"
+    },
+    {
+      "premise": "P1",
+      "case": "tree",
+      "path": "",
+      "sha": "c440246484e340dfe1d43fda5dcc31ea6b03a89a",
+      "entries": 43,
+      "result": "PASS"
+    },
+    {
+      "premise": "P1",
+      "case": "tree",
+      "path": "crates/",
+      "sha": "3970e21fe17460acbbb7e51fbe7ebbce621cd2a2",
+      "entries": 3,
+      "result": "PASS"
+    },
+    {
+      "premise": "P1",
+      "case": "tree",
+      "path": "crates/resourcefs-core/",
+      "sha": "560584718bd3ad724703d9612a49692dab774646",
+      "entries": 3,
+      "result": "PASS"
+    },
+    {
+      "premise": "P1",
+      "case": "blob",
+      "sha": "8b57d630ab71fbc6daa17d949b311029362ff5aa",
+      "size": 1063,
+      "sha256": "dbef110105ca17fba63d1785fce00321b083c30310062abd2218c0154619698b",
+      "result": "PASS"
+    }
+  ],
+  "scope": "Pinned existing ASCII nested path only; no new feature enforcement, exotic paths, binary blob, symlink or submodule provider proof."
+}
