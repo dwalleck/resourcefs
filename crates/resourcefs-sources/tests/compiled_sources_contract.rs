@@ -160,6 +160,18 @@ async fn unmounted_github_family_refuses_reads_without_faking_a_projection() {
         .await
         .expect_err("no compiled source can acquire without configuration");
     assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    // Caller controls cannot reword it: the family is served by this build,
+    // and only the missing configuration decides the answer.
+    let controlled = fixture
+        .compiled
+        .read(
+            &reference,
+            &OperationGuard::new(),
+            Some(&resourcefs_core::ReadAcquisitionLimits::default()),
+        )
+        .await
+        .expect_err("controls cannot change a configuration-derived refusal");
+    assert_eq!(controlled.category(), ErrorCategory::SourceUnavailable);
     // Discovery and mutation are refused by the family itself, so neither
     // answer may change with the mount state or the caller's control set.
     let target = SearchTarget::resource(reference.clone());
@@ -179,8 +191,11 @@ async fn unmounted_github_family_refuses_reads_without_faking_a_projection() {
         .compiled
         .resolve(&reference, MutationAccess::Update)
         .await
-        .expect_err("immutable facts accept no mutation");
-    assert_eq!(mutation.category(), ErrorCategory::UnsupportedMutation);
+        .expect_err("no compiled route serves an unserved family's writes either");
+    // One address, one claim: discovery and writing name the same fact this
+    // build cannot serve, and neither depends on configuration.
+    assert_eq!(mutation.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(mutation.message(), search.message());
 }
 
 #[tokio::test]

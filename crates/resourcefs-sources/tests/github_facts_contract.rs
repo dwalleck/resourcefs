@@ -1718,22 +1718,55 @@ async fn immutable_commit_production_budget() -> Result<(), &'static str> {
     Ok(())
 }
 
-fn immutable_reference_with_size(total_bytes: usize) -> String {
-    const SEGMENT_COUNT: usize = 1_024;
+/// Fixed bytes a `github://` reference spends outside its source path.
+fn reference_framing_bytes() -> usize {
+    format!("github://owner/repo/source/{}/", "a".repeat(40)).len() + "/facts".len()
+}
+
+/// `github://` source reference of exactly `total_bytes` carried by `segments`
+/// path segments: every segment but the first is one canonical byte.
+fn immutable_reference_with_size(total_bytes: usize, segments: usize) -> String {
     let prefix = format!("github://owner/repo/source/{}/", "a".repeat(40));
     let suffix = "/facts";
-    let separator_bytes = 2 * (SEGMENT_COUNT - 1);
+    let separator_bytes = 2 * (segments - 1);
     let first_segment_len = total_bytes - prefix.len() - suffix.len() - separator_bytes;
-    assert!(first_segment_len > 0);
+    assert!(
+        first_segment_len > 0,
+        "shape does not fit {total_bytes} bytes"
+    );
     let mut reference = String::with_capacity(total_bytes);
     reference.push_str(&prefix);
     reference.push_str(&"x".repeat(first_segment_len));
-    for _ in 1..SEGMENT_COUNT {
+    for _ in 1..segments {
         reference.push_str("/x");
     }
     reference.push_str(suffix);
     assert_eq!(reference.len(), total_bytes);
     reference
+}
+
+/// The most segments a reference of `total_bytes` can carry: one byte each,
+/// every one after the first paying a separator as well.
+fn adversarial_segment_count(total_bytes: usize) -> usize {
+    (total_bytes - reference_framing_bytes()).div_ceil(2)
+}
+
+/// Average wall time and peak incremental heap for `iterations` parses.
+fn parse_cost(reference: &str, iterations: u32) -> (Duration, usize) {
+    let baseline = FACTS_CURRENT_HEAP.load(Ordering::Acquire);
+    FACTS_PEAK_HEAP.store(baseline, Ordering::Release);
+    let started = Instant::now();
+    for _ in 0..iterations {
+        let parsed = PathReference::parse(reference).expect("exact maximum reference");
+        assert_eq!(parsed.requested(), reference);
+        black_box(&parsed);
+        drop(parsed);
+    }
+    let average = started.elapsed() / iterations;
+    let incremental_heap = FACTS_PEAK_HEAP
+        .load(Ordering::Acquire)
+        .saturating_sub(baseline);
+    (average, incremental_heap)
 }
 
 #[test]
@@ -1746,21 +1779,14 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
     }
     const EXACT_BYTES: usize = 65_536;
     const ITERATIONS: usize = 100;
-    let exact = immutable_reference_with_size(EXACT_BYTES);
-    let baseline = FACTS_CURRENT_HEAP.load(Ordering::Acquire);
-    FACTS_PEAK_HEAP.store(baseline, Ordering::Release);
-    let started = Instant::now();
-    for _ in 0..ITERATIONS {
-        let parsed = PathReference::parse(&exact).expect("exact maximum reference");
-        assert_eq!(parsed.requested(), exact);
-        black_box(&parsed);
-        drop(parsed);
-    }
-    let elapsed = started.elapsed();
-    let incremental_heap = FACTS_PEAK_HEAP
-        .load(Ordering::Acquire)
-        .saturating_sub(baseline);
-    let average = elapsed / ITERATIONS as u32;
+    const SEGMENT_COUNT: usize = 1_024;
+    // The cheapest and the most expensive segment shape the same ceiling
+    // admits. A path segment costs one `String` plus its `Vec` slot on top of
+    // its bytes, so the adversarial shape allocates about 32x what one long
+    // segment costs at the same total; a bound derived from the cheap shape
+    // alone cannot see a per-segment regression.
+    let cheap = immutable_reference_with_size(EXACT_BYTES, SEGMENT_COUNT);
+    let (average, incremental_heap) = parse_cost(&cheap, ITERATIONS as u32);
     // Release measurement at this revision: 225_837ns average for a 65_536-byte
     // reference with 1_024 segments. The sibling `reference_parse_budget`
     // allows 1ms for a 183-byte input; 5ms is ~70x tighter per byte.
@@ -1773,11 +1799,34 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
         "incremental parser heap {incremental_heap}"
     );
     println!(
-        "immutable_reference_budget phase=parse exact_bytes={EXACT_BYTES} segments=1024 iterations={ITERATIONS} average_wall_ns={} incremental_heap_bytes={incremental_heap}",
+        "immutable_reference_budget phase=parse exact_bytes={EXACT_BYTES} segments={SEGMENT_COUNT} iterations={ITERATIONS} average_wall_ns={} incremental_heap_bytes={incremental_heap}",
         average.as_nanos()
     );
 
-    let over = immutable_reference_with_size(EXACT_BYTES + 1);
+    let adversarial_segments = adversarial_segment_count(EXACT_BYTES);
+    let adversarial = immutable_reference_with_size(EXACT_BYTES, adversarial_segments);
+    let (worst_average, worst_heap) = parse_cost(&adversarial, ITERATIONS as u32);
+    // Release measurement at this revision: 4_675_798ns average and 2_194_430
+    // heap bytes for the same 65_536-byte reference split into 32_731 segments —
+    // 6.3x the cheap shape's time and 4.9x its heap, because every segment costs
+    // one `String` and its `Vec` slot before its byte. The wall bound keeps the
+    // cheap shape's ~6x headroom; the heap bound allows 2x the measured
+    // structural cost, so a per-segment regression cannot hide under a bound
+    // calibrated on one long segment.
+    assert!(
+        worst_average <= Duration::from_millis(30),
+        "adversarial parser wall time {worst_average:?}"
+    );
+    assert!(
+        worst_heap <= 64 * EXACT_BYTES,
+        "adversarial parser heap {worst_heap}"
+    );
+    println!(
+        "immutable_reference_budget phase=parse exact_bytes={EXACT_BYTES} segments={adversarial_segments} iterations={ITERATIONS} average_wall_ns={} incremental_heap_bytes={worst_heap}",
+        worst_average.as_nanos()
+    );
+
+    let over = immutable_reference_with_size(EXACT_BYTES + 1, SEGMENT_COUNT);
     let error = PathReference::parse(&over).expect_err("reference above hard ceiling");
     assert_eq!(error.category(), ErrorCategory::LimitExceeded);
 

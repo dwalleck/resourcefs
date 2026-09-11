@@ -97,3 +97,23 @@ Affected named mutations: .rfs-jrz7/mutation-review2.txt
 - budget honesty: debug run FAILED with "run this budget in release mode"; release run PASS with average_wall_ns=193534 (parse) and 11 (controls) against 5ms/1us bounds.
 - placement gate: transport mutant reports C02 (was C11 before the repair); protected-parent mutant reports C11; a verbatim owner-declaration copy in another crate reports C11; branch-name baseline, dangling baseline, mistyped stage and non-identifier wiring_calls entry each fail closed; every restoration is green.
 - The decoded-control mutation (.rfs-jrz7/mutation-c6-controls.txt) travels with the dimension to the increment that enforces it.
+
+=== Review round 3 re-verification (2026-09-10) ===
+Source state: the four repair commits on top of 6e1c55c (ffc7510 gate, 276177c core, a8bc564 sources, c8280ae fences), worktree resourcefs-wt-jrz7-fix.
+Command: python3 scripts/ci-gates.py
+Result: All repository gates passed (exit 0) — module placement, formatting, clippy with -D warnings, all-feature debug and release functional legs, the registered ignored-budget roster, and cargo-deny (advisories/bans/licenses/sources ok). Runner wall time 3668 s; the earlier interrupted attempts (tool deadline, mid-edit) were abandoned rather than reconciled.
+
+Affected named mutations: .rfs-jrz7/mutation-review3.txt, produced by the re-runnable .rfs-jrz7/mutation-review3.py. Nine cases; the reviewed side is the 6e1c55c scripts plus that ledger, the repaired side is the working tree, and each case injects exactly one policy row:
+- M1 pure move of a policy-tracked helper: reviewed fails at the symbol's own approved owner; repaired passes.
+- M2 pure move to an owner outside the watch list: reviewed aborts on `unknown historical owner symbol`; repaired passes (a zero count would still fail, so the census reaching discovery.rs is what the pass proves).
+- M3 pure move of a symbol the policy does not track: reviewed aborts; repaired passes.
+- M4 retired name still declared: both gates fail identically — the retirement check was not relaxed.
+- M5 owner does not declare the moved symbol: both gates fail identically — the placement check was not relaxed.
+- M6 protected parent present now, absent at its pin: reviewed aborts with an anonymous oracle-input failure and abandons every other check; repaired reports C11 against the row's path.
+- M7 inline cfg(test) copy in an owner file: reviewed fails; repaired passes.
+- M8 divergent same-name copy in the owner's directory: reviewed passes (missed); repaired fails.
+- M9 trait bearing an owned name in the owner file: reviewed fails only as a generic seam; repaired also reports the second declaration.
+
+Production budgets (release, this revision): immutable_reference_parse_budget PASS — cheap shape (1,024 segments) 1.03 ms / 449,657 B against 5 ms and 16·64 KiB + 1 MiB; adversarial shape (32,731 segments) 5.87 ms / 2,194,430 B against 30 ms and 64·64 KiB; control construction 29 ns against 1 µs. Observed range across release runs: cheap 0.65–1.03 ms, adversarial 4.4–5.9 ms (idle versus loaded machine).
+
+Per-commit scope: the gate repair carries its own A/B harness and log; the core repair carries the typed-path bound and its three fences; the sources repair carries the single family claim and the paired mounted/unmounted fences; the fence repair carries the C19 rationale/row and the adversarial budget shape. No commit changes behavior that a later commit in the same repair also changes.

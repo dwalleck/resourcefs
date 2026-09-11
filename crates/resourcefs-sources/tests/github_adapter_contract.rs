@@ -756,6 +756,7 @@ async fn mounted_registry_keeps_the_family_discovery_refusal() {
         "github://owner/repo/commits/0123456789abcdef0123456789abcdef01234567/facts",
     )
     .expect("immutable commit reference");
+
     let target = SearchTarget::resource(reference.clone());
     let search = compiled
         .search(
@@ -768,6 +769,13 @@ async fn mounted_registry_keeps_the_family_discovery_refusal() {
         .expect_err("no compiled source discovers github://");
     assert_eq!(search.category(), ErrorCategory::UnsupportedProjection);
     assert!(search.details().is_none());
+    // The mutation route makes the same claim, on a mounted build too: an
+    // unserved family has no compiled write route.
+    let mutation = MutationAdapter::resolve(&compiled, &reference, MutationAccess::Update)
+        .await
+        .expect_err("an unserved family has no compiled write route");
+    assert_eq!(mutation.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(mutation.message(), search.message());
 }
 
 #[tokio::test]

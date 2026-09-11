@@ -64,17 +64,33 @@ DECL = re.compile(r"\b(?:fn|struct|enum|trait|const|type)\s+([A-Za-z_]\w*)")
 FN = re.compile(r"\bfn\s+([A-Za-z_]\w*)")
 TOKEN = re.compile(r"[A-Za-z_]\w*|\d+|::|=>|->|[^\s]")
 CALL = re.compile(r"\b([A-Za-z_]\w*)\s*(?:!\s*)?\(")
+# A PascalCase path segment qualified by another PascalCase segment is an enum
+# variant or tuple constructor, not a function call: Rust spells functions in
+# snake_case. Reading `ResourceAddress::Github(_)` as a call is what forced an
+# allowlist entry every time a family added a match arm.
+VARIANT_CALL = re.compile(r"\b[A-Z]\w*\s*::\s*([A-Z]\w*)\s*(?:!\s*)?\(")
 CONTROL = re.compile(r"\b(?:for|while|loop|unsafe)\b|\b(?:sort\w*|spawn\w*|sleep|timeout\w*)\s*\(")
+
+
+def calls(code):
+    """Call names in `code`, excluding variant and constructor paths."""
+    variants = {match.start(1) for match in VARIANT_CALL.finditer(code)}
+    return [match.group(1) for match in CALL.finditer(code)
+            if match.start(1) not in variants]
+
 # Historical C1 placement obligations are permanent policy, not executable
 # evidence. Keep their original owners, stages, and responsibility checks here
 # so the active successor gate can run without importing an archived checkout.
 HISTORICAL_PARENTS = {
-    CORE + "reference.rs": (2089, 2080),
-    CORE + "discovery.rs": (1342, 1367),
-    SOURCES + "atlassian/jira.rs": (467, 317),
-    SOURCES + "atlassian/wire.rs": (571, 601),
-    SOURCES + "atlassian/render.rs": (480, 488),
-    HTTP + "mod.rs": (1759, 1679),
+    # The baseline count is the archived observation; the ceiling is the one
+    # ceiling this policy states for that parent, so raising a tripwire cannot
+    # leave these two tables disagreeing.
+    CORE + "reference.rs": (2089, PARENTS[CORE + "reference.rs"]),
+    CORE + "discovery.rs": (1342, PARENTS[CORE + "discovery.rs"]),
+    SOURCES + "atlassian/jira.rs": (467, PARENTS[SOURCES + "atlassian/jira.rs"]),
+    SOURCES + "atlassian/wire.rs": (571, PARENTS[SOURCES + "atlassian/wire.rs"]),
+    SOURCES + "atlassian/render.rs": (480, PARENTS[SOURCES + "atlassian/render.rs"]),
+    HTTP + "mod.rs": (1759, PARENTS[HTTP + "mod.rs"]),
 }
 HISTORICAL_CHILD_LIMITS = {
     CORE + "reference/jira.rs": 650,
@@ -102,7 +118,10 @@ HISTORICAL_REQUIRED = {
 }
 HISTORICAL_OWNERS = {
     "parse_jira_address": CORE + "reference/jira.rs",
-    "encode_jira_segment": CORE + "reference/jira.rs",
+    # Relocated out of Jira's family grammar by rfs-jrz7 and renamed there; the
+    # pinned policy records current ownership, and `relocated_symbols` carries
+    # only the migration (the retired name must not reappear).
+    "encode_rfc3986_segment": CORE + "reference.rs",
     "fetch_bounded_attempts": SOURCES + "http/read.rs",
     "decode_project_page": SOURCES + "atlassian/wire/collections.rs",
     "decode_project": SOURCES + "atlassian/wire/collections.rs",
@@ -271,15 +290,31 @@ def check_historical(root, stage, transition=None):
     historical_owners = dict(HISTORICAL_OWNERS)
     if transition is not None:
         for old, relocation in transition.relocated_symbols.items():
-            if old not in historical_owners:
-                raise ValueError(f"unknown historical owner symbol {old!r}")
-            del historical_owners[old]
+            # The row is authoritative for a migration the pinned policy cannot
+            # spell: the retired name leaves the census and the symbol's current
+            # name and owner enter it. A row that keeps the name is a pure
+            # ownership move, which the ownership rule below then fails wherever
+            # a declaration is left outside the approved owner.
+            historical_owners.pop(old, None)
             historical_owners[relocation['name']] = relocation['owner']
     relocated_counts = {
         row['name']: 0 for row in (
             transition.relocated_symbols.values() if transition is not None else ()
         )
     }
+    if relocated_counts:
+        # A relocated helper's approved owner may sit anywhere in the production
+        # tree, not only inside the historical watch list, so the one-owner count
+        # reads every production source. Only files that name a relocated symbol
+        # pay for masking.
+        for directory in sorted((root / "crates").glob("*/src")):
+            for path in sorted(directory.rglob("*.rs")):
+                source = path.read_text(encoding="utf-8")
+                if not any(name in source for name in relocated_counts):
+                    continue
+                for name in HISTORICAL_DECLARATION.findall(production(source)):
+                    if name in relocated_counts:
+                        relocated_counts[name] += 1
     paths = {path for directory in watched for path in directory.rglob("*.rs")}
     paths.add(root / CORE / "reference.rs")
     for path in sorted(paths):
@@ -292,9 +327,10 @@ def check_historical(root, stage, transition=None):
                 fail(relative, f"{lines} lines exceeds child tripwire {maximum}")
         for name in HISTORICAL_DECLARATION.findall(source):
             owner = historical_owners.get(name)
-            if name in relocated_counts:
-                relocated_counts[name] += 1
-            if transition is not None and name in transition.relocated_symbols:
+            relocation = None if transition is None else transition.relocated_symbols.get(name)
+            if relocation is not None and (
+                relocation['name'] != name or relative != relocation['owner']
+            ):
                 fail(relative, f"obsolete shared helper {name} must migrate to its approved owner")
             if relative.startswith(SOURCES + "atlassian/jira") and name in HISTORICAL_JIRA_TRANSPORT:
                 owner = SOURCES + "atlassian/jira/transport.rs"
@@ -534,10 +570,12 @@ def check(root, repository, stage, transition=None):
                 if tag in ("insert", "replace"):
                     added.extend(new_tokens[start:end])
             additions = " ".join(added)
-            new_calls = set(CALL.findall(body)) - set(CALL.findall(old_body))
-            allowed_calls = {"read_query", "Query"} if path == SOURCES + "atlassian/jira.rs" else {"Query"}
-            if transition is not None:
-                allowed_calls.update(transition.wiring_calls.get(path, set()))
+            new_calls = set(calls(body)) - set(calls(old_body))
+            # The one admitted facade call: the extraction's own dispatcher,
+            # which the historical invocation has no changed-body row to admit.
+            # Variant paths are excluded by `calls` instead of an allowlist, so a
+            # new family adds no ledger entry.
+            allowed_calls = {"read_query"} if path == SOURCES + "atlassian/jira.rs" else set()
             forbidden_calls = new_calls - allowed_calls
             if CONTROL.search(additions) or forbidden_calls:
                 fail(path, f"non-wiring body change in {symbol}; new_calls={sorted(forbidden_calls)} added={additions[:160]!r}; delta={delta:+d}")

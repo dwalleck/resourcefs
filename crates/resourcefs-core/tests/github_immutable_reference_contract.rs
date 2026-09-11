@@ -153,17 +153,78 @@ fn typed_immutable_addresses_round_trip_through_the_public_constructor() {
 }
 
 #[test]
-fn typed_source_paths_stay_within_the_reference_ceiling() {
-    let exact = GithubSourcePath::new(vec!["a".repeat(MAX_PATH_REFERENCE_BYTES)])
-        .expect("exact ceiling is inclusive");
-    assert_eq!(exact.as_str().len(), MAX_PATH_REFERENCE_BYTES);
+fn typed_source_path_ceiling_is_exact_for_the_shortest_reference() {
+    // The shortest admissible repository plus the fixed framing is the least a
+    // canonical reference can add around a path, so a path above that bound
+    // could not become a Path Reference for any repository at all. Deriving the
+    // bound from the shortest identity is also what keeps the reference
+    // ceiling itself inclusive at exactly 64 KiB.
+    let repository = GithubRepositoryIdentity::new("o", "r").expect("short identity");
+    let shortest = format!("github://{}/source/{COMMIT}/", repository.as_str());
+    let exact_path_bytes = MAX_PATH_REFERENCE_BYTES - shortest.len() - "/facts".len();
 
-    let over = GithubSourcePath::new(vec!["a".repeat(MAX_PATH_REFERENCE_BYTES + 1)])
-        .expect_err("a typed path that cannot fit a Path Reference must not exist");
+    let exact = GithubSourcePath::new(vec!["a".repeat(exact_path_bytes)])
+        .expect("the shortest reference's ceiling is inclusive");
+    assert_eq!(exact.as_str().len(), exact_path_bytes);
+    let reference = PathReference::github(
+        GithubAddress::Source {
+            repository,
+            commit: GithubCommitId::new(COMMIT).expect("commit id"),
+            path: exact,
+        },
+        None,
+    )
+    .expect("an accepted path addresses a reference");
+    assert_eq!(reference.requested().len(), MAX_PATH_REFERENCE_BYTES);
+
+    let over = GithubSourcePath::new(vec!["a".repeat(exact_path_bytes + 1)])
+        .expect_err("a typed path that cannot fit any Path Reference must not exist");
     assert_eq!(
         over.category(),
-        resourcefs_core::ErrorCategory::InvalidReference
+        resourcefs_core::ErrorCategory::LimitExceeded
     );
+}
+
+#[test]
+fn whole_reference_ceiling_survives_a_path_some_repository_can_address() {
+    // A path can be addressable by a short repository and still overflow the
+    // 64 KiB reference ceiling for a long one. The type promises the former and
+    // the reference boundary decides the latter, so the answer is a typed
+    // limit failure rather than a minted reference the parser would refuse.
+    let path = GithubSourcePath::new(vec!["a".repeat(65_400)]).expect("addressable path");
+    let error = PathReference::github(
+        GithubAddress::Source {
+            repository: GithubRepositoryIdentity::new("o".repeat(39), "r".repeat(100))
+                .expect("longest identity"),
+            commit: GithubCommitId::new(COMMIT).expect("commit id"),
+            path,
+        },
+        None,
+    )
+    .expect_err("the whole reference exceeds 64 KiB");
+    assert_eq!(
+        error.category(),
+        resourcefs_core::ErrorCategory::LimitExceeded
+    );
+}
+
+#[test]
+fn facts_documents_admit_a_selector_the_read_path_refuses() {
+    // Singular Facts documents take no selector, so a trailing `:raw`,
+    // line range or `:page:` is a projection the reader refuses rather than a
+    // second identity — the shape `pr://…/facts:raw` already has
+    // (`crates/resourcefs-sources/src/github/facts.rs`). The grammar admits it
+    // so the refusal belongs to the read path; a canonical identity still
+    // requires an unprojected reference.
+    for input in [
+        format!("github://owner/repo/commits/{COMMIT}/facts:raw"),
+        format!("github://owner/repo/source/{COMMIT}/a.rs/facts:12-20"),
+        format!("github://owner/repo/commits/{COMMIT}/facts:page:2"),
+    ] {
+        let reference = PathReference::parse(input.clone()).expect("selector parses");
+        assert_eq!(reference.requested(), input);
+        assert!(reference.projection().is_some());
+    }
 }
 
 #[test]

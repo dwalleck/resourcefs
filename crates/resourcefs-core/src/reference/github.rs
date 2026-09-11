@@ -1,20 +1,40 @@
 use super::{
     GithubRepositoryIdentity, MAX_PATH_REFERENCE_BYTES, ProjectionSelector, encode_rfc3986_segment,
-    invalid_reference, is_unreserved, percent_decode, projection_candidate_split,
+    invalid_reference, is_unreserved, limit_exceeded, percent_decode, projection_candidate_split,
 };
 use crate::ResourceError;
 
 pub(crate) const GITHUB_PREFIX: &str = "github://";
 const FACTS_SUFFIX: &str = "/facts";
+/// One `%XX` escape renders one byte outside the unreserved alphabet.
+const PERCENT_ESCAPE_BYTES: usize = 3;
+/// The fewest bytes a canonical `github://` reference adds around a source
+/// path: the scheme, the shortest `owner/repository` half (both parts are
+/// validated nonempty and one separator joins them), `/source/`, the commit
+/// operand, the separator before the path and the `/facts` suffix every
+/// document in this family carries. A path bounded by what remains is
+/// addressable by some repository; whether a given repository's reference fits
+/// is decided by the whole-reference ceiling, never by this type.
+const MIN_REPOSITORY_REFERENCE_BYTES: usize = 3;
+const MIN_REFERENCE_ENVELOPE_BYTES: usize = GITHUB_PREFIX.len()
+    + MIN_REPOSITORY_REFERENCE_BYTES
+    + "/source/".len()
+    + GithubCommitId::BYTES
+    + "/".len()
+    + FACTS_SUFFIX.len();
+const MAX_GITHUB_PATH_BYTES: usize = MAX_PATH_REFERENCE_BYTES - MIN_REFERENCE_ENVELOPE_BYTES;
 
 /// A complete lowercase hexadecimal Git commit object identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GithubCommitId(String);
 
 impl GithubCommitId {
+    /// Exact byte length of a Git object identifier in this family.
+    const BYTES: usize = 40;
+
     pub fn new(value: impl Into<String>) -> Result<Self, ResourceError> {
         let value = value.into();
-        if value.len() != 40
+        if value.len() != Self::BYTES
             || !value
                 .bytes()
                 .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
@@ -36,7 +56,11 @@ impl GithubCommitId {
 /// Unlike filesystem paths, Git names preserve backslashes and control bytes;
 /// canonical rendering percent-encodes every byte outside the RFC3986
 /// unreserved alphabet.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// [`segments`](Self::segments) are Git tree entry names as bytes: compare them
+/// with the names a tree lists, and never join them to a filesystem or cache
+/// path. A backslash is an ordinary name byte here, not a separator.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GithubSourcePath {
     segments: Vec<String>,
     canonical: String,
@@ -49,24 +73,33 @@ impl GithubSourcePath {
                 "GitHub source path must contain at least one segment",
             ));
         }
+        let mut encoded_bytes = segments.len() - 1;
         for segment in &segments {
             validate_decoded_segment(segment)?;
+            for byte in segment.bytes() {
+                encoded_bytes += if is_unreserved(byte) {
+                    1
+                } else {
+                    PERCENT_ESCAPE_BYTES
+                };
+            }
         }
-        let decoded_bytes = segments.iter().map(String::len).sum::<usize>() + segments.len() - 1;
-        let mut canonical = String::with_capacity(decoded_bytes);
+        // One ceiling for every family, enforced where the value is built: a
+        // typed path that cannot fit any Path Reference must not exist, or the
+        // full-reference parser would refuse a value this type accepted. The
+        // canonical length is measured from the decoded segments, so the
+        // refusal precedes materialization and sizes the encode exactly.
+        if encoded_bytes > MAX_GITHUB_PATH_BYTES {
+            return Err(limit_exceeded(
+                "GitHub source path must fit the reference ceiling",
+            ));
+        }
+        let mut canonical = String::with_capacity(encoded_bytes);
         for (index, segment) in segments.iter().enumerate() {
             if index != 0 {
                 canonical.push('/');
             }
             encode_rfc3986_segment(segment, &mut canonical);
-        }
-        // One ceiling for every family, enforced where the value is built: a
-        // typed path that cannot fit a Path Reference must not exist, or the
-        // full-reference parser would refuse a value this type accepted.
-        if canonical.len() > MAX_PATH_REFERENCE_BYTES {
-            return Err(invalid_reference(
-                "GitHub source path must fit the reference ceiling",
-            ));
         }
         Ok(Self {
             segments,
@@ -113,25 +146,6 @@ pub enum GithubAddress {
 }
 
 impl GithubAddress {
-    pub const fn repository(&self) -> &GithubRepositoryIdentity {
-        match self {
-            Self::Commit { repository, .. } | Self::Source { repository, .. } => repository,
-        }
-    }
-
-    pub const fn commit(&self) -> &GithubCommitId {
-        match self {
-            Self::Commit { commit, .. } | Self::Source { commit, .. } => commit,
-        }
-    }
-
-    pub const fn path(&self) -> Option<&GithubSourcePath> {
-        match self {
-            Self::Commit { .. } => None,
-            Self::Source { path, .. } => Some(path),
-        }
-    }
-
     pub fn canonical_reference(&self) -> String {
         match self {
             Self::Commit { repository, commit } => format!(
