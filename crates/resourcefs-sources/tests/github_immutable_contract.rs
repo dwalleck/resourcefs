@@ -107,6 +107,15 @@ enum LoginCase {
     DotDot,
 }
 
+/// How a fixture drops the commit's own required API link.
+#[derive(Clone, Copy, Debug)]
+enum RequiredLinkCase {
+    /// The provider omits the key.
+    Omitted,
+    /// The provider sends an explicit null.
+    Null,
+}
+
 fn commit_json(host: &str) -> Value {
     json!({
         "sha": COMMIT_SHA,
@@ -154,6 +163,8 @@ enum FixtureMode {
     AppAccounts(AppCase),
     /// The author's login is one of `LoginCase`'s unusable values.
     MalformedLogin(LoginCase),
+    /// The commit's own required API link is absent or null.
+    RequiredCommitLink(RequiredLinkCase),
 }
 
 async fn fixture(
@@ -251,6 +262,14 @@ async fn fixture_with_limits(
                 }
                 FixtureMode::AbsentAuthor if request.target().contains("/commits/") => {
                     body.as_object_mut().expect("commit object").remove("author");
+                }
+                FixtureMode::RequiredCommitLink(case) if request.target().contains("/commits/") => {
+                    match case {
+                        RequiredLinkCase::Omitted => {
+                            body.as_object_mut().expect("commit object").remove("url");
+                        }
+                        RequiredLinkCase::Null => body["url"] = Value::Null,
+                    }
                 }
                 FixtureMode::Valid => {}
                 _ => {}
@@ -435,6 +454,33 @@ async fn immutable_commit_facts_refuse_wrong_observed_sha_even_with_correct_link
     ));
     assert_eq!(listener.requests().len(), 2);
 }
+#[tokio::test]
+async fn immutable_commit_facts_refuse_absent_or_null_required_commit_link() {
+    // Presence and identity are different questions. The shared required-link
+    // guard answers a contradiction for both an absent and a foreign link, so a
+    // commit whose own API link is missing must be reported as a malformed
+    // document rather than as an object that does not exist.
+    for case in [RequiredLinkCase::Omitted, RequiredLinkCase::Null] {
+        let (_listener, source, _session) = fixture(FixtureMode::RequiredCommitLink(case)).await;
+        let reference = format!("github://owner/repo/commits/{COMMIT_SHA}/facts");
+        let error = read_reference(&source, &reference)
+            .await
+            .expect_err("a commit without its own API link must refuse");
+        assert_eq!(
+            error.category(),
+            resourcefs_core::ErrorCategory::SourceUnavailable,
+            "{case:?}"
+        );
+        assert!(
+            matches!(
+                error.details().map(|details| details.reason()),
+                Some(resourcefs_core::ErrorReason::UpstreamMalformed)
+            ),
+            "{case:?}: {error}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn immutable_commit_facts_refuse_foreign_commit_link() {
     let (listener, source, _session) = fixture(FixtureMode::WrongLink).await;

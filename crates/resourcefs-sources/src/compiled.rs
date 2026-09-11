@@ -290,17 +290,19 @@ fn github_source_unavailable() -> ResourceError {
 /// Refuses a `github://` operation this build cannot serve.
 ///
 /// Distinct from [`github_source_unavailable`]: that one says no repository
-/// authority is declared, and it must never be the answer for an address no
+/// authority is declared, and it must never be the answer for an operation no
 /// configured source could serve. Reads of an acquired route reach the
 /// configured source; discovery, mutation and any spelling whose acquiring
 /// increment has not landed answer here, and they answer identically whether
 /// or not a source is mounted — a refusal that depended on configuration would
 /// tell a caller that a route this build cannot serve is merely unavailable
-/// until it is configured.
+/// until it is configured. The sentence names the operation rather than the
+/// family, because a build that serves a read route for an address must not
+/// claim it serves no route for it at all.
 fn github_family_unreadable() -> ResourceError {
     ResourceError::new(
         ErrorCategory::UnsupportedProjection,
-        "the compiled sources serve no github:// route for this address",
+        "the compiled sources serve no github:// route for the requested operation",
     )
 }
 

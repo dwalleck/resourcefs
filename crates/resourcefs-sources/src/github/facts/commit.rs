@@ -433,10 +433,19 @@ fn route_matches(url: &Url, authority: &Url, route: &[&str]) -> Result<bool, Res
         return Ok(false);
     };
     let mut observed = observed;
-    for segment in base
-        .filter(|segment| !segment.is_empty())
-        .chain(route.iter().copied())
-    {
+    // The deployment's own prefix is compared as spelled. Both sides come from
+    // `Url::path_segments`, which yields the serialized segment, so an escaped
+    // byte in a custom `apiBaseUrl` matches the provider's escaping of it.
+    for segment in base.filter(|segment| !segment.is_empty()) {
+        match observed.next() {
+            Some(observed) if observed.eq_ignore_ascii_case(segment) => {}
+            _ => return Ok(false),
+        }
+    }
+    // A route is compared decoded, because its expected segments are the
+    // account's own login and app slug as the provider publishes them while the
+    // link spells them percent-encoded.
+    for segment in route {
         match observed.next() {
             Some(observed) if decode_segment(observed)?.eq_ignore_ascii_case(segment) => {}
             _ => return Ok(false),
