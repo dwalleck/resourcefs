@@ -77,7 +77,7 @@ Raw nonsecret row output: `live-commit-results.txt`. These results prove commit 
 
 ## PR #13 review repair round — 2026-09-11
 
-Review: `docs/research/pr13-code-review-2026-09-11.md` (main checkout), 13 findings and 14 below-the-line items against head `1cfa020`. Per-finding decisions: `review-decisions.md` § "PR #13 review repair round".
+Review: `docs/research/pr13-code-review-2026-09-11.md`, 13 findings and 14 below-the-line items against head `1cfa020`; the re-review that followed is `docs/research/pr13-rereview-2026-09-11.md`. Per-finding decisions: `review-decisions.md` § "PR #13 review repair round".
 
 Repairs by area, all on this branch:
 

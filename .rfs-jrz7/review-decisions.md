@@ -182,7 +182,7 @@ This branch rebases onto the repaired S1 tip, so the S1 round-2 decision table a
 
 ## PR #13 review repair round (2026-09-11)
 
-Review document: `docs/research/pr13-code-review-2026-09-11.md` (held in the main checkout; F1–F13 and T1–T14 are the review's own identifiers). Code repairs are implemented in this round by the parent (`crates/`) and the gate agent (`scripts/`); the documentation and evidence rows (F4, F11, T13) are repaired in `.rfs-jrz7/*`, `DESIGN.md` and `docs/operating.md` by this round's documentation workstream.
+Review document: `docs/research/pr13-code-review-2026-09-11.md`; the re-review of this round is `docs/research/pr13-rereview-2026-09-11.md`. F1–F13 and T1–T14 are the review's own identifiers. Code repairs are implemented in this round by the parent (`crates/`) and the gate agent (`scripts/`); the documentation and evidence rows (F4, F11, T13) are repaired in `.rfs-jrz7/*`, `DESIGN.md` and `docs/operating.md` by this round's documentation workstream.
 
 | finding-id | decision | note |
 |---|---|---|
