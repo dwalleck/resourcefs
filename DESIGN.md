@@ -124,7 +124,7 @@ First-release portable core:
 - HTTPS documents with reader-mode Markdown/text by default and `:raw` for the bounded original body;
 - converted documents, typed images, and Jupyter notebooks;
 - server-owned `artifact://` and `local://`;
-- configured `memory://`, `skill://`, `rule://`, `vault://`, `issue://`, `pr://`, and `ssh://` sources;
+- configured `memory://`, `skill://`, `rule://`, `vault://`, `github://`, `issue://`, `pr://`, and `ssh://` sources;
 - optional read-only `agent://` and `history://` Agent Export sources;
 - optional downstream MCP Resource sources through `mcp://` and otherwise-unclaimed native URI schemes.
 

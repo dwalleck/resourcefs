@@ -10,8 +10,12 @@ introduced the mechanism under test; the repaired side is the working tree's.
     python3 .rfs-jrz7/mutation-review3.py [--reviewed 6e1c55c] [--repository PATH]
 
 The source cases mutate a disposable copy of `crates/`, never the repository.
+A source case's addition may be a callable instead of text; it receives the
+repository and returns the text to append, so one case can append a copy read
+from the tree under test.
 """
 import argparse
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -21,6 +25,26 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE_FILES = ("module_shape.py", "module_shape_base.py")
+
+
+def declaration_span(repository, owner, symbol):
+    """The owner's declaration text, exactly as the gates scan its span."""
+    spec = importlib.util.spec_from_file_location(
+        "module_shape", repository / "scripts" / "module_shape.py")
+    shape = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shape)
+    inherited = shape.load_base()
+    source = (repository / owner).read_text(encoding="utf-8")
+    return source[slice(*shape.node_spans(source, inherited)[(symbol, 1)])]
+
+
+def hidden_duplicate(repository):
+    """Two spans the target already declares, then a verbatim copy between them."""
+    owner = "crates/resourcefs-core/src/reference/pull.rs"
+    symbol = "parse_pull_request_reference"
+    return ("\nfn {0}() -> u8 {{ 7 }}\n\nfn {0}() -> u8 {{ 8 }}\n\n".format(symbol)
+            + declaration_span(repository, owner, symbol) + "\n")
+
 
 CASES = {
     "M1 pure move of a policy-tracked helper": (
@@ -73,6 +97,11 @@ SOURCE_CASES = {
         "GithubCommitId",
         ("crates/resourcefs-core/src/reference/github.rs",
          "\nmod zz_probe {\n    trait GithubCommitId {}\n}\n")),
+    # Outside the owner's directory, so only the duplication rule can fire, and
+    # never a single span, so a subject asked of the whole file returned none.
+    "M10 verbatim copy hidden behind a counterpart's second span": (
+        "crates/resourcefs-core/src/session.rs",
+        ("crates/resourcefs-core/src/session.rs", hidden_duplicate)),
 }
 
 
@@ -163,6 +192,7 @@ def main():
                 continue
             path = copy / target
             original = path.read_text()
+            addition = addition(repository) if callable(addition) else addition
             try:
                 path.write_text(original + addition)
                 report(name, (needles,),

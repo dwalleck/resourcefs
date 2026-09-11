@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use std::{
     net::{IpAddr, Ipv4Addr},
     sync::Arc,
+    time::Duration,
 };
 use tls::{FixtureResponse, TlsListener};
 
@@ -61,6 +62,51 @@ fn actor_json(host: &str, id: u64, login: &str) -> Value {
     })
 }
 
+/// A GitHub App account exactly as the REST API spells it: the login keeps its
+/// `[bot]` suffix, the API route percent-encodes the brackets
+/// (`/users/dependabot%5Bbot%5D`) and the profile link names the app slug under
+/// `/apps/<slug>`. Ids, node ids and slugs below are the provider's own values,
+/// read from `gh api users/dependabot%5Bbot%5D`, `gh api
+/// users/github-actions%5Bbot%5D` and the `author` of
+/// `repos/actions/checkout/commits/e8d4307400f9427dba7cb98e488d6ab85f1cec5f`.
+fn app_account_json(host: &str, id: u64, node_id: &str, login: &str, slug: &str) -> Value {
+    let encoded = login.replace('[', "%5B").replace(']', "%5D");
+    json!({
+        "id": id,
+        "node_id": node_id,
+        "login": login,
+        "url": format!("https://{host}/users/{encoded}"),
+        "html_url": format!("https://github.example/apps/{slug}")
+    })
+}
+
+const DEPENDABOT_ID: u64 = 49_699_333;
+const GITHUB_ACTIONS_ID: u64 = 41_898_282;
+
+/// Which account link an app-account fixture bends, so each case exercises one
+/// half of the relaxation and nothing else.
+#[derive(Clone, Copy, Debug)]
+enum AppCase {
+    /// The provider's own spelling of both accounts.
+    Accepted,
+    /// The API link names a login that is not this account.
+    WrongApiAccount,
+    /// The profile link names an app that is not this account's slug.
+    WrongAppLink,
+    /// A foreign origin on the API link.
+    ForeignApiLink,
+    /// A foreign origin on the profile link.
+    ForeignWebLink,
+}
+
+/// Which unusable login a fixture serves.
+#[derive(Clone, Copy, Debug)]
+enum LoginCase {
+    Empty,
+    Dot,
+    DotDot,
+}
+
 fn commit_json(host: &str) -> Value {
     json!({
         "sha": COMMIT_SHA,
@@ -104,10 +150,21 @@ enum FixtureMode {
     MalformedNative,
     ZeroRepositoryId,
     AbsentAuthor,
+    /// Both native accounts are GitHub App accounts, bent by `AppCase`.
+    AppAccounts(AppCase),
+    /// The author's login is one of `LoginCase`'s unusable values.
+    MalformedLogin(LoginCase),
 }
 
 async fn fixture(
     mode: FixtureMode,
+) -> (TlsListener, GithubSource, session_support::ScratchFixture) {
+    fixture_with_limits(mode, ReadAcquisitionLimits::default()).await
+}
+
+async fn fixture_with_limits(
+    mode: FixtureMode,
+    operator: ReadAcquisitionLimits,
 ) -> (TlsListener, GithubSource, session_support::ScratchFixture) {
     let api_prefix = if matches!(mode, FixtureMode::Enterprise) {
         "/api/v3"
@@ -146,6 +203,48 @@ async fn fixture(
                 }
                 FixtureMode::HostileLogin if request.target().contains("/commits/") => {
                     body["author"]["login"] = Value::String("//foreign.invalid/".to_owned());
+                }
+                FixtureMode::AppAccounts(case) if request.target().contains("/commits/") => {
+                    let mut author = app_account_json(
+                        &host,
+                        DEPENDABOT_ID,
+                        "MDM6Qm90NDk2OTkzMzM=",
+                        "dependabot[bot]",
+                        "dependabot",
+                    );
+                    body["committer"] = app_account_json(
+                        &host,
+                        GITHUB_ACTIONS_ID,
+                        "MDM6Qm90NDE4OTgyODI=",
+                        "github-actions[bot]",
+                        "github-actions",
+                    );
+                    match case {
+                        AppCase::Accepted => {}
+                        AppCase::WrongApiAccount => {
+                            author["url"] = json!(format!("https://{host}/users/someone-else"));
+                        }
+                        AppCase::WrongAppLink => {
+                            author["html_url"] = json!("https://github.example/apps/other-app");
+                        }
+                        AppCase::ForeignApiLink => {
+                            author["url"] = json!(
+                                "https://foreign.invalid/users/dependabot%5Bbot%5D".to_owned()
+                            );
+                        }
+                        AppCase::ForeignWebLink => {
+                            author["html_url"] =
+                                json!("https://foreign.invalid/apps/dependabot".to_owned());
+                        }
+                    }
+                    body["author"] = author;
+                }
+                FixtureMode::MalformedLogin(case) if request.target().contains("/commits/") => {
+                    body["author"]["login"] = Value::String(match case {
+                        LoginCase::Empty => String::new(),
+                        LoginCase::Dot => ".".to_owned(),
+                        LoginCase::DotDot => "..".to_owned(),
+                    });
                 }
                 FixtureMode::MalformedNative if request.target().contains("/commits/") => {
                     body["commit"]["author"]["date"] = json!(17);
@@ -195,7 +294,7 @@ async fn fixture(
         true,
         SecretReference::environment("UNUSED_IMMUTABLE_COMMIT_TOKEN").expect("reference"),
         vec![GithubRepository::new("owner/repo", MutationGrants::default()).expect("repository")],
-        ReadAcquisitionLimits::default(),
+        operator,
     )
     .expect("config");
     let session = session_support::scratch_fixture().await;
@@ -209,13 +308,32 @@ async fn read_reference(
     source: &GithubSource,
     reference: &str,
 ) -> Result<SourceResource, resourcefs_core::ResourceError> {
+    read_reference_with_limits(source, reference, None).await
+}
+
+async fn read_reference_with_limits(
+    source: &GithubSource,
+    reference: &str,
+    limits: Option<&ReadAcquisitionLimits>,
+) -> Result<SourceResource, resourcefs_core::ResourceError> {
     source
         .read(
             &PathReference::parse(reference)?,
             &OperationGuard::new(),
-            None,
+            limits,
         )
         .await
+}
+
+/// The reason this family's stable `unavailableFacts` vocabulary records for
+/// `field`, or `None` when the document does not record the field at all.
+fn unavailable_reason<'a>(document: &'a Value, field: &str) -> Option<&'a str> {
+    document["unavailableFacts"]
+        .as_array()
+        .expect("unavailable facts")
+        .iter()
+        .find(|entry| entry["field"] == field)
+        .map(|entry| entry["reason"].as_str().expect("recorded reason"))
 }
 
 #[tokio::test]
@@ -302,6 +420,10 @@ async fn immutable_commit_facts_accept_absent_optional_commit_links() {
 
 #[tokio::test]
 async fn immutable_commit_facts_refuse_wrong_observed_sha_even_with_correct_links() {
+    // `FixtureMode::WrongSha` also omits the three optional SHA-bearing links
+    // (the shared `MinimalLinks` set), so the equality mutation is isolated:
+    // every link this fixture keeps is the one the requested SHA expects, and
+    // the observed SHA alone decides the refusal.
     let (listener, source, _session) = fixture(FixtureMode::WrongSha).await;
     let reference = format!("github://owner/repo/commits/{COMMIT_SHA}/facts");
     let error = read_reference(&source, &reference)
@@ -336,6 +458,102 @@ async fn immutable_commit_facts_reject_hostile_account_login_path() {
         Some(resourcefs_core::ErrorReason::UpstreamIdentityMismatch)
     ));
     assert_eq!(listener.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn immutable_commit_facts_accept_github_app_accounts() {
+    // A GitHub App's account is the one place the provider's own links cannot be
+    // rebuilt from the login: the API route percent-encodes the `[bot]` suffix
+    // and the profile link names the app slug. Both `validate_account` call
+    // sites carry such a shape here.
+    let (listener, source, _session) = fixture(FixtureMode::AppAccounts(AppCase::Accepted)).await;
+    let reference = format!("github://owner/repo/commits/{COMMIT_SHA}/facts");
+    let resource = read_reference(&source, &reference)
+        .await
+        .expect("app accounts are accounts");
+    let document: Value = serde_json::from_str(resource.content()).expect("facts JSON");
+    for (key, login, api_route, web_route) in [
+        (
+            "authorAccount",
+            "dependabot[bot]",
+            "/users/dependabot%5Bbot%5D",
+            "https://github.example/apps/dependabot",
+        ),
+        (
+            "committerAccount",
+            "github-actions[bot]",
+            "/users/github-actions%5Bbot%5D",
+            "https://github.example/apps/github-actions",
+        ),
+    ] {
+        assert_eq!(document["data"][key]["login"], login, "{key} login");
+        assert_eq!(
+            document["data"][key]["links"]["apiUrl"],
+            format!(
+                "https://{}:{}{api_route}",
+                tls::FIXTURE_HOST,
+                listener.address.port()
+            ),
+            "{key} API link"
+        );
+        assert_eq!(
+            document["data"][key]["links"]["htmlUrl"], web_route,
+            "{key} profile link"
+        );
+    }
+    assert_eq!(listener.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn immutable_commit_facts_refuse_app_account_links_naming_another_account_or_origin() {
+    // The app-account relaxation accepts the provider's two spellings of this
+    // one account and nothing else: each case bends exactly one supplied link,
+    // so a check that accepted any `/apps/` profile, any bracketed login or any
+    // origin would publish an account the native record does not name.
+    for case in [
+        AppCase::WrongApiAccount,
+        AppCase::WrongAppLink,
+        AppCase::ForeignApiLink,
+        AppCase::ForeignWebLink,
+    ] {
+        let (listener, source, _session) = fixture(FixtureMode::AppAccounts(case)).await;
+        let reference = format!("github://owner/repo/commits/{COMMIT_SHA}/facts");
+        let outcome = read_reference(&source, &reference).await;
+        assert_eq!(
+            outcome
+                .as_ref()
+                .err()
+                .and_then(|error| error.details())
+                .map(|details| details.reason()),
+            Some(resourcefs_core::ErrorReason::UpstreamIdentityMismatch),
+            "{case:?} must be an identity contradiction"
+        );
+        assert_eq!(listener.requests().len(), 2, "{case:?}");
+    }
+}
+
+#[tokio::test]
+async fn immutable_commit_facts_refuse_unusable_account_logins() {
+    // An empty login names the user *collection* and a dot segment never
+    // survives URL parsing, so neither can be the account the native record
+    // claims to identify. Each is malformed rather than a contradiction with a
+    // link — which is the verdict the link comparison alone would reach here,
+    // since these fixtures keep the links of a real login.
+    for case in [LoginCase::Empty, LoginCase::Dot, LoginCase::DotDot] {
+        let (listener, source, _session) = fixture(FixtureMode::MalformedLogin(case)).await;
+        let reference = format!("github://owner/repo/commits/{COMMIT_SHA}/facts");
+        let outcome = read_reference(&source, &reference).await;
+        assert_eq!(
+            outcome
+                .as_ref()
+                .err()
+                .and_then(|error| error.details())
+                .map(|details| details.reason()),
+            Some(resourcefs_core::ErrorReason::UpstreamMalformed),
+            "{case:?} must be malformed rather than a link contradiction"
+        );
+        assert_eq!(listener.requests().len(), 2, "{case:?}");
+    }
 }
 #[tokio::test]
 async fn immutable_commit_facts_reject_wrong_repository_before_commit() {
@@ -387,7 +605,20 @@ async fn immutable_commit_facts_preserve_absent_and_null_accounts() {
         .expect("present account");
     let present: Value = serde_json::from_str(present.content()).expect("present JSON");
     assert_eq!(present["data"]["authorAccount"]["login"], "author-login");
+    // The native committer is `null` rather than absent, and the two are
+    // different observations: the owned document must keep the key with a null
+    // value and record the `null` reason. Asserting only `is_null()` cannot
+    // tell that apart from a dropped key, because serde reads a missing key
+    // back as `Null` too.
+    assert!(
+        present["data"].get("committerAccount").is_some(),
+        "a null account keeps its key"
+    );
     assert!(present["data"]["committerAccount"].is_null());
+    assert_eq!(
+        unavailable_reason(&present, "committerAccount"),
+        Some("null")
+    );
     assert_eq!(listener.requests().len(), 2);
 
     let (_listener, source, _session) = fixture(FixtureMode::AbsentAuthor).await;
@@ -397,4 +628,102 @@ async fn immutable_commit_facts_preserve_absent_and_null_accounts() {
     let absent: Value = serde_json::from_str(absent.content()).expect("absent JSON");
     assert!(absent["data"].get("authorAccount").is_none());
     assert!(absent["data"]["committerAccount"].is_null());
+    // Both spellings appear in this one document, so the record distinguishes
+    // them where the serialized values alone would not: the dropped key is
+    // `omitted` and the null one is `null`.
+    assert_eq!(
+        unavailable_reason(&absent, "authorAccount"),
+        Some("omitted")
+    );
+    assert!(
+        absent["data"].get("committerAccount").is_some(),
+        "a null account keeps its key"
+    );
+    assert_eq!(
+        unavailable_reason(&absent, "committerAccount"),
+        Some("null")
+    );
+}
+
+#[tokio::test]
+async fn immutable_commit_facts_report_effective_limits_and_enforce_the_attempt_bound() {
+    // `docs/operating.md` documents `"acquisition": {"maxAttempts": 2}` for this
+    // route: the two attempts are exactly what repository plus exact-commit
+    // acquisition need, and the owned document must report the intersection of
+    // the profile's bounds with the caller's, per dimension.
+    let (listener, source, _session) = fixture_with_limits(
+        FixtureMode::Valid,
+        ReadAcquisitionLimits::new(
+            Some(2),
+            Some(Duration::from_secs(10)),
+            Some(1_048_576),
+            Some(2_097_152),
+            Some(4_194_304),
+        )
+        .expect("documented profile limits"),
+    )
+    .await;
+    // The caller both lowers and raises dimensions against the profile bounds,
+    // so each reported value names which side decided that dimension.
+    let caller = ReadAcquisitionLimits::new(
+        Some(5),
+        Some(Duration::from_secs(3)),
+        Some(524_288),
+        Some(4_194_304),
+        Some(8_388_608),
+    )
+    .expect("caller limits");
+    let reference = format!("github://owner/repo/commits/{COMMIT_SHA}/facts");
+    let resource = read_reference_with_limits(&source, &reference, Some(&caller))
+        .await
+        .expect("both GETs fit the profile attempt bound");
+    let document: Value = serde_json::from_str(resource.content()).expect("facts JSON");
+    for (field, expected) in [
+        ("maxAttempts", 2.0),
+        ("timeoutMs", 3000.0),
+        ("maxResponseBytes", 524_288.0),
+        ("maxAcceptedBodyBytes", 2_097_152.0),
+        ("maxRepresentationBytes", 4_194_304.0),
+    ] {
+        assert_eq!(
+            document["acquisition"]["limits"][field]
+                .as_f64()
+                .expect("numeric limit"),
+            expected,
+            "{field}"
+        );
+    }
+    assert_eq!(document["acquisition"]["usage"]["attemptedRequests"], 2);
+    assert_eq!(
+        listener.requests().len(),
+        2,
+        "the attempt bound admits both GETs"
+    );
+
+    // The bound is enforced, not merely echoed: with one attempt the read
+    // cannot reach the commit after the repository.
+    let (listener, source, _session) = fixture_with_limits(
+        FixtureMode::Valid,
+        ReadAcquisitionLimits::new(Some(1), None, None, None, None).expect("one attempt"),
+    )
+    .await;
+    let error = read_reference(&source, &reference)
+        .await
+        .expect_err("one attempt cannot acquire the repository and the commit");
+    assert_eq!(
+        error.category(),
+        resourcefs_core::ErrorCategory::LimitExceeded
+    );
+    assert_eq!(
+        error
+            .details()
+            .and_then(|details| details.limit())
+            .map(|limit| (limit.kind(), limit.bound())),
+        Some((resourcefs_core::AcquisitionLimitKind::Attempts, 1))
+    );
+    assert_eq!(
+        listener.requests().len(),
+        1,
+        "the second GET is refused before it is sent"
+    );
 }

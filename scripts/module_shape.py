@@ -296,30 +296,37 @@ def check(root, repository, ledger, stage):
             )
         return production_spans[path]
 
-    def declaration_subject(path, symbol):
-        """Tokens and literals of the one declaration that owns `symbol`.
+    def declaration_subjects(path, symbol):
+        """One entry per candidate declaration of `symbol` in `path`.
 
-        A type the `native!` macro generates has no declaration span the
-        scanner can see, so the invocation that generates it is the subject;
-        anything with several spans is not one declaration and has none.
+        Each subject is `fingerprint` of a declaration span of the text `codes`
+        holds, which is production code: comments, literals and inline test
+        modules are already blanked there, so the literal spellings
+        `fingerprint` recovers from raw text contribute nothing to a subject
+        and the hashed value is the span's token stream. A verbatim copy of a
+        declaration therefore shares its subject wherever it is placed. A type
+        the `native!` macro generates has no declaration span the scanner can
+        see, so the invocation that generates it is its subject, and only when
+        the file holds no span of the name.
         """
         spans = [span for (name, _), span in production_nodes(path).items()
                  if name == symbol]
-        if len(spans) == 1:
-            return fingerprint(codes[path][slice(*spans[0])], inherited)
         if spans:
-            return None
+            return [fingerprint(codes[path][slice(*span)], inherited)
+                    for span in spans]
+        # `production_nodes` above tolerates a path without production code, so
+        # the raw-text fallback reads the same map the same way.
         code = codes.get(path, '')
         invocation = re.search(r'\bnative!\s*\(\s*' + re.escape(symbol) + r'\s*\{', code)
         if invocation is None:
-            return None
+            return []
         depth, index = 0, invocation.end() - 1
         while index < len(code):
             depth += (code[index] == '{') - (code[index] == '}')
             index += 1
             if depth == 0:
                 break
-        return fingerprint(code[invocation.start():index], inherited)
+        return [fingerprint(code[invocation.start():index], inherited)]
 
     for path, row in ledger['owners'].items():
         # Ledger conformance for the immutable-grammar increment is the C11
@@ -362,15 +369,20 @@ def check(root, repository, ledger, stage):
             # Duplication is a property of the declaration, not of its
             # directory: a copied body anywhere in the workspace is the same
             # responsibility in two places, while a different function that
-            # happens to share the name is not a duplicate at all.
-            subject = declaration_subject(path, symbol)
-            if subject is None:
+            # happens to share the name is not a duplicate at all. A second
+            # declaration in the owner file is not one declaration and fails.
+            subjects = declaration_subjects(path, symbol)
+            if len(subjects) != 1:
                 fail(path, f'owned symbol {symbol} must have exactly one declaration', claim)
                 continue
             for other in declarations:
                 if other == path or symbol not in declarations[other]:
                     continue
-                if declaration_subject(other, symbol) == subject:
+                # How many spans the counterpart holds never suppresses the
+                # comparison: every same-named span it declares is a candidate,
+                # so a verbatim copy cannot ride beside declarations the file
+                # already owns.
+                if subjects[0] in declaration_subjects(other, symbol):
                     fail(other, f'symbol {symbol} belongs in {path}', claim)
 
     if 'facts' in policy.active:
@@ -388,7 +400,11 @@ def check(root, repository, ledger, stage):
             'validate_optional_web_link', 'require_observed_id',
         }
         if 'immutable-commit' in policy.active:
-            expected_entry_points.update({'required', 'sha', 'validate_repository'})
+            # clean_authority stays the one definition of the
+            # deployment-authority predicate shared with account-link
+            # validation in the commit owner.
+            expected_entry_points.update({'required', 'sha', 'validate_repository',
+                                          'clean_authority'})
         if (len(entry_points) != len(expected_entry_points)
                 or set(entry_points) != expected_entry_points):
             fail(identity_path, f'identity validation must expose exactly {", ".join(sorted(expected_entry_points))}')

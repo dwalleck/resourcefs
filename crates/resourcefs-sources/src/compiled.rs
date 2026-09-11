@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use resourcefs_core::{
-    CatalogAddress, DiscoveryAdapter, ErrorCategory, GlobOptions, GlobSource, GlobTarget,
-    MutationAccess, MutationAdapter, MutationCommitFailure, MutationCommitOutcome, MutationState,
-    MutationTarget, OperationGuard, PathReference, ResourceAddress, ResourceError, SearchOptions,
-    SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult, SourceMutation,
-    SourceResource, catalog_discovery_unsupported,
+    CatalogAddress, DiscoveryAdapter, ErrorCategory, GithubAddress, GlobOptions, GlobSource,
+    GlobTarget, MutationAccess, MutationAdapter, MutationCommitFailure, MutationCommitOutcome,
+    MutationState, MutationTarget, OperationGuard, PathReference, ResourceAddress, ResourceError,
+    SearchOptions, SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult,
+    SourceMutation, SourceResource, catalog_discovery_unsupported,
 };
 
 use crate::{
@@ -129,9 +129,14 @@ impl SourceAdapter for CompiledSources {
                     .read(reference, operation, acquisition)
                     .await
             }
-            // Commit Facts exist from this increment: the family reaches its
-            // configured source again, while discovery and mutation keep the
-            // configuration-independent refusals they had before it.
+            // Reads reach the configured source only for a route an increment
+            // has acquired. A spelling this build does not serve is refused
+            // here, before the mount is consulted, so one address cannot answer
+            // differently depending on configuration or caller controls; the
+            // source-facts spelling lands with the increment that acquires it.
+            ResourceAddress::Github(GithubAddress::Source { .. }) => {
+                Err(github_family_unreadable())
+            }
             ResourceAddress::Github(_)
             | ResourceAddress::Issue(_)
             | ResourceAddress::PullRequest(_) => {
@@ -282,17 +287,20 @@ fn github_source_unavailable() -> ResourceError {
     )
 }
 
-/// Refuses an address family this build does not serve.
+/// Refuses a `github://` operation this build cannot serve.
 ///
 /// Distinct from [`github_source_unavailable`]: that one says no repository
-/// authority is declared, and it must never be the answer for a family no
-/// configured source could serve. Commit and source Facts are registered by
-/// the increments that acquire them; until then the same refusal answers on
-/// every build.
+/// authority is declared, and it must never be the answer for an address no
+/// configured source could serve. Reads of an acquired route reach the
+/// configured source; discovery, mutation and any spelling whose acquiring
+/// increment has not landed answer here, and they answer identically whether
+/// or not a source is mounted — a refusal that depended on configuration would
+/// tell a caller that a route this build cannot serve is merely unavailable
+/// until it is configured.
 fn github_family_unreadable() -> ResourceError {
     ResourceError::new(
         ErrorCategory::UnsupportedProjection,
-        "github:// Resources are not served by the compiled sources",
+        "the compiled sources serve no github:// route for this address",
     )
 }
 

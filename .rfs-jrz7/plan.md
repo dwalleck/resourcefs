@@ -222,7 +222,7 @@ Publication checkpoint: S1 committed as `5d941fb` and pushed to `feat/rfs-jrz7`;
 
 ### S2 returned checkpoint judgment
 
-Delivered: immutable commit Facts through the existing SourceAdapter, compiled source registry, catalog, configured profile and real binary stdio. The shared context dispatch matches the existing address sum; no mirror enum, second setup/envelope or duplicate SHA validator remains. Final physical lines: commit owner405, facts parent671<=700, GitHub facade1175. Staged increment:1938 changed lines across24 files, within S2's2200-line estimate. Source-file acquisition and crate adoption are not claimed by S2.
+Delivered: immutable commit Facts through the existing SourceAdapter, compiled source registry, catalog, configured profile and real binary stdio. The shared context dispatch matches the existing address sum; no mirror enum, second setup/envelope or duplicate SHA validator remains. Final physical lines: commit owner 405, facts parent 671 <= 700, GitHub facade 1174 (`wc -l crates/resourcefs-sources/src/github/mod.rs`, matching the placement gate's count of `len(text.splitlines())`). Staged increment: 1938 insertions and 117 deletions across 26 files from the S2 fork point (`git diff --shortstat 6e1c55c 64e1f56`); the first S2 commit alone is 1862 insertions across 24 files (`git diff --shortstat 0460337^ 0460337`), and the merged head against the review base is 1952 insertions and 142 deletions across 26 files (`git diff --shortstat 09cef66 1cfa020`) — within S2's 2200-line estimate. Source-file acquisition and crate adoption are not claimed by S2.
 
 | Mandatory gate | Verdict | Evidence |
 |---|---|---|

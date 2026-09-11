@@ -1618,7 +1618,16 @@ async fn immutable_commit_production_budget() -> Result<(), &'static str> {
     const HEAP_LIMIT: usize = 128 * 1024 * 1024;
     const COMMIT_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    for measure_heap in [false, true] {
+    // One member per side of the response ceiling: the first two pin that a
+    // body of exactly `COMMIT_BODY_BYTES` is admitted whole, while the third
+    // serves one byte more and pins that the same bound still refuses it. A
+    // loosened or removed ceiling has to fail that member; a row that only
+    // serves the ceiling itself cannot notice.
+    for (measure_heap, serve_bytes) in [
+        (false, COMMIT_BODY_BYTES),
+        (true, COMMIT_BODY_BYTES),
+        (false, COMMIT_BODY_BYTES + 1),
+    ] {
         let body = Arc::new(OnceLock::<String>::new());
         let served = Arc::clone(&body);
         let listener = TlsListener::serve_request_router(
@@ -1645,7 +1654,7 @@ async fn immutable_commit_production_budget() -> Result<(), &'static str> {
         .await;
         let (source, _session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
         let host = format!("{}:{}", tls::FIXTURE_HOST, listener.address.port());
-        body.set(immutable_commit_budget_body(&host, COMMIT_BODY_BYTES))
+        body.set(immutable_commit_budget_body(&host, serve_bytes))
             .expect("one immutable commit budget body");
         let reference =
             PathReference::parse(format!("github://owner/repo/commits/{COMMIT_SHA}/facts"))
@@ -1660,6 +1669,27 @@ async fn immutable_commit_production_budget() -> Result<(), &'static str> {
         let incremental_heap = FACTS_PEAK_HEAP
             .load(Ordering::Acquire)
             .saturating_sub(baseline);
+        if serve_bytes > COMMIT_BODY_BYTES {
+            // The refusal is typed by the dimension the enforcement reports:
+            // the response-body ceiling the substrate and the read budget both
+            // hold at `COMMIT_BODY_BYTES`.
+            let error = result.expect_err("one byte over the response ceiling must refuse");
+            assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+            let details = error.details().expect("typed limit refusal");
+            assert_eq!(details.reason(), ErrorReason::LimitExceeded);
+            let limit = details.limit().expect("limit dimension");
+            assert_eq!(
+                limit.kind(),
+                resourcefs_core::AcquisitionLimitKind::ResponseBodyBytes
+            );
+            assert_eq!(limit.bound(), COMMIT_BODY_BYTES as u64);
+            assert_eq!(
+                listener.requests().len(),
+                2,
+                "repository and over-ceiling commit GETs"
+            );
+            continue;
+        }
         let resource = result.expect("production-size immutable commit facts");
         let output_bytes = resource.content().len();
         assert!(output_bytes <= OUTPUT_LIMIT, "owned document byte ceiling");

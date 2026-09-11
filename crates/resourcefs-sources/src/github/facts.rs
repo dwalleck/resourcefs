@@ -150,6 +150,17 @@ macro_rules! native {
         }
     };
 }
+
+/// Record each absent field in the family's stable unavailable vocabulary.
+///
+/// Defined once for every family: the per-field vocabulary is a single
+/// contract, so a change to how unavailability is recorded must not have to
+/// find a copy per family.
+macro_rules! missing {
+    ($facts:expr; $($field:expr => $name:literal),* $(,)?) => { $(
+        $field.unavailable($name, &mut $facts);
+    )* };
+}
 native!(Actor {
     id: NativeId,
     node_id: String,
@@ -631,11 +642,8 @@ impl GithubSource {
             ResourceAddress::PullRequest(PullRequestAddress::Item {
                 repository,
                 number,
-                resource,
+                resource: PullRequestResource::Facts(fact),
             }) => {
-                let PullRequestResource::Facts(fact) = resource else {
-                    return Err(super::unsupported_github_projection());
-                };
                 let cursor = reference
                     .projection()
                     .and_then(|selector| selector.source_cursor());

@@ -179,3 +179,37 @@ This branch rebases onto the repaired S1 tip, so the S1 round-2 decision table a
 |---|---|---|---|---|---|---|---|
 | S1-R2-F8, S1-R2-F10 | The unserved-family refusal belongs to the increment that has no implementation; this one has commit Facts | code review (max) | Verified at S1, resolved here | Commit Facts read through the compiled registry and the real binary; `.rfs-jrz7/mutation-c3-commit.txt` and the stdio contract cover the served route. | Accept | Route `ResourceAddress::Github(_)` reads to the configured source again; keep the discovery and mutation refusals configuration-independent | The paired fences move with the increment: an unmounted build reports the missing profile entry for a read and the family refusal for discovery and mutation; a mounted registry never fetches for discovery. S3 adds the source route with no change here. |
 | S1-R2-F6 (macro form) | Owner uniqueness must recognize the declaration form this increment introduced | code review (max) | Verified | `native!(NativePerson {..})` generates a type with no declaration span; the workspace-wide comparison now takes the macro invocation as the subject. | Modify | Compare macro invocations like declarations | Probe: a verbatim copy of `native!(NativePerson {..})` in another family fails; a differently shaped same-named invocation stays green. |
+
+## PR #13 review repair round (2026-09-11)
+
+Review document: `docs/research/pr13-code-review-2026-09-11.md` (held in the main checkout; F1–F13 and T1–T14 are the review's own identifiers). Code repairs are implemented in this round by the parent (`crates/`) and the gate agent (`scripts/`); the documentation and evidence rows (F4, F11, T13) are repaired in `.rfs-jrz7/*`, `DESIGN.md` and `docs/operating.md` by this round's documentation workstream.
+
+| finding-id | decision | note |
+|---|---|---|
+| F1 | Repair | Stop rebuilding account links from the login: accept the provider's own route family (`/users/dependabot%5Bbot%5D`, `/apps/<slug>`) so app/bot-authored commits read, with a bot-shaped fixture. |
+| F2 | Repair | Restore main's all-span iteration over same-named counterpart declarations in the owner-uniqueness rule. |
+| F3 | Repair | The account-presence fence asserts key presence before `is_null()`, so its null half can fail. |
+| F4 | Repair | The deterministic stdio row keeps its deliberate harness route; the evidence sentences it outran are corrected in `evidence.md` and `qualification-s2.txt` (this round). |
+| F5 | Repair | Split presence from identity so an absent required link no longer answers `not_found`. |
+| F6 | Repair | Delete `ParentLinks` in favour of the shared `facts::Links`. |
+| F7 | Repair | Reword the family-refusal sentence and doc comment to the claim the family can make. |
+| F8 | Repair | Add a commit-route per-call acquisition-controls fence mirroring the PR row's effective-`maxAttempts` case. |
+| F9 | Repair | Serve or refuse the unserved `…/source/…` spelling at the same boundary as its siblings. |
+| F10 | Repair | Bind the family decision where the address is first destructured instead of re-deriving it. |
+| F11 | Repair | Correct the recorded claims: control-route list (`docs/operating.md:186`), adapter count and S2 checkpoint counts (`qualification-s2.txt`, `plan.md`), family index (`DESIGN.md:127`); the live-row sub-item is T13. |
+| F12 | Repair | A `.`/`..` login can no longer vanish from the expected URL. |
+| F13 | Repair | Add a `cap + 1` case so the commit budget row notices a loosened ceiling, not only a tightened one. |
+| T1 | Repair | Consolidate the duplicated `macro_rules! missing` against `facts/pull.rs`'s copy. |
+| T2 | Accepted, deferred | The new contract binary did copy its sibling's transport/mount helpers and native JSON builders; consolidating them into a GitHub-family support module is a test-fixture refactor whose churn would invalidate this round's per-fence bit-proofs, and the review's own verifier narrowed the claim (the finder's proposed `tests/support/jira.rs` home is not reusable, and the shared TLS/session support is already reused). Deferred to the increment that next edits those fixtures. |
+| T3 | Accepted, deferred | Fix needs a lifetime-parameterized DTO layer and a placement-gate accommodation; output bytes, semantics and the registered budgets are unaffected. |
+| T4 | Repair | Record the WrongSha row's deliberate fixture omissions so re-adding links cannot silently re-mask the equality mutant. |
+| T5 | No change | The guard is load-bearing, not redundant: `production_nodes` tolerates a path absent from `codes` and returns `{}`, while the raw-text fallback in the same function would raise `KeyError` there — which surfaces as an unlocated `C02 FAIL oracle input` instead of a named failure. Kept, with a comment stating that both reads of the map answer absence the same way. |
+| T6 | Repair | Correct the docstring (`declaration_subjects` now returns one subject per same-named production span) to state that a subject is the span's token stream, since its input is production-masked. |
+| T7 | No change | Refuted: ignored-row registration is complete and unclassified rows fail the gate. |
+| T8 | No change | Pre-existing and previously dispositioned; the increment changes the message's truth, not the category. |
+| T9 | No change | The runner always executes budgets with `--exact --test-threads=1`; the hazard is a local-invocation false red in the fail-safe direction. |
+| T10 | No change | The generation rule's single owner is already `facts.rs` (`establish_generation`/`check_generation`); `accept_generation` is a 6-line family-local composition of the two, and hoisting it would leave the four sibling inline comparisons untouched while spending owner line budgets already near their ledger maxima (`facts.rs` at 671 of 700), for no behavioural gain. |
+| T11 | Repair | Extract the GitHub source row both live profiles mount into one builder. The two envelopes stay separate: sharing them would need a builder taking the file name and cache directory as adjacent string arguments, which is the positional-transposition hazard the repository rejects elsewhere. |
+| T12 | No change | Benefit refuted: the peak doubling is not caused by escape density and the registered escape-dense row already exercises the fragmented path. |
+| T13 | Repair | Correct the live-row non-skip claim (this round): the receipt cannot distinguish a real run from a skip; the recorded ~2 s durations are the only receipt-side signal. |
+| T14 | No change | Substance held; only the documentation attribution was overstated. |

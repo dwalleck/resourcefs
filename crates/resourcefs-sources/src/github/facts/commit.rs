@@ -78,18 +78,9 @@ struct CommitLinks<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ParentLinks<'a> {
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    api_url: &'a Presence<String>,
-    #[serde(skip_serializing_if = "Presence::omitted")]
-    html_url: &'a Presence<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct CommitParentFacts<'a> {
     sha: &'a str,
-    links: ParentLinks<'a>,
+    links: super::Links<'a>,
 }
 
 #[derive(Serialize)]
@@ -204,12 +195,7 @@ pub(super) async fn read(
     )?;
 
     let mut unavailable_facts = Vec::new();
-    macro_rules! missing {
-        ($($field:expr => $name:literal),* $(,)?) => { $(
-            $field.unavailable($name, &mut unavailable_facts);
-        )* };
-    }
-    missing!(
+    missing!(unavailable_facts;
         commit.html_url => "links.htmlUrl",
         commit.comments_url => "links.commentsUrl",
         details.message => "message",
@@ -333,6 +319,12 @@ fn validate_commit<'a>(
     if observed_sha != requested.as_str() {
         return Err(failure(ErrorReason::UpstreamIdentityMismatch));
     }
+    // Presence and identity answer different questions: an absent link is a
+    // malformed document, while a present link naming a foreign object is a
+    // contradiction. The shared guard answers both with the contradiction, so
+    // presence is required here to keep this read's verdicts consistent — the
+    // repository's own required links are already presence-checked above.
+    identity::required(&commit.url)?;
     identity::require_object_link(&commit.url, endpoint)?;
     let expected_web = expected_web_commit_url(web, repository, observed_sha)?;
     identity::validate_optional_object_link(&commit.html_url, &expected_web)?;
@@ -365,7 +357,7 @@ fn validate_commit<'a>(
         identity::validate_optional_object_link(&parent.html_url, &expected_html)?;
         parents.push(CommitParentFacts {
             sha,
-            links: ParentLinks {
+            links: super::Links {
                 api_url: &parent.url,
                 html_url: &parent.html_url,
             },
@@ -379,20 +371,112 @@ fn validate_account(account: &Presence<Actor>, api: &Url, web: &Url) -> Result<(
         return Ok(());
     };
     let login = identity::required(&account.login)?;
-    let expected_api = append_path_segments(api, &["users", login])?;
-    let expected_web = append_path_segments(web, &[login])?;
-    identity::validate_optional_object_link(&account.url, &expected_api)?;
-    identity::validate_optional_object_link(&account.html_url, &expected_web)?;
+    require_login(login)?;
+    validate_account_link(&account.url, api, &[&["users", login]])?;
+    // A GitHub App's account is spelled `<slug>[bot]` and served from
+    // `/apps/<slug>`, so its profile link names the slug rather than the login;
+    // both routes spell the one account the login identifies.
+    match login.strip_suffix("[bot]").filter(|slug| !slug.is_empty()) {
+        Some(slug) => validate_account_link(&account.html_url, web, &[&[login], &["apps", slug]]),
+        None => validate_account_link(&account.html_url, web, &[&[login]]),
+    }
+}
+
+/// A login names exactly one account. An empty login resolves to the user
+/// *collection* and a dot segment never survives URL parsing, so neither can
+/// be the account the login claims to identify.
+fn require_login(login: &str) -> Result<(), ResourceError> {
+    if login.is_empty() || matches!(login, "." | "..") {
+        return Err(failure(ErrorReason::UpstreamMalformed));
+    }
     Ok(())
 }
 
-fn append_path_segments(base: &Url, segments: &[&str]) -> Result<Url, ResourceError> {
-    let mut url = base.clone();
-    url.path_segments_mut()
-        .map_err(|_| failure(ErrorReason::UpstreamMalformed))?
-        .pop_if_empty()
-        .extend(segments);
-    Ok(url)
+/// A supplied account link must belong to this deployment and, when its path
+/// is one of the account's own routes, must name that account.
+///
+/// Compared on decoded segments, never on serialized paths: the provider
+/// percent-encodes an app account's login in the API route
+/// (`/users/dependabot%5Bbot%5D`) while a constructed path renders those bytes
+/// literally, so a path comparison reads the provider's own escaping as a
+/// contradiction. Segments are split before decoding, so an escaped separator
+/// cannot merge two segments into one.
+fn validate_account_link(
+    link: &Presence<String>,
+    authority: &Url,
+    routes: &[&[&str]],
+) -> Result<(), ResourceError> {
+    let Some(value) = link.value() else {
+        return Ok(());
+    };
+    let parsed = Url::parse(value).map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
+    if !identity::clean_authority(&parsed, authority)
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(failure(ErrorReason::UpstreamIdentityMismatch));
+    }
+    for route in routes {
+        if route_matches(&parsed, authority, route)? {
+            return Ok(());
+        }
+    }
+    Err(failure(ErrorReason::UpstreamIdentityMismatch))
+}
+
+/// Whether `url` is `authority`'s own path prefix followed by exactly `route`.
+///
+/// The prefix is skipped rather than assumed empty: a custom `apiBaseUrl` may
+/// carry one (`https://host/api/v3/`), and a route is checked below it.
+fn route_matches(url: &Url, authority: &Url, route: &[&str]) -> Result<bool, ResourceError> {
+    let (Some(observed), Some(base)) = (url.path_segments(), authority.path_segments()) else {
+        return Ok(false);
+    };
+    let mut observed = observed;
+    for segment in base
+        .filter(|segment| !segment.is_empty())
+        .chain(route.iter().copied())
+    {
+        match observed.next() {
+            Some(observed) if decode_segment(observed)?.eq_ignore_ascii_case(segment) => {}
+            _ => return Ok(false),
+        }
+    }
+    Ok(observed.next().is_none())
+}
+
+/// Percent-decode one supplied path segment for comparison only.
+///
+/// A malformed escape is a contradiction rather than a recovery: the link is a
+/// provider observation that is compared and never published, so there is no
+/// lossless reading of it to preserve.
+fn decode_segment(segment: &str) -> Result<String, ResourceError> {
+    if !segment.contains('%') {
+        return Ok(segment.to_owned());
+    }
+    let bytes = segment.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let (Some(high), Some(low)) = (
+                bytes.get(index + 1).and_then(|byte| hex_nibble(*byte)),
+                bytes.get(index + 2).and_then(|byte| hex_nibble(*byte)),
+            ) else {
+                return Err(failure(ErrorReason::UpstreamMalformed));
+            };
+            decoded.push(high << 4 | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| failure(ErrorReason::UpstreamMalformed))
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    char::from(byte).to_digit(16).map(|digit| digit as u8)
 }
 
 fn expected_web_commit_url(

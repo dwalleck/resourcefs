@@ -196,6 +196,27 @@ async fn unmounted_github_family_refuses_reads_without_faking_a_projection() {
     // build cannot serve, and neither depends on configuration.
     assert_eq!(mutation.category(), ErrorCategory::UnsupportedProjection);
     assert_eq!(mutation.message(), search.message());
+    // The `source` spelling is not acquired by this increment, so a read of it
+    // is also refused by the family itself — before the mount is consulted and
+    // before the caller's control set is judged — rather than answering the
+    // missing profile entry its commit sibling answers above.
+    let source = PathReference::parse(
+        "github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/src/lib.rs/facts",
+    )
+    .expect("immutable source reference");
+    for controls in [
+        None,
+        Some(resourcefs_core::ReadAcquisitionLimits::default()),
+    ] {
+        let read = fixture
+            .compiled
+            .read(&source, &OperationGuard::new(), controls.as_ref())
+            .await
+            .expect_err("no compiled route reads the source spelling");
+        assert_eq!(read.category(), ErrorCategory::UnsupportedProjection);
+        assert!(read.details().is_none());
+        assert_eq!(read.message(), search.message());
+    }
 }
 
 #[tokio::test]
