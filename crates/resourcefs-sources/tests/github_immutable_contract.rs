@@ -165,6 +165,8 @@ enum FixtureMode {
     MalformedLogin(LoginCase),
     /// The commit's own required API link is absent or null.
     RequiredCommitLink(RequiredLinkCase),
+    /// A custom deployment whose API base carries an escaped path byte.
+    EncodedPrefix,
 }
 
 async fn fixture(
@@ -177,10 +179,12 @@ async fn fixture_with_limits(
     mode: FixtureMode,
     operator: ReadAcquisitionLimits,
 ) -> (TlsListener, GithubSource, session_support::ScratchFixture) {
-    let api_prefix = if matches!(mode, FixtureMode::Enterprise) {
-        "/api/v3"
-    } else {
-        ""
+    let api_prefix = match mode {
+        FixtureMode::Enterprise => "/api/v3",
+        // A configured `apiBaseUrl` may spell a path byte escaped, as
+        // `Url::parse` itself does for a space or a non-ASCII label.
+        FixtureMode::EncodedPrefix => "/GitHub%20Enterprise/api/v3",
+        _ => "",
     };
     let listener = TlsListener::serve_request_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -417,6 +421,36 @@ async fn immutable_commit_facts_accept_path_prefixed_deployment() {
         [
             "GET /api/v3/repos/owner/repo HTTP/1.1",
             "GET /api/v3/repos/owner/repo/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HTTP/1.1"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn immutable_commit_facts_accept_percent_encoded_deployment_prefix() {
+    // A configured `apiBaseUrl` may carry a path byte spelled escaped. The
+    // deployment's own prefix is compared as it is spelled on both sides, so
+    // the provider's escaping of the same byte is not read as a contradiction —
+    // and only the route below the prefix is compared decoded.
+    let (listener, source, _session) = fixture(FixtureMode::EncodedPrefix).await;
+    let reference = format!("github://owner/repo/commits/{COMMIT_SHA}/facts");
+    let resource = read_reference(&source, &reference)
+        .await
+        .expect("escaped-prefix deployment commit facts");
+    let document: Value = serde_json::from_str(resource.content()).expect("facts JSON");
+    assert_eq!(document["observed"]["commitSha"], COMMIT_SHA);
+    assert_eq!(
+        document["data"]["authorAccount"]["links"]["apiUrl"],
+        format!(
+            "https://{}:{}/GitHub%20Enterprise/api/v3/users/author-login",
+            tls::FIXTURE_HOST,
+            listener.address.port()
+        )
+    );
+    assert_eq!(
+        listener.requests(),
+        [
+            "GET /GitHub%20Enterprise/api/v3/repos/owner/repo HTTP/1.1",
+            "GET /GitHub%20Enterprise/api/v3/repos/owner/repo/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HTTP/1.1"
         ]
     );
 }

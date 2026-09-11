@@ -207,6 +207,8 @@ The owned schema is version 1.0 with `kind: "github.commit"` and the shared Fact
 
 ResourceFS acquires the repository and the exact `/repos/<owner>/<repo>/commits/<commit-sha>` endpoint under one existing acquisition budget. Returned repository, commit, tree and parent identities and supplied authority-bearing links must agree with the request and configured deployment, including Enterprise API path prefixes. Returned links are validated, never followed for enrichment. Commit Facts do not acquire trees, blobs, diffs or changed-file contents.
 
+An account's supplied links are validated against the deployment's own authority and, when the path is one of that account's routes, against the account itself, compared on decoded path segments — so a provider that escapes a login (`/users/dependabot%5Bbot%5D`) or serves an app account from `/apps/<slug>` is not read as a contradiction. Presence and identity answer separately: a required link that is absent or null is malformed, while one that names a foreign object is `not_found` with reason `upstream_identity_mismatch` and no access ambiguity — the verdict the conversation-comment and review families give a record that does not belong to the addressed pull request, kept here so one contradiction has one category.
+
 The Version Tag names the complete acquired JSON and its provenance, not the native Git object. Provider metadata is not reconstructed raw Git commit bytes. Final generation/cancellation/deadline checks precede publication; overflow of display limits uses byte-exact artifact recovery without reacquiring the source. See [the commit operating example](docs/operating.md#github-immutable-commit-facts).
 
 #### Conversation-comment Facts version 1
