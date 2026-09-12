@@ -8,9 +8,27 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
-libfuzzer-sys = "0.4"
+# Structured input, so the `pattern` target can draw a (pattern, subject,
+# flags) tuple rather than splitting one byte slice by hand.
+arbitrary = { version = "1.4.2", features = ["derive"] }
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+# The `pattern` target includes `sources/src/pattern.rs` by `#[path]`, the same
+# way `tests/pattern_contract.rs` does, because `SearchMatcher` and
+# `GlobMatcher` are `pub(crate)` and fuzzing them should not widen the
+# library's public surface. That module's own dependencies therefore have to be
+# here; all three are already in the workspace lockfile.
+globset = "=0.4.20"
+pcre2-sys = "=0.2.10"
+regex = "=1.13.1"
 resourcefs-core = { path = "../crates/resourcefs-core", features = ["test-support"] }
 resourcefs-mcp = { path = "../crates/resourcefs-mcp" }
+
+[[bin]]
+name = "pattern"
+path = "fuzz_targets/pattern.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "path_reference"
