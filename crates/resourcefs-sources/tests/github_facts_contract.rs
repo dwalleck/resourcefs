@@ -4894,8 +4894,9 @@ struct ImmutableSourceBudgetOracle {
 /// recorded Git identities in the shared fixture. The four-megabyte payload is
 /// deliberately not committed: only its byte recipe and native object IDs are
 /// source-controlled. The same listener serves the fixture's widest admitted
-/// tree and deepest admitted path, so the production budget can measure those
-/// corners against one source.
+/// tree and the deepest path whose metadata walk fits the attempt ceiling, so
+/// the production budget can measure both the widest publishing shape and the
+/// attempt-refusal boundary against one source.
 async fn immutable_source_budget_fixture() -> (
     TlsListener,
     GithubSource,
@@ -4969,7 +4970,7 @@ async fn immutable_source_budget_fixture() -> (
     // The same fixture records the other admitted shapes: the widest tree the
     // entry ceiling admits and the deepest path whose metadata walk fits the
     // attempt ceiling. Serving them from this listener lets the budget rows
-    // measure the worst admitted corner without a second fixture.
+    // measure both corners without a second fixture.
     let main_commit = fixture["commit"].to_string();
     let main_commit_target = format!(
         "/repos/owner/repo/commits/{}",
@@ -5193,11 +5194,14 @@ async fn immutable_source_production_budget() -> Result<(), &'static str> {
         }
     }
 
-    // Worst admitted path: `deep/d1/.../payload` is the deepest path whose
-    // metadata walk fits the attempt ceiling. Repository, commit and the
-    // eight-tree walk cost exactly the admitted attempts, so the next one — the
-    // blob GET — is refused locally: the whole read fails and no partial Facts
-    // document is published for a bound the caller could have raised.
+    // Deepest metadata walk that fits the attempt ceiling:
+    // `deep/d1/.../payload` spends exactly the admitted attempts on repository,
+    // commit and eight trees, so its next request — the blob GET — is refused
+    // locally: the whole read fails and no partial Facts document is published
+    // for a bound the caller could have raised. This row certifies that refusal
+    // boundary; it does not measure a publishing read at depth, because the
+    // fixture's deepest path that publishes content is seven components and the
+    // corpus has no such case.
     let deep = &fixture["cases"]["deepBlobLimit"];
     let deep_path = deep["encodedPath"].as_str().expect("deep encoded path");
     let (listener, source, _session, _oracle) = immutable_source_budget_fixture().await;

@@ -195,7 +195,7 @@ pub(super) async fn acquire(
     accept_generation(ctx, commit_response.cache_generation)?;
     let commit: NativeCommit = serde_json::from_slice(commit_response.body())
         .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;
-    let (_, _, _, _) = validate_commit(
+    let (_, _, _) = validate_commit(
         &commit,
         repository,
         commit_id,
@@ -235,6 +235,7 @@ pub(super) async fn read(
         commit.author => "authorAccount",
         commit.committer => "committerAccount"
     );
+    // Publish the parents the same loop above validated, in the same order.
     let parents = identity::required(&commit.parents)?
         .iter()
         .map(|parent| {
@@ -341,11 +342,11 @@ fn require_repository(repository: &Repository) -> Result<(), ResourceError> {
     Ok(())
 }
 
-/// Validate one native commit and return its validated parts.
+/// Validate one native commit and return its verified identity and message.
 ///
-/// The parents come back as the validated slice the caller publishes from, so
-/// each published parent is the record whose links were checked — there is no
-/// index to re-resolve and no way for the two to drift apart.
+/// The parent loop below validates every parent of the one slice `read`
+/// publishes, so each published parent is the record whose links were checked —
+/// there is no index to re-resolve and no way for the two to drift apart.
 fn validate_commit<'a>(
     commit: &'a NativeCommit,
     repository: &GithubRepositoryIdentity,
@@ -353,7 +354,7 @@ fn validate_commit<'a>(
     endpoint: &Url,
     api: &Url,
     web: &Url,
-) -> Result<(&'a NativeCommitData, &'a str, &'a str, &'a [NativeParent]), ResourceError> {
+) -> Result<(&'a NativeCommitData, &'a str, &'a str), ResourceError> {
     let observed_sha = identity::sha(&commit.sha)?;
     if observed_sha != requested.as_str() {
         return Err(failure(ErrorReason::UpstreamIdentityMismatch));
@@ -394,7 +395,7 @@ fn validate_commit<'a>(
         identity::validate_optional_object_link(&parent.url, &expected_api)?;
         identity::validate_optional_object_link(&parent.html_url, &expected_html)?;
     }
-    Ok((details, observed_sha, tree_sha, parent_values.as_slice()))
+    Ok((details, observed_sha, tree_sha))
 }
 
 fn validate_account(account: &Presence<Actor>, api: &Url, web: &Url) -> Result<(), ResourceError> {

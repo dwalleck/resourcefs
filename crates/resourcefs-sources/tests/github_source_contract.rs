@@ -58,6 +58,11 @@ enum Mutation {
     BlobRetryAfterBeyondDeadline,
     BlobDenied,
     BlobAbsent,
+    BlobRetryAfterWithinDeadline,
+    BlobAborted,
+    OmitBlobUrl,
+    ForeignSiblingLink,
+    NullBinaryTreeSize,
     OpaqueEntryLink,
     QueryBearingEntryLink,
     OmitTreeUrl,
@@ -203,6 +208,12 @@ fn default_fixture_response(
                 "429 Too Many Requests",
                 vec![("Retry-After".to_owned(), "120".to_owned())],
             )),
+            // Guidance that fits the remaining deadline: an ordinary rate limit,
+            // not a deadline refusal.
+            Mutation::BlobRetryAfterWithinDeadline => Some((
+                "429 Too Many Requests",
+                vec![("Retry-After".to_owned(), "1".to_owned())],
+            )),
             _ => None,
         };
         if let Some((status, headers)) = blob_failure {
@@ -211,6 +222,11 @@ fn default_fixture_response(
                 headers,
                 body: b"{}".to_vec(),
             };
+        }
+        // A dropped connection is the last ordinary class: the object itself is
+        // fine, the request did not arrive.
+        if matches!(mutation, Mutation::BlobAborted) {
+            return FixtureResponse::Abort;
         }
     }
     let host = request.host().to_owned();
@@ -294,6 +310,38 @@ fn mutate(target: &str, body: &mut Value, mutation: Mutation) {
             mutated.replace_range(last_data..last_data + 1, "h");
             body["content"] = json!(mutated);
         }
+        // A sibling the caller never selects carries a link naming another
+        // deployment's object. Only the selected entry is judged, so this must
+        // not fail a read of a different path.
+        Mutation::ForeignSiblingLink
+            if target.ends_with(&format!("/git/trees/{ROOT_TREE_SHA}")) =>
+        {
+            let entries = body["tree"].as_array_mut().expect("tree entries");
+            let entry = entries
+                .iter_mut()
+                .find(|entry| entry["path"] == "run.sh")
+                .expect("executable entry");
+            let shas = entry["sha"].as_str().expect("entry sha").to_owned();
+            entry["url"] = json!(format!(
+                "https://foreign.invalid/repos/owner/repo/git/blobs/{shas}"
+            ));
+        }
+        // The blob response omits its own top-level link. Presence and identity
+        // answer different questions, so this is a malformed document rather
+        // than a contradiction.
+        Mutation::OmitBlobUrl if target.contains("/git/blobs/") => {
+            body.as_object_mut().expect("blob object").remove("url");
+        }
+        Mutation::NullBinaryTreeSize
+            if target.ends_with("/git/trees/d9cf1e2c10ed61b36c812e36c3f79acd6971126c") =>
+        {
+            let entries = body["tree"].as_array_mut().expect("tree entries");
+            let binary = entries.first_mut().expect("binary entry");
+            binary
+                .as_object_mut()
+                .expect("binary object")
+                .insert("size".to_owned(), Value::Null);
+        }
         Mutation::OversizedEntrySize
             if target.ends_with(&format!("/git/trees/{ROOT_TREE_SHA}")) =>
         {
@@ -354,6 +402,11 @@ fn mutate(target: &str, body: &mut Value, mutation: Mutation) {
         | Mutation::BlobRetryAfterBeyondDeadline
         | Mutation::BlobDenied
         | Mutation::BlobAbsent
+        | Mutation::BlobRetryAfterWithinDeadline
+        | Mutation::BlobAborted
+        | Mutation::OmitBlobUrl
+        | Mutation::ForeignSiblingLink
+        | Mutation::NullBinaryTreeSize
         | Mutation::OpaqueEntryLink
         | Mutation::QueryBearingEntryLink
         | Mutation::OmitTreeUrl
@@ -635,6 +688,14 @@ async fn source_facts_verify_tree_and_blob_identity_before_retention() {
             ErrorCategory::SourceUnavailable,
             ErrorReason::UpstreamMalformed,
             3,
+        ),
+        (
+            // The blob's own link is required too: absent is a malformed
+            // document, not a contradiction.
+            Mutation::OmitBlobUrl,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamMalformed,
+            5,
         ),
         (
             Mutation::WrongBlobSha,
@@ -1069,6 +1130,18 @@ async fn source_facts_retain_ordinary_blob_failure_but_not_identity_failure() {
             "source_unavailable",
             "upstream_unavailable",
         ),
+        (
+            // Guidance that fits the remaining deadline is an ordinary rate
+            // limit, not the deadline refusal above.
+            Mutation::BlobRetryAfterWithinDeadline,
+            "source_unavailable",
+            "upstream_rate_limited",
+        ),
+        (
+            Mutation::BlobAborted,
+            "source_unavailable",
+            "transport_failure",
+        ),
         (Mutation::BlobDenied, "permission_denied", "upstream_denied"),
         (
             Mutation::BlobAbsent,
@@ -1210,6 +1283,14 @@ async fn source_facts_read_a_path_whose_sibling_entries_carry_opaque_links() {
         ),
         (Mutation::OpaqueEntryLink, "run.sh"),
         (Mutation::QueryBearingEntryLink, "run.sh"),
+        // An unselected entry naming another deployment's object is not this
+        // read's contradiction: the link is never read, retained or followed.
+        // This is the case that fails if validation widens back to every entry
+        // of every traversed tree.
+        (
+            Mutation::ForeignSiblingLink,
+            "docs/%CE%BB%20space%252F%3Araw.bin",
+        ),
     ] {
         let (_listener, source, _session) =
             fixture_source(ReadAcquisitionLimits::default(), mutation).await;
@@ -1263,30 +1344,56 @@ async fn source_facts_refuse_a_size_refusal_without_claiming_an_observed_size() 
 async fn source_facts_publish_presence_aware_terminal_size() {
     // `null` and an omitted key are different upstream observations in the one
     // family whose purpose is byte-exact fidelity.
-    let (_listener, source, _session) = fixture_source(
-        ReadAcquisitionLimits::default(),
-        Mutation::OmitBinaryTreeSize,
-    )
-    .await;
-    let resource = read(&source, "docs/%CE%BB%20space%252F%3Araw.bin")
-        .await
-        .expect("source facts");
+    // The supplied branch: this fixture's executable entry carries size 29, and
+    // a verified blob is the one case where that number is cross-checked.
+    let (_listener, source, _session) =
+        fixture_source(ReadAcquisitionLimits::default(), Mutation::None).await;
+    let resource = read(&source, "run.sh").await.expect("source facts");
     let document: Value = serde_json::from_str(resource.content()).expect("facts JSON");
     assert_eq!(document["data"]["content"]["state"], "available");
-    assert!(
-        !document["data"]
-            .as_object()
-            .expect("data object")
-            .contains_key("sizeBytes"),
-        "an omitted upstream size stays omitted"
-    );
+    assert_eq!(document["data"]["sizeBytes"], 29);
     assert!(
         document["unavailableFacts"]
             .as_array()
             .expect("facts")
-            .iter()
-            .any(|entry| { entry["field"] == "sizeBytes" && entry["reason"] == "omitted" })
+            .is_empty(),
+        "a supplied size leaves nothing unavailable"
     );
+
+    for (mutation, expected_reason, present) in [
+        (Mutation::OmitBinaryTreeSize, "omitted", false),
+        (Mutation::NullBinaryTreeSize, "null", true),
+    ] {
+        let (_listener, source, _session) =
+            fixture_source(ReadAcquisitionLimits::default(), mutation).await;
+        let resource = read(&source, "docs/%CE%BB%20space%252F%3Araw.bin")
+            .await
+            .expect("source facts");
+        let document: Value = serde_json::from_str(resource.content()).expect("facts JSON");
+        assert_eq!(document["data"]["content"]["state"], "available");
+        // An explicit null and an absent key are different upstream
+        // observations. Asserted on presence, because reading a missing key
+        // back through `Value` indexing also yields Null.
+        assert_eq!(
+            document["data"]
+                .as_object()
+                .expect("data object")
+                .contains_key("sizeBytes"),
+            present,
+            "{mutation:?}"
+        );
+        if present {
+            assert_eq!(document["data"]["sizeBytes"], Value::Null, "{mutation:?}");
+        }
+        assert!(
+            document["unavailableFacts"]
+                .as_array()
+                .expect("facts")
+                .iter()
+                .any(|entry| entry["field"] == "sizeBytes" && entry["reason"] == expected_reason),
+            "{mutation:?} records why the size is unavailable"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1330,7 +1437,16 @@ async fn source_facts_accept_exact_decoded_cap_and_reject_cap_plus_one() {
                 .map(str::len),
             (expected_state == "available").then_some(encoded_length)
         );
-        assert_eq!(document["data"]["sizeBytes"], Value::Null);
+        // This corpus supplies no tree-entry size at all, so nothing unverified
+        // is published for it. Read through `as_object`, not `Value` indexing:
+        // indexing a missing key also yields Null.
+        assert!(
+            !document["data"]
+                .as_object()
+                .expect("data object")
+                .contains_key("sizeBytes"),
+            "an unsupplied size is not invented"
+        );
         assert_eq!(document["data"]["objectSha"], blob_sha);
         assert!(document["upstream"]["blobs"][blob_sha]["body"].is_object());
         assert!(

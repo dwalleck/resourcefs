@@ -205,7 +205,10 @@ pub(super) async fn read_review_item(
         .fetch_controlled(endpoint, GITHUB_JSON, ctx.read, Some(&mut ctx.budget))
         .await?;
     if response.cache_generation != parent_generation {
-        return Err(failure(ErrorReason::UpstreamUnavailable));
+        // A concurrent mutation invalidated the parent's body: the same
+        // condition the shared generation guards report, so the caller is not
+        // told a different story depending on where the invalidation landed.
+        return Err(failure(ErrorReason::CacheGenerationChanged));
     }
     let review: NativeReview = serde_json::from_slice(response.body())
         .map_err(|_| failure(ErrorReason::UpstreamMalformed))?;

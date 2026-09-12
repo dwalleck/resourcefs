@@ -576,7 +576,10 @@ pub(super) async fn read(
             }
         };
         if page.response.cache_generation != parent_generation {
-            return Err(failure(ErrorReason::UpstreamUnavailable));
+            // A concurrent mutation invalidated the parent's body: the same
+            // condition the shared generation guards report, so the caller is not
+            // told a different story depending on where the invalidation landed.
+            return Err(failure(ErrorReason::CacheGenerationChanged));
         }
         let response = page.response;
         let next = page.next;

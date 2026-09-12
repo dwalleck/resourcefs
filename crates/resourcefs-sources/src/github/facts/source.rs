@@ -5,7 +5,7 @@ use resourcefs_core::{
     AcquisitionLimitKind, ErrorCategory, ErrorReason, GithubCommitId, GithubRepositoryIdentity,
     GithubSourcePath, ResourceError, ResourceErrorDetails, SourceResource,
 };
-use serde::{Serialize, Serializer, ser::SerializeStruct};
+use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use super::super::fetch::BodyObservation;
 use super::super::{GITHUB_JSON, GithubSource};
@@ -59,39 +59,37 @@ enum SourceContent {
 
 impl Serialize for SourceContent {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let fields = match self {
-            Self::Available { .. } => 4,
-            Self::DecodedSizeLimit(_) | Self::AcquisitionFailed(_) => 3,
-            Self::NonRegularObject | Self::UnsupportedObjectMode => 2,
-        };
-        let mut map = serializer.serialize_struct("SourceContent", fields)?;
+        // One variable-shape map, the same form the sibling native records use:
+        // the arm split below is what makes a new variant a non-exhaustive-match
+        // error instead of a silent fallback to another variant's reason.
+        let mut map = serializer.serialize_map(None)?;
         match self {
             Self::Available {
                 decoded_size_bytes,
                 bytes_base64,
             } => {
-                map.serialize_field("state", "available")?;
-                map.serialize_field("encoding", "base64")?;
-                map.serialize_field("decodedSizeBytes", decoded_size_bytes)?;
-                map.serialize_field("bytesBase64", bytes_base64)?;
+                map.serialize_entry("state", "available")?;
+                map.serialize_entry("encoding", "base64")?;
+                map.serialize_entry("decodedSizeBytes", decoded_size_bytes)?;
+                map.serialize_entry("bytesBase64", bytes_base64)?;
             }
             Self::DecodedSizeLimit(limit) => {
-                map.serialize_field("state", "unavailable")?;
-                map.serialize_field("reason", "decoded_size_limit")?;
-                map.serialize_field("limit", limit)?;
+                map.serialize_entry("state", "unavailable")?;
+                map.serialize_entry("reason", "decoded_size_limit")?;
+                map.serialize_entry("limit", limit)?;
             }
             Self::AcquisitionFailed(failure) => {
-                map.serialize_field("state", "unavailable")?;
-                map.serialize_field("reason", "acquisition_failed")?;
-                map.serialize_field("failure", failure)?;
+                map.serialize_entry("state", "unavailable")?;
+                map.serialize_entry("reason", "acquisition_failed")?;
+                map.serialize_entry("failure", failure)?;
             }
-            Self::NonRegularObject | Self::UnsupportedObjectMode => {
-                map.serialize_field("state", "unsupported")?;
-                let reason = match self {
-                    Self::NonRegularObject => "non_regular_object",
-                    _ => "unsupported_object_mode",
-                };
-                map.serialize_field("reason", reason)?;
+            Self::NonRegularObject => {
+                map.serialize_entry("state", "unsupported")?;
+                map.serialize_entry("reason", "non_regular_object")?;
+            }
+            Self::UnsupportedObjectMode => {
+                map.serialize_entry("state", "unsupported")?;
+                map.serialize_entry("reason", "unsupported_object_mode")?;
             }
         }
         map.end()
