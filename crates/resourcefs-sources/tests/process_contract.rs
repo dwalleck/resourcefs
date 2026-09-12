@@ -849,3 +849,77 @@ async fn inherited_relative_path_resolves_against_the_command_base() {
         "an inherited relative entry resolves against the base, like a declared one"
     );
 }
+
+/// A spawn failure says which failure it was.
+///
+/// `CommandError::message` is `&'static str` so it can never carry a path or a
+/// credential, which meant every spawn failure produced the same sentence: a
+/// missing program, a non-executable one, and a machine out of processes were
+/// indistinguishable. That is not academic -- a `Spawn` failure of unknown
+/// cause showed up in this suite under load and could not be told apart from a
+/// real one, because the reason had been discarded at the `map_err`.
+///
+/// `io::ErrorKind` is fieldless, so carrying it leaks nothing the `&'static
+/// str` rule protects.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_spawn_failure_records_the_reason_the_os_gave() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = TempDir::new().expect("command base");
+    let base = temporary.path().canonicalize().expect("canonical base");
+
+    // Absent: the program is not there at all.
+    let absent = CommandSpec::new(
+        vec![base.join("not-here").to_string_lossy().into_owned()],
+        ChildEnvironment::new(BTreeMap::new()).expect("environment"),
+    )
+    .expect("absent command");
+    let error = CommandExecutor::new(1, &base)
+        .expect("executor")
+        .run(
+            &absent,
+            CommandRole::OneShot,
+            CommandInput::None,
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("a missing program cannot be started");
+    assert_eq!(error.kind(), CommandErrorKind::Spawn);
+    assert_eq!(
+        error.os_error(),
+        Some(std::io::ErrorKind::NotFound),
+        "a missing program must be distinguishable: {error:?}"
+    );
+
+    // Present but not executable: a different failure, same message.
+    let unreadable = base.join("not-executable");
+    fs::write(&unreadable, "#!/bin/sh\nexit 0\n").expect("write helper");
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).expect("drop the x bit");
+    let denied = CommandSpec::new(
+        vec![unreadable.to_string_lossy().into_owned()],
+        ChildEnvironment::new(BTreeMap::new()).expect("environment"),
+    )
+    .expect("non-executable command");
+    let error = CommandExecutor::new(1, &base)
+        .expect("executor")
+        .run(
+            &denied,
+            CommandRole::OneShot,
+            CommandInput::None,
+            &OperationGuard::new(),
+        )
+        .await
+        .expect_err("a non-executable program cannot be started");
+    assert_eq!(error.kind(), CommandErrorKind::Spawn);
+    assert_eq!(
+        error.os_error(),
+        Some(std::io::ErrorKind::PermissionDenied),
+        "a permission failure must not look like a missing program: {error:?}"
+    );
+
+    // And the message stays value-free, which is why the kind had to be a
+    // separate field rather than formatted text.
+    assert_eq!(error.to_string(), "configured command could not be started");
+    assert!(!error.to_string().contains("not-executable"));
+}
