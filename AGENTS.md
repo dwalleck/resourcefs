@@ -14,7 +14,21 @@ This is a single-context repository with `CONTEXT.md` at the root and ADRs under
 
 ## Repository verification
 
-Run `python scripts/ci-gates.py` for the complete local/CI gate; Python 3.9+ and `cargo-deny` are required. The runner owns the command list and ignored-test classification. A plain `cargo test` is a focused functional check, not the full gate. Keep production budgets in the runner's verified inventory and live smoke tests in their separate, credential-gated path below.
+Run `python scripts/ci-gates.py` for the complete local/CI gate; Python 3.9+, `cargo-deny` and `cargo-nextest` are required. The runner owns the command list and ignored-test classification. A plain `cargo test` is a focused functional check, not the full gate. Keep production budgets in the runner's verified inventory and live smoke tests in their separate, credential-gated path below.
+
+## Test tooling
+
+`cargo-nextest` runs the functional gate, configured in `.config/nextest.toml`. It is not a preference: four test binaries install a counting `#[global_allocator]` and assert a peak-heap ceiling, and a process-global counter is only trustworthy when one test owns the process. Under `cargo test` those rows share a binary with everything else in it, so a concurrent test's allocations land in this one's measurement — the misattribution recorded in rfs-1e6h, and the reason its ceilings were raised (1 MiB to 4 MiB, 100 ms to 1000 ms) rather than fixed. The `#[ignore]`d production budgets were never affected, because the runner already executes each of those on its own with `--exact`. nextest does not run doctests, so they have their own gate beside it.
+
+A test target with `harness = false` must still parse `--list`, `--exact` and `--ignored`, or the budget gate cannot enumerate it and nextest reports zero tests in it. `tests/secret_contract.rs` is the worked example: its `main` doubles as the helper subprocess the fixtures spawn, so it keeps `harness = false` and uses `libtest-mimic` for the argument surface, branching on `RFS_SECRET_FIXTURE` before parsing argv.
+
+`cargo-mutants` is configured in `.cargo/mutants.toml` but is **not** a gate — the workspace carries ~5,000 viable mutants against a suite whose slowest rows drive real subprocesses, so a full run is tens of CPU-hours. Use `cargo mutants --in-diff` on a pull request and `--shard N/M` for a nightly. It complements the named mutation fences in `configuration_contract.rs` (C11/C14/C15/C16) rather than replacing them: those are criterion IDs from ticket plans, chosen so one named mutant flips exactly one test name, while cargo-mutants finds what nobody thought to hand-pick.
+
+## Fuzzing
+
+`fuzz/` declares its own `[workspace]`, so `cargo test --workspace` cannot reach it — `scripts/ci-gates.py` compiles and format-checks it explicitly so the targets cannot rot against the APIs they exercise. Running the fuzzers is a separate, longer job.
+
+Each parse boundary gets a byte target and, where the grammar is deep enough that bytes rarely reach it, a structured companion. `server_profile` explores the encoding and owns the `MAX_PROFILE_BYTES` refusal, which a structured target cannot express because a value derived from a grammar has no oversized spelling. `server_profile_structured` uses `arbitrary` to generate documents that are profile-shaped by construction, so the budget goes on semantics — duplicate identifiers, grants a source kind refuses, path collisions. The reason both exist: of the byte target's 3,912 corpus entries, 555 contained the text `"sources"` but not one was a JSON object carrying that key, so the source-configuration path had never been fuzzed at all.
 
 ## Live smoke tests
 

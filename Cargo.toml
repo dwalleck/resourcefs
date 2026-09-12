@@ -52,6 +52,15 @@ sha2 = "0.10.9"
 serde_json = "1.0.143"
 serde_path_to_error = "0.1.20"
 tempfile = "3.22.0"
+# rmcp instruments its own transport and service layers with `tracing` and
+# emits 138 events, 22 of them at error level. Without a subscriber every one
+# is discarded, so a transport failure rmcp knows about but does not surface as
+# a `Result` reaches nobody. `tracing` is the event API; `tracing-subscriber`
+# supplies only the span registry -- formatting stays ours, because the
+# redactor must see a whole record and a `fmt` layer would hand it fields one
+# at a time, splitting a secret across two writes.
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
 tokio = { version = "=1.47.1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 # Test-only TLS server for the loopback fixtures that prove the substrate's
 # address policy and hostname-bound certificate verification. Both crates are
@@ -60,6 +69,14 @@ tokio = { version = "=1.47.1", features = ["fs", "io-std", "io-util", "macros", 
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws-lc-rs"] }
 # Test-only issuance avoids both expired fixtures and native TLS lifetime limits.
 rcgen = { version = "=0.14.10", default-features = false, features = ["aws_lc_rs"] }
+# Gives `secret_contract` a real libtest-style harness. That target must stay
+# `harness = false` (its `main` doubles as the helper subprocess the fixtures
+# spawn), but a hand-written `main` cannot enumerate its own cases: `--list`
+# returned nothing, so `scripts/ci-gates.py` could not distinguish "no ignored
+# rows" from "cannot enumerate" and re-ran the whole contract as a side effect
+# of trying to list it. libtest-mimic supplies the argument parsing and the
+# listing format without giving up the subprocess entry point.
+libtest-mimic = "0.8.2"
 rstest = { version = "0.27.0", default-features = false }
 trybuild = "1.0.111"
 url = "2.5.7"

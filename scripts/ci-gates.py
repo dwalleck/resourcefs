@@ -141,9 +141,25 @@ def main():
     gates = [
         ("Formatting", ["cargo", "fmt", "--all", "--", "--check"]),
         ("Lints", ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]),
-        ("Functional tests", ["cargo", "test", "--workspace", "--all-features", "--no-fail-fast"]),
+        # nextest, not `cargo test`, because it runs each test in its own
+        # process. Four test binaries install a counting `#[global_allocator]`
+        # and assert a peak-heap ceiling; a process-global counter only means
+        # anything when one test owns the process. Under a shared binary a
+        # concurrent test's allocations land in this one's measurement, which
+        # is rfs-1e6h and why those ceilings were raised rather than fixed.
+        # (The `#[ignore]`d budgets below were never affected -- each already
+        # runs on its own with `--exact`.)
+        ("Functional tests", ["cargo", "nextest", "run", "-P", "ci", "--workspace", "--all-features"]),
+        # nextest does not run doctests, so they need their own gate.
+        ("Doc tests", ["cargo", "test", "--workspace", "--all-features", "--doc"]),
         ("Release workspace", ["cargo", "test", *RELEASE, "--workspace", "--all-features", "--no-fail-fast", "--", "--test-threads=1"]),
         ("Ignored production budgets", None),
+        # `fuzz/` declares its own `[workspace]`, so `--workspace` above cannot
+        # reach it and nothing else compiles it. Without this the targets rot
+        # silently against the APIs they exercise. A compile is all that belongs
+        # in a per-commit gate; running the fuzzers is a separate, longer job.
+        ("Fuzz targets", ["cargo", "fmt", "--manifest-path", "fuzz/Cargo.toml", "--", "--check"]),
+        ("Fuzz targets build", ["cargo", "build", "--manifest-path", "fuzz/Cargo.toml"]),
         ("Dependency vetting", ["cargo", "deny", "check"]),
     ]
     if sys.platform == "linux":

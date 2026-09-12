@@ -1,0 +1,29 @@
+# cargo-mutants settings.
+#
+# The workspace carries 5,104 viable mutants and a suite whose slowest rows
+# drive real subprocesses and TLS handshakes, so a full run is tens of CPU-hours.
+# That is a sharded nightly, never a per-commit gate. Use:
+#
+#   cargo mutants --in-diff <(git diff origin/main...)   # per pull request
+#   cargo mutants --shard 1/8                            # one nightly shard
+#
+# This complements the named mutation fences in configuration_contract.rs
+# (C11/C14/C15/C16) rather than replacing them. Those are criterion IDs from
+# ticket plans, deliberately chosen so one named mutant flips exactly one test
+# name; cargo-mutants finds what nobody thought to hand-pick.
+
+# The fixture operator's rows take 20-80s each against real subprocesses, so a
+# mutant that causes a hang needs a generous ceiling before it is called caught.
+timeout_multiplier = 5.0
+minimum_test_timeout = 120
+
+exclude_globs = [
+    # Test-only scaffolding: mutating a fake proves nothing about the product.
+    "crates/*/src/test_support.rs",
+    "crates/*/src/**/*_tests.rs",
+    # Platform FFI shims whose bodies are single foreign calls. A mutant here
+    # reports "unviable" or "missed" for reasons about the platform, not the
+    # code, and neither is actionable.
+    "crates/resourcefs-sources/src/process/windows.rs",
+    "crates/resourcefs-sources/src/process/unix.rs",
+]

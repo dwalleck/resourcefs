@@ -13,3 +13,5 @@
 
 # Python bytecode from scripts/module_shape.py and the oracle chain.
 __pycache__/
+# cargo-mutants scratch output; runs are sharded and disposable.
+/mutants.out

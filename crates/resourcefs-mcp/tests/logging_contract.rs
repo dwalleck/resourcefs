@@ -329,3 +329,120 @@ async fn file_destination_permission_denial_is_reported() {
     let error = result.err().expect("permission denial must fail");
     assert_eq!(error.kind(), LogErrorKind::Io);
 }
+
+/// The admission policy that keeps a dependency's lifecycle narration out of a
+/// clean run's stderr while still recovering its fault reports.
+#[test]
+fn foreign_targets_are_admitted_from_warn_up_except_at_debug() {
+    use logging::admits_foreign;
+
+    // `rmcp` narrates ordinary lifecycle at INFO, once per request. At every
+    // configured level below `debug` that narration stays out.
+    for configured in [LogLevel::Error, LogLevel::Warn, LogLevel::Info] {
+        assert!(
+            !admits_foreign(configured, "rmcp::service", LogLevel::Info),
+            "foreign info must not reach the sink at {configured:?}"
+        );
+        assert!(
+            !admits_foreign(configured, "rmcp::service", LogLevel::Debug),
+            "foreign debug must not reach the sink at {configured:?}"
+        );
+        // The faults this bridge exists to recover always pass; `LogSink::write`
+        // still applies the configured ceiling afterwards.
+        assert!(admits_foreign(configured, "rmcp::service", LogLevel::Warn));
+        assert!(admits_foreign(configured, "rmcp::service", LogLevel::Error));
+    }
+
+    // At `debug` the operator has asked for everything, and a transport problem
+    // is the likely reason.
+    for level in [
+        LogLevel::Error,
+        LogLevel::Warn,
+        LogLevel::Info,
+        LogLevel::Debug,
+    ] {
+        assert!(admits_foreign(LogLevel::Debug, "rmcp::service", level));
+    }
+
+    // Our own events ride the configured level at every setting.
+    for configured in [LogLevel::Error, LogLevel::Warn, LogLevel::Info] {
+        assert!(admits_foreign(
+            configured,
+            "resourcefs_mcp::server",
+            LogLevel::Info
+        ));
+        assert!(admits_foreign(
+            configured,
+            "resourcefs_sources::http",
+            LogLevel::Debug
+        ));
+    }
+}
+
+/// One process may install one global subscriber, so this row owns the bridge
+/// for this binary and proves the two properties that matter: a foreign fault
+/// reaches the configured destination, and the redactor still sees a whole
+/// record on the way.
+///
+/// It matters that earlier rows in this file build sinks first. Under
+/// `--test-threads=1` -- which is how the release gate runs -- the first sink
+/// constructed in the process is what starts the drain, and this row is not it.
+/// That ordering is the only thing that catches the drain being tied to a
+/// caller's runtime: it found exactly that bug once, when the drain rode
+/// `tokio::spawn` and died with the first test's runtime. Do not "fix" this by
+/// isolating the row.
+#[tokio::test]
+async fn the_tracing_bridge_delivers_foreign_faults_and_still_redacts() {
+    let temporary = TempDir::new().expect("log directory");
+    let path = temporary.path().join("bridge.log");
+    let config = LogConfig::file(LogLevel::Info, &path, MAX_ROTATION_BYTES as i64, 2)
+        .expect("file logging config");
+    let sink = LogSink::new(config, redactor_for("bridge-secret-sentinel"))
+        .await
+        .expect("sink");
+
+    // The bridge attaches when a sink is constructed; there is no separate
+    // install step, which is what keeps `server::serve` out of this entirely.
+
+    // An ordinary write through the handle, to prove both paths land in the one
+    // destination rather than the bridge opening a second one.
+    sink.write(LogLevel::Error, "direct write through the handle")
+        .await
+        .expect("direct write");
+
+    // Shaped like the events `rmcp` actually emits, including one carrying a
+    // credential in a field value rather than in the message.
+    tracing::info!(target: "rmcp::service", "service initialized as server peer");
+    tracing::error!(target: "rmcp::service", token = "bridge-secret-sentinel", "response send task failed");
+
+    // The drain task is a separate task; give it a bounded chance to run.
+    let mut contents = String::new();
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        contents = fs::read_to_string(&path).unwrap_or_default();
+        if contents.contains("response send task failed") {
+            break;
+        }
+    }
+
+    assert!(
+        contents.contains("[error] rmcp::service: response send task failed"),
+        "the foreign fault must reach the sink: {contents:?}"
+    );
+    assert!(
+        !contents.contains("bridge-secret-sentinel"),
+        "a credential in an event field must not survive the bridge: {contents:?}"
+    );
+    assert!(
+        contents.contains("<redacted>"),
+        "the redactor must have seen the whole record: {contents:?}"
+    );
+    assert!(
+        !contents.contains("service initialized as server peer"),
+        "foreign lifecycle narration must not reach an info sink: {contents:?}"
+    );
+    assert!(
+        contents.contains("[error] direct write through the handle"),
+        "the handle and the bridge must share one destination: {contents:?}"
+    );
+}
