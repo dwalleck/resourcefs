@@ -1,0 +1,34 @@
+Target: crates/resourcefs-sources/src/github/facts/commit.rs
+Command: ['cargo', 'test', '--locked', '--all-features', '-p', 'resourcefs-sources', '--test', 'github_immutable_contract', 'immutable_commit_facts_preserve_absent_and_null_accounts', '--', '--exact', '--nocapture']
+Mutation: '    #[serde(skip_serializing_if = "Presence::omitted")]\n    author_account:' -> '    author_account:'
+RED exit=101
+
+running 1 test
+test immutable_commit_facts_preserve_absent_and_null_accounts ... FAILED
+
+failures:
+
+failures:
+    immutable_commit_facts_preserve_absent_and_null_accounts
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.16s
+
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.98s
+     Running tests/github_immutable_contract.rs (target/debug/deps/github_immutable_contract-87bce5586dd53a5f)
+
+thread 'immutable_commit_facts_preserve_absent_and_null_accounts' (2495496) panicked at crates/resourcefs-sources/tests/github_immutable_contract.rs:384:5:
+assertion failed: absent["data"].get("authorAccount").is_none()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p resourcefs-sources --test github_immutable_contract`
+
+RESTORED GREEN exit=0
+
+running 1 test
+test immutable_commit_facts_preserve_absent_and_null_accounts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.14s
+
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.95s
+     Running tests/github_immutable_contract.rs (target/debug/deps/github_immutable_contract-87bce5586dd53a5f)

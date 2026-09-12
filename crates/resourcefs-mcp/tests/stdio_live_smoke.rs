@@ -64,26 +64,33 @@ fn write_profile(directory: &Path) -> PathBuf {
     write_profile_with_attempts(directory, None)
 }
 
-fn write_profile_with_attempts(directory: &Path, max_attempts: Option<u64>) -> PathBuf {
-    let path = directory.join("live.json");
-    let mut github = json!({
+/// The GitHub source row both live profiles mount: one required source with an
+/// environment credential, differing only by repository and, when a row
+/// exercises the documented per-call control, a pinned attempt bound.
+fn github_source(repository: &str, max_attempts: Option<u64>) -> Value {
+    let mut source = json!({
         "kind": "github",
         "id": "forge",
         "required": true,
         "allowPrivateNetwork": false,
         "credential": {"kind": "environment", "name": "GITHUB_TOKEN"},
-        "repositories": [{"name": "rust-lang/rust"}]
+        "repositories": [{"name": repository}]
     });
     if let Some(max_attempts) = max_attempts {
-        github["acquisition"] = json!({"maxAttempts": max_attempts});
+        source["acquisition"] = json!({"maxAttempts": max_attempts});
     }
+    source
+}
+
+fn write_profile_with_attempts(directory: &Path, max_attempts: Option<u64>) -> PathBuf {
+    let path = directory.join("live.json");
     fs::write(
         &path,
         serde_json::to_vec_pretty(&json!({
             "schemaVersion": 1,
             "session": {"cacheDirectory": "live-cache"},
             "sources": [
-                github,
+                github_source("rust-lang/rust", max_attempts),
                 {
                     "kind": "https",
                     "id": "docs",
@@ -95,6 +102,21 @@ fn write_profile_with_attempts(directory: &Path, max_attempts: Option<u64>) -> P
         .expect("profile JSON"),
     )
     .expect("write profile");
+    path
+}
+
+fn write_commit_profile(directory: &Path) -> PathBuf {
+    let path = directory.join("live-commit.json");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&json!({
+            "schemaVersion": 1,
+            "session": {"cacheDirectory": "live-commit-cache"},
+            "sources": [github_source("dwalleck/resourcefs", None)]
+        }))
+        .expect("commit profile JSON"),
+    )
+    .expect("write commit profile");
     path
 }
 
@@ -357,6 +379,7 @@ fn live_stdio_profile_probe_serve_and_tools_hold_up() {
         .expect("page text");
     assert!(page_text.contains("rustup"), "S4 reader mode lacks rustup");
     assert_eq!(page["structuredContent"]["canonicalReference"], BOOK_PAGE);
+
     eprintln!("S4 https: {} bytes", page_text.len());
 
     // S5 — refusals keep their categories across the tool boundary.
@@ -377,6 +400,136 @@ fn live_stdio_profile_probe_serve_and_tools_hold_up() {
         !stderr.contains(&token),
         "the credential never reaches the diagnostics channel"
     );
+}
+#[test]
+#[ignore = "live full-stack commit smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
+fn live_stdio_github_commit_facts_match_native_observation() {
+    const COMMIT: &str = "635ab170ab57542c18272921298d575da2f8b08a";
+    let Some(token) = live_token() else { return };
+    let temporary = TempDir::new().expect("temporary directory");
+    let profile = write_commit_profile(temporary.path());
+    let check = Command::new(binary())
+        .args(["check", "--probe", "--config"])
+        .arg(&profile)
+        .env("GITHUB_TOKEN", &token)
+        .current_dir(temporary.path())
+        .output()
+        .expect("run commit check");
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "commit check failed: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let report: Value = serde_json::from_slice(&check.stdout).expect("commit check report");
+    assert_eq!(report["ok"], true, "{report}");
+    assert_eq!(report["probe"], true);
+    assert_eq!(report["sources"][0]["state"], "available");
+    assert!(
+        !check
+            .stdout
+            .windows(token.len())
+            .any(|window| window == token.as_bytes()),
+        "the credential never reaches the commit check report"
+    );
+    let Some(native_repository) = native_gh(&token, "repos/dwalleck/resourcefs") else {
+        return;
+    };
+    let Some(native_commit) = native_gh(
+        &token,
+        &format!("repos/dwalleck/resourcefs/commits/{COMMIT}"),
+    ) else {
+        return;
+    };
+    let mut server = Server::start(&profile, &token);
+    server.initialize();
+    let reference = format!("github://dwalleck/resourcefs/commits/{COMMIT}/facts");
+    let first = server.call("rfs_read", json!({"path": reference}));
+    let (facts, bytes, _) = recover_artifact_document(&mut server, first);
+    assert_eq!(facts["schemaVersion"], json!({"major": 1, "minor": 0}));
+    assert_eq!(facts["kind"], "github.commit");
+    assert_eq!(facts["resource"], reference);
+    assert_eq!(
+        facts["request"],
+        json!({"repository":{"owner":"dwalleck","name":"resourcefs"},"commitSha":COMMIT})
+    );
+    assert_eq!(facts["observed"]["commitSha"], native_commit["sha"]);
+    assert_eq!(
+        facts["observed"]["treeSha"],
+        native_commit["commit"]["tree"]["sha"]
+    );
+    assert_eq!(
+        facts["repository"]["observed"]["id"],
+        native_repository["id"]
+            .as_u64()
+            .expect("repository id")
+            .to_string()
+    );
+    assert_eq!(
+        facts["repository"]["observed"]["fullName"],
+        native_repository["full_name"]
+    );
+    assert_eq!(facts["data"]["sha"], native_commit["sha"]);
+    assert_eq!(
+        facts["data"]["treeSha"],
+        native_commit["commit"]["tree"]["sha"]
+    );
+    assert_eq!(facts["data"]["message"], native_commit["commit"]["message"]);
+    assert_eq!(
+        facts["data"]["parents"]
+            .as_array()
+            .expect("commit parents")
+            .iter()
+            .map(|parent| parent["sha"].clone())
+            .collect::<Vec<_>>(),
+        native_commit["parents"]
+            .as_array()
+            .expect("native parents")
+            .iter()
+            .map(|parent| parent["sha"].clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        facts["data"]["author"]["name"],
+        native_commit["commit"]["author"]["name"]
+    );
+    assert_eq!(
+        facts["data"]["author"]["email"],
+        native_commit["commit"]["author"]["email"]
+    );
+    assert_eq!(
+        facts["data"]["author"]["date"],
+        native_commit["commit"]["author"]["date"]
+    );
+    assert_eq!(
+        facts["data"]["committer"]["name"],
+        native_commit["commit"]["committer"]["name"]
+    );
+    assert_eq!(
+        facts["data"]["committer"]["email"],
+        native_commit["commit"]["committer"]["email"]
+    );
+    assert_eq!(
+        facts["data"]["committer"]["date"],
+        native_commit["commit"]["committer"]["date"]
+    );
+    assert_eq!(facts["data"]["links"]["apiUrl"], native_commit["url"]);
+    assert_eq!(facts["data"]["links"]["htmlUrl"], native_commit["html_url"]);
+    assert_eq!(
+        facts["data"]["links"]["commentsUrl"],
+        native_commit["comments_url"]
+    );
+    assert_eq!(
+        facts["data"]["authorAccount"]["login"],
+        native_commit["author"]["login"]
+    );
+    assert_eq!(
+        facts["data"]["committerAccount"]["login"],
+        native_commit["committer"]["login"]
+    );
+    assert!(!bytes.contains(&token));
+    let stderr = server.finish();
+    assert!(!stderr.contains(&token), "credential leaked to diagnostics");
 }
 
 #[test]

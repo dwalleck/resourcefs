@@ -1,0 +1,56 @@
+S2 immutable commit Facts checkpoint qualification
+
+Complete runner:
+  python scripts/ci-gates.py
+  duration: 1135.01 seconds
+  aggregate exit: 1
+  only failed gate: Lints
+  diagnostic: needless_borrows_for_generic_args in the new commit budget fixture's PathReference::parse(&format!(...)) setup.
+
+Retained successful runner legs:
+  Module placement: PASS, immutable-commit stage.
+  Formatting: PASS.
+  All-feature functional workspace: PASS.
+  All-feature release workspace: PASS.
+  Compiled ignored-test inventory and all production-budget executions: PASS, including immutable_commit_production_budget.
+  Dependency vetting: advisories ok, bans ok, licenses ok, sources ok.
+
+Atomic repair:
+  Pass the owned formatted reference to PathReference::parse rather than borrowing and unnecessarily cloning it. Production code, fixture payloads and assertions are unchanged.
+  cargo fmt --all && cargo fmt --all -- --check
+  cargo clippy --workspace --all-targets --all-features -- -D warnings
+  cargo test --locked --release --config profile.release.debug-assertions=false -p resourcefs-sources --test github_facts_contract immutable_commit_production_budget -- --ignored --exact --nocapture
+  combined exit: 0; duration 23.71 seconds.
+  Release environment: CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=false.
+
+Latest measured commit budget:
+  native commit response: 8388608 bytes
+  owned output: 8390709 bytes
+  wall phase: 16245553 ns, bound 2000000000 ns
+  heap phase: 33575607 incremental bytes, bound 134217728 bytes
+  Both phases PASS. Setup-only ownership repair occurs before measurement.
+
+Targeted behavior and independent evidence:
+  github_immutable_contract: 16 runnable tests — `grep -c '#\[tokio::test\]' crates/resourcefs-sources/tests/github_immutable_contract.rs` = 16 at this head (10 at `1cfa020`; the review-repair round added the app-account accept and refusal rows, the unusable-login row, the absent/null required-link row and the escaped-deployment-prefix row). The S2 increment's own ten-contract claim below is the count at its tip.
+  github_adapter_contract: 25 runnable tests — 28 test attributes with 3 production budgets #[ignore]d. Counting basis: `grep -c -e '#\[tokio::test\]' -e '#\[test\]' crates/resourcefs-sources/tests/github_adapter_contract.rs` = 28 and `grep -c '#\[ignore'` on the same file = 3, unchanged at 09cef66, 64e1f56 and 1cfa020. The earlier record of "24 passed" is corrected: no raw focused-run output was retained and 24 understated the runnable set by one; the complete runner repeated adapter coverage and executed those budgets separately.
+  Stdio commit read, catalog and byte-exact recovery without reacquisition: PASS over the production serve path; the deterministic row re-enters the compiled test binary (`std::env::current_exe()` with `--ignored --exact profile_https_test_server`) and calls `serve_profile_with_https_root` in-process, so the shipped `resourcefs` binary is started only by the credential-gated live row, which asserts none of the selector/catalog/refusal specifics.
+  Native REST commit versus independent git cat-file tree/ordered parents/exact message: PASS; commit-oracle-result.json.
+  C3 requested-SHA mutant: compiled RED / exact-restored GREEN; initial masked fixture repaired, mutation-c3-commit.txt.
+  C9 absent-to-null account mutant: compiled RED / exact-restored GREEN; mutation-c9-commit.txt.
+  Enterprise /api/v3/ account URL defect: runtime RED before pop_if_empty repair, GREEN afterward with exact prefixed targets.
+  Live SourceAdapter commit and real check --probe/stdio commit rows: both PASS; non-skip status is not receipt-observable (both rows return green with a skip notice when RFS_LIVE/GITHUB_TOKEN are unset, and libtest captures output from passing tests, so the receipt is identical either way). The recorded 1.97 s / 2.09 s durations are the only receipt-side signal; an unavailable gh CLI also silently omits the native comparison. live-commit-results.txt and evidence.md.
+
+Evidence reconciliation:
+  All constituent gates are PASS after the narrow test-setup lint repair. The original aggregate runner exit remains 1; no aggregate exit 0 is claimed. Unchanged production behavior and other successful legs are retained rather than rerunning the full unrelated fixture-operator lifecycle suite.
+  Shared fetch/cache/cancellation/final-publication regression legs remain inherited from the existing github_facts_contract suite. New source-chain C8 acceptance remains S3-owned, not claimed here.
+  This checkpoint implements commit Facts only. Source object/bytes, final conformance, and S2/S3 platform CI are not inferred from these local results.
+
+=== Review round 2 re-verification (2026-09-10) ===
+Source state: the rebased increment plus its round-2 repair (family routing restored, paired refusal fences moved with the increment, macro-declaration form recognized by owner uniqueness).
+Command: python3 scripts/ci-gates.py
+Result: All repository gates passed. (placement, formatting, clippy, all-feature debug and release functional legs, the registered ignored-budget roster and cargo-deny)
+
+Affected behavior re-proven:
+- github:// reads reach the configured source again (commit Facts); the immutable adapter contracts and the real-binary stdio contract pass unchanged.
+- An unmounted compiled registry reports source_unavailable for a read and the family refusal for discovery and mutation; a mounted registry never fetches for discovery (compiled_sources_contract.rs, github_adapter_contract.rs).
+- A verbatim copy of a native!-declared owner type in another family fails the placement gate; a differently shaped same-named declaration does not.

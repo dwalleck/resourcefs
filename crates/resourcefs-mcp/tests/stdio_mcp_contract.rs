@@ -4072,6 +4072,255 @@ fn github_facts_stdio_reconstructs_native_json_without_reacquisition() {
 
 #[cfg(feature = "test-support")]
 #[test]
+fn github_commit_facts_stdio_reconstructs_overflow_without_reacquisition() {
+    const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+    const TREE: &str = "89abcdef0123456789abcdef0123456789abcdef";
+    const FIRST_PARENT: &str = "abcdef0123456789abcdef0123456789abcdef01";
+    const SECOND_PARENT: &str = "fedcba9876543210fedcba9876543210fedcba98";
+    const MESSAGE: &str = "S2 exact commit message λ\nwith a second line\n";
+    let fixture = WorkspaceFixture::new();
+    let repository = json!({
+        "id": 9001,
+        "node_id": "R_commit",
+        "name": "repo",
+        "full_name": "owner/repo",
+        "owner": {
+            "id": 9002,
+            "node_id": "O_commit",
+            "login": "owner",
+            "url": "@API@users/owner",
+            "html_url": "https://github.example/owner"
+        },
+        "url": "@API@repos/owner/repo",
+        "html_url": "https://github.example/owner/repo"
+    });
+    let commit = json!({
+        "sha": COMMIT,
+        "node_id": "C_commit",
+        "url": format!("@API@repos/owner/repo/commits/{COMMIT}"),
+        "html_url": format!("https://github.example/owner/repo/commit/{COMMIT}"),
+        "commit": {
+            "author": {
+                "name": "Ada Lovelace",
+                "email": "ada@example.test",
+                "date": "2026-09-01T01:02:03Z"
+            },
+            "committer": {
+                "name": "Grace Hopper",
+                "email": "grace@example.test",
+                "date": "2026-09-02T04:05:06Z"
+            },
+            "message": MESSAGE,
+            "tree": {
+                "sha": TREE,
+                "url": format!("@API@repos/owner/repo/git/trees/{TREE}")
+            },
+            "url": format!("@API@repos/owner/repo/git/commits/{COMMIT}"),
+            "comment_count": 0
+        },
+        "comments_url": format!("@API@repos/owner/repo/commits/{COMMIT}/comments"),
+        "author": {
+            "id": 9010,
+            "node_id": "A_commit",
+            "login": "ada",
+            "url": "@API@users/ada",
+            "html_url": "https://github.example/ada"
+        },
+        "committer": {
+            "id": 9011,
+            "node_id": "G_commit",
+            "login": "grace",
+            "url": "@API@users/grace",
+            "html_url": "https://github.example/grace"
+        },
+        "parents": [
+            {
+                "sha": FIRST_PARENT,
+                "url": format!("@API@repos/owner/repo/commits/{FIRST_PARENT}"),
+                "html_url": format!("https://github.example/owner/repo/commit/{FIRST_PARENT}")
+            },
+            {
+                "sha": SECOND_PARENT,
+                "url": format!("@API@repos/owner/repo/commits/{SECOND_PARENT}"),
+                "html_url": format!("https://github.example/owner/repo/commit/{SECOND_PARENT}")
+            }
+        ]
+    });
+    let server = profile_tls::ProfileTlsServer::start_native(vec![
+        profile_tls::NativeResponse {
+            path: "/repos/owner/repo".into(),
+            body: repository.to_string(),
+            headers: Vec::new(),
+        },
+        profile_tls::NativeResponse {
+            path: format!("/repos/owner/repo/commits/{COMMIT}"),
+            body: commit.to_string(),
+            headers: Vec::new(),
+        },
+    ]);
+    let api_base = server.base_url();
+    let profile = fixture.root.join("github-commit-facts.json");
+    fs::write(
+        &profile,
+        json!({"schemaVersion":1,"sources":[{
+            "kind":"github","id":"github","required":true,
+            "apiBaseUrl":api_base.clone(),"webOrigin":"https://github.example",
+            "allowPrivateNetwork":true,
+            "credential":{"kind":"environment","name":"RFS_GITHUB_TEST_TOKEN"},
+            "repositories":[{"name":"owner/repo"}],
+            "acquisition":{"maxAttempts":2}
+        }]})
+        .to_string(),
+    )
+    .expect("profile");
+    let mut process = McpProcess::start_profile_with_https_root_and_env(
+        &profile,
+        &fixture.root,
+        &[("RFS_GITHUB_TEST_TOKEN", "commit-stdio-secret")],
+    );
+    process.initialize(VERSION_2026);
+    let reference = format!("github://owner/repo/commits/{COMMIT}/facts");
+    let first = process.call_read_arguments(json!({
+        "path": reference,
+        "limits": {"bytes": 256}
+    }));
+    assert_eq!(first["structuredContent"]["bounded"], true, "{first}");
+    assert!(
+        first["structuredContent"]["recoveryReference"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("artifact://")),
+        "overflow must publish an artifact recovery root: {first}"
+    );
+    let recovery = first["structuredContent"]["recoveryReference"]
+        .as_str()
+        .expect("commit artifact root")
+        .to_owned();
+    let requests_before_recovery = server.recorded_requests();
+    assert_eq!(
+        requests_before_recovery
+            .iter()
+            .map(|request| request.path.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            "/repos/owner/repo".to_owned(),
+            format!("/repos/owner/repo/commits/{COMMIT}")
+        ]
+    );
+    let (facts, bytes, _) = recover_artifact_document(&mut process, first, json!({"bytes": 256}));
+    let full_artifact = process.call_read_arguments(json!({
+        "path": recovery,
+        "limits": {"bytes": 49_152}
+    }));
+    assert_eq!(full_artifact["structuredContent"]["bounded"], false);
+    assert_eq!(
+        full_artifact["structuredContent"]["content"], bytes,
+        "artifact root must reproduce the exact acquired JSON bytes"
+    );
+    assert_eq!(facts["schemaVersion"], json!({"major": 1, "minor": 0}));
+    assert_eq!(facts["kind"], "github.commit");
+    assert_eq!(
+        facts["resource"],
+        format!("github://owner/repo/commits/{COMMIT}/facts")
+    );
+    assert_eq!(
+        facts["request"],
+        json!({"repository":{"owner":"owner","name":"repo"},"commitSha":COMMIT})
+    );
+    assert_eq!(facts["observed"]["commitSha"], COMMIT);
+    assert_eq!(facts["observed"]["treeSha"], TREE);
+    assert_eq!(facts["repository"]["owner"], "owner");
+    assert_eq!(facts["repository"]["name"], "repo");
+    assert_eq!(facts["repository"]["observed"]["fullName"], "owner/repo");
+    assert_eq!(facts["repository"]["observed"]["id"], "9001");
+    assert_eq!(facts["data"]["sha"], COMMIT);
+    assert_eq!(facts["data"]["treeSha"], TREE);
+    assert_eq!(facts["data"]["message"], MESSAGE);
+    assert_eq!(
+        facts["data"]["parents"]
+            .as_array()
+            .expect("commit parents")
+            .iter()
+            .map(|parent| parent["sha"].as_str().expect("parent SHA"))
+            .collect::<Vec<_>>(),
+        vec![FIRST_PARENT, SECOND_PARENT]
+    );
+    assert_eq!(
+        facts["data"]["parents"][0]["links"]["apiUrl"],
+        format!("{api_base}repos/owner/repo/commits/{FIRST_PARENT}")
+    );
+    assert_eq!(
+        facts["data"]["parents"][0]["links"]["htmlUrl"],
+        format!("https://github.example/owner/repo/commit/{FIRST_PARENT}")
+    );
+    assert_eq!(
+        facts["data"]["parents"][1]["links"]["apiUrl"],
+        format!("{api_base}repos/owner/repo/commits/{SECOND_PARENT}")
+    );
+    assert_eq!(
+        facts["data"]["parents"][1]["links"]["htmlUrl"],
+        format!("https://github.example/owner/repo/commit/{SECOND_PARENT}")
+    );
+    assert_eq!(facts["data"]["author"]["date"], "2026-09-01T01:02:03Z");
+    assert_eq!(facts["data"]["committer"]["date"], "2026-09-02T04:05:06Z");
+    assert_eq!(
+        facts["data"]["links"]["apiUrl"],
+        format!("{api_base}repos/owner/repo/commits/{COMMIT}")
+    );
+    assert_eq!(
+        facts["data"]["links"]["htmlUrl"],
+        format!("https://github.example/owner/repo/commit/{COMMIT}")
+    );
+    assert_eq!(
+        facts["data"]["links"]["commentsUrl"],
+        format!("{api_base}repos/owner/repo/commits/{COMMIT}/comments")
+    );
+    assert_eq!(facts["data"]["author"]["name"], "Ada Lovelace");
+    assert_eq!(facts["data"]["author"]["email"], "ada@example.test");
+    assert_eq!(facts["data"]["committer"]["name"], "Grace Hopper");
+    assert_eq!(facts["data"]["committer"]["email"], "grace@example.test");
+    assert_eq!(facts["data"]["authorAccount"]["login"], "ada");
+    assert_eq!(facts["data"]["committerAccount"]["login"], "grace");
+    assert!(!bytes.contains("commit-stdio-secret"));
+    assert_eq!(
+        server.recorded_requests().len(),
+        requests_before_recovery.len(),
+        "artifact recovery must not reacquire commit facts"
+    );
+
+    let catalog = process.call_read("rfs://");
+    let catalog_text = catalog["structuredContent"]["content"]
+        .as_str()
+        .expect("source catalog content");
+    assert!(
+        catalog_text.contains("pr://") && catalog_text.contains("issue://"),
+        "existing GitHub families must remain advertised: {catalog_text}"
+    );
+    assert!(
+        catalog_text.contains("github://") && catalog_text.contains("/commits/"),
+        "catalog must advertise immutable commit Facts: {catalog_text}"
+    );
+    assert!(
+        !catalog_text.contains("/source/"),
+        "S3 source acquisition must not be advertised before implementation: {catalog_text}"
+    );
+    assert_tool_error(
+        &process.call_read(&format!("{reference}:1")),
+        "unsupported_projection",
+    );
+    assert_tool_error(
+        &process.call_read("github://owner/repo/commits/main/facts"),
+        "invalid_reference",
+    );
+    process.finish();
+    assert_eq!(
+        server.recorded_requests().len(),
+        requests_before_recovery.len(),
+        "catalog, artifact pages and refusals must not fetch upstream facts"
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[test]
 fn github_facts_stdio_cancelled_http_read_cannot_publish_and_session_recovers() {
     let fixture = WorkspaceFixture::new();
     let (server, arrived, release) = profile_tls::ProfileTlsServer::start_blocked_native(

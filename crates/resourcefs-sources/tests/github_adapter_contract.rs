@@ -4,7 +4,7 @@ mod session_support;
 mod tls;
 
 use resourcefs_core::{
-    DiscoveryAdapter, DiscoveryEngine, ErrorCategory, MutationAccess, MutationAdapter,
+    DiscoveryAdapter, DiscoveryEngine, ErrorCategory, ErrorReason, MutationAccess, MutationAdapter,
     OperationGuard, PathReference, PathSession, SearchLimits, SearchOptions, SearchRequest,
     SearchTarget, ServerLimits, ServerLimitsInput, SourceAdapter, StorageLimitInput,
 };
@@ -716,6 +716,7 @@ async fn compiled_registry_mounts_dispatches_and_requires_github_grant() {
         .expect("catalog read");
     assert!(catalog.content().contains("issue://"));
     assert!(catalog.content().contains("pr://"));
+    assert!(catalog.content().contains("github://"));
     let title_reference = PathReference::parse("issue://owner/repo/42/title").expect("title");
     assert_eq!(
         compiled
@@ -732,14 +733,13 @@ async fn compiled_registry_mounts_dispatches_and_requires_github_grant() {
 }
 
 #[tokio::test]
-async fn mounted_registry_refuses_unserved_github_family_identically() {
-    // The paired unmounted assertion lives in compiled_sources_contract.rs;
-    // both must observe the same family refusal for the same address. Both
-    // refusals are `unsupported_projection` with no details, so the message is
-    // what distinguishes the compiled registry's family refusal from the
-    // adapter's projection refusal: folding `Github` back into the served
-    // record arms would answer with the adapter's message and fail here.
-    let (_listener, github) = fixture_source(|path| panic!("unserved family: {path}")).await;
+async fn mounted_registry_keeps_the_family_discovery_refusal() {
+    // The paired unmounted assertion lives in compiled_sources_contract.rs.
+    // Reads of the commit route are exercised by the immutable contracts; what
+    // this fence pins is that discovery on the family never consults
+    // configuration or reaches the network.
+    let (_listener, github) =
+        fixture_source(|path| panic!("discovery must not fetch: {path}")).await;
     let scratch = session_support::scratch_fixture().await;
     let session = scratch.path_session().clone();
     let compiled = CompiledSources::new(
@@ -756,36 +756,7 @@ async fn mounted_registry_refuses_unserved_github_family_identically() {
         "github://owner/repo/commits/0123456789abcdef0123456789abcdef01234567/facts",
     )
     .expect("immutable commit reference");
-    let error = compiled
-        .read(&reference, &OperationGuard::new(), None)
-        .await
-        .expect_err("no compiled source serves github:// yet");
-    assert_eq!(error.category(), ErrorCategory::UnsupportedProjection);
-    assert!(error.details().is_none());
-    assert!(
-        error
-            .message()
-            .contains("not served by the compiled sources"),
-        "{error}"
-    );
-    // Caller controls cannot reword the refusal: the family, not the control
-    // set, is what this build cannot serve.
-    let controlled = compiled
-        .read(
-            &reference,
-            &OperationGuard::new(),
-            Some(&resourcefs_core::ReadAcquisitionLimits::default()),
-        )
-        .await
-        .expect_err("controls cannot change an unserved family");
-    assert_eq!(controlled.category(), ErrorCategory::UnsupportedProjection);
-    assert_eq!(controlled.message(), error.message());
-    // The mutation route makes the same claim, on a mounted build too.
-    let mutation = MutationAdapter::resolve(&compiled, &reference, MutationAccess::Update)
-        .await
-        .expect_err("an unserved family has no compiled write route");
-    assert_eq!(mutation.category(), ErrorCategory::UnsupportedProjection);
-    assert_eq!(mutation.message(), error.message());
+
     let target = SearchTarget::resource(reference.clone());
     let search = compiled
         .search(
@@ -797,7 +768,45 @@ async fn mounted_registry_refuses_unserved_github_family_identically() {
         .await
         .expect_err("no compiled source discovers github://");
     assert_eq!(search.category(), ErrorCategory::UnsupportedProjection);
-    assert_eq!(search.message(), error.message());
+    assert!(search.details().is_none());
+    // The mutation route makes the same claim, on a mounted build too: an
+    // unserved family has no compiled write route.
+    let mutation = MutationAdapter::resolve(&compiled, &reference, MutationAccess::Update)
+        .await
+        .expect_err("an unserved family has no compiled write route");
+    assert_eq!(mutation.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(mutation.message(), search.message());
+    // Mounting changes neither the source spelling's answer nor the caller's
+    // ability to reword it: the compiled read refuses it by the family before
+    // it consults the mount or judges a control set.
+    let source = PathReference::parse(
+        "github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/src/lib.rs/facts",
+    )
+    .expect("immutable source reference");
+    for controls in [
+        None,
+        Some(resourcefs_core::ReadAcquisitionLimits::default()),
+    ] {
+        let read = compiled
+            .read(&source, &OperationGuard::new(), controls.as_ref())
+            .await
+            .expect_err("a mounted build still serves no source spelling");
+        assert_eq!(read.category(), ErrorCategory::UnsupportedProjection);
+        assert!(read.details().is_none());
+        assert_eq!(read.message(), search.message());
+    }
+    // The commit spelling still reaches the adapter instead: this fixture's
+    // deployment has no web origin, so the refusal is the adapter's own
+    // missing deployment identity rather than the family's claim.
+    let commit = compiled
+        .read(&reference, &OperationGuard::new(), None)
+        .await
+        .expect_err("a deployment without a web origin cannot serve commit Facts");
+    assert_ne!(commit.message(), search.message());
+    assert_eq!(
+        commit.details().map(|details| details.reason()),
+        Some(ErrorReason::DeploymentIdentityUnavailable)
+    );
 }
 
 #[tokio::test]

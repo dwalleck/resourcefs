@@ -23,7 +23,7 @@ The official Rust `rmcp` SDK is the runtime. The server advertises MCP `2026-07-
 Model-controlled tools are canonical:
 
 1. `rfs_read`
-   - Input: `path`; optional lower-only output `limits` (`bytes`, `lines`, `columns`), `numbered`, and lower-only source `acquisition` controls (currently PR Facts only).
+   - Input: `path`; optional lower-only output `limits` (`bytes`, `lines`, `columns`), `numbered`, and lower-only source `acquisition` controls (currently GitHub Facts).
    - Reads a Resource or projection, directory, archive member, SQLite row, document, image, notebook, web URL, or internal Path Reference.
    - Parseable code with no selector returns a Structural Summary; selectors recover exact omitted ranges.
 2. `rfs_search`
@@ -124,7 +124,7 @@ First-release portable core:
 - HTTPS documents with reader-mode Markdown/text by default and `:raw` for the bounded original body;
 - converted documents, typed images, and Jupyter notebooks;
 - server-owned `artifact://` and `local://`;
-- configured `memory://`, `skill://`, `rule://`, `vault://`, `issue://`, `pr://`, and `ssh://` sources;
+- configured `memory://`, `skill://`, `rule://`, `vault://`, `github://`, `issue://`, `pr://`, and `ssh://` sources;
 - optional read-only `agent://` and `history://` Agent Export sources;
 - optional downstream MCP Resource sources through `mcp://` and otherwise-unclaimed native URI schemes.
 
@@ -174,7 +174,7 @@ Existing remote replacement fetches and compares the authoritative Version Tag i
 
 #### PR Facts version 1
 
-`pr://owner/repo/<positive-number>/facts` is a read-only JSON Resource, not the PR's human-readable Aggregate and not raw provider JSON. This singular PR Facts route accepts no projection selector, including `:raw`. Facts are not available for issues, repository PR listings, reviews or diffs; conversation-comment Facts are specified separately below. Existing PR Aggregate, field, diff and mutation behavior is unchanged.
+`pr://owner/repo/<positive-number>/facts` is a read-only JSON Resource, not the PR's human-readable Aggregate and not raw provider JSON. This singular PR Facts route accepts no projection selector, including `:raw`. It does not acquire issues, repository PR listings, reviews or diffs; conversation-comment and immutable commit Facts are separate Resources. Existing PR Aggregate, field, diff and mutation behavior is unchanged.
 
 The JSON representation uses `schemaVersion: {"major": 1, "minor": 0}` and `kind: "github.pull_request"`. Its top-level fields are:
 
@@ -194,6 +194,22 @@ Acceptance requires a matching PR number/API identity and both 40-character lowe
 One native PR-detail acquisition supplies Facts. ResourceFS does not automatically follow links, fetch the head repository, resolve refs, compare commits, or acquire comments, reviews, diffs, or patches to enrich the result. Facts remain read-only even where mutation grants exist. Their Version Tag names the exact JSON representation, including acquisition observations, not a stable PR revision or a base/head comparison result.
 
 Public GitHub derives `webOrigin` as `https://github.com`; `https://api.<tenant>.ghe.com` derives `https://<tenant>.ghe.com`. A configured explicit origin must agree with those documented deployments. A custom `apiBaseUrl` requires explicit HTTPS `webOrigin` to serve Facts; without it, existing reads remain available but Facts return `unsupported_projection` / `deployment_identity_unavailable`. See [operating guidance](docs/operating.md#github-pr-facts) for profile and call examples.
+
+#### Immutable commit Facts version 1
+
+`github://owner/repo/commits/<commit-sha>/facts` describes exactly one immutable commit through the configured GitHub source and repository allowlist. The operand is a full 40-character lowercase hexadecimal commit ID, not a branch, tag, abbreviation or synthetic merge ref. No projection selector is supported. Commit Facts are read-only regardless of mutation grants.
+
+The owned schema is version 1.0 with `kind: "github.commit"` and the shared Facts envelope:
+
+- `request` carries the requested repository and `commitSha`; `observed` carries the validated `commitSha` and `treeSha`.
+- Envelope `repository.observed` is independently acquired native repository metadata. `upstream.repository` and `upstream.commit` each retain their own body and optional revalidation observations.
+- `data` carries `sha`, `treeSha`, ordered `parents` with supplied links, exact provider `message`, native Git `author` and `committer` (`name`, `email`, `date`), optional/null GitHub `authorAccount` and `committerAccount`, and `links` (`apiUrl`, `htmlUrl`, `commentsUrl`). Native account/repository IDs remain decimal strings; absent, null and present metadata remain distinct.
+
+ResourceFS acquires the repository and the exact `/repos/<owner>/<repo>/commits/<commit-sha>` endpoint under one existing acquisition budget. Returned repository, commit, tree and parent identities and supplied authority-bearing links must agree with the request and configured deployment, including Enterprise API path prefixes. Returned links are validated, never followed for enrichment. Commit Facts do not acquire trees, blobs, diffs or changed-file contents.
+
+An account's supplied links are validated against the deployment's own authority and, when the path is one of that account's routes, against the account itself, compared on decoded path segments — so a provider that escapes a login (`/users/dependabot%5Bbot%5D`) or serves an app account from `/apps/<slug>` is not read as a contradiction. Presence and identity answer separately: a required link that is absent or null is malformed, while one that names a foreign object is `not_found` with reason `upstream_identity_mismatch` and no access ambiguity — the verdict the conversation-comment and review families give a record that does not belong to the addressed pull request, kept here so one contradiction has one category.
+
+The Version Tag names the complete acquired JSON and its provenance, not the native Git object. Provider metadata is not reconstructed raw Git commit bytes. Final generation/cancellation/deadline checks precede publication; overflow of display limits uses byte-exact artifact recovery without reacquiring the source. See [the commit operating example](docs/operating.md#github-immutable-commit-facts).
 
 #### Conversation-comment Facts version 1
 
@@ -326,7 +342,7 @@ The built-in Kiro-safe hard preset is:
 
 A Server Profile and per-call `limits` may lower these values, never raise them above the binary’s hard ceiling.
 
-PR Facts acquisition is independent of output `limits`. A GitHub source profile and `rfs_read` may each supply an `acquisition` object with these positive integer, lower-only dimensions:
+GitHub Facts acquisition is independent of output `limits`. A GitHub source profile and `rfs_read` may each supply an `acquisition` object with these positive integer, lower-only dimensions:
 
 | Field | Default and hard ceiling | Meaning |
 | --- | ---: | --- |

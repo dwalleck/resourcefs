@@ -90,11 +90,15 @@ _Avoid_: Workspace Mutation, adapter enabled
 
 **Version Tag**:
 A content-derived identifier in a read header that names the exact Resource state against which an edit is valid.
-_Avoid_: Line number, modification time
+_Avoid_: Line number, modification time, native Git object identity
 
 **Aggregate Resource**:
 A read-only Resource that combines several authoritative upstream values into one navigable representation.
 _Avoid_: Document when writing it would imply replacing every rendered field
+
+**Facts Resource**:
+A read-only, owned machine-readable Resource that preserves selected native observations and their acquisition provenance rather than mirroring raw provider data.
+_Avoid_: Raw API response, stable native object revision when referring to its Version Tag
 
 **Field Resource**:
 A Resource that corresponds to one authoritative upstream value and may be mutated when its source grants that operation.

@@ -183,7 +183,7 @@ Call `rfs_read` with a PR Facts path and optional per-call lower acquisition lim
 }
 ```
 
-The example is a tool input, not a profile fragment. Output `limits` control the rendered result, not upstream acquisition. Source and per-call acquisition policies intersect dimension by dimension; a call cannot raise the source policy. Omitted dimensions use the hard defaults before intersection: 10 attempts, 30000 ms, 8388608 response bytes, 16777216 accepted body bytes, and 16777216 representation bytes. Applicable HTTP substrate ceilings may lower them further. Every supplied value must be a positive integer at or below its hard ceiling. Unknown/duplicate keys, nulls and non-object controls are rejected. An empty `acquisition: {}` still explicitly requests support. Singular PR Facts, conversation-comment collection Facts and singular conversation-comment Facts support these controls; non-facts Resources reject them rather than ignoring them.
+The example is a tool input, not a profile fragment. Output `limits` control the rendered result, not upstream acquisition. Source and per-call acquisition policies intersect dimension by dimension; a call cannot raise the source policy. Omitted dimensions use the hard defaults before intersection: 10 attempts, 30000 ms, 8388608 response bytes, 16777216 accepted body bytes, and 16777216 representation bytes. Applicable HTTP substrate ceilings may lower them further. Every supplied value must be a positive integer at or below its hard ceiling. Unknown/duplicate keys, nulls and non-object controls are rejected. An empty `acquisition: {}` still explicitly requests support. Singular PR Facts; the conversation-comment, review-submission and inline review-comment collection and singular Facts; and immutable commit Facts support these controls; non-facts Resources reject them rather than ignoring them.
 
 Facts return `application/json; charset=utf-8` in the normal read-result envelope. The inner JSON schema is `{"major": 1, "minor": 0}` under `schemaVersion`, with `kind: "github.pull_request"`. Native numeric IDs and PR numbers are decimal strings, not JSON numbers. Optional nulls, omitted fields, empty strings and false values remain distinct. Both branches have validated commit SHAs; missing or null repository metadata is reported via `repositoryAvailability`, not filled with a guessed repository. See the [complete Facts contract](../DESIGN.md#pr-facts-version-1) for fields and provenance.
 
@@ -194,6 +194,23 @@ Facts acquisitions refuse HTTP redirects, unlike the sibling human-readable `pr:
 One logical deadline covers the acquisition, retry waits, and final acceptance, with at most one retry within the attempt budget. Cache revalidation retains original body provenance separately from the 304 observation, and reused body bytes still count toward admission limits. Acquisition overflow or cancellation never returns partial Facts JSON. A complete representation that exceeds the separate text output limit uses normal lossless artifact recovery; follow the returned artifact selectors rather than appending a selector to `/facts`.
 
 Failures retain the ordinary error category and may include bounded structured `details`. In particular, a 404 has reason `upstream_not_found_or_hidden` and `accessAmbiguity: "missing_or_access_hidden"`: it is not proof that a private PR does not exist. Rate-limit errors may carry numeric retry guidance/reset time; limit errors may name the effective bound and observed value. Provider error prose, response bodies and arbitrary headers are not exposed in these details. Inspect the category/reason rather than matching human-readable messages.
+
+## GitHub immutable commit Facts
+
+The same GitHub source profile and readable repository allowlist also serve exact commit metadata; no additional source kind or MCP tool is needed:
+
+```json
+{
+  "path": "github://owner/repo/commits/0123456789abcdef0123456789abcdef01234567/facts",
+  "acquisition": { "maxAttempts": 2 }
+}
+```
+
+Replace the sample ID with a real full lowercase commit SHA from the allowed repository. Branches, tags, abbreviated IDs and selectors such as `:raw` are rejected. Two attempts cover repository and commit acquisition without retries; use the default attempt budget if retries must remain possible. Enterprise API prefixes such as `/api/v3/` are preserved.
+
+The inner schema is version 1.0, `kind: "github.commit"`. Requested and observed commit IDs are separate; `data` preserves the provider's message, native Git author/committer, ordered parents and optional/null GitHub accounts. Repository and commit responses have separate `upstream` observations. This is neither a commit diff nor raw Git object bytes. The ResourceFS Version Tag includes acquisition provenance and is not the native commit SHA.
+
+Use the normal artifact recovery references when the complete JSON exceeds display limits; recovery does not fetch GitHub again. The `github://` catalog entry advertises commit Facts. Exact source-file acquisition is not yet advertised by this increment.
 
 ## GitHub conversation-comment facts
 

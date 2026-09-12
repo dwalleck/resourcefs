@@ -9,9 +9,9 @@ use std::{
 };
 
 use resourcefs_core::{
-    AcquisitionLimitKind, ErrorCategory, ErrorReason, LimitDetail, OperationGuard, PathReference,
-    PullRequestAddress, PullRequestFact, ReadAcquisitionLimits, ResourceAddress, ResourceError,
-    ResourceErrorDetails, SourceResource, Utf8ContentType,
+    AcquisitionLimitKind, ErrorCategory, ErrorReason, GithubAddress, LimitDetail, OperationGuard,
+    PathReference, PullRequestAddress, PullRequestFact, PullRequestResource, ReadAcquisitionLimits,
+    ResourceAddress, ResourceError, ResourceErrorDetails, SourceResource, Utf8ContentType,
 };
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -149,6 +149,17 @@ macro_rules! native {
             }
         }
     };
+}
+
+/// Record each absent field in the family's stable unavailable vocabulary.
+///
+/// Defined once for every family: the per-field vocabulary is a single
+/// contract, so a change to how unavailability is recorded must not have to
+/// find a copy per family.
+macro_rules! missing {
+    ($facts:expr; $($field:expr => $name:literal),* $(,)?) => { $(
+        $field.unavailable($name, &mut $facts);
+    )* };
 }
 native!(Actor {
     id: NativeId,
@@ -364,6 +375,7 @@ pub(super) struct FactsRead<'a> {
 
 mod collection;
 mod comment;
+mod commit;
 pub(super) mod continuation;
 mod family;
 mod inline;
@@ -548,11 +560,10 @@ impl GithubSource {
     pub(super) async fn read_facts(
         &self,
         reference: &PathReference,
-        fact: PullRequestFact,
         operation: &OperationGuard,
         acquisition: Option<&ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
-        self.facts_resource(reference, fact, operation, acquisition)
+        self.facts_resource(reference, operation, acquisition)
             .await
             .map_err(sanitize)
     }
@@ -560,26 +571,41 @@ impl GithubSource {
     async fn facts_resource(
         &self,
         reference: &PathReference,
-        fact: PullRequestFact,
         operation: &OperationGuard,
         acquisition: Option<&ReadAcquisitionLimits>,
     ) -> Result<SourceResource, ResourceError> {
-        let ResourceAddress::PullRequest(address) = reference.address() else {
-            return Err(super::unsupported_github_projection());
+        let (canonical, repository) = match reference.address() {
+            ResourceAddress::PullRequest(address) => {
+                let PullRequestAddress::Item {
+                    repository,
+                    resource,
+                    ..
+                } = address
+                else {
+                    return Err(super::unsupported_github_projection());
+                };
+                let PullRequestResource::Facts(fact) = resource else {
+                    return Err(super::unsupported_github_projection());
+                };
+                let cursor = reference
+                    .projection()
+                    .and_then(|selector| selector.source_cursor());
+                if reference.projection().is_some() && !(fact.is_collection() && cursor.is_some()) {
+                    return Err(super::unsupported_github_projection());
+                }
+                (
+                    PathReference::pull_request(address.clone(), None)?,
+                    repository,
+                )
+            }
+            ResourceAddress::Github(address @ GithubAddress::Commit { repository, .. }) => {
+                if reference.projection().is_some() {
+                    return Err(super::unsupported_github_projection());
+                }
+                (PathReference::github(address.clone(), None)?, repository)
+            }
+            _ => return Err(super::unsupported_github_projection()),
         };
-        let PullRequestAddress::Item {
-            repository, number, ..
-        } = address
-        else {
-            return Err(super::unsupported_github_projection());
-        };
-        let cursor = reference
-            .projection()
-            .and_then(|selector| selector.source_cursor());
-        if reference.projection().is_some() && !(fact.is_collection() && cursor.is_some()) {
-            return Err(super::unsupported_github_projection());
-        }
-        let canonical = PathReference::pull_request(address.clone(), None)?;
         self.authorize_repository(repository).map_err(|error| {
             error.with_details(ResourceErrorDetails::new(
                 ErrorReason::RepositoryNotAuthorized,
@@ -612,23 +638,38 @@ impl GithubSource {
             started,
             cache_generation: None,
         };
-        match fact {
-            PullRequestFact::Pull => pull::read(self, repository, *number, &mut ctx).await,
-            PullRequestFact::Comment(id) => {
-                comment::read_comment_item(self, repository, *number, id, &mut ctx).await
+        match reference.address() {
+            ResourceAddress::PullRequest(PullRequestAddress::Item {
+                repository,
+                number,
+                resource: PullRequestResource::Facts(fact),
+            }) => {
+                let cursor = reference
+                    .projection()
+                    .and_then(|selector| selector.source_cursor());
+                match *fact {
+                    PullRequestFact::Pull => pull::read(self, repository, *number, &mut ctx).await,
+                    PullRequestFact::Comment(id) => {
+                        comment::read_comment_item(self, repository, *number, id, &mut ctx).await
+                    }
+                    PullRequestFact::Review(id) => {
+                        review::read_review_item(self, repository, *number, id, &mut ctx).await
+                    }
+                    PullRequestFact::ReviewComment(id) => {
+                        inline::read_inline_item(self, repository, *number, id, &mut ctx).await
+                    }
+                    PullRequestFact::Comments
+                    | PullRequestFact::Reviews
+                    | PullRequestFact::ReviewComments => {
+                        let family = family::CollectionFamily::from_fact(*fact)?;
+                        collection::read(self, repository, *number, family, cursor, &mut ctx).await
+                    }
+                }
             }
-            PullRequestFact::Review(id) => {
-                review::read_review_item(self, repository, *number, id, &mut ctx).await
+            ResourceAddress::Github(GithubAddress::Commit { repository, commit }) => {
+                commit::read(self, repository, commit, &mut ctx).await
             }
-            PullRequestFact::ReviewComment(id) => {
-                inline::read_inline_item(self, repository, *number, id, &mut ctx).await
-            }
-            PullRequestFact::Comments
-            | PullRequestFact::Reviews
-            | PullRequestFact::ReviewComments => {
-                let family = family::CollectionFamily::from_fact(fact)?;
-                collection::read(self, repository, *number, family, cursor, &mut ctx).await
-            }
+            _ => Err(super::unsupported_github_projection()),
         }
     }
 }

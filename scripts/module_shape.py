@@ -220,7 +220,10 @@ def check(root, repository, ledger, stage):
     for path in policy.test_children:
         if path in codes:
             codes[path] = ''
-    declarations = {path: inherited.DECL.findall(code) for path, code in codes.items()}
+    declarations = {
+        path: inherited.DECL.findall(code) + re.findall(r'\bnative!\s*\(\s*(\w+)\s*\{', code)
+        for path, code in codes.items()
+    }
 
     def check_parent_nodes(path, before, changes, moves=(), move_slots=(), claim='C02'):
         before_nodes = node_spans(before, inherited)
@@ -293,6 +296,38 @@ def check(root, repository, ledger, stage):
             )
         return production_spans[path]
 
+    def declaration_subjects(path, symbol):
+        """One entry per candidate declaration of `symbol` in `path`.
+
+        Each subject is `fingerprint` of a declaration span of the text `codes`
+        holds, which is production code: comments, literals and inline test
+        modules are already blanked there, so the literal spellings
+        `fingerprint` recovers from raw text contribute nothing to a subject
+        and the hashed value is the span's token stream. A verbatim copy of a
+        declaration therefore shares its subject wherever it is placed. A type
+        the `native!` macro generates has no declaration span the scanner can
+        see, so the invocation that generates it is its subject, and only when
+        the file holds no span of the name.
+        """
+        spans = [span for (name, _), span in production_nodes(path).items()
+                 if name == symbol]
+        if spans:
+            return [fingerprint(codes[path][slice(*span)], inherited)
+                    for span in spans]
+        # `production_nodes` above tolerates a path without production code, so
+        # the raw-text fallback reads the same map the same way.
+        code = codes.get(path, '')
+        invocation = re.search(r'\bnative!\s*\(\s*' + re.escape(symbol) + r'\s*\{', code)
+        if invocation is None:
+            return []
+        depth, index = 0, invocation.end() - 1
+        while index < len(code):
+            depth += (code[index] == '{') - (code[index] == '}')
+            index += 1
+            if depth == 0:
+                break
+        return [fingerprint(code[invocation.start():index], inherited)]
+
     for path, row in ledger['owners'].items():
         # Ledger conformance for the immutable-grammar increment is the C11
         # claim; every other owner row keeps the census label it had.
@@ -334,19 +369,21 @@ def check(root, repository, ledger, stage):
             # Duplication is a property of the declaration, not of its
             # directory: a copied body anywhere in the workspace is the same
             # responsibility in two places, while a different function that
-            # happens to share the name is not a duplicate at all.
-            owned = [span for (name, _), span in production_nodes(path).items()
-                     if name == symbol]
-            if len(owned) != 1:
+            # happens to share the name is not a duplicate at all. A second
+            # declaration in the owner file is not one declaration and fails.
+            subjects = declaration_subjects(path, symbol)
+            if len(subjects) != 1:
                 fail(path, f'owned symbol {symbol} must have exactly one declaration', claim)
                 continue
-            body = fingerprint(codes[path][slice(*owned[0])], inherited)
             for other in declarations:
                 if other == path or symbol not in declarations[other]:
                     continue
-                for (name, _), span in production_nodes(other).items():
-                    if name == symbol and fingerprint(codes[other][slice(*span)], inherited) == body:
-                        fail(other, f'symbol {symbol} belongs in {path}', claim)
+                # How many spans the counterpart holds never suppresses the
+                # comparison: every same-named span it declares is a candidate,
+                # so a verbatim copy cannot ride beside declarations the file
+                # already owns.
+                if subjects[0] in declaration_subjects(other, symbol):
+                    fail(other, f'symbol {symbol} belongs in {path}', claim)
 
     if 'facts' in policy.active:
         identity_path = SOURCES + 'github/facts/identity.rs'
@@ -362,9 +399,15 @@ def check(root, repository, ledger, stage):
             'require_object_link', 'validate_optional_object_link',
             'validate_optional_web_link', 'require_observed_id',
         }
+        if 'immutable-commit' in policy.active:
+            # clean_authority stays the one definition of the
+            # deployment-authority predicate shared with account-link
+            # validation in the commit owner.
+            expected_entry_points.update({'required', 'sha', 'validate_repository',
+                                          'clean_authority'})
         if (len(entry_points) != len(expected_entry_points)
                 or set(entry_points) != expected_entry_points):
-            fail(identity_path, 'identity validation must expose exactly validate and validate_comment_links')
+            fail(identity_path, f'identity validation must expose exactly {", ".join(sorted(expected_entry_points))}')
 
     # ErrorCategory already has a stable Serialize contract. Preserve it without
     # admitting serialization responsibilities into the new operational details.

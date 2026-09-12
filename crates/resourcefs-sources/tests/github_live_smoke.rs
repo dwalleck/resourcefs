@@ -26,6 +26,9 @@ use resourcefs_sources::{
 };
 
 const REPOSITORY: &str = "rust-lang/rust";
+/// The immutable commit used by the retained P1 Git plumbing comparison.
+const IMMUTABLE_REPOSITORY: &str = "dwalleck/resourcefs";
+const IMMUTABLE_COMMIT: &str = "635ab170ab57542c18272921298d575da2f8b08a";
 /// Evidence P1–P6 fixture: 7 conversation comments, 6 inline comments, 4 files.
 const SMALL_PR: u64 = 159_232;
 /// A public PR with more than one page of conversation comments.
@@ -69,6 +72,13 @@ fn native_gh(token: &str, endpoint: &str) -> Option<serde_json::Value> {
 }
 
 async fn live_source(token: String) -> (session_support::ScratchFixture, GithubSource) {
+    live_source_for(token, REPOSITORY).await
+}
+
+async fn live_source_for(
+    token: String,
+    repository: &str,
+) -> (session_support::ScratchFixture, GithubSource) {
     let origin = AllowedOrigin::new("https://api.github.com/", false).expect("origin");
     let secret = Secret::new(token).expect("token is a valid secret");
     let credential =
@@ -87,7 +97,7 @@ async fn live_source(token: String) -> (session_support::ScratchFixture, GithubS
         resourcefs_sources::GithubDeployment::default(),
         false,
         SecretReference::environment("GITHUB_TOKEN").expect("secret reference"),
-        vec![GithubRepository::new(REPOSITORY, MutationGrants::default()).expect("repository")],
+        vec![GithubRepository::new(repository, MutationGrants::default()).expect("repository")],
         resourcefs_core::ReadAcquisitionLimits::default(),
     )
     .expect("GitHub config");
@@ -638,4 +648,92 @@ async fn live_github_review_and_inline_facts_hold_up() {
         .find(|record| record["id"] == serde_json::json!(first_inline))
         .expect("inline row");
     assert_eq!(item_facts["data"], *collection_row);
+}
+#[tokio::test]
+#[ignore = "live GitHub immutable commit smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
+async fn live_github_immutable_commit_facts_hold_up() {
+    let Some(token) = live_token() else { return };
+    let (_session, source) = live_source_for(token.clone(), IMMUTABLE_REPOSITORY).await;
+    let reference = format!("github://{IMMUTABLE_REPOSITORY}/commits/{IMMUTABLE_COMMIT}/facts");
+    let resource = read(&source, &reference).await;
+    let facts: serde_json::Value = serde_json::from_str(resource.content()).expect("facts JSON");
+
+    assert_eq!(
+        facts["schemaVersion"],
+        serde_json::json!({"major": 1, "minor": 0})
+    );
+    assert_eq!(facts["kind"], "github.commit");
+    assert_eq!(facts["request"]["repository"]["owner"], "dwalleck");
+    assert_eq!(facts["request"]["repository"]["name"], "resourcefs");
+    assert_eq!(facts["request"]["commitSha"], IMMUTABLE_COMMIT);
+    assert_eq!(facts["observed"]["commitSha"], IMMUTABLE_COMMIT);
+    assert_eq!(facts["data"]["sha"], IMMUTABLE_COMMIT);
+    assert_eq!(facts["data"]["treeSha"], facts["observed"]["treeSha"]);
+    assert!(facts["data"]["parents"].is_array());
+    assert!(facts["data"]["message"].is_string());
+    assert!(facts["data"]["author"].is_object());
+    assert!(facts["data"]["committer"].is_object());
+    assert!(facts["data"]["links"]["apiUrl"].is_string());
+    assert!(facts["data"]["links"]["htmlUrl"].is_string());
+    assert!(facts["upstream"]["repository"]["body"]["status"].is_number());
+    assert!(facts["upstream"]["commit"]["body"]["status"].is_number());
+
+    let Some(native_repository) = native_gh(&token, &format!("/repos/{IMMUTABLE_REPOSITORY}"))
+    else {
+        return;
+    };
+    let Some(native_commit) = native_gh(
+        &token,
+        &format!("/repos/{IMMUTABLE_REPOSITORY}/commits/{IMMUTABLE_COMMIT}"),
+    ) else {
+        return;
+    };
+    assert_eq!(
+        facts["repository"]["observed"]["id"],
+        native_repository["id"].to_string().trim_matches('\"')
+    );
+    assert_eq!(
+        facts["repository"]["observed"]["fullName"],
+        native_repository["full_name"]
+    );
+    assert_eq!(facts["data"]["sha"], native_commit["sha"]);
+    assert_eq!(
+        facts["data"]["treeSha"],
+        native_commit["commit"]["tree"]["sha"]
+    );
+    assert_eq!(facts["data"]["message"], native_commit["commit"]["message"]);
+    for (output, native) in [("name", "name"), ("email", "email"), ("date", "date")] {
+        assert_eq!(
+            facts["data"]["author"][output],
+            native_commit["commit"]["author"][native]
+        );
+        assert_eq!(
+            facts["data"]["committer"][output],
+            native_commit["commit"]["committer"][native]
+        );
+    }
+    let native_parents = native_commit["parents"].as_array().expect("native parents");
+    let output_parents = facts["data"]["parents"].as_array().expect("output parents");
+    assert_eq!(output_parents.len(), native_parents.len());
+    for (output, native) in output_parents.iter().zip(native_parents) {
+        assert_eq!(output["sha"], native["sha"]);
+        assert_eq!(output["links"]["apiUrl"], native["url"]);
+        assert_eq!(output["links"]["htmlUrl"], native["html_url"]);
+    }
+    for (output_key, native_key) in [
+        ("authorAccount", "author"),
+        ("committerAccount", "committer"),
+    ] {
+        match native_commit.get(native_key) {
+            None => assert!(facts["data"].get(output_key).is_none()),
+            Some(value) if value.is_null() => assert!(facts["data"][output_key].is_null()),
+            Some(value) => {
+                assert_eq!(
+                    facts["data"][output_key]["id"],
+                    value["id"].to_string().trim_matches('\"')
+                );
+                assert_eq!(facts["data"][output_key]["login"], value["login"]);
+            }
+        }
+    }
 }

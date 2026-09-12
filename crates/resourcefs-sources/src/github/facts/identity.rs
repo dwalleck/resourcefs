@@ -50,8 +50,8 @@ pub(super) fn validate<'a>(
     }
     let base = required(&pull.base)?;
     let head = required(&pull.head)?;
-    let base_sha = sha(base)?;
-    let head_sha = sha(head)?;
+    let base_sha = sha(&base.sha)?;
+    let head_sha = sha(&head.sha)?;
     validate_repository(&base.repo, Some(repository), api, web)?;
     validate_repository(&head.repo, None, api, web)?;
     Ok(ValidatedIdentity {
@@ -180,7 +180,7 @@ pub(super) fn expected_object_url(
 /// every authority comparison must use this rule rather than origin alone:
 /// a credential-bearing URL is a contradiction, never an opaque value to
 /// publish.
-fn clean_authority(url: &Url, expected: &Url) -> bool {
+pub(super) fn clean_authority(url: &Url, expected: &Url) -> bool {
     url.origin() == expected.origin() && url.username().is_empty() && url.password().is_none()
 }
 
@@ -381,13 +381,13 @@ fn web_route<'a>(url: &'a Url, web: &Url) -> Result<Option<WebObjectRoute<'a>>, 
     }))
 }
 
-fn required<T>(field: &Presence<T>) -> Result<&T, ResourceError> {
+pub(super) fn required<T>(field: &Presence<T>) -> Result<&T, ResourceError> {
     field
         .value()
         .ok_or_else(|| failure(ErrorReason::UpstreamMalformed))
 }
-fn sha(branch: &Branch) -> Result<&str, ResourceError> {
-    let sha = required(&branch.sha)?;
+pub(super) fn sha(field: &Presence<String>) -> Result<&str, ResourceError> {
+    let sha = required(field)?;
     if sha.len() != 40
         || !sha
             .bytes()
@@ -540,7 +540,7 @@ fn repository_link_identity(
     Ok(Some(identity))
 }
 
-fn validate_repository(
+pub(super) fn validate_repository(
     repository: &Presence<Repository>,
     expected: Option<&GithubRepositoryIdentity>,
     api: &Url,

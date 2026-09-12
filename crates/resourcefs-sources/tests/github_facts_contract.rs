@@ -1551,6 +1551,203 @@ async fn github_facts_production_budget() -> Result<(), &'static str> {
     Ok(())
 }
 
+fn immutable_commit_budget_repository(host: &str) -> String {
+    json!({
+        "id": 1,
+        "node_id": "repository-node",
+        "name": "repo",
+        "full_name": "owner/repo",
+        "owner": {
+            "id": 2,
+            "node_id": "owner-node",
+            "login": "owner",
+            "url": format!("https://{host}/users/owner"),
+            "html_url": "https://github.example/owner"
+        },
+        "url": format!("https://{host}/repos/owner/repo"),
+        "html_url": "https://github.example/owner/repo"
+    })
+    .to_string()
+}
+
+fn immutable_commit_budget_body(host: &str, target_bytes: usize) -> String {
+    const COMMIT_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const TREE_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let mut value = json!({
+        "sha": COMMIT_SHA,
+        "node_id": "commit-node",
+        "url": format!("https://{host}/repos/owner/repo/commits/{COMMIT_SHA}"),
+        "html_url": format!("https://github.example/owner/repo/commit/{COMMIT_SHA}"),
+        "comments_url": format!("https://{host}/repos/owner/repo/commits/{COMMIT_SHA}/comments"),
+        "commit": {
+            "author": {"name": "Author", "email": "author@example.test", "date": "2026-01-01T00:00:00Z"},
+            "committer": {"name": "Committer", "email": "committer@example.test", "date": "2026-01-01T00:00:00Z"},
+            "message": "",
+            "tree": {
+                "sha": TREE_SHA,
+                "url": format!("https://{host}/repos/owner/repo/git/trees/{TREE_SHA}")
+            },
+            "url": format!("https://{host}/repos/owner/repo/git/commits/{COMMIT_SHA}")
+        },
+        "author": null,
+        "committer": null,
+        "parents": []
+    });
+    let baseline = serde_json::to_string(&value)
+        .expect("commit budget baseline")
+        .len();
+    let message = "x".repeat(
+        target_bytes
+            .checked_sub(baseline)
+            .expect("commit metadata fits the response ceiling"),
+    );
+    value["commit"]["message"] = json!(message);
+    let encoded = serde_json::to_string(&value).expect("commit budget body");
+    assert_eq!(encoded.len(), target_bytes, "independent commit body size");
+    encoded
+}
+
+#[tokio::test]
+#[ignore = "checkpointed-build immutable commit production-scale budget"]
+async fn immutable_commit_production_budget() -> Result<(), &'static str> {
+    if cfg!(debug_assertions) {
+        return Err("run this budget in release mode");
+    }
+    const COMMIT_BODY_BYTES: usize = 8 * 1024 * 1024;
+    const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+    const HEAP_LIMIT: usize = 128 * 1024 * 1024;
+    const COMMIT_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    // One member per side of the response ceiling: the first two pin that a
+    // body of exactly `COMMIT_BODY_BYTES` is admitted whole, while the third
+    // serves one byte more and pins that the same bound still refuses it. A
+    // loosened or removed ceiling has to fail that member; a row that only
+    // serves the ceiling itself cannot notice.
+    for (measure_heap, serve_bytes) in [
+        (false, COMMIT_BODY_BYTES),
+        (true, COMMIT_BODY_BYTES),
+        (false, COMMIT_BODY_BYTES + 1),
+    ] {
+        let body = Arc::new(OnceLock::<String>::new());
+        let served = Arc::clone(&body);
+        let listener = TlsListener::serve_request_router(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            0,
+            tls::match_cert(),
+            move |request| {
+                let host = host_from_head(request.head());
+                let content = match request.target() {
+                    "/repos/owner/repo" => immutable_commit_budget_repository(host),
+                    "/repos/owner/repo/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" => served
+                        .get()
+                        .expect("prepared immutable commit body")
+                        .clone(),
+                    target => panic!("unexpected immutable commit budget request: {target}"),
+                };
+                response(
+                    "200 OK",
+                    content,
+                    vec![("ETag".into(), "\"immutable-commit-budget\"".into())],
+                )
+            },
+        )
+        .await;
+        let (source, _session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
+        let host = format!("{}:{}", tls::FIXTURE_HOST, listener.address.port());
+        body.set(immutable_commit_budget_body(&host, serve_bytes))
+            .expect("one immutable commit budget body");
+        let reference =
+            PathReference::parse(format!("github://owner/repo/commits/{COMMIT_SHA}/facts"))
+                .expect("immutable commit facts reference");
+        let operation = OperationGuard::new();
+
+        let baseline = FACTS_CURRENT_HEAP.load(Ordering::Acquire);
+        FACTS_PEAK_HEAP.store(baseline, Ordering::Release);
+        let started = Instant::now();
+        let result = source.read(&reference, &operation, None).await;
+        let elapsed = started.elapsed();
+        let incremental_heap = FACTS_PEAK_HEAP
+            .load(Ordering::Acquire)
+            .saturating_sub(baseline);
+        if serve_bytes > COMMIT_BODY_BYTES {
+            // The refusal is typed by the dimension the enforcement reports:
+            // the response-body ceiling the substrate and the read budget both
+            // hold at `COMMIT_BODY_BYTES`.
+            let error = result.expect_err("one byte over the response ceiling must refuse");
+            assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+            let details = error.details().expect("typed limit refusal");
+            assert_eq!(details.reason(), ErrorReason::LimitExceeded);
+            let limit = details.limit().expect("limit dimension");
+            assert_eq!(
+                limit.kind(),
+                resourcefs_core::AcquisitionLimitKind::ResponseBodyBytes
+            );
+            assert_eq!(limit.bound(), COMMIT_BODY_BYTES as u64);
+            assert_eq!(
+                listener.requests().len(),
+                2,
+                "repository and over-ceiling commit GETs"
+            );
+            continue;
+        }
+        let resource = result.expect("production-size immutable commit facts");
+        let output_bytes = resource.content().len();
+        assert!(output_bytes <= OUTPUT_LIMIT, "owned document byte ceiling");
+        let facts = document(&resource);
+        assert_eq!(facts["kind"], "github.commit");
+        assert_eq!(facts["data"]["sha"], COMMIT_SHA);
+        assert_eq!(facts["data"]["message"].as_str().map(str::len), Some(
+            COMMIT_BODY_BYTES
+                - serde_json::to_string(&json!({
+                    "sha": COMMIT_SHA,
+                    "node_id": "commit-node",
+                    "url": format!("https://{host}/repos/owner/repo/commits/{COMMIT_SHA}"),
+                    "html_url": format!("https://github.example/owner/repo/commit/{COMMIT_SHA}"),
+                    "comments_url": format!("https://{host}/repos/owner/repo/commits/{COMMIT_SHA}/comments"),
+                    "commit": {
+                        "author": {"name": "Author", "email": "author@example.test", "date": "2026-01-01T00:00:00Z"},
+                        "committer": {"name": "Committer", "email": "committer@example.test", "date": "2026-01-01T00:00:00Z"},
+                        "message": "",
+                        "tree": {
+                            "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            "url": format!("https://{host}/repos/owner/repo/git/trees/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                        },
+                        "url": format!("https://{host}/repos/owner/repo/git/commits/{COMMIT_SHA}")
+                    },
+                    "author": null,
+                    "committer": null,
+                    "parents": []
+                }))
+                .expect("baseline encoding")
+                .len(),
+        ));
+        assert_eq!(
+            facts["acquisition"]["usage"]["acceptedBodyBytes"],
+            COMMIT_BODY_BYTES + immutable_commit_budget_repository(&host).len()
+        );
+        assert_eq!(listener.requests().len(), 2, "repository and commit GETs");
+        if measure_heap {
+            println!(
+                "immutable_commit_budget phase=heap body_bytes={COMMIT_BODY_BYTES} output_bytes={output_bytes} incremental_heap_bytes={incremental_heap} heap_limit_bytes={HEAP_LIMIT}"
+            );
+            assert!(
+                incremental_heap <= HEAP_LIMIT,
+                "incremental heap {incremental_heap}"
+            );
+        } else {
+            println!(
+                "immutable_commit_budget phase=wall body_bytes={COMMIT_BODY_BYTES} output_bytes={output_bytes} elapsed_ns={}",
+                elapsed.as_nanos()
+            );
+            assert!(
+                elapsed <= Duration::from_secs(2),
+                "local processing upper bound {elapsed:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Fixed bytes a `github://` reference spends outside its source path.
 fn reference_framing_bytes() -> usize {
     format!("github://owner/repo/source/{}/", "a".repeat(40)).len() + "/facts".len()
