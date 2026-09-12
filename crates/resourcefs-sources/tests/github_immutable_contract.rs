@@ -24,16 +24,6 @@ const TREE_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const PARENT_SHA: &str = "cccccccccccccccccccccccccccccccccccccccc";
 const SECOND_PARENT_SHA: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
-fn host_from_head(head: &str) -> &str {
-    head.lines()
-        .find_map(|line| {
-            line.split_once(':')
-                .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-                .map(|(_, value)| value.trim())
-        })
-        .expect("Host header")
-}
-
 fn repository_json(host: &str) -> Value {
     json!({
         "id": 1,
@@ -191,7 +181,7 @@ async fn fixture_with_limits(
         0,
         tls::match_cert(),
         move |request| {
-            let host = format!("{}{api_prefix}", host_from_head(request.head()));
+            let host = format!("{}{api_prefix}", request.host());
             let mut body = match request.target().strip_prefix(api_prefix).expect("configured API prefix") {
                 "/repos/owner/repo" => repository_json(&host),
                 "/repos/owner/repo/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" => {

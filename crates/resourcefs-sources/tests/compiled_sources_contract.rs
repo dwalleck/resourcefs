@@ -172,8 +172,9 @@ async fn unmounted_github_family_refuses_reads_without_faking_a_projection() {
         .await
         .expect_err("controls cannot change a configuration-derived refusal");
     assert_eq!(controlled.category(), ErrorCategory::SourceUnavailable);
-    // Discovery and mutation are refused by the family itself, so neither
-    // answer may change with the mount state or the caller's control set.
+    // Discovery is refused by the family itself, and writing by the family's
+    // read-only rule, so neither answer may change with the mount state or the
+    // caller's control set.
     let target = SearchTarget::resource(reference.clone());
     let search = fixture
         .compiled
@@ -191,15 +192,18 @@ async fn unmounted_github_family_refuses_reads_without_faking_a_projection() {
         .compiled
         .resolve(&reference, MutationAccess::Update)
         .await
-        .expect_err("no compiled route serves an unserved family's writes either");
-    // One address, one claim: discovery and writing name the same fact this
-    // build cannot serve, and neither depends on configuration.
-    assert_eq!(mutation.category(), ErrorCategory::UnsupportedProjection);
-    assert_eq!(mutation.message(), search.message());
+        .expect_err("immutable commit Facts accept no writes");
+    // Writing is refused by the family's read-only rule, not by the mount: the
+    // route is served as a read, so the refusal names what the family accepts
+    // rather than what configuration is missing. Discovery still names the
+    // unserved operation.
+    assert_eq!(mutation.category(), ErrorCategory::UnsupportedMutation);
+    assert!(mutation.details().is_none());
     // The `source` spelling is acquired by this increment, so an unmounted
     // build reports the missing profile entry for it exactly as its commit
     // sibling answers above — the same configuration-derived answer, with and
-    // without caller controls. Discovery and mutation still refuse by family.
+    // without caller controls. Discovery still refuses without consulting the
+    // mount, and writing stays refused by the family's read-only rule.
     let source = PathReference::parse(
         "github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/src/lib.rs/facts",
     )

@@ -36,7 +36,7 @@ enum Corpus {
     Over,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Mutation {
     None,
     WrongTreeSha,
@@ -55,16 +55,13 @@ enum Mutation {
     BlobUnavailable,
     MalformedOversizedTail,
     OmitBinaryTreeSize,
-}
-
-fn host_from_head(head: &str) -> &str {
-    head.lines()
-        .find_map(|line| {
-            line.split_once(':')
-                .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-                .map(|(_, value)| value.trim())
-        })
-        .expect("Host header")
+    BlobRetryAfterBeyondDeadline,
+    BlobDenied,
+    BlobAbsent,
+    OpaqueEntryLink,
+    QueryBearingEntryLink,
+    OmitTreeUrl,
+    OversizedEntrySize,
 }
 
 fn fixture_value() -> Value {
@@ -195,14 +192,28 @@ fn default_fixture_response(
     corpus: Corpus,
     mutation: Mutation,
 ) -> FixtureResponse {
-    if matches!(mutation, Mutation::BlobUnavailable) && request.target().contains("/git/blobs/") {
-        return FixtureResponse::Response {
-            status: "503 Service Unavailable",
-            headers: vec![],
-            body: b"{}".to_vec(),
+    if request.target().contains("/git/blobs/") {
+        let blob_failure = match mutation {
+            Mutation::BlobUnavailable => Some(("503 Service Unavailable", vec![])),
+            Mutation::BlobDenied => Some(("401 Unauthorized", vec![])),
+            Mutation::BlobAbsent => Some(("404 Not Found", vec![])),
+            // Guidance that cannot fit the remaining logical deadline, so the
+            // refusal is a deadline error produced before the deadline expires.
+            Mutation::BlobRetryAfterBeyondDeadline => Some((
+                "429 Too Many Requests",
+                vec![("Retry-After".to_owned(), "120".to_owned())],
+            )),
+            _ => None,
         };
+        if let Some((status, headers)) = blob_failure {
+            return FixtureResponse::Response {
+                status,
+                headers,
+                body: b"{}".to_vec(),
+            };
+        }
     }
-    let host = host_from_head(request.head()).to_owned();
+    let host = request.host().to_owned();
     let mut body = response_body(request.target(), fixture, corpus);
     mutate(request.target(), &mut body, mutation);
     replace_api(&mut body, &host);
@@ -283,6 +294,38 @@ fn mutate(target: &str, body: &mut Value, mutation: Mutation) {
             mutated.replace_range(last_data..last_data + 1, "h");
             body["content"] = json!(mutated);
         }
+        Mutation::OversizedEntrySize
+            if target.ends_with(&format!("/git/trees/{ROOT_TREE_SHA}")) =>
+        {
+            let entries = body["tree"].as_array_mut().expect("tree entries");
+            let entry = entries
+                .iter_mut()
+                .find(|entry| entry["path"] == "run.sh")
+                .expect("executable entry");
+            entry["size"] = json!(9_000_000);
+        }
+        Mutation::OmitTreeUrl if target.ends_with(&format!("/git/trees/{ROOT_TREE_SHA}")) => {
+            body.as_object_mut().expect("tree object").remove("url");
+        }
+        Mutation::OpaqueEntryLink if target.ends_with(&format!("/git/trees/{ROOT_TREE_SHA}")) => {
+            let entries = body["tree"].as_array_mut().expect("tree entries");
+            let entry = entries
+                .iter_mut()
+                .find(|entry| entry["path"] == "run.sh")
+                .expect("executable entry");
+            entry["url"] = json!("not-a-url-at-all");
+        }
+        Mutation::QueryBearingEntryLink
+            if target.ends_with(&format!("/git/trees/{ROOT_TREE_SHA}")) =>
+        {
+            let entries = body["tree"].as_array_mut().expect("tree entries");
+            let entry = entries
+                .iter_mut()
+                .find(|entry| entry["path"] == "run.sh")
+                .expect("executable entry");
+            let url = entry["url"].as_str().expect("entry url").to_owned();
+            entry["url"] = json!(format!("{url}?ref=main"));
+        }
         Mutation::OmitBinaryTreeSize
             if target.ends_with("/git/trees/d9cf1e2c10ed61b36c812e36c3f79acd6971126c") =>
         {
@@ -307,7 +350,14 @@ fn mutate(target: &str, body: &mut Value, mutation: Mutation) {
         | Mutation::MalformedBlobBase64
         | Mutation::MalformedOversizedTail
         | Mutation::WrongBlobSize
-        | Mutation::OmitBinaryTreeSize => {}
+        | Mutation::OmitBinaryTreeSize
+        | Mutation::BlobRetryAfterBeyondDeadline
+        | Mutation::BlobDenied
+        | Mutation::BlobAbsent
+        | Mutation::OpaqueEntryLink
+        | Mutation::QueryBearingEntryLink
+        | Mutation::OmitTreeUrl
+        | Mutation::OversizedEntrySize => {}
     }
 }
 
@@ -529,50 +579,217 @@ async fn source_facts_cover_every_independent_fixture_case() {
 
 #[tokio::test]
 async fn source_facts_verify_tree_and_blob_identity_before_retention() {
-    for mutation in [
-        Mutation::WrongTreeSha,
-        Mutation::WrongTreeLink,
-        Mutation::TruncatedTree,
-        Mutation::DuplicateTreeName,
-        Mutation::UnrepresentableTreeName,
-        Mutation::UnselectedTreeName,
-        Mutation::ContradictoryModeType,
-        Mutation::WrongBlobSha,
-        Mutation::WrongBlobLink,
-        Mutation::WrongBlobEncoding,
-        Mutation::WrongBlobContent,
-        Mutation::MalformedBlobBase64,
-        Mutation::WrongBlobSize,
+    // Every contradictory shape must produce its own typed verdict, and must do
+    // so without publishing a Facts document. The request count is asserted too:
+    // it separates a refusal that happened before the blob GET (3 requests: the
+    // repository, the commit and the root tree) from one that happened after it
+    // (5: those, plus the two trees of this path and the blob).
+    for (mutation, expected_category, expected_reason, expected_requests) in [
+        (
+            Mutation::WrongTreeSha,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamIdentityMismatch,
+            3,
+        ),
+        (
+            Mutation::WrongTreeLink,
+            ErrorCategory::NotFound,
+            ErrorReason::UpstreamIdentityMismatch,
+            3,
+        ),
+        (
+            Mutation::TruncatedTree,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamMalformed,
+            3,
+        ),
+        (
+            // A directory that names one entry twice is not a Git tree at all.
+            Mutation::DuplicateTreeName,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamMalformed,
+            3,
+        ),
+        (
+            Mutation::UnrepresentableTreeName,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamMalformed,
+            3,
+        ),
+        (
+            // An entry the caller never selects is still covered by the
+            // reconstructed tree hash, so renaming one is a contradiction.
+            Mutation::UnselectedTreeName,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamIdentityMismatch,
+            3,
+        ),
+        (
+            Mutation::ContradictoryModeType,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamMalformed,
+            3,
+        ),
+        (
+            Mutation::OmitTreeUrl,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamMalformed,
+            3,
+        ),
+        (
+            Mutation::WrongBlobSha,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamIdentityMismatch,
+            5,
+        ),
+        (
+            Mutation::WrongBlobLink,
+            ErrorCategory::NotFound,
+            ErrorReason::UpstreamIdentityMismatch,
+            5,
+        ),
+        (
+            Mutation::WrongBlobEncoding,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamMalformed,
+            5,
+        ),
+        (
+            Mutation::WrongBlobContent,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamIdentityMismatch,
+            5,
+        ),
+        (
+            Mutation::MalformedBlobBase64,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamMalformed,
+            5,
+        ),
+        (
+            Mutation::WrongBlobSize,
+            ErrorCategory::SourceUnavailable,
+            ErrorReason::UpstreamIdentityMismatch,
+            5,
+        ),
     ] {
-        let (_listener, source, _session) =
+        let (listener, source, _session) =
             fixture_source(ReadAcquisitionLimits::default(), mutation).await;
         let error = read(&source, "docs/%CE%BB%20space%252F%3Araw.bin")
             .await
             .expect_err("contradictory fixture must fail");
-        assert!(
-            error.details().is_some(),
-            "identity/malformed failure is machine-readable"
+        assert_eq!(error.category(), expected_category, "{mutation:?}");
+        assert_eq!(
+            error.details().map(|details| details.reason()),
+            Some(expected_reason),
+            "{mutation:?}"
         );
+        let requests = listener.requests();
+        assert_eq!(
+            requests.len(),
+            expected_requests,
+            "{mutation:?} stopped at the contradiction rather than continuing"
+        );
+        // The further the walk got, the more it must not have asked for: a
+        // contradiction in the root tree never reaches the blob.
+        assert_eq!(
+            requests
+                .iter()
+                .any(|request| request.contains("/git/blobs/")),
+            expected_requests == 5,
+            "{mutation:?}"
+        );
+    }
+}
+
+/// A per-target request counter shared by the revalidation tests.
+///
+/// Returns a router that hands each request to `respond` together with whether
+/// this target has been seen before, so a test can answer the second and later
+/// hits differently (a conditional 304, or a failure of the revalidation).
+fn counting_router<F>(
+    respond: F,
+) -> impl Fn(&tls::FixtureRequest, &Value, Corpus, Mutation) -> FixtureResponse + Send + Sync + 'static
+where
+    F: Fn(bool, &tls::FixtureRequest, &Value, Corpus, Mutation) -> FixtureResponse
+        + Send
+        + Sync
+        + 'static,
+{
+    let counts = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
+    move |request, fixture, corpus, mutation| {
+        let revalidation = {
+            let mut counts = counts.lock().expect("revalidation counters");
+            let count = counts.entry(request.target().to_owned()).or_default();
+            let revalidation = *count > 0;
+            *count += 1;
+            revalidation
+        };
+        respond(revalidation, request, fixture, corpus, mutation)
+    }
+}
+
+/// Parks one named upstream response inside the read.
+///
+/// The barrier is the point: a test that changes session state must do so while
+/// the read is provably inside that request, so the refusal is provoked by the
+/// change rather than by ordinary sequencing.
+struct ResponseBarrier {
+    entered: Arc<tokio::sync::Notify>,
+    blocked: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+    release: std::sync::mpsc::Sender<()>,
+}
+
+impl ResponseBarrier {
+    fn new() -> Self {
+        let (release, blocked) = std::sync::mpsc::channel();
+        Self {
+            entered: Arc::new(tokio::sync::Notify::new()),
+            blocked: Arc::new(Mutex::new(blocked)),
+            release,
+        }
+    }
+
+    /// A router that parks `target` until [`Self::release`].
+    fn router(
+        &self,
+        target: String,
+    ) -> impl Fn(&tls::FixtureRequest, &Value, Corpus, Mutation) -> FixtureResponse + Send + Sync + 'static
+    {
+        let entered = Arc::clone(&self.entered);
+        let blocked = Arc::clone(&self.blocked);
+        move |request, fixture, corpus, mutation| {
+            if request.target() == target {
+                entered.notify_one();
+                blocked
+                    .lock()
+                    .expect("response barrier")
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("blocked response release");
+            }
+            default_fixture_response(request, fixture, corpus, mutation)
+        }
+    }
+
+    async fn wait_entered(&self) {
+        tokio::time::timeout(Duration::from_secs(3), self.entered.notified())
+            .await
+            .expect("selected response entered");
+    }
+
+    fn release(&self) {
+        self.release.send(()).expect("selected response release");
     }
 }
 
 #[tokio::test]
 async fn source_facts_revalidate_304_preserves_bytes_identity_and_provenance() {
-    let counts = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
-    let route_counts = Arc::clone(&counts);
     let (listener, source, _session) = source_for_with_router(
         ReadAcquisitionLimits::default(),
         Mutation::None,
         Corpus::Main,
-        move |request, fixture, corpus, mutation| {
-            let is_revalidation = {
-                let mut counts = route_counts.lock().expect("revalidation counters");
-                let count = counts.entry(request.target().to_owned()).or_default();
-                let is_revalidation = *count > 0;
-                *count += 1;
-                is_revalidation
-            };
-            if is_revalidation {
+        counting_router(|revalidation, request, fixture, corpus, mutation| {
+            if revalidation {
                 assert!(
                     request
                         .head()
@@ -588,7 +805,7 @@ async fn source_facts_revalidate_304_preserves_bytes_identity_and_provenance() {
             } else {
                 default_fixture_response(request, fixture, corpus, mutation)
             }
-        },
+        }),
     )
     .await;
     let first = read(&source, "docs/%CE%BB%20space%252F%3Araw.bin")
@@ -649,27 +866,18 @@ async fn source_facts_revalidate_304_preserves_bytes_identity_and_provenance() {
 
 #[tokio::test]
 async fn source_facts_failed_blob_revalidation_never_exposes_stale_bytes() {
-    let counts = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
-    let route_counts = Arc::clone(&counts);
     let (listener, source, _session) = source_for_with_router(
         ReadAcquisitionLimits::default(),
         Mutation::None,
         Corpus::Main,
-        move |request, fixture, corpus, mutation| {
-            let is_revalidation = {
-                let mut counts = route_counts.lock().expect("revalidation counters");
-                let count = counts.entry(request.target().to_owned()).or_default();
-                let is_revalidation = *count > 0;
-                *count += 1;
-                is_revalidation
-            };
-            if is_revalidation && request.target().contains("/git/blobs/") {
+        counting_router(|revalidation, request, fixture, corpus, mutation| {
+            if revalidation && request.target().contains("/git/blobs/") {
                 FixtureResponse::Response {
                     status: "503 Service Unavailable",
                     headers: vec![],
                     body: b"{}".to_vec(),
                 }
-            } else if is_revalidation {
+            } else if revalidation {
                 FixtureResponse::Response {
                     status: "304 Not Modified",
                     headers: vec![],
@@ -678,7 +886,7 @@ async fn source_facts_failed_blob_revalidation_never_exposes_stale_bytes() {
             } else {
                 default_fixture_response(request, fixture, corpus, mutation)
             }
-        },
+        }),
     )
     .await;
     let fresh = read(&source, "docs/%CE%BB%20space%252F%3Araw.bin")
@@ -738,27 +946,12 @@ async fn source_facts_generation_change_between_each_response_refuses_publicatio
         format!("/repos/owner/repo/git/trees/{ROOT_TREE_SHA}"),
         format!("/repos/owner/repo/git/blobs/{BINARY_SHA}"),
     ] {
-        let entered = Arc::new(tokio::sync::Notify::new());
-        let route_entered = Arc::clone(&entered);
-        let (release, blocked) = std::sync::mpsc::channel();
-        let blocked = Arc::new(Mutex::new(blocked));
-        let route_blocked = Arc::clone(&blocked);
-        let route_target = blocked_target.clone();
+        let barrier = ResponseBarrier::new();
         let (listener, source, session) = source_for_with_router(
             ReadAcquisitionLimits::default(),
             Mutation::None,
             Corpus::Main,
-            move |request, fixture, corpus, mutation| {
-                if request.target() == route_target {
-                    route_entered.notify_one();
-                    route_blocked
-                        .lock()
-                        .expect("generation response barrier")
-                        .recv_timeout(Duration::from_secs(5))
-                        .expect("generation response release");
-                }
-                default_fixture_response(request, fixture, corpus, mutation)
-            },
+            barrier.router(blocked_target.clone()),
         )
         .await;
         let source = Arc::new(source);
@@ -774,24 +967,24 @@ async fn source_facts_generation_change_between_each_response_refuses_publicatio
             )
             .await
         });
-        tokio::time::timeout(Duration::from_secs(3), entered.notified())
-            .await
-            .expect("selected response entered");
+        barrier.wait_entered().await;
         session
             .path_session()
             .cache_remove_namespace("github-http")
             .await
             .expect("generation invalidation");
-        release.send(()).expect("selected response release");
+        barrier.release();
         let error = tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .expect("generation refusal")
             .expect("source task")
             .expect_err("invalidated source cannot publish");
         assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+        // Its own reason: the caller's session changed, so the retry is against
+        // that, not against a provider that reported itself unavailable.
         assert_eq!(
             error.details().expect("generation details").reason(),
-            ErrorReason::UpstreamUnavailable
+            ErrorReason::CacheGenerationChanged
         );
         assert!(
             listener
@@ -822,27 +1015,12 @@ async fn source_facts_cancellation_at_metadata_and_verified_blob_is_whole_read_r
             "AP+AbGluZQ0KZW5kAA=="
         );
 
-        let entered = Arc::new(tokio::sync::Notify::new());
-        let route_entered = Arc::clone(&entered);
-        let (release, blocked) = std::sync::mpsc::channel();
-        let blocked = Arc::new(Mutex::new(blocked));
-        let route_blocked = Arc::clone(&blocked);
-        let route_target = blocked_target.clone();
+        let barrier = ResponseBarrier::new();
         let (listener, source, _session) = source_for_with_router(
             ReadAcquisitionLimits::default(),
             Mutation::None,
             Corpus::Main,
-            move |request, fixture, corpus, mutation| {
-                if request.target() == route_target {
-                    route_entered.notify_one();
-                    route_blocked
-                        .lock()
-                        .expect("cancellation response barrier")
-                        .recv_timeout(Duration::from_secs(5))
-                        .expect("cancellation response release");
-                }
-                default_fixture_response(request, fixture, corpus, mutation)
-            },
+            barrier.router(blocked_target.clone()),
         )
         .await;
         let source = Arc::new(source);
@@ -858,13 +1036,9 @@ async fn source_facts_cancellation_at_metadata_and_verified_blob_is_whole_read_r
             )
             .await
         });
-        tokio::time::timeout(Duration::from_secs(3), entered.notified())
-            .await
-            .expect("selected cancellation response entered");
+        barrier.wait_entered().await;
         assert!(operation.cancel(), "active source operation cancels");
-        release
-            .send(())
-            .expect("selected cancellation response release");
+        barrier.release();
         let error = tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .expect("cancellation refusal")
@@ -887,15 +1061,43 @@ async fn source_facts_cancellation_at_metadata_and_verified_blob_is_whole_read_r
 
 #[tokio::test]
 async fn source_facts_retain_ordinary_blob_failure_but_not_identity_failure() {
-    let (_listener, source, _session) =
-        fixture_source(ReadAcquisitionLimits::default(), Mutation::BlobUnavailable).await;
-    let resource = read(&source, "run.sh")
-        .await
-        .expect("ordinary blob failure facts");
-    let document: Value = serde_json::from_str(resource.content()).expect("facts JSON");
-    assert_eq!(document["data"]["content"]["state"], "unavailable");
-    assert_eq!(document["data"]["content"]["reason"], "acquisition_failed");
-    assert!(document["data"]["content"]["failure"].is_object());
+    // An ordinary failure of the one blob request keeps the terminal identity
+    // the trees already proved, and publishes only bounded failure facts.
+    for (mutation, expected_category, expected_reason) in [
+        (
+            Mutation::BlobUnavailable,
+            "source_unavailable",
+            "upstream_unavailable",
+        ),
+        (Mutation::BlobDenied, "permission_denied", "upstream_denied"),
+        (
+            Mutation::BlobAbsent,
+            "not_found",
+            "upstream_not_found_or_hidden",
+        ),
+    ] {
+        let (_listener, source, _session) =
+            fixture_source(ReadAcquisitionLimits::default(), mutation).await;
+        let resource = read(&source, "run.sh")
+            .await
+            .unwrap_or_else(|error| panic!("{mutation:?} is ordinary: {error}"));
+        let document: Value = serde_json::from_str(resource.content()).expect("facts JSON");
+        assert_eq!(document["data"]["content"]["state"], "unavailable");
+        assert_eq!(
+            document["data"]["content"]["reason"], "acquisition_failed",
+            "{mutation:?}"
+        );
+        assert_eq!(
+            document["data"]["content"]["failure"]["category"], expected_category,
+            "{mutation:?}"
+        );
+        assert_eq!(
+            document["data"]["content"]["failure"]["reason"], expected_reason,
+            "{mutation:?}"
+        );
+        assert_eq!(document["data"]["objectType"], "blob");
+        assert_eq!(document["data"]["mode"], "100755");
+    }
 
     let (_listener, source, _session) =
         fixture_source(ReadAcquisitionLimits::default(), Mutation::WrongBlobSha).await;
@@ -905,6 +1107,185 @@ async fn source_facts_retain_ordinary_blob_failure_but_not_identity_failure() {
     assert_eq!(
         error.details().map(|details| details.reason()),
         Some(ErrorReason::UpstreamIdentityMismatch)
+    );
+}
+
+#[tokio::test]
+async fn source_facts_refuse_the_whole_read_for_a_deadline_refusal() {
+    // The blob's 429 carries `Retry-After: 120` while most of the logical
+    // deadline remains, so the refusal is a deadline error produced before the
+    // deadline expired. A decoded-size or outage retention must not swallow it:
+    // DESIGN.md and docs/operating.md both make deadline expiration a whole-read
+    // refusal, and a published `acquisition_failed` would be a refusal reported
+    // as a successful partial document.
+    let (_listener, source, _session) = fixture_source(
+        ReadAcquisitionLimits::default(),
+        Mutation::BlobRetryAfterBeyondDeadline,
+    )
+    .await;
+    let error = read(&source, "run.sh")
+        .await
+        .expect_err("a deadline refusal cannot be published as a partial document");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    let details = error.details().expect("typed deadline refusal");
+    assert_eq!(details.reason(), ErrorReason::DeadlineExceeded);
+    assert_eq!(
+        details.retry_guidance(),
+        Some(resourcefs_core::RetryGuidance::DelaySeconds(120))
+    );
+}
+
+#[tokio::test]
+async fn source_facts_refuse_the_whole_read_when_the_response_ceiling_bounds_the_blob() {
+    // `maxResponseBytes` is an independent caller dimension, and a base64 body
+    // is 4/3 the decoded size: the exact decoded boundary corpus (4 MiB decoded,
+    // 5,592,408 encoded) is legal under the default decoded cap but not under a
+    // caller response ceiling of 4 MiB. The caller is entitled to the typed
+    // refusal naming that bound — not a 200 document whose content says
+    // acquisition_failed, which a retention predicate keyed on the error *kind*
+    // would have produced.
+    let limits =
+        ReadAcquisitionLimits::new(None, None, Some(4_194_304), None, None, None).expect("limits");
+    let (_listener, source, _session) = source_for(limits, Mutation::None, Corpus::Exact).await;
+    let error = read_commit(&source, EXACT_COMMIT_SHA, "payload")
+        .await
+        .expect_err("a response-body refusal cannot be published as a partial document");
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+    let details = error.details().expect("typed limit refusal");
+    assert_eq!(details.reason(), ErrorReason::LimitExceeded);
+    assert_eq!(
+        details.limit().map(|limit| limit.kind()),
+        Some(resourcefs_core::AcquisitionLimitKind::ResponseBodyBytes)
+    );
+}
+
+#[tokio::test]
+async fn source_facts_classify_mid_path_and_absent_components_as_not_found() {
+    // A component that resolves to a file, symlink or submodule cannot be
+    // descended, so the caller's path provably does not exist in a verified
+    // tree. Nothing upstream contradicted itself, so this is not an outage or
+    // a malformed provider document.
+    for encoded in ["run.sh/anything", "link/anything", "submodule/anything"] {
+        let (_listener, source, _session) =
+            fixture_source(ReadAcquisitionLimits::default(), Mutation::None).await;
+        let error = read(&source, encoded)
+            .await
+            .expect_err("a non-directory component cannot be descended");
+        assert_eq!(error.category(), ErrorCategory::NotFound, "{encoded}");
+        assert_eq!(
+            error.details().map(|details| details.reason()),
+            Some(ErrorReason::UpstreamNotFoundOrHidden),
+            "{encoded}"
+        );
+    }
+
+    // The sibling branch that answers "this path is not here" for a name the
+    // verified directory does not contain, kept beside it so both stay one rule.
+    let (listener, source, _session) =
+        fixture_source(ReadAcquisitionLimits::default(), Mutation::None).await;
+    let error = read(&source, "docs/absent")
+        .await
+        .expect_err("an absent name is not present in a verified tree");
+    assert_eq!(error.category(), ErrorCategory::NotFound);
+    assert_eq!(
+        error.details().map(|details| details.reason()),
+        Some(ErrorReason::UpstreamNotFoundOrHidden)
+    );
+    assert_eq!(listener.requests().len(), 4, "root tree then the docs tree");
+}
+
+#[tokio::test]
+async fn source_facts_read_a_path_whose_sibling_entries_carry_opaque_links() {
+    // Only the selected entry's supplied link is judged. A sibling entry the
+    // caller never selects cannot fail the read, and a value that is not a URL
+    // at all stays an opaque provider observation rather than a contradiction.
+    for (mutation, path) in [
+        (
+            Mutation::OpaqueEntryLink,
+            "docs/%CE%BB%20space%252F%3Araw.bin",
+        ),
+        (
+            Mutation::QueryBearingEntryLink,
+            "docs/%CE%BB%20space%252F%3Araw.bin",
+        ),
+        (Mutation::OpaqueEntryLink, "run.sh"),
+        (Mutation::QueryBearingEntryLink, "run.sh"),
+    ] {
+        let (_listener, source, _session) =
+            fixture_source(ReadAcquisitionLimits::default(), mutation).await;
+        let resource = read(&source, path)
+            .await
+            .unwrap_or_else(|error| panic!("{mutation:?} on {path} must not refuse: {error}"));
+        let document: Value = serde_json::from_str(resource.content()).expect("facts JSON");
+        assert_eq!(document["kind"], "github.source");
+    }
+}
+
+#[tokio::test]
+async fn source_facts_refuse_a_size_refusal_without_claiming_an_observed_size() {
+    // A Git tree entry carries no size the reconstructed tree hash covers, so an
+    // over-stated downstream size drives the pre-fetch refusal and is never
+    // cross-checked against the bytes. The refusal therefore names its bound and
+    // omits `observed` rather than publishing an unverified number as a
+    // measurement, and the blob is never requested.
+    let (listener, source, _session) = fixture_source(
+        ReadAcquisitionLimits::default(),
+        Mutation::OversizedEntrySize,
+    )
+    .await;
+    let resource = read(&source, "run.sh")
+        .await
+        .expect("a metadata-only refusal is not a read failure");
+    let document: Value = serde_json::from_str(resource.content()).expect("facts JSON");
+    assert_eq!(document["data"]["content"]["state"], "unavailable");
+    assert_eq!(document["data"]["content"]["reason"], "decoded_size_limit");
+    assert_eq!(
+        document["data"]["content"]["limit"]["kind"],
+        "decoded_content_bytes"
+    );
+    assert!(
+        !document["data"]["content"]["limit"]
+            .as_object()
+            .expect("limit object")
+            .contains_key("observed"),
+        "an unverified upstream size is not an observation"
+    );
+    assert!(
+        !listener
+            .requests()
+            .iter()
+            .any(|request| request.contains("/git/blobs/")),
+        "the refusal happens before the blob request"
+    );
+}
+
+#[tokio::test]
+async fn source_facts_publish_presence_aware_terminal_size() {
+    // `null` and an omitted key are different upstream observations in the one
+    // family whose purpose is byte-exact fidelity.
+    let (_listener, source, _session) = fixture_source(
+        ReadAcquisitionLimits::default(),
+        Mutation::OmitBinaryTreeSize,
+    )
+    .await;
+    let resource = read(&source, "docs/%CE%BB%20space%252F%3Araw.bin")
+        .await
+        .expect("source facts");
+    let document: Value = serde_json::from_str(resource.content()).expect("facts JSON");
+    assert_eq!(document["data"]["content"]["state"], "available");
+    assert!(
+        !document["data"]
+            .as_object()
+            .expect("data object")
+            .contains_key("sizeBytes"),
+        "an omitted upstream size stays omitted"
+    );
+    assert!(
+        document["unavailableFacts"]
+            .as_array()
+            .expect("facts")
+            .iter()
+            .any(|entry| { entry["field"] == "sizeBytes" && entry["reason"] == "omitted" })
     );
 }
 
@@ -1058,16 +1439,28 @@ async fn source_facts_enforce_exact_representation_limit_without_truncation() {
 }
 #[tokio::test]
 async fn source_facts_keep_one_attempt_budget_through_deep_blob_stage() {
+    // Eight components cost eight trees plus the repository and commit: the
+    // shared attempt ceiling is spent before the blob is reached, so the read is
+    // refused rather than published as a document with no content. One ledger
+    // covers the whole walk, and exhaustion is a typed refusal naming the
+    // dimension the caller could have raised.
     let limits =
         ReadAcquisitionLimits::new(Some(10), None, None, None, None, None).expect("limits");
     let (listener, source, _session) = fixture_source(limits, Mutation::None).await;
-    let resource = read(&source, "deep/d1/d2/d3/d4/d5/d6/payload")
+    let error = read(&source, "deep/d1/d2/d3/d4/d5/d6/payload")
         .await
-        .expect("metadata-only source facts");
-    let document: Value = serde_json::from_str(resource.content()).expect("facts JSON");
-    assert_eq!(document["data"]["content"]["state"], "unavailable");
-    assert_eq!(document["data"]["content"]["reason"], "acquisition_failed");
-    assert_eq!(document["acquisition"]["usage"]["attemptedRequests"], 10);
+        .expect_err("the blob stage cannot be reached inside the attempt ceiling");
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+    let details = error.details().expect("typed attempt refusal");
+    assert_eq!(details.reason(), ErrorReason::LimitExceeded);
+    let limit = details.limit().expect("attempt limit detail");
+    assert_eq!(
+        limit.kind(),
+        resourcefs_core::AcquisitionLimitKind::Attempts
+    );
+    assert_eq!(limit.bound(), 10);
+    assert_eq!(limit.observed(), Some(11));
+    assert_eq!(listener.requests().len(), 10);
     assert!(
         !listener
             .requests()
