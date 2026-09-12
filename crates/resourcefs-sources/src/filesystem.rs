@@ -1288,9 +1288,13 @@ fn component_requires_glob_walk(component: &str) -> bool {
     let bytes = component.as_bytes();
     let mut index = 0_usize;
     while index < bytes.len() {
+        // `is_ascii_hexdigit`, not `is_ascii`: `<[u8]>::is_ascii` is true for any
+        // two ASCII bytes, so `%zz` used to be consumed as a three-byte escape
+        // and the glob-walk decision made on a misparse.
         if bytes[index] == b'%'
             && index + 2 < bytes.len()
-            && bytes[index + 1..=index + 2].is_ascii()
+            && bytes[index + 1].is_ascii_hexdigit()
+            && bytes[index + 2].is_ascii_hexdigit()
         {
             index += 3;
             continue;
@@ -2792,6 +2796,12 @@ fn final_windows_path(handle: &impl std::os::windows::io::AsRawHandle) -> io::Re
 
     let mut buffer = vec![0_u16; 32_768];
     loop {
+        // SAFETY: `handle` borrows a live object for this call, and `buffer` is
+        // a `Vec<u16>` whose length is passed as the element count, so the
+        // callee writes no more than was allocated. A zero return means failure
+        // and is handled below; a return >= the buffer length means the buffer
+        // was too small, and the loop grows it rather than reading the
+        // truncated contents.
         let length = unsafe {
             GetFinalPathNameByHandleW(
                 handle.as_raw_handle(),
@@ -2870,6 +2880,41 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    /// A percent escape is two *hex digits*, not two arbitrary ASCII bytes.
+    ///
+    /// `component_requires_glob_walk` skips escapes so an encoded metacharacter
+    /// stays a literal: `%2A` is the character `*`, not a wildcard. The skip
+    /// used to test `bytes[index + 1..=index + 2].is_ascii()`, which is true for
+    /// *any* two ASCII bytes -- so a component like `%*a` had its real `*`
+    /// consumed as the tail of a fake escape and was reported as needing no
+    /// glob walk.
+    #[test]
+    fn glob_walk_detection_skips_only_real_percent_escapes() {
+        // An encoded metacharacter is a literal: nothing to walk.
+        assert!(!component_requires_glob_walk("%2A"));
+        assert!(!component_requires_glob_walk("name%5Bx"));
+        assert!(!component_requires_glob_walk("plain"));
+
+        // The regression: `%` followed by a metacharacter is not an escape, and
+        // the metacharacter must still be seen.
+        assert!(component_requires_glob_walk("%*a"));
+        assert!(component_requires_glob_walk("%?b"));
+        assert!(component_requires_glob_walk("%[c"));
+        assert!(component_requires_glob_walk("%{d"));
+
+        // A malformed escape is not an escape, so what follows is scanned.
+        assert!(component_requires_glob_walk("%zz*"));
+        assert!(!component_requires_glob_walk("%zz"));
+
+        // A bare `%` is a literal, and `%` is not a metacharacter, so a
+        // truncated escape at the end of a component requires no walk.
+        assert!(!component_requires_glob_walk("a%"));
+        assert!(!component_requires_glob_walk("%2"));
+
+        // But a half-formed escape must not swallow the byte after it.
+        assert!(component_requires_glob_walk("%2*"));
+    }
 
     #[tokio::test]
     async fn delivery_validation_rejects_removed_generation_only() {

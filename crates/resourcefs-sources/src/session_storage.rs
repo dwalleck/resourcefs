@@ -642,9 +642,14 @@ fn try_lock_exclusive(file: &File) -> io::Result<bool> {
         System::IO::OVERLAPPED,
     };
 
-    // SAFETY: An all-zero OVERLAPPED selects offset zero; LockFileEx returns before this local is
-    // dropped because FAIL_IMMEDIATELY is set and the file handle remains owned by SessionLease.
+    // SAFETY: `OVERLAPPED` is plain-old-data, and an all-zero value is the
+    // documented way to select offset zero.
     let mut overlapped: OVERLAPPED = unsafe { zeroed() };
+    // SAFETY: `file` is a live `File`, so its raw handle is valid for this call,
+    // and `overlapped` is a valid writable out-parameter that outlives it --
+    // `LOCKFILE_FAIL_IMMEDIATELY` means `LockFileEx` returns rather than queuing
+    // the request, so it cannot still be writing through the pointer after this
+    // local is dropped. The handle stays owned by `SessionLease`.
     let locked = unsafe {
         LockFileEx(
             file.as_raw_handle(),
