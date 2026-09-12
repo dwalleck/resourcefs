@@ -4,6 +4,10 @@
 Ignored tests are inventoried from compiled release harnesses, not source text.
 Unknown or missing ignored rows fail closed; `live_*` smokes (run by
 scripts/live-smoke.sh) and the child-server hosts are excluded, never run here.
+
+Release tests run one target at a time, serial by default, so that a wall-clock
+assertion anywhere in a target keeps a quiet machine. Targets cleared to run
+parallel are named, with their clearing inspection, in PARALLEL_RELEASE_TARGETS.
 """
 
 import json
@@ -36,6 +40,20 @@ BUDGETS = {
     "http_mutation_request_budget",
     "http_metadata_budget",
 }
+# Release-mode test targets that may run with default test threads. The default
+# is the other way round: every target not named here runs serial, because one
+# wall-clock assertion anywhere in it flakes under contention, and no source scan
+# can prove a target free of one (assertions span lines, hide behind helpers, and
+# need not spell `elapsed`). Each entry therefore records the inspection that
+# cleared it, and a target added later is serial until someone clears it too.
+PARALLEL_RELEASE_TARGETS = {
+    "atlassian_fixture_operator_contract":
+        "fixture-lifecycle contract: 78 tests driving a TLS fixture through create/verify/cleanup, no wall-clock assertion in the target",
+}
+# Fixed rather than per-machine: each of those tests opens its own fixture
+# listener, and pinning the width keeps the local and hosted runs the same shape
+# instead of fanning out to whatever the workstation has.
+PARALLEL_TEST_THREADS = 4
 # The only ignored rows outside the live_* convention: child servers that
 # functional tests spawn and drive themselves.
 CHILD_SERVERS = {
@@ -72,16 +90,20 @@ def run(command, *, capture=False):
     )
 
 
-def ignored_budgets():
+def release_test_targets():
+    """Every compiled release test target, as (package_id, name, kind, executable).
+
+    Enumerated from cargo's own artifacts rather than from source text, so the
+    inventory is what is built and runnable. Returns None when the build failed.
+    """
     result = run([
         "cargo", "test", *RELEASE, "--workspace", "--all-features",
         "--no-run", "--message-format=json",
     ], capture=True)
     if result.returncode:
         print(result.stdout, end="")
-        return False
-    seen = set()
-    passed = True
+        return None
+    targets = []
     for line in result.stdout.splitlines():
         artifact = json.loads(line)
         if artifact.get("reason") != "compiler-artifact":
@@ -94,8 +116,63 @@ def ignored_budgets():
                 f"Release test target {artifact['target']['name']} has debug assertions enabled; remove the profile override.",
                 file=sys.stderr,
             )
+            return None
+        target = artifact["target"]
+        targets.append((artifact["package_id"], target["name"], target["kind"], executable))
+    return targets
+
+
+def target_selector(kind, name):
+    """The cargo selector that runs one target, or None when it has none."""
+    if "test" in kind:
+        return ["--test", name]
+    if "lib" in kind:
+        return ["--lib"]
+    if "bin" in kind:
+        return ["--bin", name]
+    return None
+
+
+def release_workspace():
+    """Release tests, serial except for the targets cleared to run parallel.
+
+    Serial is the default: a target runs with `--test-threads=1` unless it is
+    named in PARALLEL_RELEASE_TARGETS. Doctests are not compiler artifacts, so
+    they run in their own serial pass rather than being lost.
+    """
+    targets = release_test_targets()
+    if targets is None:
+        return False
+    passed = True
+    for package_id, name, kind, _executable in targets:
+        selector = target_selector(kind, name)
+        if selector is None:
+            print(f"Unsupported release test target: {name}", file=sys.stderr)
             passed = False
             continue
+        if name in PARALLEL_RELEASE_TARGETS:
+            threads = ["--", f"--test-threads={PARALLEL_TEST_THREADS}"]
+        else:
+            threads = ["--", "--test-threads=1"]
+        result = run([
+            "cargo", "test", *RELEASE, "-p", package_id, "--all-features",
+            *selector, "--no-fail-fast", *threads,
+        ])
+        passed = result.returncode == 0 and passed
+    doctests = run([
+        "cargo", "test", *RELEASE, "--workspace", "--all-features",
+        "--doc", "--", "--test-threads=1",
+    ])
+    return doctests.returncode == 0 and passed
+
+
+def ignored_budgets():
+    targets = release_test_targets()
+    if targets is None:
+        return False
+    seen = set()
+    passed = True
+    for package_id, target_name, kind, executable in targets:
         listing = run([executable, "--ignored", "--list", "--format=terse"], capture=True)
         if listing.returncode:
             print(listing.stdout, end="")
@@ -113,20 +190,13 @@ def ignored_budgets():
                 print(f"Unclassified ignored test: {name}", file=sys.stderr)
                 passed = False
                 continue
-            target = artifact["target"]
-            kind = target["kind"]
-            if "test" in kind:
-                selector = ["--test", target["name"]]
-            elif "lib" in kind:
-                selector = ["--lib"]
-            elif "bin" in kind:
-                selector = ["--bin", target["name"]]
-            else:
-                print(f"Unsupported ignored-test target: {target}", file=sys.stderr)
+            selector = target_selector(kind, target_name)
+            if selector is None:
+                print(f"Unsupported ignored-test target: {target_name}", file=sys.stderr)
                 passed = False
                 continue
             result = run([
-                "cargo", "test", *RELEASE, "-p", artifact["package_id"],
+                "cargo", "test", *RELEASE, "-p", package_id,
                 "--all-features", *selector, "--", "--ignored", "--exact", name,
                 "--test-threads=1",
             ])
@@ -142,8 +212,8 @@ def main():
         ("Formatting", ["cargo", "fmt", "--all", "--", "--check"]),
         ("Lints", ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]),
         ("Functional tests", ["cargo", "test", "--workspace", "--all-features", "--no-fail-fast"]),
-        ("Release workspace", ["cargo", "test", *RELEASE, "--workspace", "--all-features", "--no-fail-fast", "--", "--test-threads=1"]),
-        ("Ignored production budgets", None),
+        ("Release workspace", release_workspace),
+        ("Ignored production budgets", ignored_budgets),
         ("Dependency vetting", ["cargo", "deny", "check"]),
     ]
     if sys.platform == "linux":
@@ -155,7 +225,7 @@ def main():
     for name, command in gates:
         print(f"\n=== {name} ===", flush=True)
         try:
-            passed = ignored_budgets() if command is None else run(command).returncode == 0
+            passed = command() if callable(command) else run(command).returncode == 0
         except (OSError, ValueError, KeyError) as error:
             print(f"{name}: {error}", file=sys.stderr)
             passed = False
