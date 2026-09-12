@@ -155,11 +155,20 @@ def main():
         ("Release workspace", ["cargo", "test", *RELEASE, "--workspace", "--all-features", "--no-fail-fast", "--", "--test-threads=1"]),
         ("Ignored production budgets", None),
         # `fuzz/` declares its own `[workspace]`, so `--workspace` above cannot
-        # reach it and nothing else compiles it. Without this the targets rot
-        # silently against the APIs they exercise. A compile is all that belongs
-        # in a per-commit gate; running the fuzzers is a separate, longer job.
+        # reach it and nothing else type-checks it. Without this the targets rot
+        # silently against the APIs they exercise. Running the fuzzers is a
+        # separate, longer job.
+        #
+        # `check`, never `build`. A libFuzzer target is `#![no_main]` and takes
+        # its entry point from the sanitizer runtime that `cargo fuzz` wires in
+        # with `-Zsanitizer=fuzzer`. A plain `cargo build` omits those flags: on
+        # Linux `libfuzzer-sys`'s prebuilt archive happens to supply a `main`
+        # anyway, so it links, but on Windows MSVC nothing does and every target
+        # fails with `LNK1561: entry point must be defined`. Type-checking never
+        # links, so it catches the API rot this gate exists for on every
+        # platform. Verified against `x86_64-pc-windows-msvc`.
         ("Fuzz targets", ["cargo", "fmt", "--manifest-path", "fuzz/Cargo.toml", "--", "--check"]),
-        ("Fuzz targets build", ["cargo", "build", "--manifest-path", "fuzz/Cargo.toml"]),
+        ("Fuzz targets check", ["cargo", "check", "--manifest-path", "fuzz/Cargo.toml"]),
         ("Dependency vetting", ["cargo", "deny", "check"]),
     ]
     if sys.platform == "linux":

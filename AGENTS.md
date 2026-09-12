@@ -26,7 +26,7 @@ A test target with `harness = false` must still parse `--list`, `--exact` and `-
 
 ## Fuzzing
 
-`fuzz/` declares its own `[workspace]`, so `cargo test --workspace` cannot reach it — `scripts/ci-gates.py` compiles and format-checks it explicitly so the targets cannot rot against the APIs they exercise. Running the fuzzers is a separate, longer job.
+`fuzz/` declares its own `[workspace]`, so `cargo test --workspace` cannot reach it — `scripts/ci-gates.py` type-checks and format-checks it explicitly so the targets cannot rot against the APIs they exercise. Running the fuzzers is a separate, longer job. That gate uses `cargo check` rather than `cargo build` on purpose: a libFuzzer target is `#![no_main]` and gets its entry point from the sanitizer runtime `cargo fuzz` supplies, so a plain build links only by accident on Linux and fails on Windows MSVC with `LNK1561`.
 
 Each parse boundary gets a byte target and, where the grammar is deep enough that bytes rarely reach it, a structured companion. `server_profile` explores the encoding and owns the `MAX_PROFILE_BYTES` refusal, which a structured target cannot express because a value derived from a grammar has no oversized spelling. `server_profile_structured` uses `arbitrary` to generate documents that are profile-shaped by construction, so the budget goes on semantics — duplicate identifiers, grants a source kind refuses, path collisions. The reason both exist: of the byte target's 3,912 corpus entries, 555 contained the text `"sources"` but not one was a JSON object carrying that key, so the source-configuration path had never been fuzzed at all.
 
