@@ -584,6 +584,12 @@ async fn errors_match_typed_status_header_matrix() {
             ErrorCategory::SourceUnavailable,
         ),
         ("404 Not Found", vec![], ErrorCategory::NotFound),
+        // Gone is absent, not an outage. This row is why: 410 used to fall
+        // through to the catch-all here and report source_unavailable, telling
+        // a caller to retry something that will never come back -- while
+        // https.rs, the Jira transport and the GitHub mutation path all
+        // already mapped it to not_found.
+        ("410 Gone", vec![], ErrorCategory::NotFound),
         (
             "429 Too Many Requests",
             vec![],

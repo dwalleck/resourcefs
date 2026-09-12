@@ -281,7 +281,10 @@ impl<'a> JiraRead<'a> {
 
     fn classify_status(response: &crate::BoundedHttpResponse) -> Result<(), ResourceError> {
         match response.status() {
-            200 => Ok(()),
+            // 2xx, not 200 alone. A 201 or 204 from a read is a success the
+            // other sources already accept; treating it as an outage made the
+            // same status mean different things per source.
+            200..=299 => Ok(()),
             401 => Err(ResourceError::new(
                 ErrorCategory::PermissionDenied,
                 "Jira rejected the configured credential",
