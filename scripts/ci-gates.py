@@ -144,6 +144,12 @@ def main():
         ("Functional tests", ["cargo", "test", "--workspace", "--all-features", "--no-fail-fast"]),
         ("Release workspace", ["cargo", "test", *RELEASE, "--workspace", "--all-features", "--no-fail-fast", "--", "--test-threads=1"]),
         ("Ignored production budgets", None),
+        # `fuzz/` declares its own `[workspace]`, so `--workspace` above cannot
+        # reach it and nothing else compiles it. Without this the targets rot
+        # silently against the APIs they exercise. A compile is all that belongs
+        # in a per-commit gate; running the fuzzers is a separate, longer job.
+        ("Fuzz targets", ["cargo", "fmt", "--manifest-path", "fuzz/Cargo.toml", "--", "--check"]),
+        ("Fuzz targets build", ["cargo", "build", "--manifest-path", "fuzz/Cargo.toml"]),
         ("Dependency vetting", ["cargo", "deny", "check"]),
     ]
     if sys.platform == "linux":
