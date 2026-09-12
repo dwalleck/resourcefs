@@ -2796,6 +2796,12 @@ fn final_windows_path(handle: &impl std::os::windows::io::AsRawHandle) -> io::Re
 
     let mut buffer = vec![0_u16; 32_768];
     loop {
+        // SAFETY: `handle` borrows a live object for this call, and `buffer` is
+        // a `Vec<u16>` whose length is passed as the element count, so the
+        // callee writes no more than was allocated. A zero return means failure
+        // and is handled below; a return >= the buffer length means the buffer
+        // was too small, and the loop grows it rather than reading the
+        // truncated contents.
         let length = unsafe {
             GetFinalPathNameByHandleW(
                 handle.as_raw_handle(),
