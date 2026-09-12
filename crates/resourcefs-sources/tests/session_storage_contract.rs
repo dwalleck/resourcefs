@@ -494,10 +494,16 @@ async fn durable_write_at_object_ceiling_within_budget() {
             .expect("read exact object"),
         content
     );
+    // Same host-dominated shape, and the same ceiling, as the 64 MiB create
+    // in filesystem_mutation_contract.rs, which a windows-latest runner
+    // missed at 13.57 s against 5 s. This one has not been observed failing
+    // yet, but it admits the same 64 MiB through the same disk on the same
+    // runners; raising only the one that happened to fail first would just
+    // wait for this to be the next red build. See rfs-1e6h.
     let budget = if cfg!(debug_assertions) {
         Duration::from_secs(100)
     } else {
-        Duration::from_secs(5)
+        Duration::from_secs(30)
     };
     assert!(
         elapsed <= budget,
