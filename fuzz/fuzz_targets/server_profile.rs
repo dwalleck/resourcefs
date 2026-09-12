@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use resourcefs_mcp::{ProfileDocument, ProfileErrorKind, MAX_PROFILE_BYTES};
+use resourcefs_mcp::{MAX_PROFILE_BYTES, ProfileDocument, ProfileErrorKind};
 
 fuzz_target!(|data: &[u8]| {
     let first = ProfileDocument::from_slice(data)
