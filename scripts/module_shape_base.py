@@ -46,7 +46,10 @@ LIMITS = {
     WIRE + "collections.rs": 600,
     SOURCES + "atlassian/render/collections.rs": 350,
     REQUEST: 280,
-    READ: 350,
+    # rfs-jrz7's acquisition-limit accounting (accepted-body budget, attempt
+    # charge) exhausted the previous tripwire for SOURCES + "http/read.rs";
+    # this increment approves 360, and HISTORICAL_CHILD_LIMITS states it too.
+    READ: 360,
     QUERY: 400,
     WIRE_QUERY: 200,
 }
@@ -95,7 +98,9 @@ HISTORICAL_PARENTS = {
 HISTORICAL_CHILD_LIMITS = {
     CORE + "reference/jira.rs": 650,
     CORE + "reference/source_page.rs": 160,
-    SOURCES + "http/read.rs": 350,
+    # Same approved budget as LIMITS: the permanent child tripwire and the
+    # active growth tripwire must state one ceiling for this path.
+    SOURCES + "http/read.rs": 360,
     SOURCES + "atlassian/jira/transport.rs": 400,
     SOURCES + "atlassian/jira/browse.rs": 600,
     SOURCES + "atlassian/jira/cursor.rs": 250,

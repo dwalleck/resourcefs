@@ -11,11 +11,10 @@ use std::{collections::HashSet, fmt::Write as _, io::Cursor, sync::Arc};
 
 use async_trait::async_trait;
 use resourcefs_core::{
-    DiscoveryAdapter, ErrorCategory, GithubAddress, GithubRepositoryIdentity, GlobOptions,
-    GlobTarget, IssueAddress, IssueResource, OperationGuard, PathReference, PathSession,
-    ProjectionSelector, PullRequestAddress, PullRequestResource, ResourceAddress, ResourceError,
-    SearchOptions, SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult,
-    SourceResource, select_utf8,
+    DiscoveryAdapter, ErrorCategory, GithubRepositoryIdentity, GlobOptions, GlobTarget,
+    IssueAddress, IssueResource, OperationGuard, PathReference, PathSession, ProjectionSelector,
+    PullRequestAddress, PullRequestResource, ResourceAddress, ResourceError, SearchOptions,
+    SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult, SourceResource, select_utf8,
 };
 use url::Url;
 
@@ -822,7 +821,7 @@ impl SourceAdapter for GithubSource {
     ) -> Result<SourceResource, ResourceError> {
         let is_facts = matches!(
             reference.address(),
-            ResourceAddress::Github(GithubAddress::Commit { .. })
+            ResourceAddress::Github(_)
                 | ResourceAddress::PullRequest(PullRequestAddress::Item {
                     resource: PullRequestResource::Facts(_),
                     ..
@@ -888,7 +887,7 @@ impl SourceCatalogMetadata for GithubSource {
             )?,
             SourceCatalogEntry::new(
                 "github://",
-                "github://<owner>/<repository>/commits/<40 lowercase hex SHA>/facts",
+                "github://<owner>/<repository>/[commits/<40 lowercase hex SHA>|source/<40 lowercase hex SHA>/<path components, each percent-encoded independently: docs/λ space%2F:raw.bin -> docs/%CE%BB%20space%252F%3Araw.bin>]/facts",
                 "github://owner/repository/commits/635ab170ab57542c18272921298d575da2f8b08a/facts",
                 None,
             )?,

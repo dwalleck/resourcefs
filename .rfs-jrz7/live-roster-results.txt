@@ -1,0 +1,17 @@
+Command: scripts/live-smoke.sh
+Final assembled S3 tree after lint cleanup; RFS_LIVE=1 and GitHub credential enabled by runner.
+Result: successful completion; 13 actual network rows PASS, 5 Jira rows SKIP due missing environment (harness ok is not live proof).
+
+missing reader-only environment RFS_ATLASSIAN_SITE; skipping live Jira query stdio
+test server::jira_query_tests::live_jira_query_stdio ... ok
+test live_stdio_github_facts_match_native_observation ... ok
+test live_stdio_github_commit_facts_match_native_observation ... ok
+test live_stdio_github_review_and_inline_facts_match_native_observation ... ok
+test live_stdio_github_source_facts_match_native_blob ... ok
+test live_stdio_github_comment_facts_match_native_observation ... ok
+test live_stdio_profile_probe_serve_and_tools_hold_up ... ok
+test live_github_facts_preserve_native_identity_and_links ... ok
+test live_github_immutable_commit_facts_hold_up ... ok
+test live_github_immutable_source_facts_hold_up ... ok
+test live_github_conversation_comment_facts_hold_up ... ok
+test live_github_review_and_inline_facts_hold_up ... ok

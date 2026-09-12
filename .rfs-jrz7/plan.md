@@ -237,3 +237,49 @@ Delivered: immutable commit Facts through the existing SourceAdapter, compiled s
 | 9 Restoration | PASS | Exact backed-up production bytes restored with fresh mtimes; restored C3/C9 tests pass. |
 
 Full runner completed in1135.01s with only a test-setup needless-borrow lint failure. The unnecessary String copy was removed; exact formatter, full Clippy gate and affected release budget then passed. Other successful legs remain valid; the original aggregate exit1 is not relabeled exit0. Complete disposition: qualification-s2.txt. Incremental review S2-F1/F2 is resolved; live rows and credentials-free output are recorded in evidence.md/live-commit-results.txt. No S2/S3 merge or issue closure is authorized.
+
+### S3 returned checkpoint judgment
+
+Delivered: exact immutable source Facts through the configured SourceAdapter and real MCP binary, with the approved gix-object/gix-hash adoption, independent Git corpus, complete-tree/blob validation, one shared acquisition budget and narrow verified-metadata retention. The `github://` catalog has one family entry, not duplicate roots. Final physical lines: facts parent683<=700, commit440, object330, source374, collection772 and GitHub facade1175. Production traversal/hash responsibilities remain in the two private child owners; no second transport, encoder, error policy, envelope or fixture framework was introduced.
+
+Caller/reuse reconciliation: the mandatory inventory above remains governing. Shared `commit::acquire` is consumed by commit.rs:233 and source.rs:139. The neutral `collection::invalidates_retention` policy is consumed by collection.rs:547/594 and source.rs:362; its old-family semantics are unchanged. Sibling-worktree LSP references returned empty despite these compiled callers, so that result was not treated as exhaustive; the bounded private-module text search and assembled compilation provide the fallback. New object/source functions have only their owning private-family callsites. Existing identity, body observation, capped serialization, operation guard and HTTP cache/budget helpers are reused.
+
+Symmetry: commit and source share repository/commit authorization, requested identity and link checks, acquisition accounting and final acceptance. Source deliberately diverges only after verified terminal metadata: an ordinary blob failure or decoded bound can preserve metadata without bytes; malformed/integrity/link, denial, cancellation, deadline and generation failures still refuse the read. Unsupported terminal objects are explicit states, never followed or converted through another provider. Errors remain typed ResourceError values with the existing bounded operational details; no silent fallback or alternate logging pipeline was added.
+
+Technical proof corrections preserve approved behavior, architecture and oracle meaning: source rows live in `github_source_contract.rs`; allocation/race/budget rows reuse the existing instrumented `github_facts_contract.rs` rather than duplicating its allocator in a proposed budget file. The catalog startup defect, initially masked C4 fixture, volatile elapsed-time representation fixture and equivalent Clippy repairs were resolved in this slice. Fresh C8 remove/move-before mutations cover the changed controller. Dependency adoption is intentional lockfile/manifests growth under the requester's recorded approval, not drift.
+
+| Mandatory gate | Verdict | Evidence |
+|---|---|---|
+| 1 Affected unit tests | PASS | Full runner debug/release functional legs, plus repaired release commit/source21 and C8/budget2; qualification-s3.txt. |
+| 2 Assigned falsifiers | PASS | C4–C8/C10/C11 named experiments; C2 exact once-decoded path and actual HTTP/stdio acceptance; C1/C3/C9 retain unchanged meaning with assembled parser/commit/live regression coverage. |
+| 3 Stress fixture | PASS | Independent Git corpus: full-tree ordering/integrity,1000/1001, binary/special modes/LFS, exact decoded cap/cap+1 without size metadata, deep shared budget, cache lifecycle and serialization race; evidence.md. |
+| 4 Implementation versus oracle | PASS | Git-plumbing fixture identities/bytes, separate gix adoption experiment, and enabled native adapter/real stdio comparisons at the pinned public revision; evidence.md. |
+| 5 Approved module shape | PASS | immutable-source gate, C11 misplaced decoder red/restored green, and blind-first independent reconstruction/ledger comparison; blind-module-map.md and design-conformance-review.json. |
+| 6 Production budgets | PASS | Full registered roster; final source5594189 native/5595590 owned bytes,25132893ns,22407536 tracked incremental heap bytes below3s/160MiB; qualification-s3.txt. Shared logical deadline/attempt and decoded limits have exact refusal fixtures. No wire/RSS guarantee was planned. |
+| 7 Regression fence | PASS | Source/cache/cancellation/cap/identity matrix, real configured stdio recovery with no reacquisition, final serialization controller and existing old-family suites. |
+| 8 Named mutation | PASS | mutation-c4-tree.txt, mutation-c5-decoded.txt, mutation-c6-source-budget.txt, mutation-c7-retention.txt, mutation-c8-generation.txt, mutation-c8-position.txt, mutation-c10-stdio.txt and mutation-c11-source-placement.txt. Initial masked C4 is recorded rather than counted as red. |
+| 9 Restoration | PASS | Exact source-byte restoration with fresh mtimes; restored fences green. Changed C8 fence re-proven after lint cleanup. |
+
+Local assembled quality is resolved through the completed runner and bounded repair, not an invented aggregate exit0: the original runner's only failed gate was Lints; full Clippy and all newly affected checks then passed. Exact final source state and disposition: qualification-source-state.json and qualification-s3.txt. Final live roster was rerun after cleanup:13 real network PASS,5 Jira environment SKIP; live-roster-results.txt. The glossary's existing Facts Resource and Version Tag definitions remain accurate, so CONTEXT.md is intentionally unchanged; DESIGN.md and the operating guide now describe source behavior. No existing changelog was found.
+
+### S3 review round 2 record
+
+The S1 review round 2 findings are dispositioned in `.rfs-jrz7/review-decisions.md`; this branch rebases onto the repaired S1 and S2 tips. What this increment carries itself:
+
+- The decoded control surface (core dimension and getter, `DecodedContentBytes` kind, MCP field/visitor/schema, generated profile fixture, docs row, transport forwarding, contract tests) is repartitioned here from S1 so that it lands with the code that compares a decoded byte count against it (`facts/source.rs`). Same approved interface; `mutation-c6-controls.txt` re-proves the intersection mutant red and restored green at this head.
+- `compiled.rs` routes the family to the configured source for both Facts kinds; discovery and mutation keep the configuration-independent refusals established in S1.
+- The placement gate's owner-uniqueness comparison recognizes the `native!` declaration form; a verbatim macro copy in another family fails, a differently shaped same-named declaration does not.
+
+Review round 2 re-verification: PASS, `python3 scripts/ci-gates.py` reported "All repository gates passed." on this head; focused crates 786 passed / 0 failed / 37 ignored; mutation-c6-controls.txt re-proves the decoded-cap intersection red and restored green.
+
+Evidence disposition: the S3 falsifier/mutation set (C4-C8, C10, C11) is unchanged by the repartition; the decoded-bound rows in `github_source_contract.rs` and the production budget now exercise a dimension whose surface is published in the same commit. Later increments that change the decoded path must revalidate C6.
+
+This is the final planned independently mergeable draft increment, stacked on `feat/rfs-jrz7-commit`. Published-head platform CI remains a publication check; no merge or ticket closure is authorized.
+
+### Merge of origin/main into this increment (2026-09-11)
+
+PR #13 merged to `main` as `b9aa182`; this increment merged `main` in (no rebase) and hand-resolved its conflicts. Three files conflicted: `evidence.md` and `review-decisions.md` were append conflicts (this increment's records precede the PR #13 repair round's, chronologically), and `commit.rs` was S3's `AcquiredCommit` parent-indices shape against the repair round's shared `super::Links` construction — both kept, with the repair's link-type change applied to this increment's own construction site.
+
+The merge also surfaced, and fixed, three semantic mismatches the textual auto-merge could not see: the compiled registry's read arm still refused the `github://…/source/…` spelling this increment acquires (removed; the paired S2-era fences moved with the increment, now asserting the source spelling answers like its commit sibling in both mount states); S3 called `GithubAddress::repository()`, an accessor S1 round 3 deleted (destructured instead); and S3's six-argument `ReadAcquisitionLimits::new` needed the repair round's five-argument test rows extended with the new dimension.
+
+Owner budget: the union of this increment's `AcquiredCommit` refactor and the repair round's account-link validation grew `commit.rs` to 533 physical lines — neither side breached the 500 tripwire alone, and trimming documentation to satisfy it would discard the review's rationale. The ledger maximum is therefore raised to 550, recorded here as the plan-owner policy decision this tripwire exists to force.

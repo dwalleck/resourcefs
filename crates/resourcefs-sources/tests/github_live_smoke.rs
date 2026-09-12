@@ -13,6 +13,8 @@
 #[path = "support/mod.rs"]
 mod session_support;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 use resourcefs_core::{
@@ -26,9 +28,10 @@ use resourcefs_sources::{
 };
 
 const REPOSITORY: &str = "rust-lang/rust";
-/// The immutable commit used by the retained P1 Git plumbing comparison.
 const IMMUTABLE_REPOSITORY: &str = "dwalleck/resourcefs";
+/// The immutable commit used by the retained P1 Git plumbing comparison.
 const IMMUTABLE_COMMIT: &str = "635ab170ab57542c18272921298d575da2f8b08a";
+const IMMUTABLE_SOURCE_PATH: &str = "crates/resourcefs-core/Cargo.toml";
 /// Evidence P1–P6 fixture: 7 conversation comments, 6 inline comments, 4 files.
 const SMALL_PR: u64 = 159_232;
 /// A public PR with more than one page of conversation comments.
@@ -370,8 +373,8 @@ async fn live_github_conversation_comment_facts_hold_up() {
     };
 
     let (_session, source) = live_source(token).await;
-    let limits =
-        ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("two-attempt limit");
+    let limits = ReadAcquisitionLimits::new(Some(2), None, None, None, None, None)
+        .expect("two-attempt limit");
     let first = read_with_limits(
         &source,
         &format!("pr://{REPOSITORY}/{MULTIPAGE_PR}/comments/facts"),
@@ -736,4 +739,165 @@ async fn live_github_immutable_commit_facts_hold_up() {
             }
         }
     }
+}
+
+#[tokio::test]
+#[ignore = "live GitHub immutable source smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
+async fn live_github_immutable_source_facts_hold_up() {
+    let Some(token) = live_token() else { return };
+    let (_session, source) = live_source_for(token.clone(), IMMUTABLE_REPOSITORY).await;
+    let reference = format!(
+        "github://{IMMUTABLE_REPOSITORY}/source/{IMMUTABLE_COMMIT}/{IMMUTABLE_SOURCE_PATH}/facts"
+    );
+    let resource = read(&source, &reference).await;
+    let facts: serde_json::Value = serde_json::from_str(resource.content()).expect("facts JSON");
+
+    // Acquire the native Git evidence through an independent gh process. This
+    // is deliberately separate from SourceAdapter's HTTP client and follows
+    // only the immutable object IDs returned by the pinned commit.
+    let native_commit = native_gh(
+        &token,
+        &format!("/repos/{IMMUTABLE_REPOSITORY}/commits/{IMMUTABLE_COMMIT}"),
+    )
+    .expect("gh is required when the live gate is enabled");
+    assert_eq!(native_commit["sha"], IMMUTABLE_COMMIT);
+    let root_tree_sha = native_commit["commit"]["tree"]["sha"]
+        .as_str()
+        .expect("native root tree SHA");
+    let root_tree = native_gh(
+        &token,
+        &format!("/repos/{IMMUTABLE_REPOSITORY}/git/trees/{root_tree_sha}"),
+    )
+    .expect("native root tree");
+    assert_eq!(root_tree["truncated"], false);
+    let crates = root_tree["tree"]
+        .as_array()
+        .expect("native root entries")
+        .iter()
+        .find(|entry| entry["path"] == "crates")
+        .expect("crates tree entry");
+    assert_eq!(crates["mode"], "040000");
+    assert_eq!(crates["type"], "tree");
+    let crates_tree_sha = crates["sha"].as_str().expect("crates tree SHA");
+    let crates_tree = native_gh(
+        &token,
+        &format!("/repos/{IMMUTABLE_REPOSITORY}/git/trees/{crates_tree_sha}"),
+    )
+    .expect("native crates tree");
+    assert_eq!(crates_tree["truncated"], false);
+    let core = crates_tree["tree"]
+        .as_array()
+        .expect("native crates entries")
+        .iter()
+        .find(|entry| entry["path"] == "resourcefs-core")
+        .expect("resourcefs-core tree entry");
+    assert_eq!(core["mode"], "040000");
+    assert_eq!(core["type"], "tree");
+    let core_tree_sha = core["sha"].as_str().expect("core tree SHA");
+    let core_tree = native_gh(
+        &token,
+        &format!("/repos/{IMMUTABLE_REPOSITORY}/git/trees/{core_tree_sha}"),
+    )
+    .expect("native resourcefs-core tree");
+    assert_eq!(core_tree["truncated"], false);
+    let cargo = core_tree["tree"]
+        .as_array()
+        .expect("native resourcefs-core entries")
+        .iter()
+        .find(|entry| entry["path"] == "Cargo.toml")
+        .expect("Cargo.toml tree entry");
+    assert_eq!(cargo["mode"], "100644");
+    assert_eq!(cargo["type"], "blob");
+    let blob_sha = cargo["sha"].as_str().expect("Cargo.toml blob SHA");
+    let native_blob = native_gh(
+        &token,
+        &format!("/repos/{IMMUTABLE_REPOSITORY}/git/blobs/{blob_sha}"),
+    )
+    .expect("native Cargo.toml blob");
+    assert_eq!(native_blob["sha"], blob_sha);
+    assert_eq!(native_blob["encoding"], "base64");
+    let native_content = native_blob["content"]
+        .as_str()
+        .expect("native blob content");
+    let compact_native: String = native_content
+        .bytes()
+        .filter(|byte| !matches!(byte, b'\r' | b'\n' | b' ' | b'\t'))
+        .map(char::from)
+        .collect();
+    let native_bytes = STANDARD
+        .decode(compact_native.as_bytes())
+        .expect("native blob base64");
+    assert_eq!(
+        native_blob["size"],
+        native_bytes.len(),
+        "native blob size matches decoded bytes"
+    );
+    let canonical_base64 = STANDARD.encode(&native_bytes);
+
+    // The retained probe result is a second, independently recorded native
+    // Git oracle. Its object identity and SHA-256 pin the evidence used here.
+    let recorded: serde_json::Value =
+        serde_json::from_str(include_str!("../../../.rfs-jrz7/probe-result.json"))
+            .expect("recorded native Git evidence");
+    assert_eq!(recorded["sourceRevision"], IMMUTABLE_COMMIT);
+    assert_eq!(recorded["repository"], IMMUTABLE_REPOSITORY);
+    let recorded_blob = recorded["comparisons"]
+        .as_array()
+        .expect("recorded comparisons")
+        .iter()
+        .find(|comparison| comparison["case"] == "blob")
+        .expect("recorded blob comparison");
+    assert_eq!(recorded_blob["sha"], blob_sha);
+    assert_eq!(
+        recorded_blob["size"],
+        native_bytes.len(),
+        "recorded Git blob size"
+    );
+    assert_eq!(
+        recorded_blob["sha256"],
+        format!("{:x}", Sha256::digest(&native_bytes)),
+        "recorded Git blob digest"
+    );
+
+    assert_eq!(
+        facts["schemaVersion"],
+        serde_json::json!({"major": 1, "minor": 0})
+    );
+    assert_eq!(facts["kind"], "github.source");
+    assert_eq!(facts["request"]["repository"]["owner"], "dwalleck");
+    assert_eq!(facts["request"]["repository"]["name"], "resourcefs");
+    assert_eq!(facts["request"]["commitSha"], IMMUTABLE_COMMIT);
+    assert_eq!(facts["request"]["path"], IMMUTABLE_SOURCE_PATH);
+    assert_eq!(facts["observed"]["commitSha"], IMMUTABLE_COMMIT);
+    assert_eq!(facts["observed"]["treeSha"], root_tree_sha);
+    assert_eq!(facts["observed"]["containingTreeSha"], core_tree_sha);
+    assert_eq!(facts["observed"]["path"], IMMUTABLE_SOURCE_PATH);
+    assert_eq!(facts["observed"]["mode"], "100644");
+    assert_eq!(facts["observed"]["objectType"], "blob");
+    assert_eq!(facts["observed"]["objectSha"], blob_sha);
+    assert_eq!(facts["data"]["treeSha"], root_tree_sha);
+    assert_eq!(facts["data"]["containingTreeSha"], core_tree_sha);
+    assert_eq!(facts["data"]["path"], IMMUTABLE_SOURCE_PATH);
+    assert_eq!(facts["data"]["mode"], "100644");
+    assert_eq!(facts["data"]["objectType"], "blob");
+    assert_eq!(facts["data"]["objectSha"], blob_sha);
+    assert_eq!(facts["data"]["sizeBytes"], native_bytes.len());
+    assert_eq!(facts["data"]["content"]["state"], "available");
+    assert_eq!(
+        facts["data"]["content"]["decodedSizeBytes"],
+        native_bytes.len()
+    );
+    assert_eq!(facts["data"]["content"]["bytesBase64"], canonical_base64);
+    assert_eq!(
+        STANDARD
+            .decode(
+                facts["data"]["content"]["bytesBase64"]
+                    .as_str()
+                    .expect("canonical source bytes")
+            )
+            .expect("source bytes decode"),
+        native_bytes,
+        "complete canonical bytes match native Git"
+    );
+    assert_eq!(facts["upstream"]["blobs"][blob_sha]["body"]["status"], 200);
 }

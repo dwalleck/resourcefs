@@ -16,6 +16,12 @@
           "minimum": 1,
           "type": "integer"
         },
+        "maxDecodedBytes": {
+          "format": "uint",
+          "maximum": 4194304,
+          "minimum": 1,
+          "type": "integer"
+        },
         "maxRepresentationBytes": {
           "format": "uint",
           "maximum": 16777216,

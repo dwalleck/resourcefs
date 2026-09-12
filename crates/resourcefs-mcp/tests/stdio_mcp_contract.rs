@@ -3635,6 +3635,11 @@ fn read_acquisition_validates_before_roots_and_reports_unsupported() {
         json!({"maxAttempts": -1}),
         json!({"maxAttempts": 1.5}),
         json!({"maxAttempts": 11}),
+        json!({"maxDecodedBytes": null}),
+        json!({"maxDecodedBytes": 0}),
+        json!({"maxDecodedBytes": -1}),
+        json!({"maxDecodedBytes": 1.5}),
+        json!({"maxDecodedBytes": 4_194_305}),
     ] {
         let response = process.request(
             "tools/call",
@@ -4010,6 +4015,7 @@ fn github_facts_stdio_reconstructs_native_json_without_reacquisition() {
             ("maxResponseBytes", 8388608),
             ("maxAcceptedBodyBytes", 16777216),
             ("maxRepresentationBytes", 16777216),
+            ("maxDecodedBytes", 4194304),
         ] {
             for invalid in [
                 Value::Null,
@@ -4296,12 +4302,16 @@ fn github_commit_facts_stdio_reconstructs_overflow_without_reacquisition() {
         "existing GitHub families must remain advertised: {catalog_text}"
     );
     assert!(
-        catalog_text.contains("github://") && catalog_text.contains("/commits/"),
-        "catalog must advertise immutable commit Facts: {catalog_text}"
+        catalog_text.contains("github://")
+            && catalog_text.contains("commits/")
+            && catalog_text.contains("source/"),
+        "catalog must advertise immutable commit and source Facts: {catalog_text}"
     );
+    // The source spelling's hardest rule is per-component percent encoding, and
+    // an agent discovering the scheme has only this line to learn it from.
     assert!(
-        !catalog_text.contains("/source/"),
-        "S3 source acquisition must not be advertised before implementation: {catalog_text}"
+        catalog_text.contains("percent-encoded"),
+        "catalog must state the source path encoding rule: {catalog_text}"
     );
     assert_tool_error(
         &process.call_read(&format!("{reference}:1")),
@@ -4317,6 +4327,344 @@ fn github_commit_facts_stdio_reconstructs_overflow_without_reacquisition() {
         requests_before_recovery.len(),
         "catalog, artifact pages and refusals must not fetch upstream facts"
     );
+}
+
+#[cfg(feature = "test-support")]
+fn immutable_source_case(fixture: &Value) -> (String, Value) {
+    fixture["cases"]
+        .as_object()
+        .expect("immutable fixture cases")
+        .iter()
+        .find(|(_, case)| {
+            case["expectedState"] == "available"
+                && case["objectType"] == "blob"
+                && case["bytesBase64"].is_string()
+                && case["path"]
+                    .as_str()
+                    .is_some_and(|path| path.split('/').count() > 1)
+                && case["encodedPath"]
+                    .as_str()
+                    .is_some_and(|path| path.contains('%'))
+        })
+        .map(|(name, case)| (name.clone(), case.clone()))
+        .expect("immutable fixture must contain a nested encoded binary source case")
+}
+
+#[cfg(feature = "test-support")]
+fn immutable_source_responses(
+    fixture: &Value,
+    case: &Value,
+    include_blob: bool,
+) -> Vec<profile_tls::NativeResponse> {
+    let owner = "owner";
+    let repository = "repo";
+    let commit_sha = fixture["commit"]["sha"]
+        .as_str()
+        .expect("immutable commit SHA");
+    let mut responses = vec![
+        profile_tls::NativeResponse {
+            path: format!("/repos/{owner}/{repository}"),
+            body: fixture["repository"].to_string(),
+            headers: Vec::new(),
+        },
+        profile_tls::NativeResponse {
+            path: format!("/repos/{owner}/{repository}/commits/{commit_sha}"),
+            body: fixture["commit"].to_string(),
+            headers: Vec::new(),
+        },
+    ];
+
+    let mut tree_sha = fixture["commit"]["commit"]["tree"]["sha"]
+        .as_str()
+        .expect("immutable root tree SHA")
+        .to_owned();
+    let path = case["path"].as_str().expect("decoded source path");
+    let segments = path.split('/').collect::<Vec<_>>();
+    for (index, segment) in segments.iter().enumerate() {
+        let tree = fixture["trees"]
+            .as_object()
+            .and_then(|trees| trees.get(&tree_sha))
+            .cloned()
+            .unwrap_or_else(|| panic!("immutable fixture tree {tree_sha}"));
+        responses.push(profile_tls::NativeResponse {
+            path: format!("/repos/{owner}/{repository}/git/trees/{tree_sha}"),
+            body: tree.to_string(),
+            headers: Vec::new(),
+        });
+        let entry = tree["tree"]
+            .as_array()
+            .expect("native tree entries")
+            .iter()
+            .find(|entry| entry["path"].as_str() == Some(*segment))
+            .unwrap_or_else(|| panic!("tree {tree_sha} lacks path segment {segment}"));
+        if index + 1 < segments.len() {
+            tree_sha = entry["sha"]
+                .as_str()
+                .expect("nested tree entry SHA")
+                .to_owned();
+        } else if include_blob {
+            let object_sha = case["objectSha"].as_str().expect("terminal blob SHA");
+            assert_eq!(
+                entry["sha"].as_str(),
+                Some(object_sha),
+                "fixture case and containing tree disagree on terminal object"
+            );
+            responses.push(profile_tls::NativeResponse {
+                path: format!("/repos/{owner}/{repository}/git/blobs/{object_sha}"),
+                body: fixture["blobs"][object_sha].to_string(),
+                headers: Vec::new(),
+            });
+        }
+    }
+    responses
+}
+
+#[cfg(feature = "test-support")]
+fn write_immutable_source_profile(
+    fixture: &WorkspaceFixture,
+    server: &profile_tls::ProfileTlsServer,
+    max_decoded_bytes: Option<u64>,
+    name: &str,
+) -> PathBuf {
+    let mut source = json!({
+        "kind": "github",
+        "id": "github",
+        "required": true,
+        "apiBaseUrl": server.base_url(),
+        "webOrigin": "https://github.example",
+        "allowPrivateNetwork": true,
+        "credential": {"kind": "environment", "name": "RFS_GITHUB_TEST_TOKEN"},
+        "repositories": [{"name": "owner/repo"}]
+    });
+    if let Some(max_decoded_bytes) = max_decoded_bytes {
+        source["acquisition"] = json!({"maxDecodedBytes": max_decoded_bytes});
+    }
+    let profile = fixture.root.join(name);
+    fs::write(
+        &profile,
+        json!({"schemaVersion": 1, "sources": [source]}).to_string(),
+    )
+    .expect("immutable source profile");
+    profile
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn github_source_stdio_reconstructs_exact_binary_and_enforces_decoded_caps() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../resourcefs-sources/tests/fixtures/github_immutable.json"
+    ))
+    .expect("shared immutable Git fixture");
+    let (case_name, case) = immutable_source_case(&fixture);
+    let decoded_size = case["decodedSizeBytes"]
+        .as_u64()
+        .expect("binary case decoded size");
+    assert!(decoded_size > 1, "binary case must exercise a lower cap");
+    let commit_sha = fixture["commit"]["sha"].as_str().expect("commit SHA");
+    let encoded_path = case["encodedPath"].as_str().expect("encoded path");
+    let decoded_path = case["path"].as_str().expect("decoded path");
+    let reference = format!("github://owner/repo/source/{commit_sha}/{encoded_path}/facts");
+
+    // A positive ordinary-blob control uses the source's configured ceiling.
+    let server = profile_tls::ProfileTlsServer::start_native(immutable_source_responses(
+        &fixture, &case, true,
+    ));
+    let positive_fixture = WorkspaceFixture::new();
+    let profile = write_immutable_source_profile(
+        &positive_fixture,
+        &server,
+        Some(decoded_size),
+        "source.json",
+    );
+    let mut process = McpProcess::start_profile_with_https_root_and_env(
+        &profile,
+        positive_fixture.root.as_path(),
+        &[("RFS_GITHUB_TEST_TOKEN", "source-stdio-secret")],
+    );
+    process.initialize(VERSION_2026);
+    let first = process.call_read_arguments(json!({
+        "path": reference.clone(),
+        "limits": {"bytes": 256},
+        "acquisition": {"maxDecodedBytes": decoded_size}
+    }));
+    let request_count = server.recorded_requests().len();
+    let (facts, bytes, _) = recover_artifact_document(&mut process, first, json!({"bytes": 256}));
+    assert_eq!(facts["schemaVersion"], json!({"major": 1, "minor": 0}));
+    assert_eq!(facts["kind"], "github.source");
+    assert_eq!(facts["request"]["commitSha"], commit_sha);
+    assert_eq!(
+        facts["request"]["repository"],
+        json!({"owner": "owner", "name": "repo"})
+    );
+    assert_eq!(facts["request"]["path"], decoded_path);
+    assert_eq!(facts["observed"]["commitSha"], commit_sha);
+    assert_eq!(
+        facts["observed"]["treeSha"],
+        fixture["commit"]["commit"]["tree"]["sha"]
+    );
+    for field in [
+        "containingTreeSha",
+        "objectSha",
+        "mode",
+        "objectType",
+        "path",
+    ] {
+        assert_eq!(
+            facts["observed"][field], case[field],
+            "native source identity field {field} for case {case_name}"
+        );
+        assert_eq!(
+            facts["data"][field], case[field],
+            "source data identity field {field} for case {case_name}"
+        );
+    }
+    assert_eq!(facts["data"]["commitSha"], commit_sha);
+    assert_eq!(
+        facts["data"]["treeSha"],
+        fixture["commit"]["commit"]["tree"]["sha"]
+    );
+    assert_eq!(facts["data"]["content"]["state"], "available");
+    assert_eq!(facts["data"]["content"]["encoding"], "base64");
+    assert_eq!(facts["data"]["content"]["decodedSizeBytes"], decoded_size);
+    assert_eq!(facts["data"]["content"]["bytesBase64"], case["bytesBase64"]);
+    assert_eq!(
+        facts["acquisition"]["limits"]["maxDecodedBytes"],
+        decoded_size
+    );
+    assert!(!bytes.contains("source-stdio-secret"));
+    let requests = server.recorded_requests();
+    assert_eq!(requests.len(), request_count);
+    let request_paths = requests
+        .iter()
+        .map(|request| request.path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        request_paths,
+        vec![
+            "/repos/owner/repo".to_owned(),
+            format!("/repos/owner/repo/commits/{commit_sha}"),
+            format!(
+                "/repos/owner/repo/git/trees/{}",
+                fixture["commit"]["commit"]["tree"]["sha"]
+                    .as_str()
+                    .expect("root tree SHA")
+            ),
+            format!(
+                "/repos/owner/repo/git/trees/{}",
+                case["containingTreeSha"]
+                    .as_str()
+                    .expect("containing tree SHA")
+            ),
+            format!(
+                "/repos/owner/repo/git/blobs/{}",
+                case["objectSha"].as_str().expect("object SHA")
+            ),
+        ]
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.path.contains("/git/blobs/")),
+        "positive control must acquire the ordinary blob"
+    );
+    let stderr = process.finish();
+    assert!(!stderr.contains("source-stdio-secret"));
+
+    // The lower operator ceiling is authoritative and must stop before blob GET.
+    let operator_server = profile_tls::ProfileTlsServer::start_native(immutable_source_responses(
+        &fixture, &case, false,
+    ));
+    let operator_fixture = WorkspaceFixture::new();
+    let operator_profile = write_immutable_source_profile(
+        &operator_fixture,
+        &operator_server,
+        Some(decoded_size - 1),
+        "operator-cap.json",
+    );
+    let mut operator = McpProcess::start_profile_with_https_root_and_env(
+        &operator_profile,
+        operator_fixture.root.as_path(),
+        &[("RFS_GITHUB_TEST_TOKEN", "source-operator-secret")],
+    );
+    operator.initialize(VERSION_2026);
+    let operator_result = operator.call_read(&reference);
+    let (operator_facts, _, _) =
+        recover_artifact_document(&mut operator, operator_result, json!({"bytes": 256}));
+    assert_eq!(operator_facts["data"]["content"]["state"], "unavailable");
+    assert_eq!(
+        operator_facts["data"]["content"]["reason"],
+        "decoded_size_limit"
+    );
+    for field in [
+        "containingTreeSha",
+        "objectSha",
+        "mode",
+        "objectType",
+        "path",
+    ] {
+        assert_eq!(
+            operator_facts["data"][field], case[field],
+            "operator-cap metadata must remain verified for {field}"
+        );
+    }
+    assert!(
+        operator_server
+            .recorded_requests()
+            .iter()
+            .all(|request| !request.path.contains("/git/blobs/")),
+        "operator decoded ceiling must prevent blob acquisition"
+    );
+    operator.finish();
+
+    // A caller ceiling lower than the operator ceiling has the same no-egress
+    // behavior, while the positive control above proves ordinary blobs work.
+    let caller_server = profile_tls::ProfileTlsServer::start_native(immutable_source_responses(
+        &fixture, &case, false,
+    ));
+    let caller_fixture = WorkspaceFixture::new();
+    let caller_profile = write_immutable_source_profile(
+        &caller_fixture,
+        &caller_server,
+        Some(decoded_size),
+        "caller-cap.json",
+    );
+    let mut caller = McpProcess::start_profile_with_https_root_and_env(
+        &caller_profile,
+        caller_fixture.root.as_path(),
+        &[("RFS_GITHUB_TEST_TOKEN", "source-caller-secret")],
+    );
+    caller.initialize(VERSION_2026);
+    let caller_result = caller.call_read_arguments(json!({
+        "path": reference,
+        "acquisition": {"maxDecodedBytes": decoded_size - 1}
+    }));
+    let (caller_facts, _, _) =
+        recover_artifact_document(&mut caller, caller_result, json!({"bytes": 256}));
+    assert_eq!(caller_facts["data"]["content"]["state"], "unavailable");
+    assert_eq!(
+        caller_facts["data"]["content"]["reason"],
+        "decoded_size_limit"
+    );
+    for field in [
+        "containingTreeSha",
+        "objectSha",
+        "mode",
+        "objectType",
+        "path",
+    ] {
+        assert_eq!(
+            caller_facts["data"][field], case[field],
+            "caller-cap metadata must remain verified for {field}"
+        );
+    }
+    assert!(
+        caller_server
+            .recorded_requests()
+            .iter()
+            .all(|request| !request.path.contains("/git/blobs/")),
+        "caller decoded ceiling must prevent blob acquisition"
+    );
+    caller.finish();
 }
 
 #[cfg(feature = "test-support")]

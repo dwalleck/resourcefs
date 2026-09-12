@@ -13,6 +13,7 @@ pub struct ReadAcquisitionLimits {
     max_response_bytes: NonZeroUsize,
     max_accepted_body_bytes: NonZeroUsize,
     max_representation_bytes: NonZeroUsize,
+    max_decoded_bytes: NonZeroUsize,
 }
 
 impl ReadAcquisitionLimits {
@@ -22,6 +23,7 @@ impl ReadAcquisitionLimits {
         max_response_bytes: Option<usize>,
         max_accepted_body_bytes: Option<usize>,
         max_representation_bytes: Option<usize>,
+        max_decoded_bytes: Option<usize>,
     ) -> Result<Self, ResourceError> {
         let hard = Self::default();
         let timeout = timeout.unwrap_or(hard.timeout);
@@ -57,6 +59,11 @@ impl ReadAcquisitionLimits {
                 hard.max_representation_bytes,
                 AcquisitionLimitKind::RepresentationBytes,
             )?,
+            max_decoded_bytes: validate(
+                max_decoded_bytes,
+                hard.max_decoded_bytes,
+                AcquisitionLimitKind::DecodedContentBytes,
+            )?,
         })
     }
 
@@ -75,6 +82,9 @@ impl ReadAcquisitionLimits {
     pub const fn max_representation_bytes(self) -> usize {
         self.max_representation_bytes.get()
     }
+    pub const fn max_decoded_bytes(self) -> usize {
+        self.max_decoded_bytes.get()
+    }
 
     /// Applies both policies without raising any dimension of either one.
     pub fn intersect(self, other: Self) -> Self {
@@ -88,6 +98,7 @@ impl ReadAcquisitionLimits {
             max_representation_bytes: self
                 .max_representation_bytes
                 .min(other.max_representation_bytes),
+            max_decoded_bytes: self.max_decoded_bytes.min(other.max_decoded_bytes),
         }
     }
 }
@@ -102,6 +113,7 @@ impl Default for ReadAcquisitionLimits {
                 .expect("positive hard admitted cap"),
             max_representation_bytes: NonZeroUsize::new(16_777_216)
                 .expect("positive hard representation cap"),
+            max_decoded_bytes: NonZeroUsize::new(4_194_304).expect("positive hard decoded cap"),
         }
     }
 }

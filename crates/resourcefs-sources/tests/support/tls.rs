@@ -312,6 +312,18 @@ impl FixtureRequest {
         &self.head
     }
 
+    /// The `Host` header value, which every fixture request carries.
+    pub fn host(&self) -> &str {
+        self.head
+            .lines()
+            .find_map(|line| {
+                line.split_once(':')
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
+                    .map(|(_, value)| value.trim())
+            })
+            .expect("Host header")
+    }
+
     pub fn body(&self) -> &[u8] {
         &self.body
     }

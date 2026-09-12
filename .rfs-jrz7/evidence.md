@@ -75,6 +75,28 @@ Both rows were invoked with `RFS_LIVE=1` and a nonempty credential obtained from
 
 Raw nonsecret row output: `live-commit-results.txt`. These results prove commit acquisition only; no source-file byte or object-validation claim is made here.
 
+## S3 implementation evidence — 2026-09-10
+
+The source implementation uses the requester-approved gix-object/gix-hash crates for native Git format semantics, with ResourceFS acceptance policy around their typed objects and streaming hashing writer. `git-object-adoption.json` records the adopted dependency graph; cargo-deny passed. The independent corpus generator `build_git_corpus.py` uses local Git plumbing, not production hashing, and emits `tests/fixtures/github_immutable.json`. The separate crate-adoption experiment reproduced 13 trees, two width templates and seven blobs with streamed native headers and Git's directory-aware ordering.
+
+- Assembled commit/source contracts: 21 PASS across `github_immutable_contract` and `github_source_contract`. The source matrix exercises exact bytes/once-decoded paths, complete-tree integrity, 1,000/1,001 entries, native modes, decoded exact/over limits with equal encoded lengths and absent sizes, metadata-only retention, one shared deep traversal budget, 304 provenance, failed revalidation, cancellation and generation invalidation.
+- Actual configured binary stdio source contract: PASS, including the operator/caller decoded bound, binary reconstruction, artifact recovery and zero reacquisition during recovery. This found and fixed a duplicate `github://` catalog entry that had prevented configured server initialization; the single entry now advertises both families.
+- C4/C5/C6/C7/C8/C10/C11: named mutants RED, exact-restored GREEN. Receipts are the corresponding `mutation-c*-*.txt` files. C4's initial masked fence is retained transparently; its corrected fixture changes only an unselected valid tree-entry name while retaining the SHA/link metadata. C8 also turns RED when the final generation check is moved before serialization, isolating the required boundary rather than merely detecting any generation check.
+- C8's calibrated allocation callback and external generation controller pass in both debug and optimized release. The callback is test-only and disarms before controller/channel work; calibration failure fails the test rather than silently passing. Its allocation-shape sensitivity remains an explicit maintenance consideration.
+- Maximum source release measurement: 5,594,189 native response bytes; 5,595,590 owned output bytes; 25,591,923ns local wall; 22,407,541 incremental tracked heap bytes. These are below the approved 3s/160MiB limits, not claims about network latency or process RSS. The fixture is registered in the repository runner as `immutable_source_production_budget`.
+- The exact representation-bound fixture now freezes Tokio elapsed time while retaining real loopback I/O, so its fixed point does not depend on volatile `elapsedMs` width. Exact equality and one-byte-under refusal remain asserted; the corrected test passes.
+- Isolated final conformance: `blind-module-map.md` preserves the production-only map before ledger disclosure; `design-conformance-review.json` preserves the initial verdict. The reviewer found no actionable defect or ownership mismatch. Its subsequent review of the final public docs and clock-only fixture delta found no new issue and preserved applicability. This review ran no validation; full quality/platform results belong to the checkpoint record.
+
+### Live source and assembled roster
+
+Both targeted source rows were explicitly enabled with `RFS_LIVE=1` and a nonempty credential obtained through existing `gh auth token` handling. No credential was written to evidence and neither row skipped. Both use `dwalleck/resourcefs` at `635ab170ab57542c18272921298d575da2f8b08a` and compare the exact native blob.
+
+| Row | Exercised surface | Result |
+|---|---|---|
+| `live_github_immutable_source_facts_hold_up` | Configured SourceAdapter, validated tree chain and exact native blob comparison | PASS; 3.97s targeted test time |
+| `live_stdio_github_source_facts_match_native_blob` | Actual profile/probe/server binary, MCP source read and recovery, exact native blob comparison | PASS; 4.38s targeted test time |
+
+`live-source-results.txt` retains targeted output. The complete `scripts/live-smoke.sh` roster then completed successfully in37.94s: 13 actual network rows passed (six adapter GitHub, six stdio and one HTTPS); five Jira rows skipped for absent environment and are not counted as live proof. `live-roster-results.txt` retains the row outcomes and explicit skips. Corporate/Jira live acceptance is not a claim of this GitHub ticket.
 ## PR #13 review repair round — 2026-09-11
 
 Review: `docs/research/pr13-code-review-2026-09-11.md`, 13 findings and 14 below-the-line items against head `1cfa020`; the re-review that followed is `docs/research/pr13-rereview-2026-09-11.md`. Per-finding decisions: `review-decisions.md` § "PR #13 review repair round".

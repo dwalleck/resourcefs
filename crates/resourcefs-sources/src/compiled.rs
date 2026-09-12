@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use resourcefs_core::{
-    CatalogAddress, DiscoveryAdapter, ErrorCategory, GithubAddress, GlobOptions, GlobSource,
-    GlobTarget, MutationAccess, MutationAdapter, MutationCommitFailure, MutationCommitOutcome,
-    MutationState, MutationTarget, OperationGuard, PathReference, ResourceAddress, ResourceError,
-    SearchOptions, SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult,
-    SourceMutation, SourceResource, catalog_discovery_unsupported,
+    CatalogAddress, DiscoveryAdapter, ErrorCategory, GlobOptions, GlobSource, GlobTarget,
+    MutationAccess, MutationAdapter, MutationCommitFailure, MutationCommitOutcome, MutationState,
+    MutationTarget, OperationGuard, PathReference, ResourceAddress, ResourceError, SearchOptions,
+    SearchSourceResult, SearchTarget, SourceAdapter, SourceGlobResult, SourceMutation,
+    SourceResource, catalog_discovery_unsupported,
 };
 
 use crate::{
@@ -129,14 +129,12 @@ impl SourceAdapter for CompiledSources {
                     .read(reference, operation, acquisition)
                     .await
             }
-            // Reads reach the configured source only for a route an increment
-            // has acquired. A spelling this build does not serve is refused
-            // here, before the mount is consulted, so one address cannot answer
-            // differently depending on configuration or caller controls; the
-            // source-facts spelling lands with the increment that acquires it.
-            ResourceAddress::Github(GithubAddress::Source { .. }) => {
-                Err(github_family_unreadable())
-            }
+            // Reads reach the configured source for every acquired route; the
+            // mount lookup itself separates an unmounted build, which answers
+            // SourceUnavailable, from a mounted but misconfigured one, which
+            // answers its own reason — a missing deployment identity, for
+            // example. Only discovery and mutation are decided without
+            // consulting the mount.
             ResourceAddress::Github(_)
             | ResourceAddress::Issue(_)
             | ResourceAddress::PullRequest(_) => {
@@ -175,13 +173,15 @@ impl MutationAdapter for CompiledSources {
                 ErrorCategory::UnsupportedMutation,
                 "jira:// Resources are read-only; Jira mutation is not supported",
             )),
-            // Unserved family whose refusal precedes configuration: an unmounted
-            // source must not explain a route that never accepts writes, and no
-            // build mounts an increment that does not exist. It names the same
-            // fact the read and search arms name — this build serves no
-            // github:// route — instead of promising a read-only family whose
-            // reads this build cannot serve either.
-            ResourceAddress::Github(_) => Err(github_family_unreadable()),
+            // Read-only family on the immutable routes this build serves:
+            // like https:// and jira://, the refusal is static, so a family
+            // that accepts no writes is never explained as merely unmounted.
+            // Issue and PullRequest mutations take the arm below instead,
+            // which does consult the mount.
+            ResourceAddress::Github(_) => Err(ResourceError::new(
+                ErrorCategory::UnsupportedMutation,
+                "github:// Resources are read-only; commit and source Facts accept no mutation",
+            )),
             ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
                 self.github_source()?.resolve(reference, access).await
             }
@@ -292,13 +292,13 @@ fn github_source_unavailable() -> ResourceError {
 /// Distinct from [`github_source_unavailable`]: that one says no repository
 /// authority is declared, and it must never be the answer for an operation no
 /// configured source could serve. Reads of an acquired route reach the
-/// configured source; discovery, mutation and any spelling whose acquiring
-/// increment has not landed answer here, and they answer identically whether
-/// or not a source is mounted — a refusal that depended on configuration would
-/// tell a caller that a route this build cannot serve is merely unavailable
-/// until it is configured. The sentence names the operation rather than the
-/// family, because a build that serves a read route for an address must not
-/// claim it serves no route for it at all.
+/// configured source; discovery and any spelling whose acquiring increment has
+/// not landed answer here, and they answer identically whether or not a
+/// source is mounted — a refusal that depended on configuration would tell a
+/// caller that a route this build cannot serve is merely unavailable until it
+/// is configured. The sentence names the operation rather than the family,
+/// because a build that serves a read route for an address must not claim it
+/// serves no route for it at all.
 fn github_family_unreadable() -> ResourceError {
     ResourceError::new(
         ErrorCategory::UnsupportedProjection,
