@@ -3,9 +3,13 @@ use std::{
     env,
     ffi::OsString,
     io::{self, Write},
-    process, thread,
+    process,
+    sync::OnceLock,
+    thread,
     time::Duration,
 };
+
+use libtest_mimic::{Arguments, Trial};
 
 use resourcefs_core::{OperationGuard, Secret};
 use resourcefs_sources::{
@@ -19,23 +23,53 @@ const FIXTURE_MODE: &str = "RFS_SECRET_FIXTURE";
 const AMBIENT_SENTINEL_NAME: &str = "RFS_AMBIENT_SECRET";
 const PRIVATE_SENTINEL: &str = "private-secret-sentinel";
 
-fn main() {
+/// The one runtime every asynchronous row shares.
+///
+/// `libtest_mimic` hands each trial to a worker thread, and `block_on` from
+/// several threads against one multi-threaded runtime is exactly what that
+/// runtime is for. Building a runtime per trial would instead stand up four
+/// two-worker pools to run four rows.
+fn runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("secret contract runtime")
+    })
+}
+
+fn main() -> process::ExitCode {
+    // The helper-subprocess entry point stays ahead of argument parsing.
+    // `fixture_reference` spawns this same executable with no arguments and
+    // only `RFS_SECRET_FIXTURE` set, so the environment -- never argv -- is
+    // what distinguishes a helper invocation from a test run.
     if let Some(mode) = env::var_os(FIXTURE_MODE) {
         let result = fixture(mode.to_string_lossy().as_ref());
         process::exit(if result.is_ok() { 0 } else { 97 });
     }
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("secret contract runtime");
-    runtime.block_on(async {
-        helper_output_matrix().await;
-        environment_matrix().await;
-        cancellation_is_typed().await;
-        helper_environment_cannot_recurse();
-    });
+    let arguments = Arguments::from_args();
+    let trials = vec![
+        Trial::test("helper_output_matrix", || {
+            runtime().block_on(helper_output_matrix());
+            Ok(())
+        }),
+        Trial::test("environment_matrix", || {
+            runtime().block_on(environment_matrix());
+            Ok(())
+        }),
+        Trial::test("cancellation_is_typed", || {
+            runtime().block_on(cancellation_is_typed());
+            Ok(())
+        }),
+        Trial::test("helper_environment_cannot_recurse", || {
+            helper_environment_cannot_recurse();
+            Ok(())
+        }),
+    ];
+    libtest_mimic::run(&arguments, trials).exit_code()
 }
 
 async fn helper_output_matrix() {

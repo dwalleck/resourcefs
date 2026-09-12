@@ -8,7 +8,12 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
-libfuzzer-sys = "0.4"
+# Structured input for `server_profile_structured`. The byte target explores the
+# encoding; this explores the grammar, so the fuzzer reaches the validation and
+# source-conversion layers the corpus shows it never entered.
+arbitrary = { version = "1.4.2", features = ["derive"] }
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+serde_json = "1.0.143"
 resourcefs-core = { path = "../crates/resourcefs-core", features = ["test-support"] }
 resourcefs-mcp = { path = "../crates/resourcefs-mcp" }
 
@@ -22,6 +27,13 @@ bench = false
 [[bin]]
 name = "server_profile"
 path = "fuzz_targets/server_profile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "server_profile_structured"
+path = "fuzz_targets/server_profile_structured.rs"
 test = false
 doc = false
 bench = false

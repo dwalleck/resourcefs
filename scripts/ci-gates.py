@@ -155,36 +155,52 @@ def target_selector(kind, name):
 
 
 def functional_tests():
-    """The debug test leg.
+    """The debug test leg, run under nextest.
 
-    With no skips requested this is the single workspace command it has always
-    been -- the default path is unchanged, so the local gate and `main` builds
-    behave exactly as before. Only when RFS_SKIP_TEST_TARGETS is set does it
-    enumerate targets so the named ones can be left out, because `cargo test
-    --workspace` has no way to exclude one target.
+    nextest rather than `cargo test` because it runs each test in its own
+    process. Four test binaries install a counting `#[global_allocator]` and
+    assert a peak-heap ceiling, and a process-global counter only means
+    anything when one test owns the process; under a shared binary a
+    concurrent test's allocations land in this one's measurement. That is
+    rfs-1e6h, and the reason those ceilings were raised rather than fixed.
+    (The `#[ignore]`d budgets were never affected -- ignored_budgets() already
+    runs each one alone with `--exact`.)
+
+    Changing runners also collapses the skip path. `cargo test --workspace` has
+    no way to exclude a single target, so RFS_SKIP_TEST_TARGETS used to force a
+    full target enumeration and one `cargo test` invocation per binary --
+    giving up the shared build and the batching to drop one target. nextest
+    takes a filterset, so the skip is one more argument to the same single
+    command.
+
+    `--no-fail-fast` is absent because it is not a flag here: the `ci` profile
+    inherits `fail-fast = false` from `[profile.default]` in
+    `.config/nextest.toml`.
+
+    Doctests are not compiled test targets, so nextest does not see them and
+    they get their own pass.
     """
-    if not SKIP_TEST_TARGETS:
-        return run([
-            "cargo", "test", "--workspace", "--all-features", "--no-fail-fast",
-        ]).returncode == 0
-    targets = test_targets([], require_no_debug_assertions=False)
-    if targets is None:
-        return False
-    passed = True
-    for package_id, name, kind, _executable in targets:
-        if name in SKIP_TEST_TARGETS:
+    command = ["cargo", "nextest", "run", "-P", "ci", "--workspace", "--all-features"]
+    if SKIP_TEST_TARGETS:
+        skipped = sorted(SKIP_TEST_TARGETS)
+        for name in skipped:
             print(f"Skipped functional target {name}: RFS_SKIP_TEST_TARGETS", flush=True)
-            continue
-        selector = target_selector(kind, name)
-        if selector is None:
-            print(f"Unsupported functional test target: {name}", file=sys.stderr)
-            passed = False
-            continue
-        result = run([
-            "cargo", "test", "-p", package_id, "--all-features",
-            *selector, "--no-fail-fast",
-        ])
-        passed = result.returncode == 0 and passed
+        # `=` asks for an exact match. A bare `binary(x)` means the same thing
+        # today -- exact is nextest's default for this matcher -- but the
+        # substring form `binary(~x)` is one character away and would silently
+        # take more than the caller named: `~atlassian` drops 90 tests where
+        # the exact name drops 78. Spelling the operator keeps the strict
+        # reading pinned.
+        #
+        # A name that matches no binary is a hard error from nextest
+        # ("operator didn't match any binary names"), so the gate fails loudly
+        # rather than quietly skipping nothing. That is a change from the
+        # enumerate-and-loop this replaced, where an unknown name was a no-op;
+        # a stale RFS_SKIP_TEST_TARGETS now gets reported instead of silently
+        # putting the target back on the critical path.
+        excluded = " | ".join(f"binary(={name})" for name in skipped)
+        command += ["-E", f"not ({excluded})"]
+    passed = run(command).returncode == 0
     doctests = run(["cargo", "test", "--workspace", "--all-features", "--doc"])
     return doctests.returncode == 0 and passed
 
@@ -270,9 +286,28 @@ def main():
     gates = [
         ("Formatting", ["cargo", "fmt", "--all", "--", "--check"]),
         ("Lints", ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]),
+        # These three are callables, not argument lists: each enumerates or
+        # filters its own targets. See functional_tests() for why the debug leg
+        # runs under nextest, and why doctests ride inside it rather than
+        # taking a gate of their own.
         ("Functional tests", functional_tests),
         ("Release workspace", release_workspace),
         ("Ignored production budgets", ignored_budgets),
+        # `fuzz/` declares its own `[workspace]`, so `--workspace` above cannot
+        # reach it and nothing else type-checks it. Without this the targets rot
+        # silently against the APIs they exercise. Running the fuzzers is a
+        # separate, longer job.
+        #
+        # `check`, never `build`. A libFuzzer target is `#![no_main]` and takes
+        # its entry point from the sanitizer runtime that `cargo fuzz` wires in
+        # with `-Zsanitizer=fuzzer`. A plain `cargo build` omits those flags: on
+        # Linux `libfuzzer-sys`'s prebuilt archive happens to supply a `main`
+        # anyway, so it links, but on Windows MSVC nothing does and every target
+        # fails with `LNK1561: entry point must be defined`. Type-checking never
+        # links, so it catches the API rot this gate exists for on every
+        # platform. Verified against `x86_64-pc-windows-msvc`.
+        ("Fuzz targets", ["cargo", "fmt", "--manifest-path", "fuzz/Cargo.toml", "--", "--check"]),
+        ("Fuzz targets check", ["cargo", "check", "--manifest-path", "fuzz/Cargo.toml"]),
         ("Dependency vetting", ["cargo", "deny", "check"]),
     ]
     if sys.platform == "linux":
