@@ -14,10 +14,7 @@ use gix_object::{
     bstr::BString,
     tree::{Entry, EntryKind, EntryMode},
 };
-use resourcefs_core::{
-    AcquisitionLimitKind, ErrorCategory, ErrorReason, LimitDetail, ResourceError,
-    ResourceErrorDetails,
-};
+use resourcefs_core::{AcquisitionLimitKind, ErrorReason, MAX_COLLECTION_RECORDS, ResourceError};
 use serde::{
     Deserialize, Deserializer,
     de::{self, MapAccess, Visitor},
@@ -25,7 +22,6 @@ use serde::{
 
 use super::identity::required;
 use super::{Presence, failure, identity};
-const MAX_TREE_ENTRIES: usize = 1_000;
 
 native!(NativeTreeEntry {
     path: String,
@@ -121,17 +117,13 @@ pub(super) fn validate_tree(
     if *truncated {
         return Err(malformed());
     }
-    if entries.len() > MAX_TREE_ENTRIES {
-        let detail = LimitDetail::new(
+    if entries.len() > MAX_COLLECTION_RECORDS {
+        return Err(super::collection::local_limit_error(
             AcquisitionLimitKind::CollectionRecords,
-            MAX_TREE_ENTRIES as u64,
-            Some(entries.len() as u64),
-        )?;
-        return Err(ResourceError::new(
-            ErrorCategory::LimitExceeded,
+            MAX_COLLECTION_RECORDS as u64,
+            entries.len() as u64,
             "GitHub tree exceeds the bounded entry limit",
-        )
-        .with_details(ResourceErrorDetails::new(ErrorReason::LimitExceeded).with_limit(detail)));
+        ));
     }
 
     let mut git_entries = Vec::with_capacity(entries.len());
@@ -178,7 +170,6 @@ pub(super) fn validate_tree(
     {
         return Err(malformed());
     }
-    drop(names);
     // gix's ordering includes the tree-vs-non-tree prefix rule mandated by
     // Git (a file named `foo.bar` sorts before a directory named `foo`).
     git_entries.sort_unstable();
@@ -287,14 +278,17 @@ pub(super) fn validate_blob(
     if decoded_size > decoded_cap {
         return Ok(BlobResult::Oversized(OversizedBlob { decoded_size }));
     }
-    let decoded = STANDARD
-        .decode(compact.as_bytes())
+    // The hash is computed over the streamed bytes so no decoded copy is retained.
+    let mut writer = gix_hash::io::Write::new(io::sink(), Kind::Sha1);
+    writer
+        .write_all(&gix_object::encode::loose_header(
+            gix_object::Kind::Blob,
+            decoded_size as u64,
+        ))
         .map_err(|_| malformed())?;
-    if decoded.len() != decoded_size {
-        return Err(malformed());
-    }
-    let blob = gix_object::BlobRef { data: &decoded };
-    if hash_object(&blob)? != observed_id {
+    let mut decoder = base64::read::DecoderReader::new(compact.as_bytes(), &STANDARD);
+    io::copy(&mut decoder, &mut writer).map_err(|_| malformed())?;
+    if writer.hash.try_finalize().map_err(|_| integrity())? != observed_id {
         return Err(integrity());
     }
     Ok(BlobResult::Available(VerifiedBlob {
@@ -321,10 +315,6 @@ fn exact_decoded_size(encoded: &[u8]) -> Result<usize, ResourceError> {
             .decode_slice(&encoded[encoded.len() - 4..], &mut [0; 3])
             .map_err(|_| malformed())?;
     }
-    encoded
-        .len()
-        .checked_div(4)
-        .and_then(|groups| groups.checked_mul(3))
-        .and_then(|decoded| decoded.checked_sub(padding))
-        .ok_or_else(malformed)
+    // Total: len % 4 == 0; padding <= 2, and nonzero padding implies len >= 4.
+    Ok(encoded.len() / 4 * 3 - padding)
 }

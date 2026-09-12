@@ -179,7 +179,7 @@ def build():
             case(name, path, "unsupported", "non_regular_object")
         case("unsupportedMode", "odd-mode", "unsupported", "unsupported_object_mode")
         case("tooWide", "too-wide/entry1000", "error", "limit_exceeded")
-        case("deepBlobLimit", "deep/d1/d2/d3/d4/d5/d6/payload", "unavailable", "acquisition_failed")
+        case("deepBlobLimit", "deep/d1/d2/d3/d4/d5/d6/payload", "error", "limit_exceeded")
         case("deepBeforeTerminalLimit", "deep/d1/d2/d3/d4/d5/d6/next/payload", "error", "limit_exceeded")
 
         # Large fixtures remain recipes plus independent Git identities, not

@@ -274,7 +274,7 @@ impl GithubSource {
                         "GitHub read was invalidated by a concurrent mutation; retry the read",
                     ),
                     controlled,
-                    ErrorReason::UpstreamUnavailable,
+                    ErrorReason::CacheGenerationChanged,
                 ));
             }
             let (Some(entry), Some(metadata)) = (cached.as_ref(), cached_metadata.as_ref()) else {

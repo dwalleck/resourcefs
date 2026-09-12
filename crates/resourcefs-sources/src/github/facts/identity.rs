@@ -218,11 +218,22 @@ pub(super) fn validate_optional_object_link(
     link: &Presence<String>,
     expected: &Url,
 ) -> Result<(), ResourceError> {
-    match link.value() {
-        Some(value) if !matches_object_url(value, expected) => {
-            Err(failure(ErrorReason::UpstreamIdentityMismatch))
-        }
-        _ => Ok(()),
+    let Some(value) = link.value() else {
+        return Ok(());
+    };
+    // Not a URL at all: an opaque provider observation, published as-is. This is
+    // the rule the comment above states and the one the sibling optional-link
+    // validators apply; only a value that *is* a URL can contradict this
+    // deployment's authority.
+    let Ok(actual) = Url::parse(value) else {
+        return Ok(());
+    };
+    // Judged on the authority and path that name the object: a query or
+    // fragment spelling does not change which object a link names.
+    if clean_authority(&actual, expected) && actual.path().eq_ignore_ascii_case(expected.path()) {
+        Ok(())
+    } else {
+        Err(failure(ErrorReason::UpstreamIdentityMismatch))
     }
 }
 

@@ -146,6 +146,16 @@ pub enum GithubAddress {
 }
 
 impl GithubAddress {
+    /// The repository authority this address names, shared by both variants.
+    ///
+    /// The operand stays typed: callers compare identities through it instead
+    /// of re-parsing a canonical spelling.
+    pub fn repository(&self) -> &GithubRepositoryIdentity {
+        match self {
+            Self::Commit { repository, .. } | Self::Source { repository, .. } => repository,
+        }
+    }
+
     pub fn canonical_reference(&self) -> String {
         match self {
             Self::Commit { repository, commit } => format!(

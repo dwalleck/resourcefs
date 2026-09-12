@@ -387,12 +387,17 @@ mod review;
 mod source;
 
 /// One acquisition observation shared by measurement and final emission.
+///
+/// `decoded_bound` is supplied by the family that actually decodes content: the
+/// envelope may only advertise a dimension the read enforced, so it is named at
+/// the call rather than patched onto the shared value afterwards.
 pub(super) fn acquisition_at(
     limits: ReadAcquisitionLimits,
     attempted_requests: usize,
     accepted_body_bytes: usize,
     started_at_unix_ms: u64,
     started: tokio::time::Instant,
+    decoded_bound: Option<usize>,
 ) -> Result<Acquisition, ResourceError> {
     Ok(Acquisition {
         started_at_unix_ms,
@@ -406,7 +411,7 @@ pub(super) fn acquisition_at(
             max_response_bytes: limits.max_response_bytes(),
             max_accepted_body_bytes: limits.max_accepted_body_bytes(),
             max_representation_bytes: limits.max_representation_bytes(),
-            max_decoded_bytes: None,
+            max_decoded_bytes: decoded_bound,
         },
         usage: Usage {
             attempted_requests,
@@ -432,7 +437,7 @@ pub(super) async fn check_generation(
         .await?
         != expected
     {
-        return Err(failure(ErrorReason::UpstreamUnavailable));
+        return Err(failure(ErrorReason::CacheGenerationChanged));
     }
     Ok(())
 }
@@ -444,6 +449,7 @@ fn acquisition(ctx: &FactsRead<'_>) -> Result<Acquisition, ResourceError> {
         ctx.budget.accepted_body_bytes(),
         ctx.started_at_unix_ms,
         ctx.started,
+        None,
     )
 }
 
@@ -606,11 +612,10 @@ impl GithubSource {
                 if reference.projection().is_some() {
                     return Err(super::unsupported_github_projection());
                 }
-                let repository = match address {
-                    GithubAddress::Commit { repository, .. }
-                    | GithubAddress::Source { repository, .. } => repository,
-                };
-                (PathReference::github(address.clone(), None)?, repository)
+                (
+                    PathReference::github(address.clone(), None)?,
+                    address.repository(),
+                )
             }
             _ => return Err(super::unsupported_github_projection()),
         };

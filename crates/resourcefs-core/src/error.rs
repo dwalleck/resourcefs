@@ -102,6 +102,11 @@ pub enum ErrorReason {
     UpstreamMalformed,
     UpstreamIdentityMismatch,
     TransportFailure,
+    /// A concurrent mutation invalidated the cached body this read was
+    /// revalidating. Distinct from `UpstreamUnavailable` because the retry the
+    /// caller should make is against its own changed session, not the provider,
+    /// and because a whole-read refusal depends on telling the two apart.
+    CacheGenerationChanged,
     LimitExceeded,
     DeadlineExceeded,
     Cancelled,
@@ -121,6 +126,7 @@ impl ErrorReason {
             Self::UpstreamMalformed => "upstream_malformed",
             Self::UpstreamIdentityMismatch => "upstream_identity_mismatch",
             Self::TransportFailure => "transport_failure",
+            Self::CacheGenerationChanged => "cache_generation_changed",
             Self::LimitExceeded => "limit_exceeded",
             Self::DeadlineExceeded => "deadline_exceeded",
             Self::Cancelled => "cancelled",
