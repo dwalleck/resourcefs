@@ -2331,3 +2331,55 @@ fn rule_manifests_enforce_entry_ceiling() {
         "one over the entry ceiling must fail even when every entry resolves"
     );
 }
+
+/// A path that cannot be resolved says which failure it was.
+///
+/// The old message was `"configuration directory must be an existing
+/// directory"` for every failure, which asserts a cause the errno can
+/// contradict: a directory that exists but whose parent is not traversable
+/// fails with `PermissionDenied`, and an operator told it does not exist
+/// checks the path, finds it right there, and is no further forward.
+///
+/// `io::ErrorKind` is a fieldless enum, so naming it carries no path and no
+/// credential -- which is what lets it into a message at all.
+#[cfg(unix)]
+#[test]
+fn an_unresolvable_configuration_directory_names_the_reason() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = TempDir::new().expect("configuration base");
+    let outer = temporary.path().join("outer");
+    let inner = outer.join("inner");
+    fs::create_dir_all(&inner).expect("nested directories");
+
+    // Absent: genuinely not there.
+    let missing = ConfigurationDirectory::new(temporary.path().join("absent"))
+        .expect_err("a missing directory is refused");
+    let missing = missing.to_string();
+    assert!(
+        missing.contains("NotFound"),
+        "an absent directory must say so: {missing}"
+    );
+
+    // Present, but the parent cannot be traversed. The old message called this
+    // one "must be an existing directory" too.
+    fs::set_permissions(&outer, fs::Permissions::from_mode(0o000)).expect("seal the parent");
+    let denied =
+        ConfigurationDirectory::new(&inner).expect_err("an unreachable directory is refused");
+    let denied = denied.to_string();
+    fs::set_permissions(&outer, fs::Permissions::from_mode(0o755)).expect("restore the parent");
+
+    assert!(
+        denied.contains("PermissionDenied"),
+        "an existing but unreachable directory must not be reported as absent: {denied}"
+    );
+    assert!(
+        !denied.contains("NotFound"),
+        "the two failures must be distinguishable: {denied}"
+    );
+    // Still value-free: the requirement is named, the path is not.
+    assert!(
+        !denied.contains("inner"),
+        "the message must not carry the path: {denied}"
+    );
+}

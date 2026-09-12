@@ -27,8 +27,17 @@ pub struct ConfigurationDirectory {
 impl ConfigurationDirectory {
     /// Canonicalizes one existing directory as the local configuration base.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, ConfigurationError> {
-        let root = std::fs::canonicalize(path.as_ref()).map_err(|_| {
-            ConfigurationError::new("configuration directory must be an existing directory")
+        // The reason is kept, not replaced. Saying only "must be an existing
+        // directory" asserts a cause the errno can contradict: a directory that
+        // exists but whose parent is not traversable fails here with
+        // `PermissionDenied`, and an operator told it does not exist checks the
+        // path, finds it, and is no further forward. `io::ErrorKind` is a
+        // fieldless enum, so naming it adds no path and no credential.
+        let root = std::fs::canonicalize(path.as_ref()).map_err(|error| {
+            ConfigurationError::new(format!(
+                "configuration directory could not be resolved ({:?}); it must be an existing directory the server can traverse",
+                error.kind()
+            ))
         })?;
         let root = normalize_platform_path(root);
         if !root.is_dir() {
@@ -59,8 +68,11 @@ impl ConfigurationDirectory {
                 "configured path must contain at least one character",
             ));
         }
-        let canonical = std::fs::canonicalize(self.root.join(input)).map_err(|_| {
-            ConfigurationError::new("configured path must name an existing filesystem entry")
+        let canonical = std::fs::canonicalize(self.root.join(input)).map_err(|error| {
+            ConfigurationError::new(format!(
+                "configured path could not be resolved ({:?}); it must name an existing filesystem entry the server can reach",
+                error.kind()
+            ))
         })?;
         let canonical = normalize_platform_path(canonical);
         if strip_beneath(&canonical, &self.root).is_none() {
@@ -68,8 +80,11 @@ impl ConfigurationDirectory {
                 "configured path must remain beneath the configuration directory",
             ));
         }
-        let metadata = std::fs::metadata(&canonical).map_err(|_| {
-            ConfigurationError::new("configured path must name a readable filesystem entry")
+        let metadata = std::fs::metadata(&canonical).map_err(|error| {
+            ConfigurationError::new(format!(
+                "configured path could not be read ({:?}); it must name a readable filesystem entry",
+                error.kind()
+            ))
         })?;
         let accepted = match expected {
             ConfigurationTargetKind::File => metadata.is_file(),
