@@ -6,9 +6,27 @@
 
 name: CI
 
+# `push` is scoped to `main`; every other branch is covered by
+# `pull_request`. An unscoped `push` plus `pull_request` ran the whole matrix
+# twice on the identical commit, so six branches pushed in half an hour
+# produced up to 36 jobs, 12 of them macOS -- against a concurrency ceiling
+# that held exactly 3 macOS jobs while Linux ran 9. Half of that work was a
+# duplicate of the other half.
 on:
   push:
+    branches: [main]
   pull_request:
+
+# One run per ref: a new push supersedes the run still queued for the previous
+# commit instead of sitting behind it. macOS is the binding constraint here --
+# its leg is 50-60 minutes and only three run at once -- so a superseded run
+# left queued costs an hour of the platform that has the least of it.
+#
+# `main` is excluded from cancellation: its runs are the record of what landed,
+# and one is also what refreshes the build cache every branch restores from.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always

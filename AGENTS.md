@@ -32,6 +32,8 @@ Runner queue time is negligible — six seconds on that run — so the hour is a
 
 Windows is 2.2x faster than macOS because `atlassian_fixture_operator_contract` is `#![cfg(unix)]` and Windows skips it. That one target is 78 tests driving real subprocesses and a live fixture, and it dominates both the functional and release legs on the two platforms that run it. Any proposal to speed up CI should start there.
 
+CI runs the matrix **once** per commit: `push` is scoped to `main` and every other branch is covered by `pull_request`. An unscoped `push` alongside `pull_request` ran everything twice on the identical SHA. A `concurrency` group per ref also cancels a superseded run rather than leaving it queued, excluding `main`. Both matter because macOS is the binding constraint: its leg is 50-60 minutes and only three run at once, while Linux scales to nine.
+
 Only `main` writes a Rust build cache; branches read it (`save-if` in `.github/workflows/ci.yml`). Each entry is 800-900 MB and there is one per platform per branch, so per-branch saving drove the repository to 10,482 MB against GitHub's 10,240 MB ceiling and the caches evicted each other continuously. Check `gh api repos/:owner/:repo/actions/cache/usage` before adding another cache key.
 
 ## Live smoke tests
