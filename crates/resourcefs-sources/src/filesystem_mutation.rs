@@ -724,6 +724,12 @@ fn windows_rename_file(
     // non-null RootDirectory with ERROR_INVALID_PARAMETER (see MS docs: the
     // relative form is an NT-layer capability). Declaring the ntdll entry here
     // keeps the dependency to one file and avoids a Wdk feature edge.
+    // SAFETY: both signatures are transcribed from the documented ntdll ABI
+    // and are the only declarations of these entry points in the workspace.
+    // `NtSetInformationFile` takes the class-specific buffer as an untyped
+    // pointer plus its length, which is the contract the call site below
+    // satisfies; `RtlNtStatusToDosError` is a pure NTSTATUS-to-DOS mapping with
+    // no pointer arguments.
     #[link(name = "ntdll")]
     unsafe extern "system" {
         fn NtSetInformationFile(
@@ -741,6 +747,10 @@ fn windows_rename_file(
     const DELETE_ACCESS: u32 = 0x0001_0000;
     const FILE_RENAME_REPLACE_IF_EXISTS: u32 = 0x0000_0001;
     const FILE_RENAME_POSIX_SEMANTICS: u32 = 0x0000_0002;
+    // SAFETY: `source_file` is a live `File`, so its raw handle is valid for
+    // the duration of this call. `ReOpenFile` only reads the handle and returns
+    // a new one; the result is checked against INVALID_HANDLE_VALUE below
+    // before it is used.
     let reopened = unsafe {
         ReOpenFile(
             source_file.as_raw_handle(),
@@ -756,6 +766,9 @@ fn windows_rename_file(
             format!("ReOpenFile failed: {error}"),
         ));
     }
+    // SAFETY: `ReOpenFile` returned ownership of a fresh handle and the
+    // INVALID_HANDLE_VALUE case returned above, so this is a valid handle that
+    // nothing else owns. Wrapping it here is what closes it on every path out.
     let reopened = unsafe { OwnedHandle::from_raw_handle(reopened) };
     let destination = destination_name.encode_wide().collect::<Vec<_>>();
     let bytes = offset_of!(FILE_RENAME_INFO, FileName)
@@ -764,6 +777,15 @@ fn windows_rename_file(
     let words = bytes.div_ceil(std::mem::size_of::<usize>());
     let mut storage = vec![0_usize; words];
     let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // SAFETY: `storage` is a `Vec<usize>` of `words` elements, where `words` is
+    // `bytes` rounded up by `div_ceil(size_of::<usize>())` and `bytes` covers
+    // `offset_of!(FILE_RENAME_INFO, FileName)` plus room for the name and its
+    // NUL. So the allocation is at least `bytes` long and, being `usize`-typed,
+    // is aligned at least as strictly as FILE_RENAME_INFO. The
+    // `copy_nonoverlapping` writes `destination.len()` `u16`s into the trailing
+    // `FileName` array, which the same `bytes` accounting reserved; source and
+    // destination are distinct allocations. `FileNameLength` is set in bytes
+    // excluding the NUL, as the structure documents.
     unsafe {
         (*info).Anonymous.Flags = FILE_RENAME_POSIX_SEMANTICS
             | if replace {
@@ -782,7 +804,14 @@ fn windows_rename_file(
     }
     let length =
         u32::try_from(bytes).map_err(|_| io::Error::other("rename buffer is too large"))?;
+    // SAFETY: `IO_STATUS_BLOCK` is a plain-old-data struct of integers and a
+    // pointer-sized field, so an all-zero bit pattern is a valid value. It is
+    // an out-parameter the call below overwrites.
     let mut io_status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+    // SAFETY: `reopened` is a live owned handle opened with DELETE access,
+    // which this class requires. `io_status` is a valid writable out-parameter.
+    // `info` points at the initialized buffer above and `length` is exactly the
+    // `bytes` that buffer covers, so the callee reads only what was written.
     let status = unsafe {
         NtSetInformationFile(
             reopened.as_raw_handle(),
@@ -793,6 +822,8 @@ fn windows_rename_file(
         )
     };
     if status < 0 {
+        // SAFETY: a pure value mapping over the NTSTATUS just returned; no
+        // pointers are involved.
         let dos = unsafe { RtlNtStatusToDosError(status) };
         let error = io::Error::from_raw_os_error(dos as i32);
         Err(io::Error::new(
@@ -816,6 +847,9 @@ fn copy_windows_dacl(source: &File, destination: &File) -> io::Result<()> {
 
     const READ_CONTROL_ACCESS: u32 = 0x0002_0000;
     const WRITE_DAC_ACCESS: u32 = 0x0004_0000;
+    // SAFETY: `destination` is a live `File`, so its raw handle is valid for
+    // this call. The returned handle is checked against INVALID_HANDLE_VALUE
+    // before use.
     let destination_security = unsafe {
         ReOpenFile(
             destination.as_raw_handle(),
@@ -827,8 +861,15 @@ fn copy_windows_dacl(source: &File, destination: &File) -> io::Result<()> {
     if destination_security == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: `ReOpenFile` returned ownership of a fresh handle and the
+    // INVALID_HANDLE_VALUE case returned above, so taking ownership here is
+    // what closes it on every path out.
     let destination_security = unsafe { OwnedHandle::from_raw_handle(destination_security) };
     let mut required = 0_u32;
+    // SAFETY: the documented sizing call -- a null buffer with length 0 asks
+    // only for the required size, which is written through `required`. It is
+    // expected to fail; `required` is checked for zero below rather than the
+    // return value.
     unsafe {
         GetKernelObjectSecurity(
             source.as_raw_handle(),
@@ -845,6 +886,11 @@ fn copy_windows_dacl(source: &File, destination: &File) -> io::Result<()> {
         .map_err(|_| io::Error::other("security descriptor is too large"))?
         .div_ceil(std::mem::size_of::<usize>());
     let mut descriptor = vec![0_usize; words];
+    // SAFETY: `descriptor` is a `Vec<usize>` holding at least `required` bytes
+    // -- `required` rounded up by `div_ceil(size_of::<usize>())` -- and being
+    // `usize`-typed is suitably aligned for a security descriptor. `required`
+    // is passed unchanged as the buffer length, so the callee writes no more
+    // than was allocated.
     let loaded = unsafe {
         GetKernelObjectSecurity(
             source.as_raw_handle(),
@@ -857,6 +903,10 @@ fn copy_windows_dacl(source: &File, destination: &File) -> io::Result<()> {
     if loaded == 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: `destination_security` is a live owned handle opened with
+    // READ_CONTROL and WRITE_DAC, which this call requires, and `descriptor`
+    // holds the descriptor the successful load above wrote. The callee only
+    // reads it.
     let stored = unsafe {
         SetKernelObjectSecurity(
             destination_security.as_raw_handle(),
