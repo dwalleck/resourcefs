@@ -317,6 +317,23 @@ Three adversarial reviewers examined the repair diff itself, because the repairs
 | RR11 | R11 redundant mutation | Verified | `SiblingUrlWithQuery` was a byte-identical duplicate of the pre-existing `QueryBearingEntryLink`, already applied to the same unselected sibling at HEAD, so it could not fail on anything the older row did not. | Accept | The variant and its three match arms plus the test row are deleted; `ForeignSiblingLink` is the row that carries the narrowing's fence. |
 | RR9 | R10 commit narrative | Verified | The two `facts.rs` body registrations rode in the gate commit rather than the commit that changed those bodies. | Reject | Narrative only: the tree is consistent and both registrations were verified legitimate (both bodies exist at the pinned baseline and genuinely differ). The follow-up commit records it. |
 
+### Fence-mutation receipts for this round
+
+Every new or changed fence this round was shown red under an injected fault on the repaired tree, then green once restored. Each row names the mutant, the one artifact it edits, and the assertion that turned red.
+
+| mutant | edit | fence turned red |
+|---|---|---|
+| X1 | `retains_verified_metadata` returns `true` (retain everything) | Five fences, one run: `source_facts_refuse_the_whole_read_for_a_deadline_refusal`, `..._when_the_response_ceiling_bounds_the_blob`, the verdict table, `source_facts_keep_one_attempt_budget_through_deep_blob_stage`, and `source_facts_cover_every_independent_fixture_case`. |
+| X2 | `read_tree_entry` validates every entry of the traversed tree instead of the selected one | `source_facts_read_a_path_whose_sibling_entries_carry_opaque_links` — panics on `ForeignSiblingLink` with `source_unavailable`, which is the narrowing this fence exists to protect. |
+| X3 | only the `ErrorReason::UpstreamRateLimited` arm removed from the retention allowlist | `source_facts_retain_ordinary_blob_failure_but_not_identity_failure` — panics on the `BlobRetryAfterWithinDeadline` row. |
+| X4 | only the `ErrorReason::TransportFailure` arm removed | The same test — panics on the `BlobAborted` row. Run separately from X3 because X3's loop aborts on its first failing row, leaving the transport row unexercised. |
+| X5 | `identity::required(&native.url)?` deleted from `read_blob` | The verdict table — `OmitBlobUrl` degrades from `SourceUnavailable`/`UpstreamMalformed` to `NotFound`. |
+| X6 | `Presence::omitted()` returns true for `Null` as well | `source_facts_publish_presence_aware_terminal_size` — the explicit-null row loses its key. |
+
+Restored green after each: `cargo test -p resourcefs-sources --test github_source_contract` — 17 passed.
+
+Not individually mutated, and recorded as such rather than implied: the `OpaqueEntryLink` and `QueryBearingEntryLink` rows (X2 exercises them only in passing — an opaque value passes even a widened check, which is the behaviour they assert), the positive supplied-size row (proven by the fixture's own value, not by a mutant), and the `BlobUnavailable`/`BlobDenied`/`BlobAbsent` retention rows (X3/X4 cover the allowlist mechanism; these three name their own published category and reason).
+
 ### Tracker dispositions
 
 | item | issue | why deferred |
