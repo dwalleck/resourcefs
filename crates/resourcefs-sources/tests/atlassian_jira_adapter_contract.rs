@@ -769,3 +769,35 @@ fn mount_validation_maximum_stays_within_budget() {
         "maximum Site Mount validation took {elapsed:?}, exceeding CI budget {budget:?}"
     );
 }
+
+/// A 2xx that is not exactly `200` is a success, not an outage.
+///
+/// `classify_status` used to accept `200` alone, so a `203` carrying a perfectly
+/// valid issue document was rejected as `source_unavailable` -- while `https.rs`
+/// and both GitHub read classifiers already accepted the whole `2xx` range. The
+/// same status meant different things depending on which source answered.
+#[tokio::test]
+async fn a_non_200_success_status_is_read_not_refused() {
+    let (_listener, source) = fixture_source(|_path| {
+        protocol_response(
+            "203 Non-Authoritative Information",
+            [("ETag", "\"proxied-v1\"".to_owned())],
+            ISSUE,
+        )
+    })
+    .await;
+    let resource = source
+        .read(
+            &PathReference::parse("jira://acme/issues/10001").expect("reference"),
+            &OperationGuard::new(),
+            None,
+        )
+        .await
+        .expect("a 2xx carrying a valid document is a successful read");
+    assert!(
+        resource.content().contains("Hello"),
+        "the proxied body must be the Resource: {:?}",
+        resource.content()
+    );
+    settle().await;
+}

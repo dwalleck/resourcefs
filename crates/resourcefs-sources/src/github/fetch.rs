@@ -115,7 +115,7 @@ pub(super) fn unix_ms() -> Result<u64, ResourceError> {
 /// Both classifiers below triage the same upstream response, so they share one
 /// predicate rather than restating it in opposite polarities that must be kept
 /// in agreement by hand.
-fn is_rate_limited(response: &crate::BoundedHttpResponse) -> bool {
+pub(super) fn is_rate_limited(response: &crate::BoundedHttpResponse) -> bool {
     response.rate_limit_remaining() == Some(0) || response.retry_after().is_some()
 }
 
@@ -135,7 +135,12 @@ fn classify_facts_status(response: &crate::BoundedHttpResponse) -> Result<(), Re
             ErrorCategory::SourceUnavailable,
             ErrorReason::UpstreamRateLimited,
         ),
-        404 => (
+        // 404 and 410 alike: every other source in the workspace maps Gone to
+        // not_found, and a Gone Resource is absent, not an outage. These two
+        // read classifiers were the only sites letting 410 fall through to
+        // source_unavailable, which told a caller to retry something that will
+        // never come back.
+        404 | 410 => (
             ErrorCategory::NotFound,
             ErrorReason::UpstreamNotFoundOrHidden,
         ),
@@ -422,7 +427,7 @@ impl GithubSource {
                 ErrorCategory::PermissionDenied,
                 "GitHub denied the requested operation",
             )),
-            404 => Err(github_error(
+            404 | 410 => Err(github_error(
                 ErrorCategory::NotFound,
                 "GitHub Resource was not found or is access-hidden",
             )),

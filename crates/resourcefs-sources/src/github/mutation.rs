@@ -1273,12 +1273,10 @@ fn classify_mutation_response(
             ErrorCategory::PermissionDenied,
             "GitHub rejected the configured credential",
         ),
-        403 if response.rate_limit_remaining() == Some(0) || response.retry_after().is_some() => {
-            ResourceError::new(
-                ErrorCategory::SourceUnavailable,
-                "GitHub rate limit is exhausted",
-            )
-        }
+        403 if super::fetch::is_rate_limited(response) => ResourceError::new(
+            ErrorCategory::SourceUnavailable,
+            "GitHub rate limit is exhausted",
+        ),
         403 => ResourceError::new(
             ErrorCategory::PermissionDenied,
             "GitHub denied the requested mutation",
