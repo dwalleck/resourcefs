@@ -1,5 +1,14 @@
 //! Compiled ResourceFS Source Adapters.
 
+// DESIGN.md requires every `unsafe` block to carry a `// SAFETY:`
+// justification. This is the crate that holds the workspace's platform FFI, and
+// thirteen blocks had drifted without one -- all of them `#[cfg(windows)]`, so
+// Linux CI never typechecked the bodies, let alone lint them. The gate runs
+// clippy with `-D warnings`, which turns this into a hard failure; verify
+// Windows-gated code with `cargo xwin clippy --target x86_64-pc-windows-msvc`,
+// because the native check cannot see it.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 mod artifact;
 mod atlassian;
 mod catalog;
