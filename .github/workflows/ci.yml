@@ -67,4 +67,18 @@ jobs:
 
       - name: Repository gates
         if: ${{ !cancelled() }}
+        env:
+          # macOS was the matrix's critical path at 60 min against Windows's 27,
+          # and one target was most of the gap:
+          # `atlassian_fixture_operator_contract`, 78 tests driving a
+          # create/verify/cleanup lifecycle through a real subprocess. Windows
+          # is fast because the target is `#![cfg(unix)]` and it skips it.
+          #
+          # Pull requests skip it on macOS so a review is not gated on it.
+          # `main` still runs it there, which is the point: the brew-bash step
+          # above exists for this contract, because
+          # `scripts/atlassian-fixture-bootstrap.sh` needs Bash 4.4+ and macOS
+          # ships 3.2. This is the only target proving that script runs on
+          # macOS, so it moves off the critical path rather than disappearing.
+          RFS_SKIP_TEST_TARGETS: ${{ (runner.os == 'macOS' && github.event_name == 'pull_request') && 'atlassian_fixture_operator_contract' || '' }}
         run: python scripts/ci-gates.py
