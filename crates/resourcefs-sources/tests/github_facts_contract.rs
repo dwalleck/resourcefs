@@ -27,6 +27,22 @@ use std::{
 };
 use tls::{FixtureResponse, TlsListener};
 
+/// How long a liveness wait sits before it gives up.
+///
+/// Every wall-clock wait in this file is a backstop, not a latency assertion:
+/// it exists so a notification that never arrives fails with a clear message
+/// instead of hanging, and no assertion here depends on the duration -- the
+/// categories and the observed counts do the actual proving. The value is
+/// therefore far above any plausible real wait, since a loopback TLS handshake
+/// is milliseconds, and the only thing it costs is how long a genuine hang
+/// takes to report.
+///
+/// It used to be two to five seconds, which is close enough to real contention
+/// to lose. `facts_inflight_cancel_and_deadline_refuse_barrier_delayed_response`
+/// failed on Windows CI at 3.223 s against a 3 s bound while the other 697
+/// tests passed, and the same commit passed in the sibling run.
+const LIVENESS_BACKSTOP: Duration = Duration::from_secs(30);
+
 const NATIVE: &str = include_str!("../../../.rfs-0n97/oracles/pr-native.json");
 const RESOURCE: &str = "pr://owner/repo/7/facts";
 
@@ -789,7 +805,7 @@ async fn facts_inflight_cancel_and_deadline_refuse_barrier_delayed_response() {
                     notify.notify_one();
                     match blocked.lock() {
                         Ok(receiver) => receiver
-                            .recv_timeout(Duration::from_secs(5))
+                            .recv_timeout(LIVENESS_BACKSTOP)
                             .expect("release barrier"),
                         Err(poisoned) => panic!("response barrier poisoned: {poisoned}"),
                     }
@@ -825,13 +841,13 @@ async fn facts_inflight_cancel_and_deadline_refuse_barrier_delayed_response() {
                 )
                 .await
         });
-        tokio::time::timeout(Duration::from_secs(3), arrived.notified())
+        tokio::time::timeout(LIVENESS_BACKSTOP, arrived.notified())
             .await
             .expect("actual HTTP request arrived");
         if cancel {
             operation.cancel();
         }
-        let result = tokio::time::timeout(Duration::from_secs(2), task)
+        let result = tokio::time::timeout(LIVENESS_BACKSTOP, task)
             .await
             .expect("bounded response")
             .expect("reader task");
@@ -875,7 +891,7 @@ async fn facts_inflight_generation_change_refuses_publication() {
                     blocked
                         .lock()
                         .expect("response barrier")
-                        .recv_timeout(Duration::from_secs(5))
+                        .recv_timeout(LIVENESS_BACKSTOP)
                         .expect("release barrier");
                 }
                 response(
@@ -890,7 +906,7 @@ async fn facts_inflight_generation_change_refuses_publication() {
         let source = Arc::new(source);
         let reading = Arc::clone(&source);
         let task = tokio::spawn(async move { read(&reading, None).await });
-        tokio::time::timeout(Duration::from_secs(3), arrived.notified())
+        tokio::time::timeout(LIVENESS_BACKSTOP, arrived.notified())
             .await
             .expect("actual request arrived");
         if invalidate {
@@ -901,7 +917,7 @@ async fn facts_inflight_generation_change_refuses_publication() {
                 .expect("source namespace invalidation");
         }
         release.send(()).expect("release response");
-        let result = tokio::time::timeout(Duration::from_secs(3), task)
+        let result = tokio::time::timeout(LIVENESS_BACKSTOP, task)
             .await
             .expect("bounded source read")
             .expect("reader task");
@@ -3164,7 +3180,7 @@ async fn collection_generation_change_between_pages_rejects_verified_prefix() {
         blocked
             .lock()
             .expect("generation barrier")
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(LIVENESS_BACKSTOP)
             .expect("release generation barrier");
         comment_page(&(101..=200).collect::<Vec<_>>(), api, None)
     })
@@ -3173,7 +3189,7 @@ async fn collection_generation_change_between_pages_rejects_verified_prefix() {
     let reading = Arc::clone(&source);
     let task =
         tokio::spawn(async move { read_reference(&reading, COLLECTION_RESOURCE, None).await });
-    tokio::time::timeout(Duration::from_secs(3), page_two_arrived.notified())
+    tokio::time::timeout(LIVENESS_BACKSTOP, page_two_arrived.notified())
         .await
         .expect("second page request arrived");
     session_fixture
@@ -3182,7 +3198,7 @@ async fn collection_generation_change_between_pages_rejects_verified_prefix() {
         .await
         .expect("invalidate GitHub generation");
     release.send(()).expect("release second page");
-    let result = tokio::time::timeout(Duration::from_secs(3), task)
+    let result = tokio::time::timeout(LIVENESS_BACKSTOP, task)
         .await
         .expect("bounded generation read")
         .expect("reader task");
@@ -4671,7 +4687,7 @@ async fn inline_collection_cancellation_rejects_acquired_pages() {
             notify.notify_one();
             match blocked.lock() {
                 Ok(receiver) => receiver
-                    .recv_timeout(Duration::from_secs(5))
+                    .recv_timeout(LIVENESS_BACKSTOP)
                     .expect("release barrier"),
                 Err(poisoned) => panic!("response barrier poisoned: {poisoned}"),
             }
@@ -4694,12 +4710,12 @@ async fn inline_collection_cancellation_rejects_acquired_pages() {
             )
             .await
     });
-    tokio::time::timeout(Duration::from_secs(3), arrived.notified())
+    tokio::time::timeout(LIVENESS_BACKSTOP, arrived.notified())
         .await
         .expect("page two request arrived after page one was acquired");
     operation.cancel();
     release.send(()).expect("release page two");
-    let error = tokio::time::timeout(Duration::from_secs(2), task)
+    let error = tokio::time::timeout(LIVENESS_BACKSTOP, task)
         .await
         .expect("bounded response")
         .expect("reader task")
@@ -5315,7 +5331,7 @@ async fn immutable_source_final_generation_change_refuses_publication() {
             (result, seen)
         })
     });
-    let observed = tokio::time::timeout(Duration::from_secs(5), notification).await;
+    let observed = tokio::time::timeout(LIVENESS_BACKSTOP, notification).await;
     if observed.is_err() {
         stop_tx.send(false).expect("stop C8 helper");
         let (result, seen) = source_thread.join().expect("racing source thread");
