@@ -39,8 +39,23 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Only `main` writes a cache; every branch reads one.
+      #
+      # Each entry is 800-900 MB and there is one per platform per branch, so
+      # with three platforms and a handful of open pull requests the repository
+      # sat at 10,482 MB against GitHub's 10,240 MB ceiling -- 13 caches
+      # evicting each other continuously, which is why a restore was 12 seconds
+      # and the compile that followed was cold anyway. Writing only from `main`
+      # holds the total at three entries, and a branch still restores from
+      # `main` because GitHub lets a ref read its default branch's caches.
+      #
+      # The trade is that a branch which changes `Cargo.lock` gets a partial
+      # restore until it merges. That is the normal case for this repository's
+      # branches and is cheaper than the eviction it replaces.
       - name: Cache cargo state
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny

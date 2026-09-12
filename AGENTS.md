@@ -16,6 +16,24 @@ This is a single-context repository with `CONTEXT.md` at the root and ADRs under
 
 Run `python scripts/ci-gates.py` for the complete local/CI gate; Python 3.9+ and `cargo-deny` are required. The runner owns the command list and ignored-test classification. A plain `cargo test` is a focused functional check, not the full gate. Keep production budgets in the runner's verified inventory and live smoke tests in their separate, credential-gated path below.
 
+### What the gate costs
+
+Measured on run 34679364288, per platform, so a change's cost is judged against where the time actually goes rather than guessed:
+
+| Gate | macOS | Ubuntu | Windows |
+|---|---|---|---|
+| Functional tests | 20.9 | 14.8 | 5.7 |
+| Release workspace | 31.6 | 29.8 | 12.4 |
+| Ignored budgets | 4.3 | 3.3 | 5.2 |
+| everything else | 2.1 | 1.6 | 2.9 |
+| **total (min)** | **60.3** | **50.6** | **27.1** |
+
+Runner queue time is negligible — six seconds on that run — so the hour is all work.
+
+Windows is 2.2x faster than macOS because `atlassian_fixture_operator_contract` is `#![cfg(unix)]` and Windows skips it. That one target is 78 tests driving real subprocesses and a live fixture, and it dominates both the functional and release legs on the two platforms that run it. Any proposal to speed up CI should start there.
+
+Only `main` writes a Rust build cache; branches read it (`save-if` in `.github/workflows/ci.yml`). Each entry is 800-900 MB and there is one per platform per branch, so per-branch saving drove the repository to 10,482 MB against GitHub's 10,240 MB ceiling and the caches evicted each other continuously. Check `gh api repos/:owner/:repo/actions/cache/usage` before adding another cache key.
+
 ## Live smoke tests
 
 Every network-backed Source Adapter, and every primary tool path that crosses one, ships with a live smoke: an `#[ignore]` test named `live_*`, gated on an environment variable (`RFS_LIVE=1`; additionally `GITHUB_TOKEN` for GitHub rows) that skips cleanly when the gate is absent and drives the real adapter — or the real `rfs` binary over stdio — against a real public upstream, read-only. `scripts/live-smoke.sh` runs them all and sources the GitHub token from `gh auth token`; `cargo live` does the same once the environment is set. The deterministic fake-upstream contracts remain the permanent suite, and CI never runs the live rows.
