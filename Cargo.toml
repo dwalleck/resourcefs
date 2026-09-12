@@ -6,6 +6,21 @@ members = [
     "crates/resourcefs-sources",
 ]
 
+# Debug information dominates this workspace's build output: 86% of a test
+# binary was DWARF (26 MB of .text against 221 MB of .debug_*), across 70
+# integration-test binaries. `line-tables-only` keeps the file:line that
+# backtraces and panic messages need -- which is all the suite consumes -- and
+# drops the type and variable DWARF that nothing here reads. Dependencies get
+# none at all: a backtrace through `reqwest` is not where these tests are
+# debugged, and they are the bulk of the graph.
+#
+# `profile.test` inherits from `profile.dev`, so this covers `cargo test`.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [workspace.package]
 version = "1.0.0"
 edition = "2024"
