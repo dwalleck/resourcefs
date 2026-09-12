@@ -24,16 +24,6 @@ const TREE_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const PARENT_SHA: &str = "cccccccccccccccccccccccccccccccccccccccc";
 const SECOND_PARENT_SHA: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
-fn host_from_head(head: &str) -> &str {
-    head.lines()
-        .find_map(|line| {
-            line.split_once(':')
-                .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-                .map(|(_, value)| value.trim())
-        })
-        .expect("Host header")
-}
-
 fn repository_json(host: &str) -> Value {
     json!({
         "id": 1,
@@ -191,7 +181,7 @@ async fn fixture_with_limits(
         0,
         tls::match_cert(),
         move |request| {
-            let host = format!("{}{api_prefix}", host_from_head(request.head()));
+            let host = format!("{}{api_prefix}", request.host());
             let mut body = match request.target().strip_prefix(api_prefix).expect("configured API prefix") {
                 "/repos/owner/repo" => repository_json(&host),
                 "/repos/owner/repo/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" => {
@@ -739,6 +729,7 @@ async fn immutable_commit_facts_report_effective_limits_and_enforce_the_attempt_
             Some(1_048_576),
             Some(2_097_152),
             Some(4_194_304),
+            None,
         )
         .expect("documented profile limits"),
     )
@@ -751,6 +742,7 @@ async fn immutable_commit_facts_report_effective_limits_and_enforce_the_attempt_
         Some(524_288),
         Some(4_194_304),
         Some(8_388_608),
+        None,
     )
     .expect("caller limits");
     let reference = format!("github://owner/repo/commits/{COMMIT_SHA}/facts");
@@ -784,7 +776,7 @@ async fn immutable_commit_facts_report_effective_limits_and_enforce_the_attempt_
     // cannot reach the commit after the repository.
     let (listener, source, _session) = fixture_with_limits(
         FixtureMode::Valid,
-        ReadAcquisitionLimits::new(Some(1), None, None, None, None).expect("one attempt"),
+        ReadAcquisitionLimits::new(Some(1), None, None, None, None, None).expect("one attempt"),
     )
     .await;
     let error = read_reference(&source, &reference)

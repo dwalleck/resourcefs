@@ -1,0 +1,26 @@
+{
+  "base": "d8d61ba",
+  "sha256": {
+    "Cargo.toml": "6759a50cf18daff94c32c999b0ee4b66c8531a502173d8ecef104d5aacd409e5",
+    "Cargo.lock": "78427bb09725e2c99e9879ab832ca77f84105c739442832186e3cfa06d64ac43",
+    "DESIGN.md": "da1d1135871bf04cfffe62da4b7e9e219d531d4409a3eb3393345775c1b726d1",
+    "docs/operating.md": "4fa7a9738bf16e7b10743cf8d5037816a42c17e9793db6d33ed5bff9d5010382",
+    "scripts/ci-gates.py": "714aa19692e239864b75d5df5f37ed282a786f2b3a87dcd92f9a637ae8b53079",
+    "scripts/module-ledger.json": "53609d080a3c933d639f5467db90a9b5ebaa30ca91ff21d2074d3bfd33159600",
+    "crates/resourcefs-sources/Cargo.toml": "20cc77600bd477f46efbeeeeba3415fa1b9d9500c845fd1faee475ed0fa800be",
+    "crates/resourcefs-sources/src/github/facts.rs": "26d4902908e3f4722c5839f2ed5495c086d5b4e755ad6da7706947ad92a7619a",
+    "crates/resourcefs-sources/src/github/facts/collection.rs": "b591cfff3c080dafc879db985f06ea0749d191e729574cc9dc07e6da9088b0a4",
+    "crates/resourcefs-sources/src/github/facts/commit.rs": "c3943e4b9998da7d278fd6566b24fb1d02dc28592b529ad166b580f45307a467",
+    "crates/resourcefs-sources/src/github/facts/object.rs": "5388ec304c470e35a87d89501699e3031b3979fefaf2952c109d51621560b22c",
+    "crates/resourcefs-sources/src/github/facts/source.rs": "55305fedbf5b25e5964c78ba7187f162b04c24e9bdb09ae839d2a03bd2faa655",
+    "crates/resourcefs-sources/src/github/mod.rs": "40b2a2129857135ba69fd8b0545c3ac4b555600bbd9a7d7206024ab86fc8147a",
+    "crates/resourcefs-sources/tests/github_facts_contract.rs": "b26a9266a9a5e46f77661c6927611579903887e8f4e427224b22562bbbaa894c",
+    "crates/resourcefs-sources/tests/github_live_smoke.rs": "a5467b86fafbcd8c0fdec2c3c042e0a410be2b0b44a0b8578735587b1eeaf9a2",
+    "crates/resourcefs-sources/tests/github_source_contract.rs": "6711e867c82d0ce2ed0091fcae58f1bb185dde902f509d07ff7fe48f4c5e6854",
+    "crates/resourcefs-sources/tests/fixtures/github_immutable.json": "0a8463c53159c31fae8ec95d9c12b31979aa8f33a746ddd9a130f298a83d5711",
+    "crates/resourcefs-mcp/tests/architecture_contract.rs": "2ebec0e114fbcf4815cc48fb05c40a6216f03295670cc66a6abdf0274bd8ca27",
+    "crates/resourcefs-mcp/tests/stdio_mcp_contract.rs": "0fc933bd4fa131b359551d8f3c63835e9191c2862851483c8b9fa19d1b0df1ce",
+    "crates/resourcefs-mcp/tests/stdio_live_smoke.rs": "1459e5e7e745ca2208c8a1280207a4b0fb17ffdd316f8b90ef24f0c263555c86",
+    ".rfs-jrz7/build_git_corpus.py": "470296875c9ef5c3f49a8e72e93969c1e6e8774d4968dfb96d64fd6087ea39eb"
+  }
+}

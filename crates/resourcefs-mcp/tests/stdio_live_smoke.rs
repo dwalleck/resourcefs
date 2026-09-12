@@ -64,8 +64,8 @@ fn write_profile(directory: &Path) -> PathBuf {
     write_profile_with_attempts(directory, None)
 }
 
-/// The GitHub source row both live profiles mount: one required source with an
-/// environment credential, differing only by repository and, when a row
+/// The GitHub source row every live profile mounts: one required source with
+/// an environment credential, differing only by repository and, when a row
 /// exercises the documented per-call control, a pinned attempt bound.
 fn github_source(repository: &str, max_attempts: Option<u64>) -> Value {
     let mut source = json!({
@@ -117,6 +117,21 @@ fn write_commit_profile(directory: &Path) -> PathBuf {
         .expect("commit profile JSON"),
     )
     .expect("write commit profile");
+    path
+}
+
+fn write_source_profile(directory: &Path) -> PathBuf {
+    let path = directory.join("live-source.json");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&json!({
+            "schemaVersion": 1,
+            "session": {"cacheDirectory": "live-source-cache"},
+            "sources": [github_source("dwalleck/resourcefs", None)]
+        }))
+        .expect("source profile JSON"),
+    )
+    .expect("write source profile");
     path
 }
 
@@ -530,6 +545,161 @@ fn live_stdio_github_commit_facts_match_native_observation() {
     assert!(!bytes.contains(&token));
     let stderr = server.finish();
     assert!(!stderr.contains(&token), "credential leaked to diagnostics");
+}
+
+#[test]
+#[ignore = "live full-stack source smoke; needs RFS_LIVE=1 and GITHUB_TOKEN"]
+fn live_stdio_github_source_facts_match_native_blob() {
+    const COMMIT: &str = "635ab170ab57542c18272921298d575da2f8b08a";
+    const SOURCE_PATH: &str = "crates/resourcefs-core/Cargo.toml";
+    const OBJECT_SHA: &str = "8b57d630ab71fbc6daa17d949b311029362ff5aa";
+    const OBJECT_SIZE: u64 = 1_063;
+    const OBJECT_SHA256: &str = "dbef110105ca17fba63d1785fce00321b083c30310062abd2218c0154619698";
+    let Some(token) = live_token() else { return };
+    let temporary = TempDir::new().expect("temporary directory");
+    let profile = write_source_profile(temporary.path());
+
+    // The real binary's check path must authenticate and probe the configured
+    // source before the stdio read is attempted.
+    let check = Command::new(binary())
+        .args(["check", "--probe", "--config"])
+        .arg(&profile)
+        .env("GITHUB_TOKEN", &token)
+        .current_dir(temporary.path())
+        .output()
+        .expect("run source check");
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "source check failed: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let report: Value = serde_json::from_slice(&check.stdout).expect("source check report");
+    assert_eq!(report["ok"], true, "{report}");
+    assert_eq!(report["probe"], true);
+    assert_eq!(report["sources"][0]["state"], "available");
+
+    let Some(native_repository) = native_gh(&token, "repos/dwalleck/resourcefs") else {
+        return;
+    };
+    let Some(native_commit) = native_gh(
+        &token,
+        &format!("repos/dwalleck/resourcefs/commits/{COMMIT}"),
+    ) else {
+        return;
+    };
+    assert_eq!(native_commit["sha"], COMMIT);
+    let mut tree_sha = native_commit["commit"]["tree"]["sha"]
+        .as_str()
+        .expect("native root tree SHA")
+        .to_owned();
+    let mut containing_tree_sha: Option<String> = None;
+    let mut native_entry = Value::Null;
+    let segments = SOURCE_PATH.split('/').collect::<Vec<_>>();
+    for (index, segment) in segments.iter().enumerate() {
+        let Some(tree) = native_gh(
+            &token,
+            &format!("repos/dwalleck/resourcefs/git/trees/{tree_sha}"),
+        ) else {
+            return;
+        };
+        let entry = tree["tree"]
+            .as_array()
+            .expect("native tree entries")
+            .iter()
+            .find(|entry| entry["path"].as_str() == Some(*segment))
+            .cloned()
+            .unwrap_or_else(|| panic!("native tree lacks {segment}"));
+        containing_tree_sha = Some(tree_sha.clone());
+        if index + 1 < segments.len() {
+            tree_sha = entry["sha"]
+                .as_str()
+                .expect("native nested tree SHA")
+                .to_owned();
+        } else {
+            native_entry = entry;
+        }
+    }
+    assert_eq!(native_entry["sha"], OBJECT_SHA);
+    assert_eq!(native_entry["mode"], "100644");
+    assert_eq!(native_entry["type"], "blob");
+    assert_eq!(native_entry["size"], OBJECT_SIZE);
+    let Some(native_blob) = native_gh(
+        &token,
+        &format!("repos/dwalleck/resourcefs/git/blobs/{OBJECT_SHA}"),
+    ) else {
+        return;
+    };
+    assert_eq!(native_blob["sha"], OBJECT_SHA);
+    assert_eq!(native_blob["size"], OBJECT_SIZE);
+    assert_eq!(native_blob["encoding"], "base64");
+    let native_base64: String = native_blob["content"]
+        .as_str()
+        .expect("native blob content")
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect();
+
+    let reference = format!("github://dwalleck/resourcefs/source/{COMMIT}/{SOURCE_PATH}/facts");
+
+    let mut server = Server::start(&profile, &token);
+    server.initialize();
+    let first = server.call(
+        "rfs_read",
+        json!({"path": reference.clone(), "limits": {"bytes": 256}}),
+    );
+    let (facts, bytes, _) = recover_artifact_document(&mut server, first);
+    assert_eq!(facts["schemaVersion"], json!({"major": 1, "minor": 0}));
+    assert_eq!(facts["kind"], "github.source");
+    assert_eq!(facts["resource"], reference);
+    assert_eq!(
+        facts["request"],
+        json!({
+            "repository": {"owner": "dwalleck", "name": "resourcefs"},
+            "commitSha": COMMIT,
+            "path": SOURCE_PATH
+        })
+    );
+    assert_eq!(facts["observed"]["commitSha"], COMMIT);
+    assert_eq!(
+        facts["observed"]["treeSha"],
+        native_commit["commit"]["tree"]["sha"]
+    );
+    assert_eq!(
+        facts["observed"]["containingTreeSha"],
+        containing_tree_sha.expect("containing tree")
+    );
+    assert_eq!(facts["observed"]["objectSha"], OBJECT_SHA);
+    assert_eq!(facts["observed"]["mode"], "100644");
+    assert_eq!(facts["observed"]["objectType"], "blob");
+    assert_eq!(facts["observed"]["path"], SOURCE_PATH);
+    assert_eq!(facts["data"]["commitSha"], COMMIT);
+    assert_eq!(
+        facts["data"]["treeSha"],
+        native_commit["commit"]["tree"]["sha"]
+    );
+    assert_eq!(
+        facts["data"]["containingTreeSha"],
+        facts["observed"]["containingTreeSha"]
+    );
+    assert_eq!(facts["data"]["objectSha"], OBJECT_SHA);
+    assert_eq!(facts["data"]["mode"], "100644");
+    assert_eq!(facts["data"]["objectType"], "blob");
+    assert_eq!(facts["data"]["path"], SOURCE_PATH);
+    assert_eq!(facts["data"]["sizeBytes"], OBJECT_SIZE);
+    assert_eq!(facts["data"]["content"]["state"], "available");
+    assert_eq!(facts["data"]["content"]["encoding"], "base64");
+    assert_eq!(facts["data"]["content"]["decodedSizeBytes"], OBJECT_SIZE);
+    assert_eq!(facts["data"]["content"]["bytesBase64"], native_base64);
+    assert_eq!(
+        native_base64.len(),
+        1_420,
+        "canonical source bytes correspond to oracle SHA-256 {OBJECT_SHA256}"
+    );
+    assert!(!bytes.contains(&token));
+    let stderr = server.finish();
+    assert!(!stderr.contains(&token), "credential leaked to diagnostics");
+    assert_eq!(native_repository["full_name"], "dwalleck/resourcefs");
 }
 
 #[test]

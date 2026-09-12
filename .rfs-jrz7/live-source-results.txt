@@ -1,0 +1,26 @@
+cargo test -p resourcefs-sources --features test-support --test github_live_smoke live_github_immutable_source_facts_hold_up -- --ignored --exact --nocapture
+exit=0
+
+running 1 test
+test live_github_immutable_source_facts_hold_up ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 3.97s
+
+
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.13s
+     Running tests/github_live_smoke.rs (target/debug/deps/github_live_smoke-e4da2cf3969eb45a)
+
+cargo test -p resourcefs-mcp --features test-support --test stdio_live_smoke live_stdio_github_source_facts_match_native_blob -- --ignored --exact --nocapture
+exit=0
+
+running 1 test
+test live_stdio_github_source_facts_match_native_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 4.38s
+
+
+   Compiling resourcefs-sources v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-sources)
+   Compiling resourcefs-mcp v1.0.0 (/home/dwalleck/repos/resourcefs-wt-rfs-jrz7/crates/resourcefs-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.06s
+     Running tests/stdio_live_smoke.rs (target/debug/deps/stdio_live_smoke-9177ed289fd964d8)

@@ -1,0 +1,33 @@
+Target: crates/resourcefs-sources/src/github/mod.rs
+Command: ['cargo', 'test', '-p', 'resourcefs-mcp', '--features', 'test-support', '--test', 'stdio_mcp_contract', 'github_source_stdio_reconstructs_exact_binary_and_enforces_decoded_caps', '--', '--exact']
+Mutation: '                self.read_facts(reference, operation, acquisition).await' -> '                Err(ResourceError::new(ErrorCategory::UnsupportedProjection, "mutant: compiled GitHub facts disabled"))'
+RED exit=101
+
+running 1 test
+test github_source_stdio_reconstructs_exact_binary_and_enforces_decoded_caps ... FAILED
+
+failures:
+
+---- github_source_stdio_reconstructs_exact_binary_and_enforces_decoded_caps stdout ----
+
+thread 'github_source_stdio_reconstructs_exact_binary_and_enforces_decoded_caps' (3276006) panicked at crates/resourcefs-mcp/tests/stdio_mcp_contract.rs:2650:9:
+assertion `left == right` failed: {"content":[{"text":"[rfs_error]\ncategory: unsupported_projection\npath: github://owner/repo/source/0aa2a666a7286bba34bec5fdc47252b93c0db651/docs/%CE%BB%20space%252F%3Araw.bin/facts\nmessage: mutant: compiled GitHub facts disabled","type":"text"}],"isError":true,"resultType":"complete","structuredContent":{"contractVersion":"1.1.0","error":{"category":"unsupported_projection","message":"mutant: compiled GitHub facts disabled"},"ok":false,"requestedPath":"github://owner/repo/source/0aa2a666a7286bba34bec5fdc47252b93c0db651/docs/%CE%BB%20space%252F%3Araw.bin/facts"}}
+  left: Bool(true)
+ right: false
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    github_source_stdio_reconstructs_exact_binary_and_enforces_decoded_caps
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 50 filtered out; finished in 0.24s
+
+
+[Compiler dead-code warning expansion omitted; the mutated harness executed and failed above.]
+
+RESTORED GREEN exit=0
+
+running 1 test
+test github_source_stdio_reconstructs_exact_binary_and_enforces_decoded_caps ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 50 filtered out; finished in 0.41s

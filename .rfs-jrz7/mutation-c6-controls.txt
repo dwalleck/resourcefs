@@ -1,0 +1,20 @@
+Target: crates/resourcefs-core/src/acquisition.rs
+Command: ['cargo', 'test', '--locked', '-p', 'resourcefs-core', '--test', 'acquisition_contract']
+Mutation: 'max_decoded_bytes: self.max_decoded_bytes.min(other.max_decoded_bytes)' -> 'max_decoded_bytes: self.max_decoded_bytes'
+Governed observable: the effective decoded ceiling must be the lower of caller and operator policy.
+
+RED exit=101
+test intersection_lowers_unequal_dimensions_independently ... FAILED
+test rejects_zero_and_above_hard_in_every_dimension ... FAILED
+failures:
+failures:
+    intersection_lowers_unequal_dimensions_independently
+    rejects_zero_and_above_hard_in_every_dimension
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+RESTORED GREEN exit=0
+test decoded_content_bound_is_stable_and_inclusive ... ok
+test bounded_details_reject_invalid_status_and_zero_limit ... ok
+test rejects_zero_and_above_hard_in_every_dimension ... ok
+test intersection_lowers_unequal_dimensions_independently ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

@@ -3,9 +3,11 @@ mod session_support;
 #[path = "support/tls.rs"]
 mod tls;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use resourcefs_core::{
-    AllowedOrigin, ErrorCategory, ErrorReason, HttpCeilings, OperationGuard, PathReference,
-    ReadAcquisitionLimits, ReadRequest, Secret, SourceAdapter, SourceResource, TextLimits,
+    AcquisitionLimitKind, AllowedOrigin, ErrorCategory, ErrorReason, HttpCeilings, OperationGuard,
+    PathReference, ReadAcquisitionLimits, ReadRequest, Secret, SourceAdapter, SourceResource,
+    TextLimits,
 };
 use resourcefs_sources::{
     GithubConfig, GithubDeployment, GithubRepository, GithubSource, GithubSourceMount,
@@ -14,6 +16,7 @@ use resourcefs_sources::{
 use serde_json::{Value, json};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
+    collections::HashMap,
     hint::black_box,
     net::{IpAddr, Ipv4Addr},
     sync::{
@@ -36,6 +39,73 @@ static FACTS_PEAK_HEAP: AtomicUsize = AtomicUsize::new(0);
 const ALLOCATION_OVERHEAD: usize = 32;
 #[global_allocator]
 static FACTS_ALLOCATOR: FactsCountingAllocator = FactsCountingAllocator;
+// C8 uses the existing facts-binary allocator as a deterministic serialization
+// window. The native blob content String has a unique, fixture-derived length;
+// the first larger reallocation after that String exists is the final facts
+// Vec growing. The allocator pauses there while a helper thread changes the
+// cache generation, so no earlier acquisition check can explain the refusal.
+// These two cells are deliberately thread-local. The source read runs on an
+// explicit single-thread runtime, so fixture-server/controller allocations
+// cannot accidentally arm the fence.
+thread_local! {
+    static C8_NATIVE_CONTENT_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static C8_NATIVE_CONTENT_SEEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+static C8_RACE_TRIGGERED: AtomicBool = AtomicBool::new(false);
+static C8_CALLBACK_FAILED: AtomicBool = AtomicBool::new(false);
+static C8_RACE_TRIGGER_SIZE: AtomicUsize = AtomicUsize::new(0);
+static C8_RACE_TRIGGER: OnceLock<std::sync::mpsc::Sender<bool>> = OnceLock::new();
+static C8_RACE_RELEASE: OnceLock<std::sync::Mutex<std::sync::mpsc::Receiver<()>>> = OnceLock::new();
+static C8_SERIALIZATION_WINDOW: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+fn observe_c8_native_content(size: usize) {
+    C8_NATIVE_CONTENT_BYTES.with(|target| {
+        if target.get() != 0 && size == target.get() {
+            C8_NATIVE_CONTENT_SEEN.with(|seen| seen.set(true));
+        }
+    });
+}
+
+// F14 (PR #14 review): this window is implemented by the test binary's global
+// allocator, so `pause_c8_serialization` blocks for up to five seconds inside
+// `GlobalAlloc::realloc` and allocates re-entrantly there (channel send, then a
+// blocking receive). The review's remedy is a `test-support` seam: a gated
+// callback invoked from `serialize_facts` (`src/github/facts.rs`) and exported
+// like this crate's other `*_for_test` helpers. That seam needs edits outside
+// this file — `src/github/facts.rs` and the `pub use` block in `src/lib.rs` —
+// which parallel repairs on this branch own, so the mechanism is left alone and
+// the fragility is recorded here instead of changed. The heap counters below
+// are independent of that remedy and stay: the budget rows measure with them.
+fn pause_c8_serialization(new_size: usize) {
+    let should_pause = C8_NATIVE_CONTENT_BYTES.with(|target| {
+        let target = target.get();
+        target != 0 && new_size > target && C8_NATIVE_CONTENT_SEEN.with(|seen| seen.get())
+    });
+    if !should_pause
+        || C8_RACE_TRIGGERED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return;
+    }
+    C8_RACE_TRIGGER_SIZE.store(new_size, Ordering::Release);
+    // Disarm before signaling: the helper and the resumed serializer allocate.
+    C8_NATIVE_CONTENT_BYTES.with(|target| target.set(0));
+    // GlobalAlloc must not unwind. Report controller failures through an
+    // atomic flag and assert them outside the allocator callback.
+    let released = match (C8_RACE_TRIGGER.get(), C8_RACE_RELEASE.get()) {
+        (Some(trigger), Some(release)) if trigger.send(true).is_ok() => match release.lock() {
+            Ok(receiver) => receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_ok(),
+            Err(_) => false,
+        },
+        _ => false,
+    };
+    if !released {
+        C8_CALLBACK_FAILED.store(true, Ordering::Release);
+    }
+}
 
 fn record_facts_allocation(bytes: usize) {
     let current = FACTS_CURRENT_HEAP.fetch_add(bytes, Ordering::AcqRel) + bytes;
@@ -47,6 +117,7 @@ unsafe impl GlobalAlloc for FactsCountingAllocator {
         // SAFETY: forward the exact layout to the system allocator.
         let pointer = unsafe { System.alloc(layout) };
         if !pointer.is_null() {
+            observe_c8_native_content(layout.size());
             record_facts_allocation(layout.size() + ALLOCATION_OVERHEAD);
         }
         pointer
@@ -64,6 +135,7 @@ unsafe impl GlobalAlloc for FactsCountingAllocator {
         if !replacement.is_null() {
             if new_size >= layout.size() {
                 record_facts_allocation(new_size - layout.size());
+                pause_c8_serialization(new_size);
             } else {
                 FACTS_CURRENT_HEAP.fetch_sub(layout.size() - new_size, Ordering::AcqRel);
             }
@@ -79,15 +151,6 @@ fn response(status: &'static str, body: String, headers: Vec<(String, String)>) 
     }
 }
 
-fn host_from_head(head: &str) -> &str {
-    head.lines()
-        .find_map(|line| {
-            line.split_once(':')
-                .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-                .map(|(_, value)| value.trim())
-        })
-        .expect("Host header")
-}
 async fn fixture<F>(
     transform: F,
     operator: ReadAcquisitionLimits,
@@ -117,7 +180,7 @@ where
                 "/repos/owner/repo/pulls/7",
                 "no link/fork egress"
             );
-            let host = host_from_head(request.head());
+            let host = request.host();
             let native = NATIVE.replace("@API@", &format!("https://{host}/"));
             transform(
                 count.fetch_add(1, Ordering::SeqCst),
@@ -193,7 +256,7 @@ fn limits(
     accepted: Option<usize>,
     representation: Option<usize>,
 ) -> ReadAcquisitionLimits {
-    ReadAcquisitionLimits::new(None, None, response, accepted, representation)
+    ReadAcquisitionLimits::new(None, None, response, accepted, representation, None)
         .expect("valid limits")
 }
 
@@ -668,7 +731,7 @@ async fn facts_errors_are_status_derived_and_sanitized() {
             ReadAcquisitionLimits::default(),
         )
         .await;
-        let one = ReadAcquisitionLimits::new(Some(1), None, None, None, None).unwrap();
+        let one = ReadAcquisitionLimits::new(Some(1), None, None, None, None, None).unwrap();
         let error = read(&source, Some(&one)).await.expect_err(status);
         assert_eq!(error.category(), category, "{status}");
         let details = error.details().expect("machine details");
@@ -748,6 +811,7 @@ async fn facts_inflight_cancel_and_deadline_refuse_barrier_delayed_response() {
                 } else {
                     Some(Duration::from_millis(100))
                 },
+                None,
                 None,
                 None,
                 None,
@@ -844,9 +908,12 @@ async fn facts_inflight_generation_change_refuses_publication() {
         if invalidate {
             let error = result.expect_err("invalidated observation cannot publish");
             assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+            // Its own reason: a concurrent mutation invalidated the caller's own
+            // cached body, so the retry it calls for is against the session
+            // rather than the provider.
             assert_eq!(
                 error.details().expect("typed refusal").reason(),
-                ErrorReason::UpstreamUnavailable
+                ErrorReason::CacheGenerationChanged
             );
         } else {
             assert_eq!(
@@ -861,14 +928,33 @@ async fn facts_inflight_generation_change_refuses_publication() {
     }
 }
 
+/// The effective acquisition limits are the per-dimension intersection of the
+/// operator's and the caller's bounds.
+///
+/// PR Facts expose exactly five of the six `ReadAcquisitionLimits` dimensions:
+/// attempts, elapsed time, response bytes, accepted body bytes and
+/// representation bytes. The sixth, `maxDecodedBytes`, bounds one selected blob
+/// and belongs to source Facts, so it is absent from this document even when
+/// both sides bound it here; the source side's operator-wins coverage for that
+/// dimension is `source_facts_apply_decoded_limit_before_and_after_blob_acquisition`
+/// in `github_source_contract.rs`.
 #[tokio::test]
 async fn facts_operator_intersection_is_observed_for_each_independent_dimension() {
+    const PR_LIMIT_FIELDS: [&str; 5] = [
+        "maxAttempts",
+        "timeoutMs",
+        "maxResponseBytes",
+        "maxAcceptedBodyBytes",
+        "maxRepresentationBytes",
+    ];
     let operator = ReadAcquisitionLimits::new(
         Some(2),
         Some(Duration::from_secs(4)),
         Some(20000),
         Some(30000),
         Some(40000),
+        // Both sides bound the sixth dimension; the PR document must not echo it.
+        Some(9000),
     )
     .unwrap();
     for (caller, expected) in [
@@ -879,6 +965,7 @@ async fn facts_operator_intersection_is_observed_for_each_independent_dimension(
                 Some(19000),
                 Some(31000),
                 Some(39000),
+                Some(5000),
             )
             .unwrap(),
             [1.0, 4000.0, 19000.0, 30000.0, 39000.0],
@@ -890,6 +977,7 @@ async fn facts_operator_intersection_is_observed_for_each_independent_dimension(
                 Some(21000),
                 Some(29000),
                 Some(41000),
+                Some(6000),
             )
             .unwrap(),
             [2.0, 3000.0, 20000.0, 29000.0, 40000.0],
@@ -901,6 +989,7 @@ async fn facts_operator_intersection_is_observed_for_each_independent_dimension(
                 Some(20000),
                 Some(30000),
                 Some(40000),
+                Some(7000),
             )
             .unwrap(),
             [2.0, 4000.0, 20000.0, 30000.0, 40000.0],
@@ -912,16 +1001,7 @@ async fn facts_operator_intersection_is_observed_for_each_independent_dimension(
         )
         .await;
         let facts = document(&read(&source, Some(&caller)).await.expect("lower-only read"));
-        for (field, minimum) in [
-            "maxAttempts",
-            "timeoutMs",
-            "maxResponseBytes",
-            "maxAcceptedBodyBytes",
-            "maxRepresentationBytes",
-        ]
-        .into_iter()
-        .zip(expected)
-        {
+        for (field, minimum) in PR_LIMIT_FIELDS.into_iter().zip(expected) {
             assert_eq!(
                 facts["acquisition"]["limits"][field]
                     .as_f64()
@@ -930,6 +1010,21 @@ async fn facts_operator_intersection_is_observed_for_each_independent_dimension(
                 "{field}"
             );
         }
+        // The loop above is the whole limit surface, not a subset of it: the
+        // decoded dimension must not appear even though both sides bounded it.
+        let mut observed_fields: Vec<&str> = facts["acquisition"]["limits"]
+            .as_object()
+            .expect("limits object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        observed_fields.sort_unstable();
+        let mut expected_fields = PR_LIMIT_FIELDS.to_vec();
+        expected_fields.sort_unstable();
+        assert_eq!(
+            observed_fields, expected_fields,
+            "PR Facts limits are five-dimensional by contract"
+        );
         assert_eq!(listener.requests().len(), 1);
     }
     let (listener, source, _session) = fixture(
@@ -1048,7 +1143,8 @@ async fn facts_retry_attempts_and_redirects_are_observed_not_inferred() {
             ReadAcquisitionLimits::default(),
         )
         .await;
-        let control = ReadAcquisitionLimits::new(Some(attempts), None, None, None, None).unwrap();
+        let control =
+            ReadAcquisitionLimits::new(Some(attempts), None, None, None, None, None).unwrap();
         let result = read(&source, Some(&control)).await;
         if attempts == 1 {
             let error = result.expect_err("parent does not retry beyond the attempt bound");
@@ -1635,7 +1731,7 @@ async fn immutable_commit_production_budget() -> Result<(), &'static str> {
             0,
             tls::match_cert(),
             move |request| {
-                let host = host_from_head(request.head());
+                let host = request.host();
                 let content = match request.target() {
                     "/repos/owner/repo" => immutable_commit_budget_repository(host),
                     "/repos/owner/repo/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" => served
@@ -1867,6 +1963,7 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
         Some(8_388_608),
         Some(16_777_216),
         Some(16_777_216),
+        Some(4_194_304),
     )
     .expect("operator limits");
     let started = Instant::now();
@@ -1877,6 +1974,7 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
             Some(4_000_000),
             Some(8_000_000),
             Some(8_000_000),
+            Some(2_000_000),
         )
         .expect("caller limits");
         black_box(operator.intersect(caller));
@@ -1914,7 +2012,7 @@ where
         tls::match_cert(),
         move |request| {
             assert_eq!(request.method(), "GET", "facts cannot write");
-            let host = host_from_head(request.head());
+            let host = request.host();
             let target = request.target().to_owned();
             let template = if target.starts_with("/repos/owner/repo/pulls/") {
                 NATIVE
@@ -2553,7 +2651,7 @@ where
         tls::match_cert(),
         move |request| {
             assert_eq!(request.method(), "GET", "facts cannot write");
-            let host = host_from_head(request.head());
+            let host = request.host();
             let api = format!("https://{host}/");
             let target = request.target().to_owned();
             if target.starts_with("/repos/owner/repo/pulls/") {
@@ -2872,7 +2970,7 @@ async fn collection_final_failure_rolls_back_last_verified_page() {
     .await;
 
     let wide_controls =
-        ReadAcquisitionLimits::new(Some(4), None, None, None, None).expect("four attempts");
+        ReadAcquisitionLimits::new(Some(4), None, None, None, None, None).expect("four attempts");
     let first = read_reference(&source, COLLECTION_RESOURCE, Some(&wide_controls))
         .await
         .expect("two verified pages plus final failure");
@@ -2953,8 +3051,8 @@ async fn collection_final_failure_rolls_back_last_verified_page() {
         cap < full_failure_bytes.saturating_sub(64),
         "derived cap leaves the required failure-growth margin"
     );
-    let controls =
-        ReadAcquisitionLimits::new(Some(4), None, None, None, Some(cap)).expect("derived cap");
+    let controls = ReadAcquisitionLimits::new(Some(4), None, None, None, Some(cap), None)
+        .expect("derived cap");
 
     let limited = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
@@ -3130,7 +3228,7 @@ async fn one_budget_covers_parent_and_pages() {
     })
     .await;
     let controls =
-        ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("two attempts");
+        ReadAcquisitionLimits::new(Some(2), None, None, None, None, None).expect("two attempts");
     let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
         .expect("parent plus one page fit the budget");
@@ -3163,8 +3261,9 @@ async fn collection_early_retry_does_not_fit_publishes_prefix_while_deadline_rem
         comment_page(&(1..=100).collect::<Vec<_>>(), api, Some(&page_two))
     })
     .await;
-    let controls = ReadAcquisitionLimits::new(None, Some(Duration::from_secs(5)), None, None, None)
-        .expect("deadline controls");
+    let controls =
+        ReadAcquisitionLimits::new(None, Some(Duration::from_secs(5)), None, None, None, None)
+            .expect("deadline controls");
     let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
         .expect("retry that cannot fit publishes verified prefix");
@@ -3254,7 +3353,7 @@ async fn collection_response_and_aggregate_limits_keep_distinct_full_details() {
             ),
         };
         let controls =
-            ReadAcquisitionLimits::new(None, None, response_bound, aggregate_bound, None)
+            ReadAcquisitionLimits::new(None, None, response_bound, aggregate_bound, None, None)
                 .expect("native-byte-derived limit");
         let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
             .await
@@ -3393,7 +3492,8 @@ async fn representation_ceiling_includes_outcome_overhead() {
     // while leaving a large margin for the first 100-record pretty document.
     let cap = revalidated.content().len().saturating_sub(8 * 1024);
     assert!(cap > 100_000, "cap must leave room for one full page");
-    let controls = ReadAcquisitionLimits::new(None, None, None, None, Some(cap)).expect("cap");
+    let controls =
+        ReadAcquisitionLimits::new(None, None, None, None, Some(cap), None).expect("cap");
     let limited = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
         .expect("whole first page under measured lower ceiling");
@@ -3588,7 +3688,8 @@ async fn truncated_collection() -> (TlsListener, GithubSource, session_support::
 #[tokio::test]
 async fn continuation_encoding_is_canonical_and_bounded() {
     let (listener, source, _session) = truncated_collection().await;
-    let controls = ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("budget");
+    let controls =
+        ReadAcquisitionLimits::new(Some(2), None, None, None, None, None).expect("budget");
     let resource = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
         .expect("truncated collection");
@@ -3658,7 +3759,8 @@ async fn continuation_is_session_and_authority_bound() {
     use sha2::{Digest, Sha256};
 
     let (listener, source, session_fixture) = truncated_collection().await;
-    let controls = ReadAcquisitionLimits::new(Some(2), None, None, None, None).expect("budget");
+    let controls =
+        ReadAcquisitionLimits::new(Some(2), None, None, None, None, None).expect("budget");
     let first = read_reference(&source, COLLECTION_RESOURCE, Some(&controls))
         .await
         .expect("first read");
@@ -4065,7 +4167,7 @@ where
         tls::match_cert(),
         move |request| {
             assert_eq!(request.method(), "GET", "facts cannot write");
-            let host = host_from_head(request.head());
+            let host = request.host();
             let api = format!("https://{host}/");
             let target = request.target().to_owned();
             if target == "/repos/owner/repo/pulls/7" {
@@ -4747,5 +4849,510 @@ async fn inline_web_links_reject_credentials_and_keep_opaque_values() {
     assert_eq!(
         facts["data"]["records"][0]["links"]["htmlUrl"],
         "https://github.example/notes/42"
+    );
+}
+
+/// Expands a `treeTemplates` entry into the generated tree response the shared
+/// immutable fixture describes, so the budget rows can read the widest admitted
+/// tree (`wide`, 1000 entries) without committing it.
+fn generated_tree(sha: &str, template: &Value) -> Value {
+    let count = template["entryCount"]
+        .as_u64()
+        .expect("template entry count");
+    let prefix = template["entryPrefix"].as_str().expect("template prefix");
+    let object_sha = template["objectSha"].as_str().expect("template object SHA");
+    let size = template["sizeBytes"].as_u64().expect("template size");
+    let tree = (0..count)
+        .map(|index| {
+            json!({
+                "mode": "100644",
+                "path": format!("{prefix}{index:04}"),
+                "sha": object_sha,
+                "size": size,
+                "type": "blob",
+                "url": format!("@API@repos/owner/repo/git/blobs/{object_sha}")
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "sha": sha,
+        "tree": tree,
+        "truncated": false,
+        "url": format!("@API@repos/owner/repo/git/trees/{sha}")
+    })
+}
+
+struct ImmutableSourceBudgetOracle {
+    commit_sha: String,
+    tree_sha: String,
+    object_sha: String,
+    decoded_size: usize,
+    expected_base64: String,
+}
+
+/// Build the maximum regular-file source at runtime from the independently
+/// recorded Git identities in the shared fixture. The four-megabyte payload is
+/// deliberately not committed: only its byte recipe and native object IDs are
+/// source-controlled. The same listener serves the fixture's widest admitted
+/// tree and the deepest path whose metadata walk fits the attempt ceiling, so
+/// the production budget can measure both the widest publishing shape and the
+/// attempt-refusal boundary against one source.
+async fn immutable_source_budget_fixture() -> (
+    TlsListener,
+    GithubSource,
+    session_support::ScratchFixture,
+    ImmutableSourceBudgetOracle,
+) {
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/github_immutable.json"))
+        .expect("immutable fixture JSON");
+    let exact = &fixture["decodedBoundary"]["exact"];
+    let commit_sha = exact["commitSha"]
+        .as_str()
+        .expect("exact commit SHA")
+        .to_owned();
+    let tree_sha = exact["treeSha"]
+        .as_str()
+        .expect("exact tree SHA")
+        .to_owned();
+    let object_sha = exact["objectSha"]
+        .as_str()
+        .expect("exact blob SHA")
+        .to_owned();
+    let decoded_size = exact["decodedSizeBytes"]
+        .as_u64()
+        .expect("exact decoded size") as usize;
+    let byte_value = exact["byteValue"].as_u64().expect("exact byte value") as u8;
+    let payload: Vec<u8> = std::iter::repeat_n(byte_value, decoded_size).collect();
+    let expected_base64 = STANDARD.encode(&payload);
+    assert_eq!(
+        expected_base64.len(),
+        exact["encodedLength"]
+            .as_u64()
+            .expect("exact encoded length") as usize
+    );
+    let oracle = ImmutableSourceBudgetOracle {
+        commit_sha,
+        tree_sha,
+        object_sha,
+        decoded_size,
+        expected_base64,
+    };
+
+    let repository_template = fixture["repository"].to_string();
+    let boundary_commit = exact["commit"].to_string();
+    let boundary_tree = json!({
+        "sha": oracle.tree_sha.as_str(),
+        "url": format!("@API@repos/owner/repo/git/trees/{}", oracle.tree_sha),
+        "tree": [{
+            "mode": "100644",
+            "path": "payload",
+            "sha": oracle.object_sha.as_str(),
+            "size": oracle.decoded_size,
+            "type": "blob",
+            "url": format!("@API@repos/owner/repo/git/blobs/{}", oracle.object_sha)
+        }],
+        "truncated": false
+    })
+    .to_string();
+    let native_content = format!("{}\n", oracle.expected_base64.as_str());
+    let boundary_blob = json!({
+        "sha": oracle.object_sha.as_str(),
+        "url": format!("@API@repos/owner/repo/git/blobs/{}", oracle.object_sha),
+        "size": oracle.decoded_size,
+        "content": native_content,
+        "encoding": "base64"
+    })
+    .to_string();
+    let boundary_commit_target = format!("/repos/owner/repo/commits/{}", oracle.commit_sha);
+    let boundary_tree_target = format!("/repos/owner/repo/git/trees/{}", oracle.tree_sha);
+    let boundary_blob_target = format!("/repos/owner/repo/git/blobs/{}", oracle.object_sha);
+
+    // The same fixture records the other admitted shapes: the widest tree the
+    // entry ceiling admits and the deepest path whose metadata walk fits the
+    // attempt ceiling. Serving them from this listener lets the budget rows
+    // measure both corners without a second fixture.
+    let main_commit = fixture["commit"].to_string();
+    let main_commit_target = format!(
+        "/repos/owner/repo/commits/{}",
+        fixture["commit"]["sha"].as_str().expect("main commit SHA")
+    );
+    let mut shared_trees: HashMap<String, String> = fixture["trees"]
+        .as_object()
+        .expect("fixture trees")
+        .iter()
+        .map(|(sha, tree)| (sha.clone(), tree.to_string()))
+        .collect();
+    for (sha, template) in fixture["treeTemplates"]
+        .as_object()
+        .expect("fixture tree templates")
+    {
+        shared_trees.insert(sha.clone(), generated_tree(sha, template).to_string());
+    }
+    let shared_blobs: HashMap<String, String> = fixture["blobs"]
+        .as_object()
+        .expect("fixture blobs")
+        .iter()
+        .map(|(sha, blob)| (sha.clone(), blob.to_string()))
+        .collect();
+
+    let listener = TlsListener::serve_request_router(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+        tls::match_cert(),
+        move |request| {
+            assert_eq!(request.method(), "GET", "immutable source is read-only");
+            let target = request.target();
+            let template = if target == "/repos/owner/repo" {
+                repository_template.as_str()
+            } else if target == boundary_commit_target {
+                boundary_commit.as_str()
+            } else if target == boundary_tree_target {
+                boundary_tree.as_str()
+            } else if target == boundary_blob_target {
+                boundary_blob.as_str()
+            } else if target == main_commit_target {
+                main_commit.as_str()
+            } else if let Some(sha) = target.strip_prefix("/repos/owner/repo/git/trees/") {
+                shared_trees.get(sha).expect("shared fixture tree").as_str()
+            } else if let Some(sha) = target.strip_prefix("/repos/owner/repo/git/blobs/") {
+                shared_blobs.get(sha).expect("shared fixture blob").as_str()
+            } else {
+                panic!("unexpected immutable source budget request: {target}")
+            };
+            let host = request.host();
+            response(
+                "200 OK",
+                template.replace("@API@", &format!("https://{host}/")),
+                vec![("ETag".into(), "\"immutable-source-budget\"".into())],
+            )
+        },
+    )
+    .await;
+    let (source, session) = build_source(&listener, ReadAcquisitionLimits::default()).await;
+    (listener, source, session, oracle)
+}
+
+#[tokio::test]
+#[ignore = "checkpointed-build immutable source production-scale budget"]
+async fn immutable_source_production_budget() -> Result<(), &'static str> {
+    if cfg!(debug_assertions) {
+        return Err("run this budget in release mode");
+    }
+    const EXPECTED_DECODED_BYTES: usize = 4 * 1024 * 1024;
+    const WALL_LIMIT: Duration = Duration::from_secs(3);
+    const HEAP_LIMIT: usize = 160 * 1024 * 1024;
+
+    for measure_heap in [false, true] {
+        let (listener, source, _session, oracle) = immutable_source_budget_fixture().await;
+        assert_eq!(oracle.decoded_size, EXPECTED_DECODED_BYTES);
+        let reference = PathReference::parse(format!(
+            "github://owner/repo/source/{}/payload/facts",
+            oracle.commit_sha
+        ))
+        .expect("immutable source budget reference");
+        let operation = OperationGuard::new();
+        let baseline = FACTS_CURRENT_HEAP.load(Ordering::Acquire);
+        FACTS_PEAK_HEAP.store(baseline, Ordering::Release);
+        let started = Instant::now();
+        let result = source.read(&reference, &operation, None).await;
+        let elapsed = started.elapsed();
+        let incremental_heap = FACTS_PEAK_HEAP
+            .load(Ordering::Acquire)
+            .saturating_sub(baseline);
+
+        let resource = result.expect("maximum immutable source through SourceAdapter");
+        let native_response_bytes = listener.flushed();
+        let output_bytes = resource.content().len();
+        let facts = document(&resource);
+        assert_eq!(
+            listener.requests().len(),
+            4,
+            "repository/commit/tree/blob GETs"
+        );
+        assert_eq!(
+            native_response_bytes,
+            facts["acquisition"]["usage"]["acceptedBodyBytes"]
+                .as_u64()
+                .expect("accepted native response bytes") as usize
+        );
+        assert_eq!(facts["kind"], "github.source");
+        assert_eq!(facts["data"]["objectSha"], oracle.object_sha);
+        assert_eq!(facts["data"]["treeSha"], oracle.tree_sha);
+        assert_eq!(facts["observed"]["treeSha"], oracle.tree_sha);
+        assert_eq!(
+            facts["data"]["content"]["decodedSizeBytes"],
+            oracle.decoded_size
+        );
+        assert_eq!(
+            facts["data"]["content"]["bytesBase64"].as_str(),
+            Some(oracle.expected_base64.as_str())
+        );
+        assert_eq!(facts["data"]["content"]["state"], "available");
+        assert_eq!(facts["observed"]["commitSha"], oracle.commit_sha);
+        assert_eq!(
+            facts["acquisition"]["limits"]["maxDecodedBytes"],
+            oracle.decoded_size
+        );
+        assert!(
+            output_bytes > oracle.expected_base64.len(),
+            "complete owned JSON output"
+        );
+
+        if measure_heap {
+            println!(
+                "immutable_source_budget phase=heap native_response_bytes={native_response_bytes} output_bytes={output_bytes} incremental_heap_bytes={incremental_heap} heap_limit_bytes={HEAP_LIMIT}"
+            );
+            assert!(
+                incremental_heap <= HEAP_LIMIT,
+                "incremental heap {incremental_heap}"
+            );
+        } else {
+            println!(
+                "immutable_source_budget phase=wall native_response_bytes={native_response_bytes} output_bytes={output_bytes} elapsed_ns={} wall_limit_ns={}",
+                elapsed.as_nanos(),
+                WALL_LIMIT.as_nanos()
+            );
+            assert!(elapsed <= WALL_LIMIT, "source read wall time {elapsed:?}");
+        }
+    }
+
+    // Worst admitted tree: the shared fixture's `wide` tree is the largest tree
+    // this source admits (`too-wide`, one entry more, is the refusal
+    // `github_source_contract.rs` covers). Its selected blob is still returned,
+    // so this row measures the widest shape that publishes content.
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/github_immutable.json"))
+        .expect("immutable fixture JSON");
+    let main_commit = fixture["commit"]["sha"].as_str().expect("main commit SHA");
+    let wide = &fixture["cases"]["wide"];
+    let wide_path = wide["encodedPath"].as_str().expect("wide encoded path");
+    for measure_heap in [false, true] {
+        let (listener, source, _session, _oracle) = immutable_source_budget_fixture().await;
+        let reference = format!("github://owner/repo/source/{main_commit}/{wide_path}/facts");
+        let baseline = FACTS_CURRENT_HEAP.load(Ordering::Acquire);
+        FACTS_PEAK_HEAP.store(baseline, Ordering::Release);
+        let started = Instant::now();
+        let result = read_reference(&source, &reference, None).await;
+        let elapsed = started.elapsed();
+        let incremental_heap = FACTS_PEAK_HEAP
+            .load(Ordering::Acquire)
+            .saturating_sub(baseline);
+
+        let resource = result.expect("widest admitted tree through SourceAdapter");
+        let native_response_bytes = listener.flushed();
+        let output_bytes = resource.content().len();
+        let facts = document(&resource);
+        assert_eq!(
+            listener.requests().len(),
+            5,
+            "repository/commit/root tree/wide tree/blob GETs"
+        );
+        assert!(
+            listener
+                .requests()
+                .iter()
+                .any(|request| request.contains("/git/blobs/")),
+            "the widest admitted tree still returns its selected blob"
+        );
+        assert_eq!(
+            native_response_bytes,
+            facts["acquisition"]["usage"]["acceptedBodyBytes"]
+                .as_u64()
+                .expect("accepted native response bytes") as usize
+        );
+        assert_eq!(facts["kind"], "github.source");
+        assert_eq!(facts["data"]["objectSha"], wide["objectSha"]);
+        assert_eq!(
+            facts["data"]["containingTreeSha"],
+            wide["containingTreeSha"]
+        );
+        assert_eq!(facts["data"]["content"]["state"], "available");
+        assert_eq!(facts["data"]["content"]["bytesBase64"], wide["bytesBase64"]);
+        assert_eq!(
+            facts["data"]["content"]["decodedSizeBytes"],
+            wide["decodedSizeBytes"]
+        );
+        assert!(
+            output_bytes > wide["bytesBase64"].as_str().expect("wide bytes").len(),
+            "complete owned JSON output"
+        );
+
+        if measure_heap {
+            println!(
+                "immutable_source_budget corner=wide_tree phase=heap native_response_bytes={native_response_bytes} output_bytes={output_bytes} incremental_heap_bytes={incremental_heap} heap_limit_bytes={HEAP_LIMIT}"
+            );
+            assert!(
+                incremental_heap <= HEAP_LIMIT,
+                "incremental heap {incremental_heap}"
+            );
+        } else {
+            println!(
+                "immutable_source_budget corner=wide_tree phase=wall native_response_bytes={native_response_bytes} output_bytes={output_bytes} elapsed_ns={} wall_limit_ns={}",
+                elapsed.as_nanos(),
+                WALL_LIMIT.as_nanos()
+            );
+            assert!(elapsed <= WALL_LIMIT, "source read wall time {elapsed:?}");
+        }
+    }
+
+    // Deepest metadata walk that fits the attempt ceiling:
+    // `deep/d1/.../payload` spends exactly the admitted attempts on repository,
+    // commit and eight trees, so its next request — the blob GET — is refused
+    // locally: the whole read fails and no partial Facts document is published
+    // for a bound the caller could have raised. This row certifies that refusal
+    // boundary; it does not measure a publishing read at depth, because the
+    // fixture's deepest path that publishes content is seven components and the
+    // corpus has no such case.
+    let deep = &fixture["cases"]["deepBlobLimit"];
+    let deep_path = deep["encodedPath"].as_str().expect("deep encoded path");
+    let (listener, source, _session, _oracle) = immutable_source_budget_fixture().await;
+    let reference = format!("github://owner/repo/source/{main_commit}/{deep_path}/facts");
+    let error = read_reference(&source, &reference, None)
+        .await
+        .expect_err("the attempt ceiling refuses the blob stage");
+    assert_eq!(error.category(), ErrorCategory::LimitExceeded);
+    let details = error.details().expect("typed attempt refusal");
+    assert_eq!(details.reason(), ErrorReason::LimitExceeded);
+    let limit = details.limit().expect("attempt limit detail");
+    assert_eq!(limit.kind(), AcquisitionLimitKind::Attempts);
+    assert_eq!(limit.bound(), 10, "the effective attempt ceiling");
+    assert_eq!(
+        limit.observed(),
+        Some(11),
+        "the refused attempt follows the ten admitted ones"
+    );
+    assert_eq!(
+        listener.requests().len(),
+        10,
+        "repository, commit and the eight-tree walk; no attempt reaches the blob"
+    );
+    assert!(
+        !listener
+            .requests()
+            .iter()
+            .any(|request| request.contains("/git/blobs/"))
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn immutable_source_final_generation_change_refuses_publication() {
+    // A successful control proves the exact boundary fixture and SourceAdapter
+    // route are live before the serialization race is armed.
+    let (control_listener, control_source, _control_session, control_oracle) =
+        immutable_source_budget_fixture().await;
+    let control_reference = PathReference::parse(format!(
+        "github://owner/repo/source/{}/payload/facts",
+        control_oracle.commit_sha
+    ))
+    .expect("control source reference");
+    let control_resource = control_source
+        .read(&control_reference, &OperationGuard::new(), None)
+        .await
+        .expect("control source read");
+    assert_eq!(control_listener.requests().len(), 4);
+    assert_eq!(
+        document(&control_resource)["data"]["content"]["state"],
+        "available"
+    );
+
+    let (listener, source, session_fixture, oracle) = immutable_source_budget_fixture().await;
+    let (trigger_tx, trigger_rx) = std::sync::mpsc::channel::<bool>();
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+    let stop_tx = trigger_tx.clone();
+    assert!(
+        C8_RACE_TRIGGER.set(trigger_tx).is_ok(),
+        "C8 trigger channel is initialized once"
+    );
+    assert!(
+        C8_RACE_RELEASE
+            .set(std::sync::Mutex::new(release_rx))
+            .is_ok(),
+        "C8 release channel is initialized once"
+    );
+    C8_RACE_TRIGGERED.store(false, Ordering::Release);
+    C8_CALLBACK_FAILED.store(false, Ordering::Release);
+    C8_RACE_TRIGGER_SIZE.store(0, Ordering::Release);
+
+    let native_content_bytes = oracle.expected_base64.len() + 1;
+    let generation_session = session_fixture.path_session().clone();
+    let helper = std::thread::spawn(move || {
+        if trigger_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("C8 serialization trigger")
+        {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("C8 helper runtime");
+            runtime.block_on(async {
+                generation_session
+                    .cache_remove_namespace("github-http")
+                    .await
+                    .expect("C8 namespace invalidation");
+            });
+            C8_SERIALIZATION_WINDOW.notify_one();
+        }
+    });
+
+    let reference = PathReference::parse(format!(
+        "github://owner/repo/source/{}/payload/facts",
+        oracle.commit_sha
+    ))
+    .expect("racing source reference");
+    let notification = C8_SERIALIZATION_WINDOW.notified();
+    let source_thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("C8 source runtime");
+        let operation = OperationGuard::new();
+        runtime.block_on(async {
+            C8_NATIVE_CONTENT_BYTES.with(|target| target.set(native_content_bytes));
+            C8_NATIVE_CONTENT_SEEN.with(|seen| seen.set(false));
+            let result = source.read(&reference, &operation, None).await;
+            let seen = C8_NATIVE_CONTENT_SEEN.with(|seen| seen.get());
+            C8_NATIVE_CONTENT_BYTES.with(|target| target.set(0));
+            (result, seen)
+        })
+    });
+    let observed = tokio::time::timeout(Duration::from_secs(5), notification).await;
+    if observed.is_err() {
+        stop_tx.send(false).expect("stop C8 helper");
+        let (result, seen) = source_thread.join().expect("racing source thread");
+        helper.join().expect("C8 helper thread");
+        panic!(
+            "serialization window did not trigger (native content allocation seen: {seen}, source succeeded: {})",
+            result.is_ok()
+        );
+    }
+    release_tx.send(()).expect("release serializer");
+    let (result, native_content_seen) = source_thread.join().expect("racing source thread");
+    helper.join().expect("C8 helper thread");
+
+    assert!(
+        !C8_CALLBACK_FAILED.load(Ordering::Acquire),
+        "allocator controller failed"
+    );
+    assert!(native_content_seen, "native content allocation calibration");
+    assert!(
+        C8_RACE_TRIGGERED.load(Ordering::Acquire),
+        "allocator race trigger was not reached"
+    );
+    assert!(
+        C8_RACE_TRIGGER_SIZE.load(Ordering::Acquire) > native_content_bytes,
+        "race trigger must be a larger reallocation"
+    );
+    assert_eq!(listener.requests().len(), 4, "no request after final race");
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("source was published after the serialization-time generation change"),
+    };
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+    assert_eq!(
+        error.details().expect("typed C8 refusal").reason(),
+        // A generation change is session-local invalidation, not an outage of
+        // the upstream this read was revalidating: the retry belongs against
+        // the caller's own changed session, so the reason names the generation.
+        ErrorReason::CacheGenerationChanged
     );
 }

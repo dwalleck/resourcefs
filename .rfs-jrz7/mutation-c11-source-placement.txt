@@ -1,0 +1,107 @@
+Mutation: relocate native Git tree decoder from object child to protected facts parent
+Restored SHA256: {"crates/resourcefs-sources/src/github/facts.rs": "77c36e760c46ffbabbb5ce607a32749482c85ad681111c4ecf0adf8e97fabea3", "crates/resourcefs-sources/src/github/facts/object.rs": "d14618df72a2d37a21dbf808ebfb2fab2d43bd0bc4bd154c6be2914f40e7b3ca"}
+RED exit=1
+C1 crates/resourcefs-core/src/reference.rs: 2089 -> 2044, maximum 2080
+C1 crates/resourcefs-core/src/discovery.rs: 1342 -> 1347, maximum 1367
+C1 crates/resourcefs-sources/src/atlassian/jira.rs: 467 -> 294, maximum 317
+C1 crates/resourcefs-sources/src/atlassian/wire.rs: 571 -> 585, maximum 601
+C1 crates/resourcefs-sources/src/atlassian/render.rs: 480 -> 482, maximum 488
+C1 crates/resourcefs-sources/src/http/mod.rs: 1759 -> 1592, maximum 1679
+C12 baseline=fad4cf2c11ec27f4272355c9e741badc9be0920e upstream=refs/remotes/origin/main
+C12 crates/resourcefs-core/src/discovery.rs: lines=1347 maximum=1367
+C12 crates/resourcefs-core/src/reference.rs: lines=2044 maximum=2080
+C12 crates/resourcefs-core/src/reference/jira.rs: lines=442 maximum=650
+C12 crates/resourcefs-core/src/reference/source_page.rs: lines=97 maximum=160
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: lines=294 maximum=317
+C12 crates/resourcefs-sources/src/atlassian/jira/browse.rs: lines=334 maximum=600
+C12 crates/resourcefs-sources/src/atlassian/jira/cursor.rs: lines=157 maximum=250
+C12 crates/resourcefs-sources/src/atlassian/jira/query.rs: lines=104 maximum=400
+C12 crates/resourcefs-sources/src/atlassian/jira/transport.rs: lines=333 maximum=400
+C12 crates/resourcefs-sources/src/atlassian/render.rs: lines=482 maximum=488
+C12 crates/resourcefs-sources/src/atlassian/render/collections.rs: lines=173 maximum=350
+C12 crates/resourcefs-sources/src/atlassian/wire.rs: lines=585 maximum=601
+C12 crates/resourcefs-sources/src/atlassian/wire/collections.rs: lines=551 maximum=600
+C12 crates/resourcefs-sources/src/atlassian/wire/query.rs: lines=127 maximum=200
+C12 crates/resourcefs-sources/src/http/mod.rs: lines=1592 maximum=1679
+C12 crates/resourcefs-sources/src/http/read.rs: lines=350 maximum=350
+C12 crates/resourcefs-sources/src/http/request.rs: lines=228 maximum=280
+C12 crates/resourcefs-core/src/discovery.rs: baseline-delta=+6
+C12 crates/resourcefs-core/src/discovery.rs: wiring body new changed; semantic placement review still required
+C12 crates/resourcefs-core/src/discovery.rs: wiring body canonical_identity changed; semantic placement review still required
+C12 crates/resourcefs-core/src/reference.rs: baseline-delta=+103
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta canonical_reference
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta parse
+C12 crates/resourcefs-core/src/reference.rs: wiring body workspace_address changed; semantic placement review still required
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta parse_pull_request_address
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta percent_decode
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: baseline-delta=+9
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body read_resource changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: successor-owned body delta read
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body catalog_entries changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: successor-owned body delta search
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body unsupported_jira_projection changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/render.rs: baseline-delta=+0
+C12 crates/resourcefs-sources/src/atlassian/wire.rs: baseline-delta=+1
+C12 crates/resourcefs-sources/src/http/mod.rs: baseline-delta=-74
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta new
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta fetch_attempt
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta header_within_ceiling
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta read_bounded
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta redirect_policy
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta cancelled_mid_request
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta policy_error_or
+C02 stage=immutable-source baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main
+C11 FAIL crates/resourcefs-sources/src/github/facts/object.rs: required owned symbol NativeGitTree is missing
+
+RESTORED GREEN exit=0
+C1 crates/resourcefs-core/src/reference.rs: 2089 -> 2044, maximum 2080
+C1 crates/resourcefs-core/src/discovery.rs: 1342 -> 1347, maximum 1367
+C1 crates/resourcefs-sources/src/atlassian/jira.rs: 467 -> 294, maximum 317
+C1 crates/resourcefs-sources/src/atlassian/wire.rs: 571 -> 585, maximum 601
+C1 crates/resourcefs-sources/src/atlassian/render.rs: 480 -> 482, maximum 488
+C1 crates/resourcefs-sources/src/http/mod.rs: 1759 -> 1592, maximum 1679
+C12 baseline=fad4cf2c11ec27f4272355c9e741badc9be0920e upstream=refs/remotes/origin/main
+C12 crates/resourcefs-core/src/discovery.rs: lines=1347 maximum=1367
+C12 crates/resourcefs-core/src/reference.rs: lines=2044 maximum=2080
+C12 crates/resourcefs-core/src/reference/jira.rs: lines=442 maximum=650
+C12 crates/resourcefs-core/src/reference/source_page.rs: lines=97 maximum=160
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: lines=294 maximum=317
+C12 crates/resourcefs-sources/src/atlassian/jira/browse.rs: lines=334 maximum=600
+C12 crates/resourcefs-sources/src/atlassian/jira/cursor.rs: lines=157 maximum=250
+C12 crates/resourcefs-sources/src/atlassian/jira/query.rs: lines=104 maximum=400
+C12 crates/resourcefs-sources/src/atlassian/jira/transport.rs: lines=333 maximum=400
+C12 crates/resourcefs-sources/src/atlassian/render.rs: lines=482 maximum=488
+C12 crates/resourcefs-sources/src/atlassian/render/collections.rs: lines=173 maximum=350
+C12 crates/resourcefs-sources/src/atlassian/wire.rs: lines=585 maximum=601
+C12 crates/resourcefs-sources/src/atlassian/wire/collections.rs: lines=551 maximum=600
+C12 crates/resourcefs-sources/src/atlassian/wire/query.rs: lines=127 maximum=200
+C12 crates/resourcefs-sources/src/http/mod.rs: lines=1592 maximum=1679
+C12 crates/resourcefs-sources/src/http/read.rs: lines=350 maximum=350
+C12 crates/resourcefs-sources/src/http/request.rs: lines=228 maximum=280
+C12 crates/resourcefs-core/src/discovery.rs: baseline-delta=+6
+C12 crates/resourcefs-core/src/discovery.rs: wiring body new changed; semantic placement review still required
+C12 crates/resourcefs-core/src/discovery.rs: wiring body canonical_identity changed; semantic placement review still required
+C12 crates/resourcefs-core/src/reference.rs: baseline-delta=+103
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta canonical_reference
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta parse
+C12 crates/resourcefs-core/src/reference.rs: wiring body workspace_address changed; semantic placement review still required
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta parse_pull_request_address
+C12 crates/resourcefs-core/src/reference.rs: successor-owned body delta percent_decode
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: baseline-delta=+9
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body read_resource changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: successor-owned body delta read
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body catalog_entries changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: successor-owned body delta search
+C12 crates/resourcefs-sources/src/atlassian/jira.rs: wiring body unsupported_jira_projection changed; semantic placement review still required
+C12 crates/resourcefs-sources/src/atlassian/render.rs: baseline-delta=+0
+C12 crates/resourcefs-sources/src/atlassian/wire.rs: baseline-delta=+1
+C12 crates/resourcefs-sources/src/http/mod.rs: baseline-delta=-74
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta new
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta fetch_attempt
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta header_within_ceiling
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta read_bounded
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta redirect_policy
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta cancelled_mid_request
+C12 crates/resourcefs-sources/src/http/mod.rs: successor-owned body delta policy_error_or
+C02 stage=immutable-source baseline=7de8d1477af6be825bada9015a6996b3f2917c7d upstream=refs/remotes/origin/main
+C02 PASS stage=immutable-source baseline=7de8d1477af6be825bada9015a6996b3f2917c7d

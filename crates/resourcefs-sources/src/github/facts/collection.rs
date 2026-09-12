@@ -42,11 +42,25 @@ enum CoverageState {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LocalLimit {
+pub(super) struct LocalLimit {
     kind: &'static str,
     bound: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     observed: Option<u64>,
+}
+
+impl LocalLimit {
+    /// The one construction path: the kind comes from the finite limit
+    /// vocabulary rather than a hand-typed string, so no call site can spell a
+    /// kind that diverges from what `retryable` and `describe_limit_rejection`
+    /// read back out of it.
+    pub(super) fn new(kind: AcquisitionLimitKind, bound: u64, observed: Option<u64>) -> Self {
+        Self {
+            kind: kind.as_str(),
+            bound,
+            observed,
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -58,7 +72,7 @@ enum RetryGuidanceFacts {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FailureFacts {
+pub(super) struct FailureFacts {
     category: &'static str,
     reason: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -186,7 +200,7 @@ struct CollectionBody<'a> {
     data: Records<'a>,
     collection: Collection<'a>,
 }
-fn failure_facts(error: &ResourceError) -> FailureFacts {
+pub(super) fn failure_facts(error: &ResourceError) -> FailureFacts {
     let details = error.details();
     FailureFacts {
         category: error.category().as_str(),
@@ -210,11 +224,7 @@ fn failure_facts(error: &ResourceError) -> FailureFacts {
         rate_limit_reset_unix: details.and_then(|details| details.rate_limit_reset()),
         limit: details
             .and_then(|details| details.limit())
-            .map(|limit| LocalLimit {
-                kind: limit.kind().as_str(),
-                bound: limit.bound(),
-                observed: limit.observed(),
-            }),
+            .map(|limit| LocalLimit::new(limit.kind(), limit.bound(), limit.observed())),
     }
 }
 
@@ -238,13 +248,14 @@ fn retryable(error: &ResourceError, ctx: &FactsRead<'_>, parent_body_bytes: usiz
                 .is_some_and(|fresh_read_bytes| fresh_read_bytes <= limit.bound()),
             AcquisitionLimitKind::ResponseBodyBytes
             | AcquisitionLimitKind::RepresentationBytes
+            | AcquisitionLimitKind::DecodedContentBytes
             | AcquisitionLimitKind::CollectionRecords => false,
         };
     }
     error.category() == ErrorCategory::SourceUnavailable
 }
 
-fn rejects_every_page(error: &ResourceError) -> bool {
+pub(super) fn invalidates_retention(error: &ResourceError) -> bool {
     matches!(
         error.category(),
         ErrorCategory::Cancelled | ErrorCategory::PermissionDenied
@@ -253,14 +264,18 @@ fn rejects_every_page(error: &ResourceError) -> bool {
         .is_some_and(|details| details.reason() == ErrorReason::UpstreamIdentityMismatch)
 }
 
-fn local_limit_error(kind: AcquisitionLimitKind, bound: usize, observed: usize) -> ResourceError {
-    let detail = LimitDetail::new(kind, bound as u64, Some(observed as u64))
+/// The one construction path for a local admission refusal, so every family
+/// emits the same `(category, reason, limit)` triple with its own sentence.
+pub(super) fn local_limit_error(
+    kind: AcquisitionLimitKind,
+    bound: u64,
+    observed: u64,
+    message: &'static str,
+) -> ResourceError {
+    let detail = LimitDetail::new(kind, bound, Some(observed))
         .expect("effective local limit bounds are positive");
-    ResourceError::new(
-        ErrorCategory::LimitExceeded,
-        "GitHub collection exceeds its local admission limit",
-    )
-    .with_details(ResourceErrorDetails::new(ErrorReason::LimitExceeded).with_limit(detail))
+    ResourceError::new(ErrorCategory::LimitExceeded, message)
+        .with_details(ResourceErrorDetails::new(ErrorReason::LimitExceeded).with_limit(detail))
 }
 fn is_representation_limit(error: &ResourceError) -> bool {
     error.category() == ErrorCategory::LimitExceeded
@@ -543,7 +558,7 @@ pub(super) async fn read(
         {
             Ok(page) => page,
             Err(error) => {
-                if records.is_empty() || rejects_every_page(&error) {
+                if records.is_empty() || invalidates_retention(&error) {
                     return Err(error);
                 }
                 let continuation = if retryable(&error, ctx, parent_body_bytes) {
@@ -561,7 +576,10 @@ pub(super) async fn read(
             }
         };
         if page.response.cache_generation != parent_generation {
-            return Err(failure(ErrorReason::UpstreamUnavailable));
+            // A concurrent mutation invalidated the parent's body: the same
+            // condition the shared generation guards report, so the caller is not
+            // told a different story depending on where the invalidation landed.
+            return Err(failure(ErrorReason::CacheGenerationChanged));
         }
         let response = page.response;
         let next = page.next;
@@ -590,7 +608,7 @@ pub(super) async fn read(
         for native in decoded {
             match family::validate_native(native, repository, number, &source.api_base, &web) {
                 Ok(record) => page_records.push(record),
-                Err(error) if rejects_every_page(&error) => return Err(error),
+                Err(error) if invalidates_retention(&error) => return Err(error),
                 Err(error) => {
                     if records.is_empty() {
                         return Err(error);
@@ -634,18 +652,19 @@ pub(super) async fn read(
             if records.is_empty() {
                 return Err(local_limit_error(
                     AcquisitionLimitKind::CollectionRecords,
-                    MAX_COLLECTION_RECORDS,
-                    candidate_count,
+                    MAX_COLLECTION_RECORDS as u64,
+                    candidate_count as u64,
+                    "GitHub collection exceeds its local admission limit",
                 ));
             }
             let continuation = owner.continuation(&url)?;
             resume = continuation.clone();
             terminal = Some(CollectionStop::Incomplete {
-                local_limit: Some(LocalLimit {
-                    kind: AcquisitionLimitKind::CollectionRecords.as_str(),
-                    bound: MAX_COLLECTION_RECORDS as u64,
-                    observed: Some(candidate_count as u64),
-                }),
+                local_limit: Some(LocalLimit::new(
+                    AcquisitionLimitKind::CollectionRecords,
+                    MAX_COLLECTION_RECORDS as u64,
+                    Some(candidate_count as u64),
+                )),
                 failure: None,
                 continuation: continuation.map(|reference| reference.requested().to_owned()),
             });
@@ -669,18 +688,19 @@ pub(super) async fn read(
             if records.is_empty() {
                 return Err(local_limit_error(
                     AcquisitionLimitKind::RepresentationBytes,
-                    ctx.limits.max_representation_bytes(),
-                    candidate_length,
+                    ctx.limits.max_representation_bytes() as u64,
+                    candidate_length as u64,
+                    "GitHub collection exceeds its local admission limit",
                 ));
             }
             let continuation = owner.continuation(&url)?;
             resume = continuation.clone();
             let mut stop = CollectionStop::Incomplete {
-                local_limit: Some(LocalLimit {
-                    kind: AcquisitionLimitKind::RepresentationBytes.as_str(),
-                    bound: ctx.limits.max_representation_bytes() as u64,
-                    observed: Some(0),
-                }),
+                local_limit: Some(LocalLimit::new(
+                    AcquisitionLimitKind::RepresentationBytes,
+                    ctx.limits.max_representation_bytes() as u64,
+                    Some(0),
+                )),
                 failure: None,
                 continuation: continuation.map(|reference| reference.requested().to_owned()),
             };
@@ -747,14 +767,14 @@ pub(super) async fn read(
                 let continuation = owner.continuation(&page.request_url)?;
                 resume = continuation.clone();
                 terminal = CollectionStop::Incomplete {
-                    local_limit: Some(LocalLimit {
-                        kind: AcquisitionLimitKind::RepresentationBytes.as_str(),
-                        bound: ctx.limits.max_representation_bytes() as u64,
-                        observed: error
+                    local_limit: Some(LocalLimit::new(
+                        AcquisitionLimitKind::RepresentationBytes,
+                        ctx.limits.max_representation_bytes() as u64,
+                        error
                             .details()
                             .and_then(|details| details.limit())
                             .and_then(|limit| limit.observed()),
-                    }),
+                    )),
                     failure: None,
                     continuation: continuation.map(|reference| reference.requested().to_owned()),
                 };

@@ -769,16 +769,19 @@ async fn mounted_registry_keeps_the_family_discovery_refusal() {
         .expect_err("no compiled source discovers github://");
     assert_eq!(search.category(), ErrorCategory::UnsupportedProjection);
     assert!(search.details().is_none());
-    // The mutation route makes the same claim, on a mounted build too: an
-    // unserved family has no compiled write route.
+    // The mutation route answers differently, and statically: a family that
+    // accepts no writes is refused like https:// and jira://, so a mounted
+    // build never explains the write route as one it merely fails to serve.
     let mutation = MutationAdapter::resolve(&compiled, &reference, MutationAccess::Update)
         .await
-        .expect_err("an unserved family has no compiled write route");
-    assert_eq!(mutation.category(), ErrorCategory::UnsupportedProjection);
-    assert_eq!(mutation.message(), search.message());
-    // Mounting changes neither the source spelling's answer nor the caller's
-    // ability to reword it: the compiled read refuses it by the family before
-    // it consults the mount or judges a control set.
+        .expect_err("github:// writes are refused as a read-only family");
+    assert_eq!(mutation.category(), ErrorCategory::UnsupportedMutation);
+    assert_ne!(mutation.message(), search.message());
+    // The source spelling reaches the adapter in this increment, so mounting
+    // changes its answer the same way it changes the commit spelling's: this
+    // fixture's deployment has no web origin, so the refusal is the adapter's
+    // own missing deployment identity rather than the family's claim — with
+    // and without caller controls.
     let source = PathReference::parse(
         "github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/src/lib.rs/facts",
     )
@@ -790,10 +793,13 @@ async fn mounted_registry_keeps_the_family_discovery_refusal() {
         let read = compiled
             .read(&source, &OperationGuard::new(), controls.as_ref())
             .await
-            .expect_err("a mounted build still serves no source spelling");
+            .expect_err("a deployment without a web origin cannot serve source Facts");
+        assert_ne!(read.message(), search.message());
         assert_eq!(read.category(), ErrorCategory::UnsupportedProjection);
-        assert!(read.details().is_none());
-        assert_eq!(read.message(), search.message());
+        assert_eq!(
+            read.details().map(|details| details.reason()),
+            Some(ErrorReason::DeploymentIdentityUnavailable)
+        );
     }
     // The commit spelling still reaches the adapter instead: this fixture's
     // deployment has no web origin, so the refusal is the adapter's own
@@ -803,6 +809,7 @@ async fn mounted_registry_keeps_the_family_discovery_refusal() {
         .await
         .expect_err("a deployment without a web origin cannot serve commit Facts");
     assert_ne!(commit.message(), search.message());
+    assert_eq!(commit.category(), ErrorCategory::UnsupportedProjection);
     assert_eq!(
         commit.details().map(|details| details.reason()),
         Some(ErrorReason::DeploymentIdentityUnavailable)
