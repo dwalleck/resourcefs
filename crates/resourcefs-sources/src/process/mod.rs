@@ -167,6 +167,20 @@ pub enum CommandErrorKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandError {
     kind: CommandErrorKind,
+    /// The failing syscall's error kind, where the failure came from one.
+    ///
+    /// `message` is `&'static str` on purpose: it can never carry runtime data,
+    /// so it can never carry a path or a credential. That is also why the
+    /// operating system's own reason used to be discarded outright -- every
+    /// spawn failure produced the same sentence whether the program did not
+    /// exist, the caller could not execute it, or the machine was out of
+    /// processes. The three need different responses and were indistinguishable.
+    ///
+    /// `io::ErrorKind` is a fieldless enum, so recording it leaks nothing the
+    /// `&'static str` rule protects. It also reaches the place it is needed
+    /// without any new plumbing: this type derives `Debug`, and `Debug` is what
+    /// a failing test prints.
+    os_error: Option<std::io::ErrorKind>,
     message: &'static str,
     stdout_observed: usize,
     stderr_observed: usize,
@@ -176,9 +190,18 @@ impl CommandError {
     const fn new(kind: CommandErrorKind, message: &'static str) -> Self {
         Self {
             kind,
+            os_error: None,
             message,
             stdout_observed: 0,
             stderr_observed: 0,
+        }
+    }
+
+    /// The same error, carrying the reason the operating system gave.
+    fn from_io(kind: CommandErrorKind, message: &'static str, error: &std::io::Error) -> Self {
+        Self {
+            os_error: Some(error.kind()),
+            ..Self::new(kind, message)
         }
     }
 
@@ -190,6 +213,15 @@ impl CommandError {
 
     pub const fn kind(&self) -> CommandErrorKind {
         self.kind
+    }
+
+    /// The failing syscall's error kind, where the failure came from one.
+    ///
+    /// `NotFound` means the program is not there; `PermissionDenied` means it
+    /// cannot be executed; `WouldBlock` means the machine could not fork. A
+    /// caller cannot act on the message alone, because all three share it.
+    pub const fn os_error(&self) -> Option<std::io::ErrorKind> {
+        self.os_error
     }
 
     pub const fn stdout_observed(&self) -> usize {
@@ -260,10 +292,11 @@ impl CommandExecutor {
                 "process concurrency must be between 1 and 32",
             ));
         }
-        let command_base = std::fs::canonicalize(command_base.as_ref()).map_err(|_| {
-            CommandError::new(
+        let command_base = std::fs::canonicalize(command_base.as_ref()).map_err(|error| {
+            CommandError::from_io(
                 CommandErrorKind::InvalidConfiguration,
                 "command base must be an existing directory",
+                &error,
             )
         })?;
         if !command_base.is_dir() {
@@ -348,10 +381,11 @@ impl CommandExecutor {
         let mut command = build_command(spec, role, input, &self.command_base)?;
         command.kill_on_drop(true);
         platform::configure(command.as_std_mut());
-        let mut child = command.spawn().map_err(|_| {
-            CommandError::new(
+        let mut child = command.spawn().map_err(|error| {
+            CommandError::from_io(
                 CommandErrorKind::Spawn,
                 "configured command could not be started",
+                &error,
             )
         })?;
 
@@ -575,10 +609,11 @@ fn build_command(
     let mut command = Command::new(program);
     command.args(&argv[1..]);
     if let CommandInput::Path(path) = input {
-        let canonical = std::fs::canonicalize(path).map_err(|_| {
-            CommandError::new(
+        let canonical = std::fs::canonicalize(path).map_err(|error| {
+            CommandError::from_io(
                 CommandErrorKind::InvalidInput,
                 "command path input must name an existing resource",
+                &error,
             )
         })?;
         command.arg(canonical);
@@ -760,7 +795,9 @@ fn join_reader(
 ) -> Result<BoundedRead, CommandError> {
     joined
         .map_err(|_| CommandError::new(CommandErrorKind::Io, "command pipe reader stopped"))?
-        .map_err(|_| CommandError::new(CommandErrorKind::Io, "command pipe read failed"))
+        .map_err(|error| {
+            CommandError::from_io(CommandErrorKind::Io, "command pipe read failed", &error)
+        })
 }
 
 async fn finish_reader(
