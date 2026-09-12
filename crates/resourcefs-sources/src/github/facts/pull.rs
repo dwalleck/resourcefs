@@ -161,10 +161,7 @@ pub(super) async fn read(
     } = identity::validate(&pull, repository, number, &endpoint, &source.api_base, &web)?;
     let requested_number = super::NativeId::from_positive(number.get());
     let mut unavailable_facts = Vec::new();
-    macro_rules! missing { ($($field:expr => $name:literal),* $(,)?) => { $(
-        $field.unavailable($name, &mut unavailable_facts);
-    )* }; }
-    missing!(pull.node_id => "nodeId", pull.title => "title", pull.body => "body", pull.state => "state",
+    missing!(unavailable_facts; pull.node_id => "nodeId", pull.title => "title", pull.body => "body", pull.state => "state",
         pull.user => "author", pull.created_at => "createdAt", pull.updated_at => "updatedAt",
         pull.closed_at => "closedAt", pull.merged_at => "mergedAt", pull.draft => "draft", pull.merged => "merged",
         pull.html_url => "links.htmlUrl", pull.diff_url => "links.diffUrl", pull.patch_url => "links.patchUrl",

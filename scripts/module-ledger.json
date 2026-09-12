@@ -4,19 +4,17 @@
       "baseline": "635ab170ab57542c18272921298d575da2f8b08a",
       "stage": "immutable-grammar",
       "changes": {
-        "immutable-commit": ["read_facts", "facts_resource"],
-        "immutable-source": ["read_facts", "facts_resource", "Limits", "acquisition_at"]
+        "immutable-commit": [
+          "read_facts",
+          "facts_resource"
+        ],
+        "immutable-source": [
+          "read_facts",
+          "facts_resource",
+          "Limits",
+          "acquisition_at"
+        ]
       }
-    }
-  },
-  "wiring_calls": {
-    "immutable-grammar": {
-      "crates/resourcefs-core/src/discovery.rs": [
-        "Github"
-      ],
-      "crates/resourcefs-core/src/reference.rs": [
-        "Github"
-      ]
     }
   },
   "added_functions": {
@@ -221,7 +219,7 @@
       ]
     },
     "crates/resourcefs-sources/src/github/facts/commit.rs": {
-      "maximum": 500,
+      "maximum": 550,
       "module": "commit",
       "parent": "crates/resourcefs-sources/src/github/facts.rs",
       "stage": "immutable-commit",

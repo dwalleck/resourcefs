@@ -4,7 +4,7 @@ mod session_support;
 mod tls;
 
 use resourcefs_core::{
-    DiscoveryAdapter, DiscoveryEngine, ErrorCategory, MutationAccess, MutationAdapter,
+    DiscoveryAdapter, DiscoveryEngine, ErrorCategory, ErrorReason, MutationAccess, MutationAdapter,
     OperationGuard, PathReference, PathSession, SearchLimits, SearchOptions, SearchRequest,
     SearchTarget, ServerLimits, ServerLimitsInput, SourceAdapter, StorageLimitInput,
 };
@@ -756,6 +756,7 @@ async fn mounted_registry_keeps_the_family_discovery_refusal() {
         "github://owner/repo/commits/0123456789abcdef0123456789abcdef01234567/facts",
     )
     .expect("immutable commit reference");
+
     let target = SearchTarget::resource(reference.clone());
     let search = compiled
         .search(
@@ -768,6 +769,48 @@ async fn mounted_registry_keeps_the_family_discovery_refusal() {
         .expect_err("no compiled source discovers github://");
     assert_eq!(search.category(), ErrorCategory::UnsupportedProjection);
     assert!(search.details().is_none());
+    // The mutation route makes the same claim, on a mounted build too: an
+    // unserved family has no compiled write route.
+    let mutation = MutationAdapter::resolve(&compiled, &reference, MutationAccess::Update)
+        .await
+        .expect_err("an unserved family has no compiled write route");
+    assert_eq!(mutation.category(), ErrorCategory::UnsupportedProjection);
+    assert_eq!(mutation.message(), search.message());
+    // The source spelling reaches the adapter in this increment, so mounting
+    // changes its answer the same way it changes the commit spelling's: this
+    // fixture's deployment has no web origin, so the refusal is the adapter's
+    // own missing deployment identity rather than the family's claim — with
+    // and without caller controls.
+    let source = PathReference::parse(
+        "github://owner/repo/source/0123456789abcdef0123456789abcdef01234567/src/lib.rs/facts",
+    )
+    .expect("immutable source reference");
+    for controls in [
+        None,
+        Some(resourcefs_core::ReadAcquisitionLimits::default()),
+    ] {
+        let read = compiled
+            .read(&source, &OperationGuard::new(), controls.as_ref())
+            .await
+            .expect_err("a deployment without a web origin cannot serve source Facts");
+        assert_ne!(read.message(), search.message());
+        assert_eq!(
+            read.details().map(|details| details.reason()),
+            Some(ErrorReason::DeploymentIdentityUnavailable)
+        );
+    }
+    // The commit spelling still reaches the adapter instead: this fixture's
+    // deployment has no web origin, so the refusal is the adapter's own
+    // missing deployment identity rather than the family's claim.
+    let commit = compiled
+        .read(&reference, &OperationGuard::new(), None)
+        .await
+        .expect_err("a deployment without a web origin cannot serve commit Facts");
+    assert_ne!(commit.message(), search.message());
+    assert_eq!(
+        commit.details().map(|details| details.reason()),
+        Some(ErrorReason::DeploymentIdentityUnavailable)
+    );
 }
 
 #[tokio::test]

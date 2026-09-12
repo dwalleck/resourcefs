@@ -180,7 +180,7 @@ pub(super) fn expected_object_url(
 /// every authority comparison must use this rule rather than origin alone:
 /// a credential-bearing URL is a contradiction, never an opaque value to
 /// publish.
-fn clean_authority(url: &Url, expected: &Url) -> bool {
+pub(super) fn clean_authority(url: &Url, expected: &Url) -> bool {
     url.origin() == expected.origin() && url.username().is_empty() && url.password().is_none()
 }
 

@@ -124,7 +124,7 @@ First-release portable core:
 - HTTPS documents with reader-mode Markdown/text by default and `:raw` for the bounded original body;
 - converted documents, typed images, and Jupyter notebooks;
 - server-owned `artifact://` and `local://`;
-- configured `memory://`, `skill://`, `rule://`, `vault://`, `issue://`, `pr://`, and `ssh://` sources;
+- configured `memory://`, `skill://`, `rule://`, `vault://`, `github://`, `issue://`, `pr://`, and `ssh://` sources;
 - optional read-only `agent://` and `history://` Agent Export sources;
 - optional downstream MCP Resource sources through `mcp://` and otherwise-unclaimed native URI schemes.
 
@@ -206,6 +206,8 @@ The owned schema is version 1.0 with `kind: "github.commit"` and the shared Fact
 - `data` carries `sha`, `treeSha`, ordered `parents` with supplied links, exact provider `message`, native Git `author` and `committer` (`name`, `email`, `date`), optional/null GitHub `authorAccount` and `committerAccount`, and `links` (`apiUrl`, `htmlUrl`, `commentsUrl`). Native account/repository IDs remain decimal strings; absent, null and present metadata remain distinct.
 
 ResourceFS acquires the repository and the exact `/repos/<owner>/<repo>/commits/<commit-sha>` endpoint under one existing acquisition budget. Returned repository, commit, tree and parent identities and supplied authority-bearing links must agree with the request and configured deployment, including Enterprise API path prefixes. Returned links are validated, never followed for enrichment. Commit Facts do not acquire trees, blobs, diffs or changed-file contents.
+
+An account's supplied links are validated against the deployment's own authority and, when the path is one of that account's routes, against the account itself, compared on decoded path segments — so a provider that escapes a login (`/users/dependabot%5Bbot%5D`) or serves an app account from `/apps/<slug>` is not read as a contradiction. Presence and identity answer separately: a required link that is absent or null is malformed, while one that names a foreign object is `not_found` with reason `upstream_identity_mismatch` and no access ambiguity — the verdict the conversation-comment and review families give a record that does not belong to the addressed pull request, kept here so one contradiction has one category.
 
 The Version Tag names the complete acquired JSON and its provenance, not the native Git object. Provider metadata is not reconstructed raw Git commit bytes. Final generation/cancellation/deadline checks precede publication; overflow of display limits uses byte-exact artifact recovery without reacquiring the source. See [the commit operating example](docs/operating.md#github-immutable-commit-facts).
 

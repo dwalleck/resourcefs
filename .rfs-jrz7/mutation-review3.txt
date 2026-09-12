@@ -1,0 +1,91 @@
+A/B: the reviewed placement gate vs the repaired gate, one injected row per case.
+
+Harness: .rfs-jrz7/mutation-review3.py
+    python3 .rfs-jrz7/mutation-review3.py --repository <worktree> [--reviewed <rev>] [--only M10]
+
+Baselines. `--reviewed <rev>` chooses the gate files and ledger used as the
+reviewed side; the default is 6e1c55c, the S1 round-2 tip this increment forked
+from. That side is only meaningful against the tree it was taken on: on a later
+tree its column reports the whole gate's exit code, so it can read FAIL while
+the injected row was in fact accepted, and its failure lines may name nothing
+the case injected (M8 below). M10 additionally ran against 1cfa020 - this
+increment's head before the review repair - because that is the revision whose
+owner-uniqueness rule the case is about; see the second run.
+
+Regenerated 2026-09-11 at 3d2dd04, after the review repair round. M1-M7 and M9
+reproduce the previous receipt byte for byte, M8's repaired column is identical
+with only its reviewed label moved, and M10 is new.
+
+== Default reviewed side (6e1c55c) ==
+
+### M1 pure move of a policy-tracked helper
+  reviewed: FAIL
+       inherited C1 FAIL crates/resourcefs-sources/src/http/read.rs: obsolete shared helper fetch_bounded_attempts must migrate to its approved owner
+  repaired: PASS
+
+### M2 pure move to an owner outside the watch list
+  reviewed: FAIL
+       C02 FAIL oracle input: unknown historical owner symbol 'canonical_identity'
+  repaired: PASS
+
+### M3 pure move of a symbol the policy does not track
+  reviewed: FAIL
+       C02 FAIL oracle input: unknown historical owner symbol 'parse_pull_request_reference'
+  repaired: PASS
+
+### M4 retired name still declared
+  reviewed: FAIL
+       inherited C1 FAIL crates/resourcefs-core/src/reference.rs: obsolete shared helper encode_rfc3986_segment must migrate to its approved owner
+       inherited C1 FAIL crates/resourcefs-core/src/reference.rs: shared helper encode_rfc3986_segment_renamed requires one owner, found 0
+  repaired: FAIL
+       inherited C1 FAIL crates/resourcefs-core/src/reference.rs: obsolete shared helper encode_rfc3986_segment must migrate to its approved owner
+       inherited C1 FAIL crates/resourcefs-core/src/reference.rs: shared helper encode_rfc3986_segment_renamed requires one owner, found 0
+
+### M5 owner does not declare the moved symbol
+  reviewed: FAIL
+       inherited C1 FAIL crates/resourcefs-core/src/reference/jira.rs: obsolete shared helper parse_jira_address must migrate to its approved owner
+       inherited C1 FAIL crates/resourcefs-core/src/reference/jira.rs: parse_jira_address belongs in crates/resourcefs-core/src/discovery.rs
+  repaired: FAIL
+       inherited C1 FAIL crates/resourcefs-core/src/reference/jira.rs: obsolete shared helper parse_jira_address must migrate to its approved owner
+       inherited C1 FAIL crates/resourcefs-core/src/reference/jira.rs: parse_jira_address belongs in crates/resourcefs-core/src/discovery.rs
+
+### M6 protected parent present now, absent at its pin
+  reviewed: FAIL
+       C02 FAIL oracle input: git show 635ab170ab57542c18272921298d575da2f8b08a:crates/resourcefs-core/src/reference/github.rs failed (exit 128)
+  repaired: FAIL
+       C11 FAIL crates/resourcefs-core/src/reference/github.rs: protected parent is absent at its pinned baseline 635ab170ab57542c18272921298d575da2f8b08a
+
+### M7 inline cfg(test) copy in an owner file
+  reviewed: FAIL
+       C02 FAIL crates/resourcefs-core/src/reference/pull.rs: owned symbol parse_pull_request_reference must have exactly one declaration
+  repaired: PASS
+
+### M8 divergent same-name copy in the owner's directory
+  reviewed: FAIL
+  repaired: FAIL
+       C02 FAIL crates/resourcefs-core/src/reference/source_page.rs: symbol parse_pull_request_reference belongs in crates/resourcefs-core/src/reference/pull.rs
+
+### M9 trait bearing an owned name in the owner file
+  reviewed: FAIL
+  repaired: FAIL
+       C11 FAIL crates/resourcefs-core/src/reference/github.rs: owned symbol GithubCommitId must have exactly one declaration
+
+### M10 verbatim copy hidden behind a counterpart's second span
+  reviewed: FAIL
+       C02 FAIL crates/resourcefs-core/src/session.rs: symbol parse_pull_request_reference belongs in crates/resourcefs-core/src/reference/pull.rs
+  repaired: FAIL
+       C02 FAIL crates/resourcefs-core/src/session.rs: symbol parse_pull_request_reference belongs in crates/resourcefs-core/src/reference/pull.rs
+
+== M10 against its own pre-repair revision ==
+
+The reviewed side is 1cfa020, the head whose rule the case is about. The
+reviewed column's failure lines are the test: this injection produces none, so
+the pre-repair rule accepted the verbatim copy, while the column's FAIL is that
+older gate's own identity-census refusal of this tree.
+
+    python3 .rfs-jrz7/mutation-review3.py --repository <worktree> --reviewed 1cfa020 --only M10
+
+### M10 verbatim copy hidden behind a counterpart's second span
+  reviewed: FAIL
+  repaired: FAIL
+       C02 FAIL crates/resourcefs-core/src/session.rs: symbol parse_pull_request_reference belongs in crates/resourcefs-core/src/reference/pull.rs

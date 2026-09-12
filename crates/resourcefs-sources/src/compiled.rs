@@ -129,9 +129,11 @@ impl SourceAdapter for CompiledSources {
                     .read(reference, operation, acquisition)
                     .await
             }
-            // Commit Facts exist from this increment: the family reaches its
-            // configured source again, while discovery and mutation keep the
-            // configuration-independent refusals they had before it.
+            // Reads reach the configured source only for a route an increment
+            // has acquired; commit Facts land in S2 and source Facts in this
+            // increment. A spelling this build does not serve is refused here,
+            // before the mount is consulted, so one address cannot answer
+            // differently depending on configuration or caller controls.
             ResourceAddress::Github(_)
             | ResourceAddress::Issue(_)
             | ResourceAddress::PullRequest(_) => {
@@ -170,13 +172,13 @@ impl MutationAdapter for CompiledSources {
                 ErrorCategory::UnsupportedMutation,
                 "jira:// Resources are read-only; Jira mutation is not supported",
             )),
-            // Read-only family whose own refusal precedes configuration: an
-            // unmounted source must not explain a route that never accepts
-            // writes, and no build mounts an increment that does not exist.
-            ResourceAddress::Github(_) => Err(ResourceError::new(
-                ErrorCategory::UnsupportedMutation,
-                "github:// Resources are read-only; immutable GitHub facts accept no mutation",
-            )),
+            // Unserved family whose refusal precedes configuration: an unmounted
+            // source must not explain a route that never accepts writes, and no
+            // build mounts an increment that does not exist. It names the same
+            // fact the read and search arms name — this build serves no
+            // github:// route — instead of promising a read-only family whose
+            // reads this build cannot serve either.
+            ResourceAddress::Github(_) => Err(github_family_unreadable()),
             ResourceAddress::Issue(_) | ResourceAddress::PullRequest(_) => {
                 self.github_source()?.resolve(reference, access).await
             }
@@ -282,17 +284,22 @@ fn github_source_unavailable() -> ResourceError {
     )
 }
 
-/// Refuses an address family this build does not serve.
+/// Refuses a `github://` operation this build cannot serve.
 ///
 /// Distinct from [`github_source_unavailable`]: that one says no repository
-/// authority is declared, and it must never be the answer for a family no
-/// configured source could serve. Commit and source Facts are registered by
-/// the increments that acquire them; until then the same refusal answers on
-/// every build.
+/// authority is declared, and it must never be the answer for an operation no
+/// configured source could serve. Reads of an acquired route reach the
+/// configured source; discovery, mutation and any spelling whose acquiring
+/// increment has not landed answer here, and they answer identically whether
+/// or not a source is mounted — a refusal that depended on configuration would
+/// tell a caller that a route this build cannot serve is merely unavailable
+/// until it is configured. The sentence names the operation rather than the
+/// family, because a build that serves a read route for an address must not
+/// claim it serves no route for it at all.
 fn github_family_unreadable() -> ResourceError {
     ResourceError::new(
         ErrorCategory::UnsupportedProjection,
-        "github:// Resources are not served by the compiled sources",
+        "the compiled sources serve no github:// route for the requested operation",
     )
 }
 

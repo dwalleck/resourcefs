@@ -64,26 +64,33 @@ fn write_profile(directory: &Path) -> PathBuf {
     write_profile_with_attempts(directory, None)
 }
 
-fn write_profile_with_attempts(directory: &Path, max_attempts: Option<u64>) -> PathBuf {
-    let path = directory.join("live.json");
-    let mut github = json!({
+/// The GitHub source row both live profiles mount: one required source with an
+/// environment credential, differing only by repository and, when a row
+/// exercises the documented per-call control, a pinned attempt bound.
+fn github_source(repository: &str, max_attempts: Option<u64>) -> Value {
+    let mut source = json!({
         "kind": "github",
         "id": "forge",
         "required": true,
         "allowPrivateNetwork": false,
         "credential": {"kind": "environment", "name": "GITHUB_TOKEN"},
-        "repositories": [{"name": "rust-lang/rust"}]
+        "repositories": [{"name": repository}]
     });
     if let Some(max_attempts) = max_attempts {
-        github["acquisition"] = json!({"maxAttempts": max_attempts});
+        source["acquisition"] = json!({"maxAttempts": max_attempts});
     }
+    source
+}
+
+fn write_profile_with_attempts(directory: &Path, max_attempts: Option<u64>) -> PathBuf {
+    let path = directory.join("live.json");
     fs::write(
         &path,
         serde_json::to_vec_pretty(&json!({
             "schemaVersion": 1,
             "session": {"cacheDirectory": "live-cache"},
             "sources": [
-                github,
+                github_source("rust-lang/rust", max_attempts),
                 {
                     "kind": "https",
                     "id": "docs",
@@ -105,14 +112,7 @@ fn write_commit_profile(directory: &Path) -> PathBuf {
         serde_json::to_vec_pretty(&json!({
             "schemaVersion": 1,
             "session": {"cacheDirectory": "live-commit-cache"},
-            "sources": [{
-                "kind": "github",
-                "id": "forge",
-                "required": true,
-                "allowPrivateNetwork": false,
-                "credential": {"kind": "environment", "name": "GITHUB_TOKEN"},
-                "repositories": [{"name": "dwalleck/resourcefs"}]
-            }]
+            "sources": [github_source("dwalleck/resourcefs", None)]
         }))
         .expect("commit profile JSON"),
     )
