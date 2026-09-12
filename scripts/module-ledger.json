@@ -12,7 +12,9 @@
           "read_facts",
           "facts_resource",
           "Limits",
-          "acquisition_at"
+          "acquisition_at",
+          "acquisition",
+          "check_generation"
         ]
       }
     }
@@ -42,7 +44,9 @@
       "crates/resourcefs-sources/src/github/facts.rs": [
         "read_facts",
         "facts_resource",
-        "acquisition_at"
+        "acquisition_at",
+        "acquisition",
+        "check_generation"
       ]
     },
     "immutable-commit": {
@@ -116,7 +120,7 @@
     "crates/resourcefs-sources/src/github/facts/collection.rs": "reqwest|ClientBuilder|CacheMetadata|SessionCacheWrite|sleep|retry_available|sha2",
     "crates/resourcefs-sources/src/github/facts/comment.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference",
     "crates/resourcefs-sources/src/github/facts/commit.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|SourceCursor|PathReference|gix_object|gix_hash|base64",
-    "crates/resourcefs-sources/src/github/facts/object.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|BodyObservation|tokio|Instant|SystemTime|sleep|fetch_controlled|SourceCursor|PathReference|SourceResource",
+    "crates/resourcefs-sources/src/github/facts/object.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|BodyObservation|tokio|Instant|SystemTime|sleep|fetch_controlled|SourceCursor|PathReference|SourceResource|Serialize|Serializer|serde_json|finish_facts|CacheMetadata|SessionCacheWrite",
     "crates/resourcefs-sources/src/github/facts/source.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|sleep|retry_available|SourceCursor|gix_object|gix_hash|base64::",
     "crates/resourcefs-sources/src/github/facts/continuation.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",
     "crates/resourcefs-sources/src/github/facts/identity.rs": "reqwest|HttpSubstrate|BoundedRead|HttpReadBudget|CacheMetadata|SessionCacheWrite|Serialize|Serializer|Deserialize|Deserializer|serde_json|tokio|Instant|SystemTime|sleep|retry_available|finish_facts",

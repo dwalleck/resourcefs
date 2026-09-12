@@ -64,8 +64,8 @@ fn write_profile(directory: &Path) -> PathBuf {
     write_profile_with_attempts(directory, None)
 }
 
-/// The GitHub source row both live profiles mount: one required source with an
-/// environment credential, differing only by repository and, when a row
+/// The GitHub source row every live profile mounts: one required source with
+/// an environment credential, differing only by repository and, when a row
 /// exercises the documented per-call control, a pinned attempt bound.
 fn github_source(repository: &str, max_attempts: Option<u64>) -> Value {
     let mut source = json!({
@@ -119,6 +119,7 @@ fn write_commit_profile(directory: &Path) -> PathBuf {
     .expect("write commit profile");
     path
 }
+
 fn write_source_profile(directory: &Path) -> PathBuf {
     let path = directory.join("live-source.json");
     fs::write(
@@ -126,14 +127,7 @@ fn write_source_profile(directory: &Path) -> PathBuf {
         serde_json::to_vec_pretty(&json!({
             "schemaVersion": 1,
             "session": {"cacheDirectory": "live-source-cache"},
-            "sources": [{
-                "kind": "github",
-                "id": "forge",
-                "required": true,
-                "allowPrivateNetwork": false,
-                "credential": {"kind": "environment", "name": "GITHUB_TOKEN"},
-                "repositories": [{"name": "dwalleck/resourcefs"}]
-            }]
+            "sources": [github_source("dwalleck/resourcefs", None)]
         }))
         .expect("source profile JSON"),
     )

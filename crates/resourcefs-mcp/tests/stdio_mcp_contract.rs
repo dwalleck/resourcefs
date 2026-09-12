@@ -4302,12 +4302,16 @@ fn github_commit_facts_stdio_reconstructs_overflow_without_reacquisition() {
         "existing GitHub families must remain advertised: {catalog_text}"
     );
     assert!(
-        catalog_text.contains("github://") && catalog_text.contains("/commits/"),
-        "catalog must advertise immutable commit Facts: {catalog_text}"
+        catalog_text.contains("github://")
+            && catalog_text.contains("commits/")
+            && catalog_text.contains("source/"),
+        "catalog must advertise immutable commit and source Facts: {catalog_text}"
     );
+    // The source spelling's hardest rule is per-component percent encoding, and
+    // an agent discovering the scheme has only this line to learn it from.
     assert!(
-        catalog_text.contains("/source/"),
-        "catalog must advertise immutable source Facts: {catalog_text}"
+        catalog_text.contains("percent-encoded"),
+        "catalog must state the source path encoding rule: {catalog_text}"
     );
     assert_tool_error(
         &process.call_read(&format!("{reference}:1")),

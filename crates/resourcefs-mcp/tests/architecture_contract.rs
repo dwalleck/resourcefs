@@ -12,28 +12,41 @@ fn dependency_names(package: &Package) -> BTreeSet<&str> {
         .collect()
 }
 
-#[test]
-fn enforces_dependency_direction() {
+/// The workspace package map keyed by name, plus the workspace root. Every
+/// dependency-direction fence below reads the same `cargo metadata` view, and
+/// one helper keeps that preamble from drifting between them. `no_deps` holds
+/// the view to the workspace's own manifests, which is what these fences
+/// assert on, rather than a resolved dependency graph.
+fn workspace_dependencies() -> (BTreeMap<String, Package>, PathBuf) {
     let metadata = MetadataCommand::new()
         .no_deps()
         .exec()
         .expect("workspace cargo metadata");
-    let packages: BTreeMap<_, _> = metadata
+    let packages = metadata
         .workspace_packages()
         .into_iter()
-        .map(|package| (package.name.as_str(), package))
+        .map(|package| (package.name.to_string(), package.clone()))
         .collect();
+    (
+        packages,
+        metadata.workspace_root.as_std_path().to_path_buf(),
+    )
+}
+
+#[test]
+fn enforces_dependency_direction() {
+    let (packages, workspace_root) = workspace_dependencies();
 
     assert_eq!(
-        packages.keys().copied().collect::<Vec<_>>(),
+        packages.keys().map(String::as_str).collect::<Vec<_>>(),
         vec!["resourcefs-core", "resourcefs-mcp", "resourcefs-sources"]
     );
 
-    let core = dependency_names(packages["resourcefs-core"]);
+    let core = dependency_names(&packages["resourcefs-core"]);
     assert!(!core.contains("rmcp"));
     assert!(!core.contains("clap"));
 
-    let sources = dependency_names(packages["resourcefs-sources"]);
+    let sources = dependency_names(&packages["resourcefs-sources"]);
     assert!(sources.contains("resourcefs-core"));
     assert!(!sources.contains("rmcp"));
     assert!(!sources.contains("clap"));
@@ -48,10 +61,7 @@ fn enforces_dependency_direction() {
         "operator profile schemas belong to resourcefs-mcp, never source-native wire decoding"
     );
 
-    let sources_root = metadata
-        .workspace_root
-        .as_std_path()
-        .join("crates/resourcefs-sources");
+    let sources_root = workspace_root.join("crates/resourcefs-sources");
     for forbidden in ["ProfileDocument", "GithubSourceProfile", "JsonSchema"] {
         assert!(
             files_containing_token(&sources_root, forbidden).is_empty(),
@@ -77,16 +87,13 @@ fn enforces_dependency_direction() {
             file.display()
         );
     }
-    let core_source = metadata
-        .workspace_root
-        .as_std_path()
-        .join("crates/resourcefs-core/src");
+    let core_source = workspace_root.join("crates/resourcefs-core/src");
     assert!(
         files_containing_token(&core_source, "serde_json").is_empty(),
         "source-neutral core production code must not decode source-native JSON"
     );
 
-    let mcp = dependency_names(packages["resourcefs-mcp"]);
+    let mcp = dependency_names(&packages["resourcefs-mcp"]);
     assert!(mcp.contains("resourcefs-core"));
     assert!(mcp.contains("resourcefs-sources"));
     assert!(mcp.contains("rmcp"));
@@ -95,40 +102,43 @@ fn enforces_dependency_direction() {
 
 #[test]
 fn git_object_dependencies_stay_in_source_adapter() {
-    let metadata = MetadataCommand::new()
-        .no_deps()
-        .exec()
-        .expect("workspace cargo metadata");
-    let packages: BTreeMap<_, _> = metadata
-        .workspace_packages()
-        .into_iter()
-        .map(|package| (package.name.as_str(), package))
-        .collect();
-    let core = dependency_names(packages["resourcefs-core"]);
-    let sources = dependency_names(packages["resourcefs-sources"]);
-    let mcp = dependency_names(packages["resourcefs-mcp"]);
+    let (packages, workspace_root) = workspace_dependencies();
+    let core = dependency_names(&packages["resourcefs-core"]);
+    let sources = dependency_names(&packages["resourcefs-sources"]);
+    let mcp = dependency_names(&packages["resourcefs-mcp"]);
 
+    // Positive control first: the source adapter owns real gix crates, so a
+    // prefix scan that matches nothing means this fence stopped reading the
+    // manifest, not that the workspace stopped using the object format.
     for dependency in ["gix-object", "gix-hash"] {
         assert!(
             sources.contains(dependency),
             "Git object format dependency {dependency} belongs to resourcefs-sources"
         );
+    }
+
+    // Derived from the manifest rather than pinned as literals: the next gix
+    // crate is fenced by declaring the dependency, not by editing this test.
+    let git_dependencies = sources
+        .iter()
+        .copied()
+        .filter(|dependency| dependency.starts_with("gix-"))
+        .collect::<Vec<_>>();
+
+    let core_source = workspace_root.join("crates/resourcefs-core/src");
+    let mcp_source = workspace_root.join("crates/resourcefs-mcp/src");
+    for dependency in git_dependencies {
         assert!(
             !core.contains(dependency) && !mcp.contains(dependency),
             "Git object format dependency {dependency} must not enter core or MCP"
         );
-    }
-
-    let workspace = metadata.workspace_root.as_std_path();
-    let core_source = workspace.join("crates/resourcefs-core/src");
-    let mcp_source = workspace.join("crates/resourcefs-mcp/src");
-    for token in ["gix_object", "gix_hash"] {
+        let token = dependency.replace('-', "_");
         assert!(
-            files_containing_token(&core_source, token).is_empty(),
+            files_containing_token(&core_source, &token).is_empty(),
             "{token} implementation leaked into resourcefs-core"
         );
         assert!(
-            files_containing_token(&mcp_source, token).is_empty(),
+            files_containing_token(&mcp_source, &token).is_empty(),
             "{token} implementation leaked into resourcefs-mcp"
         );
     }
@@ -257,20 +267,12 @@ fn files_containing_token(root: &Path, token: &str) -> Vec<PathBuf> {
 
 #[test]
 fn discovery_dependencies_stay_in_owning_modules() {
-    let metadata = MetadataCommand::new()
-        .no_deps()
-        .exec()
-        .expect("workspace cargo metadata");
-    let packages: BTreeMap<_, _> = metadata
-        .workspace_packages()
-        .into_iter()
-        .map(|package| (package.name.as_str(), package))
-        .collect();
+    let (packages, workspace_root) = workspace_dependencies();
 
     // The source-neutral core contract must stay free of every search engine,
     // capability sandbox, and FFI binding: discovery machinery belongs to
     // resourcefs-sources alone.
-    let core = dependency_names(packages["resourcefs-core"]);
+    let core = dependency_names(&packages["resourcefs-core"]);
     for forbidden in [
         "rmcp",
         "cap-std",
@@ -288,7 +290,7 @@ fn discovery_dependencies_stay_in_owning_modules() {
 
     // The MCP server owns rmcp/clap but must not reach into compiled-pattern
     // engines or capability sandboxes.
-    let mcp = dependency_names(packages["resourcefs-mcp"]);
+    let mcp = dependency_names(&packages["resourcefs-mcp"]);
     for forbidden in [
         "cap-std",
         "regex",
@@ -309,11 +311,10 @@ fn discovery_dependencies_stay_in_owning_modules() {
     // crate's private implementation ordering. The identifier is assembled at
     // runtime so this fence's own source text does not match the scan.
     let token = format!("pcre2_{}", "sys");
-    let workspace_root = metadata.workspace_root.as_std_path();
-    let mut offenders: Vec<String> = files_containing_token(workspace_root, &token)
+    let mut offenders: Vec<String> = files_containing_token(&workspace_root, &token)
         .into_iter()
         .map(|path| {
-            path.strip_prefix(workspace_root)
+            path.strip_prefix(&workspace_root)
                 .unwrap_or_else(|_| {
                     panic!("scanned path {} escaped the workspace root", path.display())
                 })
@@ -361,30 +362,21 @@ fn offending_paths(workspace_root: &Path, token: &str) -> Vec<String> {
 /// this fence's own source text does not match its own scan.
 #[test]
 fn single_http_client_module() {
-    let metadata = MetadataCommand::new()
-        .no_deps()
-        .exec()
-        .expect("workspace cargo metadata");
-    let packages: BTreeMap<_, _> = metadata
-        .workspace_packages()
-        .into_iter()
-        .map(|package| (package.name.as_str(), package))
-        .collect();
-    let workspace_root = metadata.workspace_root.as_std_path();
+    let (packages, workspace_root) = workspace_dependencies();
 
     // The client belongs to the sources crate alone: neither the source-neutral
     // core contract nor the protocol adapter may reach the network.
     let client = format!("req{}", "west");
     for crate_name in ["resourcefs-core", "resourcefs-mcp"] {
         assert!(
-            !dependency_names(packages[crate_name]).contains(client.as_str()),
+            !dependency_names(&packages[crate_name]).contains(client.as_str()),
             "forbidden edge {crate_name} -> {client}: network egress belongs to resourcefs-sources"
         );
     }
 
     // Exactly one module may construct a client. A second one would be able to
     // issue requests that never pass the policy resolver.
-    let offenders = offending_paths(workspace_root, &client);
+    let offenders = offending_paths(&workspace_root, &client);
     assert_eq!(
         offenders,
         vec!["crates/resourcefs-sources/src/http/mod.rs"],
@@ -395,7 +387,7 @@ fn single_http_client_module() {
     // Raw TCP egress is confined to the probe, which authorizes each resolved
     // address through the same policy the substrate applies.
     let socket = format!("TcpS{}", "tream");
-    let offenders = offending_paths(workspace_root, &socket);
+    let offenders = offending_paths(&workspace_root, &socket);
     assert_eq!(
         offenders,
         vec!["crates/resourcefs-sources/src/probe.rs"],

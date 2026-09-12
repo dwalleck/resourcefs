@@ -2,8 +2,8 @@
 """Run the local/CI gates: python scripts/ci-gates.py (Python 3.9+, cargo-deny).
 
 Ignored tests are inventoried from compiled release harnesses, not source text.
-Unknown or missing ignored rows fail closed; live tests and the child-server
-entry point are never enabled. Add new ignored rows to the appropriate set.
+Unknown or missing ignored rows fail closed; `live_*` smokes (run by
+scripts/live-smoke.sh) and the child-server hosts are excluded, never run here.
 """
 
 import json
@@ -13,6 +13,10 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
+# Budgets stay a literal inventory: below, `missing = BUDGETS - seen` is what
+# proves every row is still compiled and executed, and no naming convention can
+# do that. Live smokes instead follow the `live_*` convention AGENTS.md
+# mandates, so a new smoke row needs no edit here.
 BUDGETS = {
     "reference_parse_budget",
     "immutable_reference_parse_budget",
@@ -32,25 +36,9 @@ BUDGETS = {
     "http_mutation_request_budget",
     "http_metadata_budget",
 }
-EXCLUDED = {
-    "live_stdio_profile_probe_serve_and_tools_hold_up": "live GitHub/stdio smoke",
-    "live_stdio_github_facts_match_native_observation": "live GitHub Facts stdio smoke",
-    "live_stdio_github_commit_facts_match_native_observation": "live GitHub commit Facts stdio smoke",
-    "live_stdio_github_source_facts_match_native_blob": "live GitHub source Facts stdio smoke",
-    "live_stdio_github_comment_facts_match_native_observation": "live GitHub comment Facts stdio smoke",
-    "live_stdio_github_review_and_inline_facts_match_native_observation": "live GitHub review/inline Facts stdio smoke",
-    "live_github_reads_hold_up": "live GitHub smoke",
-    "live_github_facts_preserve_native_identity_and_links": "live GitHub Facts smoke",
-    "live_github_immutable_commit_facts_hold_up": "live GitHub immutable commit Facts smoke",
-    "live_github_immutable_source_facts_hold_up": "live GitHub immutable source Facts smoke",
-    "live_github_conversation_comment_facts_hold_up": "live GitHub comment Facts smoke",
-    "live_github_review_and_inline_facts_hold_up": "live GitHub review/inline Facts smoke",
-    "live_https_reads_hold_up": "live HTTPS smoke",
-    "live_jira_issue_read": "live Jira smoke",
-    "live_jira_project_browse": "live Jira project smoke",
-    "live_jira_browse": "live Jira project and issue browse smoke",
-    "live_jira_jql": "live Jira native JQL smoke",
-    "server::jira_query_tests::live_jira_query_stdio": "live Jira native JQL stdio smoke",
+# The only ignored rows outside the live_* convention: child servers that
+# functional tests spawn and drive themselves.
+CHILD_SERVERS = {
     "server::jira_query_tests::jira_query_stdio_test_host": "child server, invoked by functional tests",
     "profile_https_test_server": "child server, invoked by functional tests",
 }
@@ -58,6 +46,22 @@ EXCLUDED = {
 # overrides must not silently select debug-scaled production assertions.
 RELEASE = ["--release", "--config", "profile.release.debug-assertions=false"]
 ENV = dict(os.environ, CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS="false")
+
+
+def exclusion_reason(name):
+    """Why `name` is skipped instead of run, or None when it must be run.
+
+    Budget membership is checked first: the literal set this replaced was
+    consulted before `BUDGETS`, so a name appearing in both was skipped
+    silently and never executed.
+    """
+    if name in BUDGETS:
+        return None
+    if name in CHILD_SERVERS:
+        return CHILD_SERVERS[name]
+    if name.startswith("live_") or "::live_" in name:
+        return "live smoke, run by scripts/live-smoke.sh outside the gates"
+    return None
 
 
 def run(command, *, capture=False):
@@ -101,8 +105,9 @@ def ignored_budgets():
                  if line.endswith(": test")]
         for name in names:
             seen.add(name)
-            if name in EXCLUDED:
-                print(f"Excluded {name}: {EXCLUDED[name]}", flush=True)
+            reason = exclusion_reason(name)
+            if reason is not None:
+                print(f"Excluded {name}: {reason}", flush=True)
                 continue
             if name not in BUDGETS:
                 print(f"Unclassified ignored test: {name}", file=sys.stderr)
