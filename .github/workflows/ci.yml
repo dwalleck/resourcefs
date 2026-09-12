@@ -6,9 +6,27 @@
 
 name: CI
 
+# `push` is scoped to `main`; every other branch is covered by
+# `pull_request`. An unscoped `push` plus `pull_request` ran the whole matrix
+# twice on the identical commit, so six branches pushed in half an hour
+# produced up to 36 jobs, 12 of them macOS -- against a concurrency ceiling
+# that held exactly 3 macOS jobs while Linux ran 9. Half of that work was a
+# duplicate of the other half.
 on:
   push:
+    branches: [main]
   pull_request:
+
+# One run per ref: a new push supersedes the run still queued for the previous
+# commit instead of sitting behind it. macOS is the binding constraint here --
+# its leg is 50-60 minutes and only three run at once -- so a superseded run
+# left queued costs an hour of the platform that has the least of it.
+#
+# `main` is excluded from cancellation: its runs are the record of what landed,
+# and one is also what refreshes the build cache every branch restores from.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -39,8 +57,23 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Only `main` writes a cache; every branch reads one.
+      #
+      # Each entry is 800-900 MB and there is one per platform per branch, so
+      # with three platforms and a handful of open pull requests the repository
+      # sat at 10,482 MB against GitHub's 10,240 MB ceiling -- 13 caches
+      # evicting each other continuously, which is why a restore was 12 seconds
+      # and the compile that followed was cold anyway. Writing only from `main`
+      # holds the total at three entries, and a branch still restores from
+      # `main` because GitHub lets a ref read its default branch's caches.
+      #
+      # The trade is that a branch which changes `Cargo.lock` gets a partial
+      # restore until it merges. That is the normal case for this repository's
+      # branches and is cheaper than the eviction it replaces.
       - name: Cache cargo state
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
@@ -52,4 +85,18 @@ jobs:
 
       - name: Repository gates
         if: ${{ !cancelled() }}
+        env:
+          # macOS was the matrix's critical path at 60 min against Windows's 27,
+          # and one target was most of the gap:
+          # `atlassian_fixture_operator_contract`, 78 tests driving a
+          # create/verify/cleanup lifecycle through a real subprocess. Windows
+          # is fast because the target is `#![cfg(unix)]` and it skips it.
+          #
+          # Pull requests skip it on macOS so a review is not gated on it.
+          # `main` still runs it there, which is the point: the brew-bash step
+          # above exists for this contract, because
+          # `scripts/atlassian-fixture-bootstrap.sh` needs Bash 4.4+ and macOS
+          # ships 3.2. This is the only target proving that script runs on
+          # macOS, so it moves off the critical path rather than disappearing.
+          RFS_SKIP_TEST_TARGETS: ${{ (runner.os == 'macOS' && github.event_name == 'pull_request') && 'atlassian_fixture_operator_contract' || '' }}
         run: python scripts/ci-gates.py

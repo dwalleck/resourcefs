@@ -54,6 +54,25 @@ PARALLEL_RELEASE_TARGETS = {
 # listener, and pinning the width keeps the local and hosted runs the same shape
 # instead of fanning out to whatever the workstation has.
 PARALLEL_TEST_THREADS = 4
+# Test targets this run skips, as a comma-separated RFS_SKIP_TEST_TARGETS. Empty
+# by default, so the local gate and every `main` build run everything.
+#
+# CI sets it on macOS for pull requests only. That platform's 60-minute leg was
+# the matrix's critical path and `atlassian_fixture_operator_contract` -- 78
+# tests driving a create/verify/cleanup lifecycle through a real subprocess --
+# was most of it. Skipping it on pull requests buys the whole gap back on the
+# path that gates a review.
+#
+# It still runs on macOS when `main` builds, and that is deliberate rather than
+# leftover: the workflow installs brew bash on macOS *for this contract*,
+# because `scripts/atlassian-fixture-bootstrap.sh` needs Bash 4.4+ and the
+# system ships 3.2. This target is the only thing proving that script runs on
+# macOS at all, so it is moved off the critical path, not deleted.
+SKIP_TEST_TARGETS = {
+    name.strip()
+    for name in os.environ.get("RFS_SKIP_TEST_TARGETS", "").split(",")
+    if name.strip()
+}
 # The only ignored rows outside the live_* convention: child servers that
 # functional tests spawn and drive themselves.
 CHILD_SERVERS = {
@@ -90,14 +109,16 @@ def run(command, *, capture=False):
     )
 
 
-def release_test_targets():
-    """Every compiled release test target, as (package_id, name, kind, executable).
+def test_targets(profile_flags, *, require_no_debug_assertions):
+    """Every compiled test target, as (package_id, name, kind, executable).
 
     Enumerated from cargo's own artifacts rather than from source text, so the
     inventory is what is built and runnable. Returns None when the build failed.
+    `profile_flags` selects the profile, so the release leg and the debug leg
+    share one enumeration instead of repeating it.
     """
     result = run([
-        "cargo", "test", *RELEASE, "--workspace", "--all-features",
+        "cargo", "test", *profile_flags, "--workspace", "--all-features",
         "--no-run", "--message-format=json",
     ], capture=True)
     if result.returncode:
@@ -111,7 +132,7 @@ def release_test_targets():
         executable = artifact.get("executable")
         if not executable or not artifact["profile"]["test"]:
             continue
-        if artifact["profile"]["debug_assertions"]:
+        if require_no_debug_assertions and artifact["profile"]["debug_assertions"]:
             print(
                 f"Release test target {artifact['target']['name']} has debug assertions enabled; remove the profile override.",
                 file=sys.stderr,
@@ -133,6 +154,41 @@ def target_selector(kind, name):
     return None
 
 
+def functional_tests():
+    """The debug test leg.
+
+    With no skips requested this is the single workspace command it has always
+    been -- the default path is unchanged, so the local gate and `main` builds
+    behave exactly as before. Only when RFS_SKIP_TEST_TARGETS is set does it
+    enumerate targets so the named ones can be left out, because `cargo test
+    --workspace` has no way to exclude one target.
+    """
+    if not SKIP_TEST_TARGETS:
+        return run([
+            "cargo", "test", "--workspace", "--all-features", "--no-fail-fast",
+        ]).returncode == 0
+    targets = test_targets([], require_no_debug_assertions=False)
+    if targets is None:
+        return False
+    passed = True
+    for package_id, name, kind, _executable in targets:
+        if name in SKIP_TEST_TARGETS:
+            print(f"Skipped functional target {name}: RFS_SKIP_TEST_TARGETS", flush=True)
+            continue
+        selector = target_selector(kind, name)
+        if selector is None:
+            print(f"Unsupported functional test target: {name}", file=sys.stderr)
+            passed = False
+            continue
+        result = run([
+            "cargo", "test", "-p", package_id, "--all-features",
+            *selector, "--no-fail-fast",
+        ])
+        passed = result.returncode == 0 and passed
+    doctests = run(["cargo", "test", "--workspace", "--all-features", "--doc"])
+    return doctests.returncode == 0 and passed
+
+
 def release_workspace():
     """Release tests, serial except for the targets cleared to run parallel.
 
@@ -140,11 +196,14 @@ def release_workspace():
     named in PARALLEL_RELEASE_TARGETS. Doctests are not compiler artifacts, so
     they run in their own serial pass rather than being lost.
     """
-    targets = release_test_targets()
+    targets = test_targets(RELEASE, require_no_debug_assertions=True)
     if targets is None:
         return False
     passed = True
     for package_id, name, kind, _executable in targets:
+        if name in SKIP_TEST_TARGETS:
+            print(f"Skipped release target {name}: RFS_SKIP_TEST_TARGETS", flush=True)
+            continue
         selector = target_selector(kind, name)
         if selector is None:
             print(f"Unsupported release test target: {name}", file=sys.stderr)
@@ -167,7 +226,7 @@ def release_workspace():
 
 
 def ignored_budgets():
-    targets = release_test_targets()
+    targets = test_targets(RELEASE, require_no_debug_assertions=True)
     if targets is None:
         return False
     seen = set()
@@ -211,7 +270,7 @@ def main():
     gates = [
         ("Formatting", ["cargo", "fmt", "--all", "--", "--check"]),
         ("Lints", ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]),
-        ("Functional tests", ["cargo", "test", "--workspace", "--all-features", "--no-fail-fast"]),
+        ("Functional tests", functional_tests),
         ("Release workspace", release_workspace),
         ("Ignored production budgets", ignored_budgets),
         ("Dependency vetting", ["cargo", "deny", "check"]),
