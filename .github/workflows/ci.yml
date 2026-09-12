@@ -45,6 +45,11 @@ jobs:
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
 
+      # The functional-test gate runs under nextest for process-per-test
+      # isolation; see the comment in scripts/ci-gates.py.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Install Python for repository gates
         uses: actions/setup-python@v5
         with:

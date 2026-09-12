@@ -1,0 +1,32 @@
+# Test-runner settings for cargo-nextest.
+#
+# nextest runs each test in its own process. That is the point of adopting it
+# here: four test binaries install a counting `#[global_allocator]` and assert a
+# peak-heap ceiling, and a process-global counter is only trustworthy when one
+# test owns the process. Under `cargo test` those rows share a binary with
+# everything else in it, so a concurrent test's allocations land in this one's
+# measurement -- the misattribution recorded in rfs-1e6h, and the reason its
+# ceilings were raised (1 MiB to 4 MiB, 100 ms to 1000 ms) rather than fixed.
+#
+# The `#[ignore]`d production budgets were never affected: scripts/ci-gates.py
+# already runs each of those individually with `--exact`. The rows this helps
+# are the non-ignored allocator assertions, in artifact_adapter_contract.rs.
+
+[profile.default]
+# The repository gate wants every failure in one run, not the first one.
+fail-fast = false
+
+# The Atlassian fixture operator drives real subprocesses and TLS handshakes;
+# its slowest row takes about 80 seconds. Report slow rows but never kill them:
+# omitting `terminate-after` is what makes this a warning, and a terminated
+# fixture would leave upstream objects behind.
+slow-timeout = { period = "60s" }
+
+# Retries hide flakes rather than fixing them, and rfs-1e6h is open precisely so
+# the remaining timing sensitivity gets fixed at the measurement.
+retries = 0
+
+[profile.ci]
+inherits = "default"
+failure-output = "immediate-final"
+status-level = "retry"
