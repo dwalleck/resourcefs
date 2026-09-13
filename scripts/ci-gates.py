@@ -10,6 +10,7 @@ assertion anywhere in a target keeps a quiet machine. Targets cleared to run
 parallel are named, with their clearing inspection, in PARALLEL_RELEASE_TARGETS.
 """
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -312,17 +313,40 @@ def ignored_budgets():
     return passed and not missing
 
 
+# The phase each gate belongs to, for `--phase`. CI runs the two phases as
+# separate jobs on the same runner image so their wall-clock cost is the larger
+# of the two rather than the sum: on Ubuntu the debug phase is about 16 minutes
+# and the release phase about 22, so one job spent 38 minutes doing what two
+# spend 22 doing. Locally, `--phase` is not passed and every gate runs in one
+# process exactly as before.
+#
+# `release` holds the two gates that need release artifacts -- they share the
+# `cargo test --release --no-run` enumeration, which is 285 s by itself, so
+# separating them would pay for it twice. Everything else is `debug`.
+#
+# PHASES is the whole vocabulary. main() refuses a gate carrying anything else,
+# which is what stops a gate added later from belonging to no job and silently
+# never running in CI.
+PHASES = ("debug", "release")
+
+
 def main():
+    parser = argparse.ArgumentParser(description="Run the repository gates.")
+    parser.add_argument(
+        "--phase", choices=PHASES, default=None,
+        help="run only this phase; omit to run every gate, as a local run does",
+    )
+    arguments = parser.parse_args()
     gates = [
-        ("Formatting", ["cargo", "fmt", "--all", "--", "--check"]),
-        ("Lints", ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]),
+        ("debug", "Formatting", ["cargo", "fmt", "--all", "--", "--check"]),
+        ("debug", "Lints", ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]),
         # These three are callables, not argument lists: each enumerates or
         # filters its own targets. See functional_tests() for why the debug leg
         # runs under nextest, and why doctests ride inside it rather than
         # taking a gate of their own.
-        ("Functional tests", functional_tests),
-        ("Release workspace", release_workspace),
-        ("Ignored production budgets", ignored_budgets),
+        ("debug", "Functional tests", functional_tests),
+        ("release", "Release workspace", release_workspace),
+        ("release", "Ignored production budgets", ignored_budgets),
         # `fuzz/` declares its own `[workspace]`, so `--workspace` above cannot
         # reach it and nothing else type-checks it. Without this the targets rot
         # silently against the APIs they exercise. Running the fuzzers is a
@@ -336,17 +360,27 @@ def main():
         # fails with `LNK1561: entry point must be defined`. Type-checking never
         # links, so it catches the API rot this gate exists for on every
         # platform. Verified against `x86_64-pc-windows-msvc`.
-        ("Fuzz targets", ["cargo", "fmt", "--manifest-path", "fuzz/Cargo.toml", "--", "--check"]),
-        ("Fuzz targets check", ["cargo", "check", "--manifest-path", "fuzz/Cargo.toml"]),
-        ("Dependency vetting", ["cargo", "deny", "check"]),
+        ("debug", "Fuzz targets", ["cargo", "fmt", "--manifest-path", "fuzz/Cargo.toml", "--", "--check"]),
+        ("debug", "Fuzz targets check", ["cargo", "check", "--manifest-path", "fuzz/Cargo.toml"]),
+        ("debug", "Dependency vetting", ["cargo", "deny", "check"]),
     ]
     if sys.platform == "linux":
         gates.insert(0, (
+            "debug",
             "Module placement",
             [sys.executable, "scripts/module_shape.py"],
         ))
+    unknown = sorted({phase for phase, _, _ in gates} - set(PHASES))
+    if unknown:
+        print(f"Gates declare unknown phases: {unknown}", file=sys.stderr)
+        return 1
+    if arguments.phase is not None:
+        gates = [gate for gate in gates if gate[0] == arguments.phase]
+        if not gates:
+            print(f"No gates in phase {arguments.phase}", file=sys.stderr)
+            return 1
     failed = []
-    for name, command in gates:
+    for _phase, name, command in gates:
         print(f"\n=== {name} ===", flush=True)
         try:
             passed = command() if callable(command) else run(command).returncode == 0
@@ -358,7 +392,8 @@ def main():
     if failed:
         print(f"Failed gates: {', '.join(failed)}", file=sys.stderr)
         return 1
-    print("All repository gates passed.")
+    scope = "repository gates" if arguments.phase is None else f"{arguments.phase}-phase gates"
+    print(f"All {scope} passed.")
     return 0
 
 

@@ -32,13 +32,37 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # One job per (platform, phase). The gates are the same gates in the same
+  # order; `--phase` only chooses which of them this runner takes.
+  #
+  # Ubuntu spent 38 minutes running 16 minutes of debug-phase work followed by
+  # 22 minutes of release-phase work, and the two share nothing: different
+  # profile, different target directory contents, no state passed between them.
+  # Run as two jobs the wall clock is the larger of the two, not the sum.
+  #
+  # macOS deliberately does NOT split. It is the constrained platform -- the
+  # account gets 5 concurrent macOS runners across every repository -- so a
+  # second macOS job costs a slot that other repositories queue behind, to save
+  # about 6 minutes on a leg that is no longer the critical path at 19.6 min.
+  # Ubuntu and Windows runners are not scarce in the same way, so they split and
+  # macOS stays whole. `phase: all` is the no-flag local behaviour.
   gates:
-    name: gates (${{ matrix.os }})
+    name: gates (${{ matrix.os }})${{ matrix.phase != 'all' && format(', {0}', matrix.phase) || '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            phase: debug
+          - os: ubuntu-latest
+            phase: release
+          - os: windows-latest
+            phase: debug
+          - os: windows-latest
+            phase: release
+          - os: macos-latest
+            phase: all
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -75,12 +99,17 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Both tools belong to debug-phase gates only -- `cargo deny check` is
+      # the Dependency vetting gate and nextest runs the functional leg -- so
+      # the release-phase job does not pay to install them.
       - name: Install cargo-deny
+        if: matrix.phase != 'release'
         uses: taiki-e/install-action@cargo-deny
 
       # The functional-test gate runs under nextest for process-per-test
       # isolation; see the comment in scripts/ci-gates.py.
       - name: Install cargo-nextest
+        if: matrix.phase != 'release'
         uses: taiki-e/install-action@nextest
 
       - name: Install Python for repository gates
@@ -120,4 +149,4 @@ jobs:
           # It still runs in the functional leg here, and on `main` the release
           # leg runs it too, so nothing loses release coverage before a merge.
           RFS_SKIP_RELEASE_TEST_TARGETS: ${{ github.event_name == 'pull_request' && 'atlassian_fixture_operator_contract' || '' }}
-        run: python scripts/ci-gates.py
+        run: python scripts/ci-gates.py ${{ matrix.phase != 'all' && format('--phase {0}', matrix.phase) || '' }}
