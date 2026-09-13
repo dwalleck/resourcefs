@@ -288,9 +288,23 @@ fn glob_language_table() {
         actual.sort_unstable();
         assert_eq!(actual, case.expected, "C1 glob case {}", case.name);
     }
+    // Debug allowance, matching every other timing budget in the tree; this
+    // file was the only one carrying flat ceilings. The release figure is the
+    // real measurement and is unchanged.
+    //
+    // The work here is about 7 ms on an idle host. It failed CI at 108 ms -- a 15x
+    // slowdown -- because the functional leg runs 725 test processes under
+    // nextest on a 3-4 core macOS runner, in an unoptimised build. At that
+    // point a wall clock is measuring how long the process sat descheduled,
+    // not the matcher. See rfs-1e6h.
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_secs(2)
+    } else {
+        Duration::from_millis(100)
+    };
     assert!(
-        started.elapsed() <= Duration::from_millis(100),
-        "C1 glob table exceeded 100 ms: {:?}",
+        started.elapsed() <= budget,
+        "C1 glob table exceeded {budget:?}: {:?}",
         started.elapsed()
     );
 }
@@ -321,7 +335,12 @@ fn matcher_selection_unicode_and_work_limits() {
         "C3 maximum engine"
     );
     assert!(
-        compile_started.elapsed() <= Duration::from_secs(2),
+        compile_started.elapsed()
+            <= if cfg!(debug_assertions) {
+                Duration::from_secs(40)
+            } else {
+                Duration::from_secs(2)
+            },
         "C3 maximum compile exceeded two seconds: {:?}",
         compile_started.elapsed()
     );
@@ -359,7 +378,12 @@ fn matcher_selection_unicode_and_work_limits() {
     let scan_started = Instant::now();
     assert!(scan.is_match(&haystack).expect("C3 maximum scan"));
     assert!(
-        scan_started.elapsed() <= Duration::from_secs(1),
+        scan_started.elapsed()
+            <= if cfg!(debug_assertions) {
+                Duration::from_secs(20)
+            } else {
+                Duration::from_secs(1)
+            },
         "C3 maximum scan exceeded one second: {:?}",
         scan_started.elapsed()
     );

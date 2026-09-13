@@ -42,6 +42,23 @@ use tls::{FixtureResponse, TlsListener};
 /// failed on Windows CI at 3.223 s against a 3 s bound while the other 697
 /// tests passed, and the same commit passed in the sibling run.
 const LIVENESS_BACKSTOP: Duration = Duration::from_secs(30);
+/// The read deadline the barrier tests arm so the response they block on is
+/// refused for exceeding it.
+///
+/// It has to outlast getting a request onto the wire -- connect, TLS
+/// handshake, first write -- because the fixture only signals `arrived` from
+/// inside its handler. If the deadline expires first the read fails before any
+/// request is issued, the handler never runs, and the test waits out
+/// LIVENESS_BACKSTOP against a notification that can no longer come. That is
+/// how it failed on windows-latest: 30 s at
+/// `expect("actual HTTP request arrived")`, with the request never sent.
+///
+/// The value only has to sit between "request is on the wire" and
+/// LIVENESS_BACKSTOP; the response itself is held by the fixture until the
+/// test releases it, so the deadline is guaranteed to fire whatever it is.
+/// Five seconds is ~50x the handshake cost on a loaded shared runner and still
+/// six times clear of the backstop. See rfs-kpgy.
+const BARRIER_READ_DEADLINE: Duration = Duration::from_secs(5);
 
 const NATIVE: &str = include_str!("../../../.rfs-0n97/oracles/pr-native.json");
 const RESOURCE: &str = "pr://owner/repo/7/facts";
@@ -825,7 +842,7 @@ async fn facts_inflight_cancel_and_deadline_refuse_barrier_delayed_response() {
                 if cancel {
                     None
                 } else {
-                    Some(Duration::from_millis(100))
+                    Some(BARRIER_READ_DEADLINE)
                 },
                 None,
                 None,

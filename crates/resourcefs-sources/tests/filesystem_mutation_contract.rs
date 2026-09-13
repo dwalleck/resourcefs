@@ -634,10 +634,22 @@ async fn exact_limit_write_budget_and_one_over_rejection() {
             .len(),
         MAX_ARTIFACT_BYTES as u64
     );
+    // This bounds a 64 MiB file creation, so it is dominated by the host's
+    // disk rather than by this crate -- the same category as the heartbeat
+    // mtime budget above in session_storage_contract.rs. A windows-latest
+    // runner took 13.57 s against the previous 5 s (PR #20, run
+    // 34722270821), on a branch whose only change was 24 lines of JSON, so
+    // the miss was the hardware and not the code.
+    //
+    // Serialising it is not the lever: the release leg already ran this
+    // target alone under `--test-threads=1` when it missed. 30 s is roughly
+    // twice the worst observed, matching the headroom the heartbeat budget
+    // was given, and still fails long before a regression that made a 64 MiB
+    // write take minutes. See rfs-1e6h.
     let budget = if cfg!(debug_assertions) {
         Duration::from_secs(100)
     } else {
-        Duration::from_secs(5)
+        Duration::from_secs(30)
     };
     assert!(elapsed <= budget, "64 MiB create took {elapsed:?}");
 
