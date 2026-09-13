@@ -104,4 +104,20 @@ jobs:
           # ships 3.2. This is the only target proving that script runs on
           # macOS, so it moves off the critical path rather than disappearing.
           RFS_SKIP_TEST_TARGETS: ${{ (runner.os == 'macOS' && github.event_name == 'pull_request') && 'atlassian_fixture_operator_contract' || '' }}
+          # The same target, taken off the RELEASE leg only, on every platform
+          # that has one. It is 551 s of a 21-minute release leg on Ubuntu --
+          # 42%, measured on run 34722270821 -- and the release leg is there to
+          # catch assertions compiled out, overflow wrapping, and the resolved
+          # feature set. A create/verify/cleanup lifecycle over a subprocess and
+          # a TLS handshake behaves the same in both profiles, so the second run
+          # was a second copy of the same evidence.
+          #
+          # In practice this is an Ubuntu change: the target is `#![cfg(unix)]`
+          # so Windows never had it, and macOS pull requests already skip it in
+          # both legs above. It is written per-event rather than per-OS anyway,
+          # so the reasoning holds if either of those facts changes.
+          #
+          # It still runs in the functional leg here, and on `main` the release
+          # leg runs it too, so nothing loses release coverage before a merge.
+          RFS_SKIP_RELEASE_TEST_TARGETS: ${{ github.event_name == 'pull_request' && 'atlassian_fixture_operator_contract' || '' }}
         run: python scripts/ci-gates.py

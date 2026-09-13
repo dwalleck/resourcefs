@@ -73,6 +73,29 @@ SKIP_TEST_TARGETS = {
     for name in os.environ.get("RFS_SKIP_TEST_TARGETS", "").split(",")
     if name.strip()
 }
+# Targets this run skips in the RELEASE leg only, as a comma-separated
+# RFS_SKIP_RELEASE_TEST_TARGETS. Empty by default, and a superset relationship
+# is not implied: a name here still runs in the functional leg, which is the
+# difference from RFS_SKIP_TEST_TARGETS above.
+#
+# The release leg exists to catch what a debug `cargo test` cannot -- assertions
+# compiled out, integer overflow wrapping instead of panicking, and the feature
+# set a dev-dependency-free build actually resolves. A target earns its place
+# there by being able to behave differently under those. One that spends its
+# time in subprocesses, sockets and the filesystem behaves identically in both
+# profiles, so running it twice buys a second copy of the same evidence.
+#
+# CI names `atlassian_fixture_operator_contract` here for pull requests. It is
+# 551 s of a 21-minute release leg -- 42% of it, measured on run 34722270821 --
+# and it is a fixture-lifecycle contract: create, verify, clean up, over a real
+# subprocess and a TLS handshake. It still runs in full in the functional leg on
+# every platform that can (see the Bash 4.4 note above), and the release leg
+# still runs it on `main`, so nothing stops being covered before a merge.
+SKIP_RELEASE_TEST_TARGETS = {
+    name.strip()
+    for name in os.environ.get("RFS_SKIP_RELEASE_TEST_TARGETS", "").split(",")
+    if name.strip()
+}
 # The only ignored rows outside the live_* convention: child servers that
 # functional tests spawn and drive themselves.
 CHILD_SERVERS = {
@@ -219,6 +242,13 @@ def release_workspace():
     for package_id, name, kind, _executable in targets:
         if name in SKIP_TEST_TARGETS:
             print(f"Skipped release target {name}: RFS_SKIP_TEST_TARGETS", flush=True)
+            continue
+        if name in SKIP_RELEASE_TEST_TARGETS:
+            print(
+                f"Skipped release target {name}: RFS_SKIP_RELEASE_TEST_TARGETS"
+                " (still ran in the functional leg)",
+                flush=True,
+            )
             continue
         selector = target_selector(kind, name)
         if selector is None:
