@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufReader, Read},
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio},
@@ -8,6 +8,9 @@ use std::{
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
+#[path = "support/stdio.rs"]
+mod stdio;
+use stdio::{McpProcessPermit, finish_process, read_message_from, write_message_to};
 
 fn binary() -> PathBuf {
     std::env::var_os("RESOURCEFS_TEST_BINARY")
@@ -904,10 +907,12 @@ struct ProfileMcpProcess {
     stdout: BufReader<ChildStdout>,
     roots: Vec<Value>,
     next_id: u64,
+    _process_permit: McpProcessPermit,
 }
 
 impl ProfileMcpProcess {
     fn start(profile: &Path, current_directory: &Path) -> Self {
+        let permit = McpProcessPermit::acquire();
         let mut child = Command::new(binary())
             .args(["serve", "--config"])
             .arg(profile)
@@ -925,6 +930,7 @@ impl ProfileMcpProcess {
             stdout,
             roots: Vec::new(),
             next_id: 1,
+            _process_permit: permit,
         }
     }
 
@@ -1003,43 +1009,15 @@ impl ProfileMcpProcess {
     }
 
     fn write(&mut self, message: &Value) {
-        let stdin = self.stdin.as_mut().expect("open profile ResourceFS stdin");
-        serde_json::to_writer(&mut *stdin, message).expect("serialize MCP message");
-        writeln!(stdin).expect("MCP message delimiter");
-        stdin.flush().expect("flush MCP message");
+        write_message_to(&mut self.stdin, message);
     }
 
     fn read(&mut self) -> Value {
-        let mut line = String::new();
-        let bytes = self.stdout.read_line(&mut line).expect("read MCP message");
-        assert_ne!(bytes, 0, "profile ResourceFS closed protocol stdout");
-        serde_json::from_str(&line)
-            .unwrap_or_else(|error| panic!("invalid MCP response {line:?}: {error}"))
+        read_message_from(&mut self.stdout, false)
     }
 
     fn finish(&mut self) -> String {
-        self.stdin.take();
-        let status = self.child.wait().expect("wait for profile ResourceFS");
-        let mut remaining = String::new();
-        self.stdout
-            .read_to_string(&mut remaining)
-            .expect("drain profile stdout");
-        assert!(
-            remaining.trim().is_empty(),
-            "unexpected MCP stdout: {remaining}"
-        );
-        let mut stderr = String::new();
-        self.child
-            .stderr
-            .take()
-            .expect("profile ResourceFS stderr")
-            .read_to_string(&mut stderr)
-            .expect("read profile stderr");
-        assert!(
-            status.success(),
-            "profile ResourceFS exited {status}: {stderr}"
-        );
-        stderr
+        finish_process(&mut self.child, &mut self.stdin, &mut self.stdout, false)
     }
 }
 
