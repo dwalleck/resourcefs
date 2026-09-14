@@ -219,13 +219,36 @@ where
 {
     // The startup probe is intentionally a bare TCP connect. Its TLS handshake
     // fails cleanly; the next accepted connection is the real HTTPS read.
-    let Ok(mut tls) = acceptor.accept(stream).await else {
+    let Ok(tls) = acceptor.accept(stream).await else {
         return Ok(());
     };
+    serve_request(tls, responses, requests).await
+}
+
+async fn serve_request<S>(
+    mut tls: S,
+    responses: &Responses,
+    requests: &Mutex<Vec<RecordedRequest>>,
+) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut head = Vec::new();
     let mut chunk = [0_u8; 1024];
     loop {
-        let read = tls.read(&mut chunk).await?;
+        let read = match tls.read(&mut chunk).await {
+            Ok(read) => read,
+            Err(error)
+                if head.is_empty()
+                    && matches!(
+                        error.kind(),
+                        io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+                    ) =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         if read == 0 {
             return Ok(());
         }
@@ -325,16 +348,293 @@ where
     .await;
     match sent {
         Err(error)
-            if matches!(responses, Responses::BlockedNative { .. })
-                && matches!(
-                    error.kind(),
-                    io::ErrorKind::BrokenPipe
-                        | io::ErrorKind::ConnectionReset
-                        | io::ErrorKind::ConnectionAborted
-                ) =>
+            if matches!(
+                error.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+            ) =>
         {
             Ok(())
         }
         result => result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::io::{DuplexStream, ReadBuf, duplex};
+    use tokio_rustls::{
+        TlsConnector,
+        rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
+    };
+
+    enum Fault {
+        Read { after: usize, kind: io::ErrorKind },
+        Write { after: usize, kind: io::ErrorKind },
+        Shutdown(io::ErrorKind),
+    }
+
+    // Wrap established TLS, not its raw transport: counts now name handler
+    // reads/writes rather than rustls handshake records or session tickets.
+    struct FaultStream {
+        inner: tokio_rustls::server::TlsStream<DuplexStream>,
+        fault: Fault,
+        fired: bool,
+    }
+
+    impl AsyncRead for FaultStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if let Fault::Read { after: 0, kind } = self.fault {
+                self.fired = true;
+                return Poll::Ready(Err(io::Error::new(kind, "injected request read fault")));
+            }
+            let before = buffer.filled().len();
+            let result = Pin::new(&mut self.inner).poll_read(cx, buffer);
+            if matches!(result, Poll::Ready(Ok(())))
+                && buffer.filled().len() > before
+                && let Fault::Read { after, .. } = &mut self.fault
+            {
+                *after -= 1;
+            }
+            result
+        }
+    }
+
+    impl AsyncWrite for FaultStream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            if let Fault::Write { after: 0, kind } = self.fault {
+                self.fired = true;
+                return Poll::Ready(Err(io::Error::new(kind, "injected response write fault")));
+            }
+            let result = Pin::new(&mut self.inner).poll_write(cx, buffer);
+            if let Poll::Ready(Ok(written)) = result
+                && written > 0
+                && let Fault::Write { after, .. } = &mut self.fault
+            {
+                *after -= 1;
+            }
+            result
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            if let Fault::Shutdown(kind) = self.fault {
+                self.fired = true;
+                return Poll::Ready(Err(io::Error::new(
+                    kind,
+                    "injected response shutdown fault",
+                )));
+            }
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum ResponseKind {
+        Html,
+        Native,
+        BlockedNative,
+    }
+
+    async fn exercise(
+        kind: ResponseKind,
+        request: &[u8],
+        fault: Fault,
+    ) -> (io::Result<()>, Vec<RecordedRequest>) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (client_io, server_io) = duplex(64 * 1024);
+            let mut roots = RootCertStore::empty();
+            roots
+                .add(CertificateDer::from(root_certificate().to_vec()))
+                .expect("test root certificate");
+            let connector = TlsConnector::from(Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth(),
+            ));
+            let acceptor = TlsAcceptor::from(Arc::new(server_config()));
+            // Both sides must finish successfully before any fault can fire.
+            let (client, server) = tokio::join!(
+                connector.connect(
+                    ServerName::try_from("localhost").expect("server name"),
+                    client_io
+                ),
+                acceptor.accept(server_io),
+            );
+            let mut client = client.expect("client TLS handshake");
+            let mut server = FaultStream {
+                inner: server.expect("server TLS handshake"),
+                fault,
+                fired: false,
+            };
+            client.write_all(request).await.expect("send request bytes");
+            client.flush().await.expect("flush request bytes");
+            let (arrived, _receiver) = mpsc::channel();
+            let responses = match kind {
+                ResponseKind::Html => Responses::Html(Arc::from("body")),
+                ResponseKind::Native => Responses::Native(vec![NativeResponse {
+                    path: "/".to_owned(),
+                    body: "{}".to_owned(),
+                    headers: Vec::new(),
+                }]),
+                ResponseKind::BlockedNative => {
+                    let release = Arc::new(tokio::sync::Notify::new());
+                    release.notify_one();
+                    Responses::BlockedNative {
+                        body: "{}".to_owned(),
+                        arrived,
+                        release,
+                    }
+                }
+            };
+            let requests = Mutex::new(Vec::new());
+            let result = serve_request(&mut server, &responses, &requests).await;
+            assert!(server.fired, "the configured I/O fault must execute");
+            (result, requests.into_inner().expect("request log"))
+        })
+        .await
+        .expect("TLS fault scenario exceeded ten seconds")
+    }
+
+    const REQUEST: &[u8] = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+
+    #[tokio::test]
+    async fn serve_treats_empty_head_disconnects_as_eof() {
+        for kind in [
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::ConnectionAborted,
+        ] {
+            let (result, requests) =
+                exercise(ResponseKind::Html, b"", Fault::Read { after: 0, kind }).await;
+            assert!(result.is_ok(), "empty-head {kind:?}: {result:?}");
+            assert!(requests.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn serve_propagates_partial_head_disconnects() {
+        for kind in [
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::ConnectionAborted,
+        ] {
+            let (result, requests) = exercise(
+                ResponseKind::Html,
+                b"GET / HTTP/1.1\r\n",
+                Fault::Read { after: 1, kind },
+            )
+            .await;
+            assert_eq!(
+                result
+                    .expect_err("partial-head disconnect must fail")
+                    .kind(),
+                kind
+            );
+            assert!(requests.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn serve_propagates_unrelated_request_read_errors() {
+        let (result, requests) = exercise(
+            ResponseKind::Html,
+            b"",
+            Fault::Read {
+                after: 0,
+                kind: io::ErrorKind::Other,
+            },
+        )
+        .await;
+        assert_eq!(
+            result.expect_err("unrelated read error must fail").kind(),
+            io::ErrorKind::Other
+        );
+        assert!(requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn serve_tolerates_response_disconnects_for_each_variant() {
+        for kind in [
+            ResponseKind::Html,
+            ResponseKind::Native,
+            ResponseKind::BlockedNative,
+        ] {
+            let (result, requests) = exercise(
+                kind,
+                REQUEST,
+                Fault::Write {
+                    after: 0,
+                    kind: io::ErrorKind::BrokenPipe,
+                },
+            )
+            .await;
+            assert!(result.is_ok(), "response disconnect: {result:?}");
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].path, "/");
+        }
+    }
+
+    #[tokio::test]
+    async fn serve_tolerates_response_body_disconnect() {
+        let (result, requests) = exercise(
+            ResponseKind::Html,
+            REQUEST,
+            Fault::Write {
+                after: 1,
+                kind: io::ErrorKind::ConnectionReset,
+            },
+        )
+        .await;
+        assert!(result.is_ok(), "body disconnect: {result:?}");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, "/");
+    }
+
+    #[tokio::test]
+    async fn serve_tolerates_response_shutdown_disconnect() {
+        let (result, requests) = exercise(
+            ResponseKind::Html,
+            REQUEST,
+            Fault::Shutdown(io::ErrorKind::ConnectionAborted),
+        )
+        .await;
+        assert!(result.is_ok(), "shutdown disconnect: {result:?}");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, "/");
+    }
+
+    #[tokio::test]
+    async fn serve_propagates_unrelated_response_write_errors() {
+        let (result, requests) = exercise(
+            ResponseKind::Html,
+            REQUEST,
+            Fault::Write {
+                after: 0,
+                kind: io::ErrorKind::Other,
+            },
+        )
+        .await;
+        assert_eq!(
+            result.expect_err("unrelated write error must fail").kind(),
+            io::ErrorKind::Other
+        );
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, "/");
     }
 }
