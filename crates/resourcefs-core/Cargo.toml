@@ -18,6 +18,7 @@ serde.workspace = true
 sha2.workspace = true
 url.workspace = true
 tokio.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 # Enables this crate's own `test-support` feature for its test targets only.
