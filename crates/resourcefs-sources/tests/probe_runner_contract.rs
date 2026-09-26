@@ -159,6 +159,75 @@ async fn network_probe_observes_connectivity_and_cancellation() {
     assert_eq!(cancelled.state(), ProbeState::Failed);
 }
 
+/// rfs-0bqa: one blackholed origin must not starve its healthy siblings.
+///
+/// The blackholed endpoint is deliberately **first**. Dialling the endpoints
+/// one after another under the probe timeout would spend the whole window on
+/// it and never reach the healthy endpoint; dialling them concurrently reaches
+/// the healthy one at once. The verdict is the same either way — the
+/// blackholed endpoint stays unreachable, so the probe does not become
+/// `Available` — which is why the assertion is on the healthy listener being
+/// *reached* within the window, not on the outcome. A wall-clock bound alone
+/// cannot tell a concurrent dial from a sequential one; an accepted connection
+/// can.
+#[tokio::test]
+async fn network_probe_dials_every_endpoint_concurrently() {
+    let blackhole = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("blackhole listener failed: {error}"));
+    let blackhole_port = blackhole
+        .local_addr()
+        .unwrap_or_else(|error| panic!("blackhole listener address failed: {error}"))
+        .port();
+    // The saturating connections must outlive the probe, hence the binding.
+    let saturation = resourcefs_sources::saturate_accept_queue(blackhole_port);
+    assert!(
+        !saturation.is_empty(),
+        "the blackhole listener must accept some connections before saturating"
+    );
+
+    let healthy = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("healthy listener failed: {error}"));
+    let healthy_endpoint = healthy
+        .local_addr()
+        .unwrap_or_else(|error| panic!("healthy listener address failed: {error}"));
+
+    let probe = NetworkProbe::new(
+        vec![
+            (
+                "127.0.0.1".to_owned(),
+                blackhole_port,
+                AddressPolicy::new(true),
+            ),
+            (
+                healthy_endpoint.ip().to_string(),
+                healthy_endpoint.port(),
+                AddressPolicy::new(true),
+            ),
+        ],
+        true,
+    )
+    .unwrap_or_else(|error| panic!("network probe construction failed: {error}"));
+    let operation = OperationGuard::new();
+    let window = std::time::Duration::from_secs(2);
+    let (outcome, accepted) = tokio::join!(
+        tokio::time::timeout(window, probe.probe(&operation)),
+        tokio::time::timeout(window, healthy.accept()),
+    );
+    assert!(
+        matches!(accepted, Ok(Ok(_))),
+        "the healthy endpoint was never dialled: a blackholed sibling consumed the probe window"
+    );
+    // Concurrency changes which endpoints get dialled, not what is reported:
+    // the blackholed endpoint never answers, so the probe is still pending
+    // when the window closes rather than `Available`.
+    assert!(
+        outcome.is_err(),
+        "a blackholed endpoint must keep the probe from reporting available"
+    );
+    drop(saturation);
+}
+
 struct Row {
     id: &'static str,
     required: bool,
