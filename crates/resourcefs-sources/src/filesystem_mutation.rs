@@ -61,15 +61,19 @@ impl MutationAdapter for FilesystemSource {
         access: MutationAccess,
     ) -> Result<MutationTarget, ResourceError> {
         let authority = self.mutation_authority_guard().await?;
-        let resolved = resolve_reference(active_view(&authority), reference)?;
-        enforce_grant(resolved.root.grants, access)?;
-        let canonical = canonical_target(&resolved)?;
-        open_mutation_parent(&resolved.root, &resolved.path, canonical.requested())?;
-        MutationTarget::new(
-            canonical,
-            MutationSourceKey::new(FILESYSTEM_MUTATION_SOURCE_KEY)?,
-            MutationTargetMode::AuthoredText,
-        )
+        let reference = reference.clone();
+        offload(move || {
+            let resolved = resolve_reference(active_view(&authority), &reference)?;
+            enforce_grant(resolved.root.grants, access)?;
+            let canonical = canonical_target(&resolved)?;
+            open_mutation_parent(&resolved.root, &resolved.path, canonical.requested())?;
+            MutationTarget::new(
+                canonical,
+                MutationSourceKey::new(FILESYSTEM_MUTATION_SOURCE_KEY)?,
+                MutationTargetMode::AuthoredText,
+            )
+        })
+        .await
     }
 
     fn validate_write(
@@ -88,19 +92,20 @@ impl MutationAdapter for FilesystemSource {
     ) -> Result<MutationState, ResourceError> {
         ensure_operation_active(operation)?;
         let authority = self.mutation_authority_guard().await?;
-        let resolved = resolve_target(active_view(&authority), target)?;
-        enforce_grant(resolved.root.grants, access)?;
-        let parent = open_mutation_parent(
-            &resolved.root,
-            &resolved.path,
-            target.canonical_reference().requested(),
-        )?;
-        load_current(&parent, target.canonical_reference().requested()).map(|current| {
-            current.map_or(MutationState::Missing, |current| MutationState::Text {
-                content: current.content,
-                version_tag: current.version_tag,
+        let target = target.clone();
+        offload(move || {
+            let resolved = resolve_target(active_view(&authority), &target)?;
+            enforce_grant(resolved.root.grants, access)?;
+            let identity = target.canonical_reference().requested();
+            let parent = open_mutation_parent(&resolved.root, &resolved.path, identity)?;
+            load_current(&parent, identity).map(|current| {
+                current.map_or(MutationState::Missing, |current| MutationState::Text {
+                    content: current.content,
+                    version_tag: current.version_tag,
+                })
             })
         })
+        .await
     }
 
     async fn commit(
@@ -116,28 +121,53 @@ impl MutationAdapter for FilesystemSource {
             .into());
         }
         let authority = self.mutation_authority_guard().await?;
-        let committed: Result<(), ResourceError> = match mutation {
-            SourceMutation::Create { target, content } => {
-                commit_create(active_view(&authority), target, content)
+        offload(move || {
+            let view = active_view(&authority);
+            match mutation {
+                SourceMutation::Create { target, content } => commit_create(view, target, content),
+                SourceMutation::Replace {
+                    target,
+                    expected,
+                    content,
+                } => commit_replace(view, target, expected, content),
+                SourceMutation::Delete { target, expected } => {
+                    commit_delete(view, target, expected)
+                }
+                SourceMutation::Move {
+                    source,
+                    destination,
+                    expected,
+                } => commit_move(view, source, *destination, expected),
             }
-            SourceMutation::Replace {
-                target,
-                expected,
-                content,
-            } => commit_replace(active_view(&authority), target, expected, content),
-            SourceMutation::Delete { target, expected } => {
-                commit_delete(active_view(&authority), target, expected)
-            }
-            SourceMutation::Move {
-                source,
-                destination,
-                expected,
-            } => commit_move(active_view(&authority), source, *destination, expected),
-        };
-        committed
-            .map(|()| MutationCommitOutcome::AuthoredText)
-            .map_err(Into::into)
+        })
+        .await
+        .map(|()| MutationCommitOutcome::AuthoredText)
+        .map_err(Into::into)
     }
+}
+
+/// Runs one synchronous mutation stage on the blocking pool.
+///
+/// Every stage after the authority guard is acquired does real file I/O:
+/// opening and re-resolving the parent, digesting the current content twice
+/// during selection, writing the temporary body, and renaming it into place.
+/// A body may be `MAX_ARTIFACT_BYTES`, so running that inline would pin a
+/// runtime worker for the whole call and stall a current-thread server
+/// (rfs-pk9w). The read adapter offloads its equivalents the same way, and a
+/// join failure is reported like a failed read task. The guard travels into
+/// the closure so the authority stays held across the stage exactly as before.
+async fn offload<T>(
+    work: impl FnOnce() -> Result<T, ResourceError> + Send + 'static,
+) -> Result<T, ResourceError>
+where
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.map_err(|error| {
+        ResourceError::new(
+            ErrorCategory::SourceUnavailable,
+            format!("filesystem mutation task failed: {error}"),
+        )
+    })?
 }
 
 fn active_view(authority: &MutationAuthorityGuard) -> &WorkspaceView {

@@ -730,3 +730,104 @@ async fn replacement_has_no_missing_window() {
         "slowest one-MiB replacement took {maximum_replacement:?}"
     );
 }
+
+/// Ticks a shared counter every time the runtime polls it, so the count says
+/// how often the runtime thread was free to schedule anything at all.
+fn spawn_ticker() -> (Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    let ticks = Arc::new(AtomicUsize::new(0));
+    let handle = {
+        let ticks = Arc::clone(&ticks);
+        tokio::spawn(async move {
+            loop {
+                ticks.fetch_add(1, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+            }
+        })
+    };
+    (ticks, handle)
+}
+
+/// rfs-pk9w: the mutation adapter must not run its file I/O on the runtime
+/// thread. `load` scans the existing file twice (digest before and after
+/// selection) and `commit` writes the whole body and renames it, each up to
+/// `MAX_ARTIFACT_BYTES`; the read adapter already offloads its equivalents.
+///
+/// On a current-thread runtime a cooperative ticker task only advances while
+/// the mutation is parked in `.await`. With the I/O inline the runtime thread
+/// is busy for the whole scan and write, so the ticker is starved and the count
+/// stays at zero for the duration of the call. Offloaded, the thread is free
+/// and the ticker advances thousands of times during the same window. The
+/// bound below sits between those two regimes with orders of magnitude to
+/// spare on each side; it is not a wall-clock budget, because a descheduled
+/// process pauses the ticker and the I/O together.
+#[test]
+fn mutation_io_leaves_the_runtime_thread_free() {
+    // The create window is one write of this many bytes; the replace window
+    // is two digest passes over the seeded file plus its rewrite, which is
+    // far longer per byte, so the seed can be smaller and the test stays fast.
+    const CREATE_BYTES: usize = 32 * 1024 * 1024;
+    const REPLACE_BYTES: usize = 4 * 1024 * 1024;
+    const MINIMUM_TICKS: usize = 100;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime");
+    runtime.block_on(async {
+        let workspace = TempDir::new().expect("workspace");
+        let seed = "x".repeat(REPLACE_BYTES);
+        fs::write(workspace.path().join("seeded.txt"), &seed).expect("seed fixture");
+        let engine = engine(workspace.path(), MutationGrants::new(true, true, false)).await;
+        let (ticks, ticker) = spawn_ticker();
+        // Let the ticker take its first turn so the count below measures only
+        // what happens during the mutations.
+        tokio::task::yield_now().await;
+
+        let before_create = ticks.load(Ordering::SeqCst);
+        engine
+            .write(
+                WriteRequest::new(reference("created.txt"), "c".repeat(CREATE_BYTES), None, None)
+                    .expect("create request"),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("create");
+        let during_create = ticks.load(Ordering::SeqCst) - before_create;
+
+        let before_replace = ticks.load(Ordering::SeqCst);
+        engine
+            .write(
+                WriteRequest::new(
+                    reference("seeded.txt"),
+                    "y".repeat(REPLACE_BYTES),
+                    Some(VersionTag::from_content(seed.as_bytes())),
+                    None,
+                )
+                .expect("replace request"),
+                &OperationGuard::new(),
+            )
+            .await
+            .expect("replace");
+        let during_replace = ticks.load(Ordering::SeqCst) - before_replace;
+        ticker.abort();
+
+        assert!(
+            during_create >= MINIMUM_TICKS,
+            "create pinned the runtime thread: the ticker advanced {during_create} times during a {CREATE_BYTES}-byte commit"
+        );
+        assert!(
+            during_replace >= MINIMUM_TICKS,
+            "replace pinned the runtime thread: the ticker advanced {during_replace} times during a {REPLACE_BYTES}-byte load and commit"
+        );
+        assert_eq!(
+            fs::read(workspace.path().join("created.txt"))
+                .expect("created bytes")
+                .len(),
+            CREATE_BYTES
+        );
+        assert_eq!(
+            fs::read(workspace.path().join("seeded.txt")).expect("replaced bytes"),
+            "y".repeat(REPLACE_BYTES).into_bytes()
+        );
+    });
+}
