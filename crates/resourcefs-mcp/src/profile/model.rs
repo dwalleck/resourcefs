@@ -415,23 +415,33 @@ fn command_environment_schema(generator: &mut SchemaGenerator) -> Schema {
 }
 
 fn read_only_grants_schema(_generator: &mut SchemaGenerator) -> Schema {
-    mutation_grants_schema([false, false, false])
+    mutation_grants_schema(MutationSupport::READ_ONLY)
 }
 
 fn github_grants_schema(_generator: &mut SchemaGenerator) -> Schema {
-    mutation_grants_schema([true, true, false])
+    mutation_grants_schema(MutationSupport::GITHUB)
 }
 
-fn mutation_grants_schema(supported: [bool; 3]) -> Schema {
+/// Publishes one source kind's `grants` object.
+///
+/// Each `const: false` refusal is derived from the same [`MutationSupport`]
+/// the runtime validates a profile against, read through its named accessors.
+/// The schema and the grant table used to be two hand-maintained copies of the
+/// same three booleans, passed positionally as a `[bool; 3]`: moving a kind's
+/// support left the schema advertising a refusal the runtime no longer made,
+/// and a transposed literal type-checked (rfs-ii60).
+fn mutation_grants_schema(support: MutationSupport) -> Schema {
+    let grants = support.grants();
     let mut properties = serde_json::Map::new();
-    for ((name, description), supported) in [
-        ("create", "Permit creation when true."),
-        ("update", "Permit replacement and editing when true."),
-        ("delete", "Permit deletion when true."),
-    ]
-    .into_iter()
-    .zip(supported)
-    {
+    for (name, description, supported) in [
+        ("create", "Permit creation when true.", grants.create()),
+        (
+            "update",
+            "Permit replacement and editing when true.",
+            grants.update(),
+        ),
+        ("delete", "Permit deletion when true.", grants.delete()),
+    ] {
         let mut property = serde_json::Map::new();
         property.insert(
             "description".to_owned(),
@@ -1715,10 +1725,54 @@ fn grants_or_default(grants: Option<MutationGrantsProfile>) -> MutationGrants {
 
 #[cfg(test)]
 mod tests {
-    use super::ProfileDocument;
+    use super::{ProfileDocument, github_grants_schema, read_only_grants_schema};
     use crate::logging::{LogDestinationKind, LogLevel};
-    use resourcefs_sources::{LaunchRootSource, MutationGrants};
+    use resourcefs_sources::{LaunchRootSource, MutationGrants, MutationSupport};
+    use schemars::SchemaGenerator;
     use std::time::{Duration, Instant};
+
+    /// The published `grants` schema for a source kind must advertise a
+    /// `const: false` refusal for exactly the operations that kind's
+    /// `MutationSupport` refuses, and nothing else. The two used to be
+    /// separate literals with nothing linking them (rfs-ii60); the schema is
+    /// now derived from the support table, and this pins that derivation
+    /// against a reintroduced literal or a transposed field.
+    #[test]
+    fn published_grant_schemas_derive_from_mutation_support() {
+        let mut generator = SchemaGenerator::default();
+        for (kind, schema, support) in [
+            (
+                "read-only",
+                read_only_grants_schema(&mut generator),
+                MutationSupport::READ_ONLY,
+            ),
+            (
+                "github",
+                github_grants_schema(&mut generator),
+                MutationSupport::GITHUB,
+            ),
+        ] {
+            let schema = schema.to_value();
+            assert_eq!(
+                schema["additionalProperties"], false,
+                "{kind}: closed object"
+            );
+            let grants = support.grants();
+            for (operation, supported) in [
+                ("create", grants.create()),
+                ("update", grants.update()),
+                ("delete", grants.delete()),
+            ] {
+                let property = &schema["properties"][operation];
+                assert_eq!(property["type"], "boolean", "{kind} {operation}");
+                assert_eq!(
+                    property.get("const"),
+                    (!supported).then_some(&serde_json::Value::Bool(false)),
+                    "{kind} {operation}: the schema must refuse exactly what MutationSupport refuses"
+                );
+            }
+        }
+    }
 
     #[test]
     fn logging_paths_resolve_from_the_profile_directory() {
