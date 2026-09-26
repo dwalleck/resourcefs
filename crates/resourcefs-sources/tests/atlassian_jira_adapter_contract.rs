@@ -801,3 +801,195 @@ async fn a_non_200_success_status_is_read_not_refused() {
     );
     settle().await;
 }
+
+// ---------------------------------------------------------------------------
+// rfs-a3ag: report-only measurement harness for the maximum Site Mount.
+//
+// `mount_validation_maximum_stays_within_budget` above guards one wall-clock
+// sample against a CI headroom budget, and rfs-a3ag records a Windows release
+// run that missed the original 5 ms bound while a duplicate run of the same
+// commit passed. The open question is what the constructor costs in CPU
+// rather than wall time at `MAX_CONFIGURATION_ENTRIES`, how much of the
+// guarded number is teardown or scheduler time, and which constructor step
+// dominates. This harness answers with warmed distributions and never asserts.
+//
+// It is ignored by default, skipped without `RFS_MEASURE=1`, and excluded from
+// `scripts/ci-gates.py` by its `measure_` prefix, the same shape the `live_`
+// smokes use. Run it on a controlled host, in release, with output captured:
+//
+//   RFS_MEASURE=1 cargo test --release -p resourcefs-sources \
+//     --test atlassian_jira_adapter_contract measure_mount_validation \
+//     -- --ignored --nocapture
+//
+// `RFS_MEASURE_ITERATIONS` overrides the sample count (default 200, after 20
+// warm-up iterations that are discarded).
+
+fn measure_enabled() -> bool {
+    std::env::var_os("RFS_MEASURE").is_some_and(|value| value == "1")
+}
+
+/// CPU time consumed so far by the calling thread.
+///
+/// Wall time minus this is time the thread spent descheduled, which is the
+/// scheduler-noise component rfs-a3ag asks to separate from the constructor's
+/// own work.
+#[cfg(unix)]
+fn thread_cpu_time() -> Duration {
+    let spec = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+    let seconds = u64::try_from(spec.tv_sec).expect("thread CPU clock is non-negative");
+    let nanos = u32::try_from(spec.tv_nsec).expect("thread CPU clock nanoseconds fit u32");
+    Duration::new(seconds, nanos)
+}
+
+#[cfg(windows)]
+fn thread_cpu_time() -> Duration {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
+
+    const EMPTY: FILETIME = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut creation, mut exit, mut kernel, mut user) = (EMPTY, EMPTY, EMPTY, EMPTY);
+    // SAFETY: `GetCurrentThread` returns a pseudo-handle that is always valid
+    // for the calling thread and needs no closing, and the four out-pointers
+    // address live stack `FILETIME`s for the duration of the call.
+    let ok = unsafe {
+        GetThreadTimes(
+            GetCurrentThread(),
+            &raw mut creation,
+            &raw mut exit,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    };
+    assert!(ok != 0, "GetThreadTimes failed");
+    let ticks =
+        |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+    // FILETIME counts 100 ns intervals.
+    Duration::from_nanos((ticks(kernel) + ticks(user)) * 100)
+}
+
+fn measure_percentile(sorted: &[Duration], fraction: f64) -> Duration {
+    let last = sorted.len().checked_sub(1).expect("at least one sample");
+    let index = ((last as f64) * fraction).round() as usize;
+    sorted[index.min(last)]
+}
+
+fn measure_report(label: &str, samples: &mut [Duration]) {
+    samples.sort_unstable();
+    eprintln!(
+        "{label:<30} min {:>10.1?}  p50 {:>10.1?}  p90 {:>10.1?}  p99 {:>10.1?}  max {:>10.1?}",
+        samples[0],
+        measure_percentile(samples, 0.50),
+        measure_percentile(samples, 0.90),
+        measure_percentile(samples, 0.99),
+        samples[samples.len() - 1],
+    );
+}
+
+#[test]
+#[ignore]
+fn measure_mount_validation_maximum_distribution() {
+    if !measure_enabled() {
+        eprintln!("measure_mount_validation_maximum_distribution: skipped; set RFS_MEASURE=1");
+        return;
+    }
+    const WARM_UP: usize = 20;
+    let iterations: usize = std::env::var("RFS_MEASURE_ITERATIONS").map_or(200, |value| {
+        value
+            .parse()
+            .expect("RFS_MEASURE_ITERATIONS must be a positive integer")
+    });
+    assert!(
+        iterations > 0,
+        "RFS_MEASURE_ITERATIONS must be a positive integer"
+    );
+
+    let substrate = Arc::new(
+        HttpSubstrate::new(
+            OriginAllowlist::new(Vec::new()),
+            HttpCeilings::default(),
+            Vec::new(),
+        )
+        .expect("substrate"),
+    );
+    let origins: Vec<AllowedOrigin> = (0..MAX_CONFIGURATION_ENTRIES)
+        .map(|index| {
+            AllowedOrigin::new(&format!("https://site-{index}.invalid/"), false).expect("origin")
+        })
+        .collect();
+    let build_sites = || -> Vec<AtlassianSite> {
+        origins
+            .iter()
+            .enumerate()
+            .map(|(index, origin)| {
+                AtlassianSite::new(
+                    AtlassianSiteId::new(format!("site-{index}")).expect("Site ID"),
+                    origin.clone(),
+                )
+                .expect("site")
+            })
+            .collect()
+    };
+
+    let mut sites_wall = Vec::with_capacity(iterations);
+    let mut construct_wall = Vec::with_capacity(iterations);
+    let mut construct_cpu = Vec::with_capacity(iterations);
+    let mut serialize_wall = Vec::with_capacity(iterations);
+    let mut teardown_wall = Vec::with_capacity(iterations);
+    let mut teardown_cpu = Vec::with_capacity(iterations);
+
+    for round in 0..WARM_UP + iterations {
+        let sites_started = Instant::now();
+        let sites = build_sites();
+        let sites_elapsed = sites_started.elapsed();
+
+        // The constructor's only per-site work besides two hash inserts is this
+        // serialization, so timing it alone attributes the cost.
+        let serialize_started = Instant::now();
+        let serialized: usize = origins
+            .iter()
+            .map(|origin| origin.base_url().origin().ascii_serialization().len())
+            .sum();
+        let serialize_elapsed = serialize_started.elapsed();
+        assert!(serialized > 0);
+
+        let cpu_before = thread_cpu_time();
+        let started = Instant::now();
+        let mount =
+            AtlassianSourceMount::new(sites, Arc::clone(&substrate)).expect("maximum mount");
+        let elapsed = started.elapsed();
+        let cpu = thread_cpu_time().saturating_sub(cpu_before);
+
+        let drop_cpu_before = thread_cpu_time();
+        let drop_started = Instant::now();
+        drop(mount);
+        let drop_elapsed = drop_started.elapsed();
+        let drop_cpu = thread_cpu_time().saturating_sub(drop_cpu_before);
+
+        if round >= WARM_UP {
+            sites_wall.push(sites_elapsed);
+            serialize_wall.push(serialize_elapsed);
+            construct_wall.push(elapsed);
+            construct_cpu.push(cpu);
+            teardown_wall.push(drop_elapsed);
+            teardown_cpu.push(drop_cpu);
+        }
+    }
+
+    eprintln!(
+        "rfs-a3ag maximum Site Mount measurement: os={} arch={} debug_assertions={} entries={} \
+         iterations={iterations} (after {WARM_UP} warm-up)",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        cfg!(debug_assertions),
+        MAX_CONFIGURATION_ENTRIES,
+    );
+    measure_report("sites build (untimed by guard)", &mut sites_wall);
+    measure_report("origin serialization only", &mut serialize_wall);
+    measure_report("constructor wall", &mut construct_wall);
+    measure_report("constructor thread CPU", &mut construct_cpu);
+    measure_report("teardown wall", &mut teardown_wall);
+    measure_report("teardown thread CPU", &mut teardown_cpu);
+}

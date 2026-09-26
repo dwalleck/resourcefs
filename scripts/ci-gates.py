@@ -122,6 +122,8 @@ def exclusion_reason(name):
         return CHILD_SERVERS[name]
     if name.startswith("live_") or "::live_" in name:
         return "live smoke, run by scripts/live-smoke.sh outside the gates"
+    if name.startswith("measure_") or "::measure_" in name:
+        return "report-only measurement harness, run by hand with RFS_MEASURE=1"
     return None
 
 
