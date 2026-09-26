@@ -99,11 +99,13 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # Both tools belong to debug-phase gates only -- `cargo deny check` is
-      # the Dependency vetting gate and nextest runs the functional leg -- so
-      # the release-phase job does not pay to install them.
+      # `cargo deny check` is a debug-phase gate, but the release phase runs
+      # every test target too, and supply_chain_contract's three fences shell
+      # out to `cargo deny` (rfs-rpbw). Skipping the install here only worked
+      # while the release job restored a cache that happened to hold the
+      # binary; a branch that changes Cargo.lock restores cold and fails with
+      # "no such command: deny". The install is a prebuilt download.
       - name: Install cargo-deny
-        if: matrix.phase != 'release'
         uses: taiki-e/install-action@cargo-deny
 
       # The functional-test gate runs under nextest for process-per-test
