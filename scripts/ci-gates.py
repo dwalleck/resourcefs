@@ -186,7 +186,8 @@ def functional_tests():
     assert a peak-heap ceiling, and a process-global counter only means
     anything when one test owns the process; under a shared binary a
     concurrent test's allocations land in this one's measurement. That is
-    rfs-1e6h, and the reason those ceilings were raised rather than fixed.
+    rfs-1e6h; with isolation in place the raised allocation ceiling is back at
+    its original value, and those rows assert it only under nextest.
     (The `#[ignore]`d budgets were never affected -- ignored_budgets() already
     runs each one alone with `--exact`.)
 

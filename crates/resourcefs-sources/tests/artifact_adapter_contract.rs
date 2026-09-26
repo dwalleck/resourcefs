@@ -71,6 +71,45 @@ fn measured_peak_bytes(baseline: usize) -> usize {
         .saturating_sub(baseline)
 }
 
+/// Whether the transient-allocation ceilings in this binary are asserted.
+///
+/// `PEAK_ALLOCATED` is fed by the `#[global_allocator]`, so every thread in
+/// the process lands in it. The number is a measurement of one test only when
+/// that test owns the process. cargo-nextest guarantees that (one process per
+/// test, announced through `NEXTEST_EXECUTION_MODE=process-per-test`) and the
+/// repository gate runs nextest, so the ceilings are enforced where it counts.
+/// A plain `cargo test` runs every test in this binary in one process, in
+/// parallel, and a neighbour's allocations would be attributed to the test
+/// under measurement -- the misattribution that raised the C8 glob ceiling
+/// from 1 MiB to 4 MiB under rfs-1e6h.
+///
+/// This is not a silent skip: the functional assertions around every ceiling
+/// still run, the gate always enforces, and [`assert_transient_allocation`]
+/// announces a non-asserted ceiling on stderr together with the measured
+/// value, so a shared-process run says what it did not measure.
+fn allocation_budget_is_enforced() -> bool {
+    std::env::var_os("NEXTEST_EXECUTION_MODE").is_some_and(|mode| mode == "process-per-test")
+}
+
+/// Asserts `peak_bytes <= ceiling` when the process is isolated; otherwise
+/// reports the measurement and the reason it is not asserted.
+fn assert_transient_allocation(label: &str, peak_bytes: usize, ceiling: usize) {
+    let ceiling_mib = ceiling / (1024 * 1024);
+    eprintln!("{label} transient allocation peak: {peak_bytes} bytes (ceiling {ceiling_mib} MiB)");
+    if allocation_budget_is_enforced() {
+        assert!(
+            peak_bytes <= ceiling,
+            "{label} transient allocation exceeded {ceiling_mib} MiB: {peak_bytes}"
+        );
+    } else {
+        eprintln!(
+            "{label} transient allocation budget not asserted: this process is shared with \
+             other tests, so the peak is not this test's alone; run under cargo nextest to \
+             enforce the {ceiling_mib} MiB ceiling (rfs-1e6h)"
+        );
+    }
+}
+
 struct Fixture {
     session: resourcefs_sources::StoredSession,
     source: ArtifactSource,
@@ -457,10 +496,7 @@ async fn search_and_glob_are_session_isolated() {
         "C8 maximum search exceeded ten seconds: {:?}",
         maximum_started.elapsed()
     );
-    assert!(
-        maximum_peak <= 96 * 1024 * 1024,
-        "C8 maximum search transient allocation exceeded 96 MiB: {maximum_peak}"
-    );
+    assert_transient_allocation("C8 maximum search", maximum_peak, 96 * 1024 * 1024);
 }
 
 #[tokio::test]
@@ -676,15 +712,12 @@ async fn glob_snapshot_excludes_its_recovery_artifact() {
         "C8 999-entry glob exceeded 250 ms: {:?}",
         started.elapsed()
     );
-    // PEAK_ALLOCATED is fed by a #[global_allocator] and is therefore
-    // process-wide, while the tests in this binary run in parallel: a
-    // concurrent test's allocations are attributed to this one. The ceiling is
-    // raised to stop that misattribution blocking CI, but the number is not
-    // the defect — the measurement is. See rfs-1e6h.
-    assert!(
-        peak_bytes <= 4 * 1024 * 1024,
-        "C8 glob transient allocation exceeded 4 MiB: {peak_bytes}"
-    );
+    // The 1 MiB ceiling is the original one. It was raised to 4 MiB while this
+    // binary ran under `cargo test`, where PEAK_ALLOCATED counted every
+    // parallel neighbour's allocations as this test's. nextest gives the test
+    // its own process, so the measurement is trustworthy again and the ceiling
+    // goes back to the number that means something. See rfs-1e6h.
+    assert_transient_allocation("C8 glob", peak_bytes, 1024 * 1024);
     assert_eq!(result.total_records(), 999, "C8 exact snapshot count");
     assert_eq!(result.returned_records(), 1, "C8 forced one-entry page");
     let recovery = result
