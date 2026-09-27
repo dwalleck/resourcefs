@@ -2287,3 +2287,31 @@ curl_config_line output "$2/$3""#,
         );
     }
 }
+
+/// rfs-cbz9: a Jira summary is manifest `text`, which admits tab, newline and
+/// backslash. It used to reach bash through jq `@tsv` and `read -r`, which left
+/// those three escaped, so the upstream received `\t` where the manifest said
+/// tab. It now travels with the description in one base64 JSON object; the
+/// summary must reach the store byte-exact and survive both verify passes.
+#[test]
+fn issue_summary_with_tab_newline_and_backslash_reaches_upstream_byte_exact() {
+    let harness = Harness::new();
+    let mut custom = manifest();
+    let summary = "summary \\ backslash\ttab\nnewline end";
+    custom["jira"]["issues"][0]["summary"] = Value::String(summary.to_owned());
+    let manifest_path = harness.write_manifest(&custom);
+
+    assert_success(&harness.command_with("bootstrap", SITE, Some(&manifest_path), None, "normal"));
+    assert_success(&harness.command_with("verify", SITE, Some(&manifest_path), None, "normal"));
+
+    let summaries: Vec<String> = harness.read_store()["issues"]
+        .as_array()
+        .expect("fake store issues")
+        .iter()
+        .filter_map(|issue| issue["fields"]["summary"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        summaries.iter().any(|stored| stored == summary),
+        "no stored issue carries the summary byte-exact: {summaries:?}"
+    );
+}

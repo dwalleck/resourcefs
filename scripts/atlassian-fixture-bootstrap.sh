@@ -1111,9 +1111,13 @@ bootstrap_jira_projects() {
 }
 
 bootstrap_jira_issues() {
-  local id project summary marker description parent body issue_id issue_key parent_id issue_type_id
-  while IFS=$'\t' read -r id project summary marker description parent; do
-    description=$(decode_json_field "$description")
+  local id project marker issue parent body issue_id issue_key parent_id issue_type_id
+  # A summary is manifest `text` and may hold a tab, newline or backslash, which
+  # @tsv would escape and `read -r` would keep escaped (rfs-cbz9). It rides
+  # with the description in one base64 JSON object, decoded by the same single
+  # jq call per row, and is only ever read back inside jq.
+  while IFS=$'\t' read -r id project marker issue parent; do
+    issue=$(decode_json_field "$issue")
     local project_key=${JIRA_PROJECT_KEYS[$project]-}
     [[ -n "$project_key" ]] || die "manifest_parent_missing logical=issue"
     parent_id=''
@@ -1126,8 +1130,9 @@ bootstrap_jira_issues() {
       issue_id=$FOUND_ID
       issue_key=$FOUND_KEY
       api_request provisioner GET "/rest/api/3/issue/${issue_id}?fields=summary,description,project,parent" '' 200 issue_get
-      if ! jq -e --arg id "$issue_id" --arg key "$project_key" --arg summary "$summary" \
-        --arg parent "$parent_id" --argjson description "$description" '
+      if ! jq -e --arg id "$issue_id" --arg key "$project_key" \
+        --arg parent "$parent_id" --argjson issue "$issue" '
+          $issue.summary as $summary | $issue.description as $description |
           .id == $id and .fields.project.key == $key and .fields.summary == $summary and
           .fields.description == $description and
           (($parent == "" and (.fields.parent? == null)) or
@@ -1145,13 +1150,13 @@ bootstrap_jira_issues() {
       if [[ -z "$parent_id" ]]; then
         issue_type_id=${JIRA_TASK_TYPE_IDS[$project]-}
         [[ -n "$issue_type_id" ]] || die "missing_issue_type logical=project"
-        body=$(jq -cn --arg key "$project_key" --arg summary "$summary" --arg type "$issue_type_id" --argjson desc "$description" \
-          '{fields:{project:{key:$key},summary:$summary,issuetype:{id:$type},description:$desc}}')
+        body=$(jq -cn --arg key "$project_key" --arg type "$issue_type_id" --argjson issue "$issue" \
+          '{fields:{project:{key:$key},summary:$issue.summary,issuetype:{id:$type},description:$issue.description}}')
       else
         issue_type_id=${JIRA_SUBTASK_TYPE_IDS[$project]-}
         [[ -n "$issue_type_id" ]] || die "missing_subtask_type logical=project"
-        body=$(jq -cn --arg key "$project_key" --arg summary "$summary" --arg type "$issue_type_id" --argjson desc "$description" --arg parent "$parent_id" \
-          '{fields:{project:{key:$key},summary:$summary,issuetype:{id:$type},description:$desc,parent:{id:$parent}}}')
+        body=$(jq -cn --arg key "$project_key" --arg type "$issue_type_id" --argjson issue "$issue" --arg parent "$parent_id" \
+          '{fields:{project:{key:$key},summary:$issue.summary,issuetype:{id:$type},description:$issue.description,parent:{id:$parent}}}')
       fi
       api_request provisioner POST '/rest/api/3/issue' "$body" 201 issue_create
       issue_id=$(response_id '.id' issue_create)
@@ -1159,8 +1164,9 @@ bootstrap_jira_issues() {
       [[ "$issue_key" =~ ^${project_key}-[1-9][0-9]*$ ]] ||
         die "identity_mismatch logical=issue"
       api_request provisioner GET "/rest/api/3/issue/${issue_id}?fields=summary,description,project,parent" '' 200 issue_get
-      jq -e --arg id "$issue_id" --arg key "$project_key" --arg summary "$summary" \
-        --arg parent "$parent_id" --argjson description "$description" '
+      jq -e --arg id "$issue_id" --arg key "$project_key" \
+        --arg parent "$parent_id" --argjson issue "$issue" '
+          $issue.summary as $summary | $issue.description as $description |
           .id == $id and .fields.project.key == $key and .fields.summary == $summary and
           .fields.description == $description and
           (($parent == "" and (.fields.parent? == null)) or
@@ -1202,7 +1208,7 @@ bootstrap_jira_issues() {
         die "invalid_response operation=comment_create"
       JIRA_COMMENT_IDS[$comment_id]=$comment_id_value
     done < <(jq -r --arg id "$id" '.jira.issues[] | select(.id==$id) | (.comments // [])[]? | [.id,.marker,(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
-  done < <(jq -r '.jira.issues[] | [.id,.project,.summary,.marker,(.description|tojson|@base64),(.parent // "null")] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.issues[] | [.id,.project,.marker,({summary,description}|tojson|@base64),(.parent // "null")] | @tsv' "$MANIFEST_PATH")
 }
 
 bootstrap_confluence_spaces() {
@@ -1479,7 +1485,7 @@ load_state() {
   while IFS=$'\t' read -r id sid; do CONF_COMMENT_IDS[$id]=$sid; done < <(jq -r '.confluence.comments[]? | [.logical_id,.id] | @tsv' "$STATE_PATH")
 }
 verify_jira() {
-  local id key name marker issue_id summary description project parent parent_id comment_id comment_body issue_logical
+  local id key name marker issue_id issue project parent parent_id comment_id comment_body issue_logical
   while IFS=$'\t' read -r id key name marker; do
     api_request provisioner GET "/rest/api/3/project/${key}" '' 200 project_get
     jq -e --arg expected_id "${JIRA_PROJECT_IDS[$id]-}" --arg expected_key "$key" \
@@ -1489,8 +1495,8 @@ verify_jira() {
       ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "authority_mismatch logical=project"
   done < <(jq -r '.jira.projects[] | [.id,.key,.name,.marker] | @tsv' "$MANIFEST_PATH")
 
-  while IFS=$'\t' read -r id summary description project parent; do
-    description=$(decode_json_field "$description")
+  while IFS=$'\t' read -r id issue project parent; do
+    issue=$(decode_json_field "$issue")
     issue_id=${JIRA_ISSUE_IDS[$id]-}
     [[ -n "$issue_id" ]] || die "state_missing_object logical=issue"
     parent_id=''
@@ -1499,13 +1505,14 @@ verify_jira() {
     fi
     api_request provisioner GET "/rest/api/3/issue/${issue_id}?fields=summary,description,project,parent" '' 200 issue_get
     jq -e --arg expected_id "$issue_id" --arg expected_key "${JIRA_PROJECT_KEYS[$project]-}" \
-      --arg expected_summary "$summary" --arg expected_parent "$parent_id" --argjson expected_description "$description" '
+      --arg expected_parent "$parent_id" --argjson issue "$issue" '
+        $issue.summary as $expected_summary | $issue.description as $expected_description |
         .id == $expected_id and .fields.project.key == $expected_key and
         .fields.summary == $expected_summary and .fields.description == $expected_description and
         (($expected_parent == "" and (.fields.parent? == null)) or
          ($expected_parent != "" and .fields.parent.id == $expected_parent))
       ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "authority_mismatch logical=issue"
-  done < <(jq -r '.jira.issues[] | [.id,.summary,(.description|tojson|@base64),.project,(.parent // "null")] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.issues[] | [.id,({summary,description}|tojson|@base64),.project,(.parent // "null")] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r comment_id issue_logical comment_body; do
     comment_body=$(decode_json_field "$comment_body")
@@ -1628,7 +1635,7 @@ verify_confluence_pagination() {
 
 verify_reader_visibility() {
   local id key name marker private path next pages=0 row row_key page_id space page
-  local comment_id issue_id issue body title parent expected parent_id summary description project homepage
+  local comment_id issue_id issue body title parent expected parent_id project homepage
   declare -A seen_public_spaces=()
   path='/wiki/api/v2/spaces?limit=1&description-format=plain'
   while :; do
@@ -1735,8 +1742,8 @@ verify_reader_visibility() {
         .name == $expected_name and .description == $expected_marker
       ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "reader_missing logical=project"
   done < <(jq -r '.jira.projects[] | [.id,.key,.name,.marker] | @tsv' "$MANIFEST_PATH")
-  while IFS=$'\t' read -r id summary description project parent; do
-    description=$(decode_json_field "$description")
+  while IFS=$'\t' read -r id issue project parent; do
+    issue=$(decode_json_field "$issue")
     issue_id=${JIRA_ISSUE_IDS[$id]-}
     parent_id=''
     if [[ "$parent" != null && -n "$parent" ]]; then
@@ -1744,13 +1751,14 @@ verify_reader_visibility() {
     fi
     api_request reader GET "/rest/api/3/issue/${issue_id}?fields=summary,description,project,parent" '' 200 reader_issue_get
     jq -e --arg expected_id "$issue_id" --arg expected_project "${JIRA_PROJECT_KEYS[$project]-}" \
-      --arg expected_summary "$summary" --arg expected_parent "$parent_id" --argjson expected_description "$description" '
+      --arg expected_parent "$parent_id" --argjson issue "$issue" '
+        $issue.summary as $expected_summary | $issue.description as $expected_description |
         (.id|tostring) == $expected_id and .fields.project.key == $expected_project and
         .fields.summary == $expected_summary and .fields.description == $expected_description and
         (($expected_parent == "" and (.fields.parent? == null)) or
          ($expected_parent != "" and (.fields.parent.id|tostring) == $expected_parent))
       ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "reader_missing logical=issue"
-  done < <(jq -r '.jira.issues[] | [.id,.summary,(.description|tojson|@base64),.project,(.parent // "null")] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.issues[] | [.id,({summary,description}|tojson|@base64),.project,(.parent // "null")] | @tsv' "$MANIFEST_PATH")
   while IFS=$'\t' read -r id issue body; do
     body=$(decode_json_field "$body")
     issue_id=${JIRA_ISSUE_IDS[$issue]-}
