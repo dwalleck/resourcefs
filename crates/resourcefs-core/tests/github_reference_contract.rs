@@ -347,9 +347,10 @@ fn reference_parse_budget() {
         assert_eq!(parsed.requested(), input);
     }
     let average = started.elapsed() / iterations;
-    assert!(
-        average <= Duration::from_millis(1),
-        "average maximum GitHub reference parse took {average:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "reference_parse_budget",
+        average,
+        Duration::from_millis(1),
     );
 }
 

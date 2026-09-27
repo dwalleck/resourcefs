@@ -1878,9 +1878,10 @@ mod tests {
         .expect("profile bytes");
         let started = Instant::now();
         ProfileDocument::from_slice_in(&encoded, fixture.path()).expect("maximum GitHub profile");
-        assert!(
-            started.elapsed() <= Duration::from_millis(50),
-            "4,096-repository profile validation exceeded 50 ms"
+        resourcefs_core::test_support::wall_budget::check_wall_budget(
+            "github_profile_validation_budget",
+            started.elapsed(),
+            Duration::from_millis(50),
         );
     }
 }

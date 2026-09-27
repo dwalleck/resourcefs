@@ -231,8 +231,9 @@ fn adf_maximum_fixture() {
     } else {
         Duration::from_secs(2)
     };
-    assert!(
-        started.elapsed() <= budget,
-        "maximum ADF render must stay within the plan budget"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "adf_maximum_fixture",
+        started.elapsed(),
+        budget,
     );
 }

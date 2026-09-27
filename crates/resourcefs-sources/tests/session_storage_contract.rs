@@ -350,16 +350,21 @@ async fn heartbeat_updates_persisted_liveness_within_budget() {
     .expect("heartbeat timestamp");
     assert!(modified > old);
     // The release budget bounds a filesystem mtime write, so it is dominated
-    // by the host rather than by this crate. A loaded Windows CI runner took
-    // 505 ms against the previous 100 ms; 1000 ms keeps a real bound on a
-    // heartbeat that should be near-instant while leaving headroom for a
-    // shared runner. See rfs-1e6h.
+    // by the host rather than by this crate. rfs-1e6h raised it to 1000 ms
+    // after a loaded Windows CI runner took 505 ms; rfs-cn1r restores 100 ms
+    // because hosted CI now only reports it (`RFS_BUDGETS=report`) and a
+    // controlled host enforces it. Five release runs on a workstation at load
+    // average 26 measured 0.58-0.69 ms.
     let budget = if cfg!(debug_assertions) {
         Duration::from_millis(2000)
     } else {
-        Duration::from_millis(1000)
+        Duration::from_millis(100)
     };
-    assert!(elapsed <= budget, "heartbeat took {elapsed:?}");
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "heartbeat_updates_persisted_liveness_within_budget",
+        elapsed,
+        budget,
+    );
 }
 
 #[tokio::test]
@@ -495,18 +500,19 @@ async fn durable_write_at_object_ceiling_within_budget() {
         content
     );
     // Same host-dominated shape, and the same ceiling, as the 64 MiB create
-    // in filesystem_mutation_contract.rs, which a windows-latest runner
-    // missed at 13.57 s against 5 s. This one has not been observed failing
-    // yet, but it admits the same 64 MiB through the same disk on the same
-    // runners; raising only the one that happened to fail first would just
-    // wait for this to be the next red build. See rfs-1e6h.
+    // in filesystem_mutation_contract.rs. rfs-1e6h raised both to 30 s after
+    // a windows-latest runner took 13.57 s on that one; rfs-cn1r restores 5 s
+    // because hosted CI now only reports it and a controlled host enforces
+    // it. Five release runs on a workstation at load average 26 measured
+    // 82-87 ms.
     let budget = if cfg!(debug_assertions) {
         Duration::from_secs(100)
     } else {
-        Duration::from_secs(30)
+        Duration::from_secs(5)
     };
-    assert!(
-        elapsed <= budget,
-        "64 MiB durable admission took {elapsed:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "durable_write_at_object_ceiling_within_budget",
+        elapsed,
+        budget,
     );
 }

@@ -214,8 +214,9 @@ async fn scratch_name_enumeration_fits_its_budget() {
     } else {
         std::time::Duration::from_millis(1)
     };
-    assert!(
-        elapsed < budget,
-        "scratch name enumeration exceeded its 1 ms budget at the production ceiling: {elapsed:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "scratch_name_enumeration_fits_its_budget",
+        elapsed,
+        budget,
     );
 }

@@ -561,9 +561,10 @@ fn catalog_target_validation_production_budget() {
     } else {
         Duration::from_secs(2)
     };
-    assert!(
-        elapsed <= budget,
-        "2,000 catalog target validations exceeded the 1 ms/request budget: {elapsed:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "catalog_target_validation_production_budget",
+        elapsed,
+        budget,
     );
 }
 
@@ -1264,9 +1265,10 @@ async fn hundred_thousand_resources_remain_bounded_and_recoverable() {
 
     assert_eq!(result.returned_records(), 100, "C13 inline record count");
     assert_eq!(result.total_records(), 10_000, "C13 total record count");
-    assert!(
-        elapsed <= Duration::from_secs(2),
-        "C13 engine wall budget: {elapsed:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "hundred_thousand_resources_remain_bounded_and_recoverable",
+        elapsed,
+        Duration::from_secs(2),
     );
     assert!(
         peak_bytes <= 256 * 1024 * 1024,

@@ -1695,7 +1695,11 @@ async fn github_pagination_cache_budget() {
         .await
         .expect("1,000-object listing");
     assert_eq!(listed.content().matches("- issue://").count(), 1_000);
-    assert!(started.elapsed() <= Duration::from_secs(30));
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "github_pagination_cache_budget",
+        started.elapsed(),
+        Duration::from_secs(30),
+    );
     settle().await;
     assert_eq!(listener.requests().len(), 10);
 }
@@ -1739,9 +1743,10 @@ async fn github_search_budget() {
         .await
         .expect("search");
     assert_eq!(result.total_records(), 1);
-    assert!(
-        started.elapsed() <= Duration::from_secs(1),
-        "maximum GitHub search exceeded one second"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "github_search_budget",
+        started.elapsed(),
+        Duration::from_secs(1),
     );
 }
 #[test]
@@ -1757,8 +1762,9 @@ fn github_single_resource_render_budget() {
     let elapsed = started.elapsed();
     assert!(rendered.len() >= body.len());
     assert!(rendered.starts_with("# Issue #1: large"));
-    assert!(
-        elapsed <= Duration::from_millis(250),
-        "maximum issue decode/render took {elapsed:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "github_single_resource_render_budget",
+        elapsed,
+        Duration::from_millis(250),
     );
 }

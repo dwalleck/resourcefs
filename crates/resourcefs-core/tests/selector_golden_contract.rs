@@ -210,7 +210,11 @@ fn stress_selection_budget() {
     } else {
         Duration::from_secs(10)
     };
-    assert!(elapsed <= budget, "selection took {elapsed:?}");
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "stress_selection_budget",
+        elapsed,
+        budget,
+    );
 }
 
 #[derive(Debug)]

@@ -681,7 +681,11 @@ async fn reads_maximum_sized_file_within_budget() {
     } else {
         Duration::from_millis(100)
     };
-    assert!(elapsed <= budget, "maximum-sized read took {elapsed:?}");
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "reads_maximum_sized_file_within_budget",
+        elapsed,
+        budget,
+    );
 }
 
 #[tokio::test]
@@ -728,7 +732,11 @@ async fn filesystem_streams_narrow_large_range() {
     } else {
         Duration::from_secs(10)
     };
-    assert!(elapsed <= budget, "256 MiB selection took {elapsed:?}");
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "filesystem_streams_narrow_large_range",
+        elapsed,
+        budget,
+    );
 }
 
 #[cfg(feature = "test-support")]
@@ -2394,10 +2402,10 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
             )
             .await
             .expect("C6 scale search");
-        assert!(
-            started.elapsed() <= Duration::from_secs(10),
-            "C6 scale search run {run} exceeded ten seconds: {:?}",
-            started.elapsed()
+        resourcefs_core::test_support::wall_budget::check_wall_budget(
+            &format!("workspace_discovery_scale_is_bounded_and_deterministic#1 run {run}"),
+            started.elapsed(),
+            Duration::from_secs(10),
         );
         assert_eq!(result.total_records(), 1_000, "C6 scale match count");
         if let Some(expected) = stable_text.as_ref() {
@@ -2415,10 +2423,10 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
         )
         .await
         .expect("C7 scale glob");
-    assert!(
-        glob_started.elapsed() <= Duration::from_secs(10),
-        "C7 scale glob exceeded ten seconds: {:?}",
-        glob_started.elapsed()
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "workspace_discovery_scale_is_bounded_and_deterministic#2",
+        glob_started.elapsed(),
+        Duration::from_secs(10),
     );
     assert_eq!(glob.total_records(), 10_000, "C7 scale glob count");
 
@@ -2467,9 +2475,9 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
         0,
         "C6 maximum no-match count"
     );
-    assert!(
-        maximum_started.elapsed() <= Duration::from_secs(2),
-        "C6 maximum exact search exceeded two seconds: {:?}",
-        maximum_started.elapsed()
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "workspace_discovery_scale_is_bounded_and_deterministic#3",
+        maximum_started.elapsed(),
+        Duration::from_secs(2),
     );
 }

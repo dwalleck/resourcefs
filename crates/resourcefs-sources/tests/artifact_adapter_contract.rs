@@ -392,10 +392,10 @@ async fn search_and_glob_are_session_isolated() {
         )
         .await
         .expect("C8 selected search");
-    assert!(
-        search_started.elapsed() <= Duration::from_secs(10),
-        "C8 search exceeded ten seconds: {:?}",
-        search_started.elapsed()
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "search_and_glob_are_session_isolated#1",
+        search_started.elapsed(),
+        Duration::from_secs(10),
     );
     assert_eq!(search.engine(), SearchEngine::RustRegex, "C8 search engine");
     assert_eq!(search.total_records(), 1, "C8 one matching line");
@@ -430,10 +430,10 @@ async fn search_and_glob_are_session_isolated() {
         )
         .await
         .expect("C8 session glob");
-    assert!(
-        glob_started.elapsed() <= Duration::from_millis(250),
-        "C8 glob exceeded 250 ms: {:?}",
-        glob_started.elapsed()
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "search_and_glob_are_session_isolated#2",
+        glob_started.elapsed(),
+        Duration::from_millis(250),
     );
     let actual: Vec<_> = glob
         .entries()
@@ -491,10 +491,10 @@ async fn search_and_glob_are_session_isolated() {
         .expect("C8 maximum selected-Artifact search");
     let maximum_peak = measured_peak_bytes(allocation_baseline);
     assert_eq!(maximum_search.total_records(), 0, "C8 maximum no-match");
-    assert!(
-        maximum_started.elapsed() <= Duration::from_secs(10),
-        "C8 maximum search exceeded ten seconds: {:?}",
-        maximum_started.elapsed()
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "search_and_glob_are_session_isolated#3",
+        maximum_started.elapsed(),
+        Duration::from_secs(10),
     );
     assert_transient_allocation("C8 maximum search", maximum_peak, 96 * 1024 * 1024);
 }
@@ -707,10 +707,10 @@ async fn glob_snapshot_excludes_its_recovery_artifact() {
         .await
         .expect("C8 spilling glob");
     let peak_bytes = measured_peak_bytes(allocation_baseline);
-    assert!(
-        started.elapsed() <= Duration::from_millis(250),
-        "C8 999-entry glob exceeded 250 ms: {:?}",
-        started.elapsed()
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "glob_snapshot_excludes_its_recovery_artifact",
+        started.elapsed(),
+        Duration::from_millis(250),
     );
     // The 1 MiB ceiling is the original one. It was raised to 4 MiB while this
     // binary ran under `cargo test`, where PEAK_ALLOCATED counted every

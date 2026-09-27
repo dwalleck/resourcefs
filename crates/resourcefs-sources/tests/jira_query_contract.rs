@@ -718,7 +718,11 @@ async fn query_production_scale_thousand_rows_preserves_order_and_wall_bound() {
     assert_eq!(listener.requests().len(), 10);
     let bound = Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 2 });
     eprintln!("C6/C9 1000 rows x 4KiB: {elapsed:?}; bound {bound:?} (includes loopback TLS)");
-    assert!(elapsed <= bound, "C6/C9 production wall bound");
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "query_production_scale_thousand_rows_preserves_order_and_wall_bound",
+        elapsed,
+        bound,
+    );
     let next = result.continuation().expect("C6 exact budget continuation");
     let terminal = read(&source, next)
         .await

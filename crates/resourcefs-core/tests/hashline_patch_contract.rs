@@ -151,9 +151,10 @@ fn exact_limit_parser_budget() {
     let elapsed = started.elapsed();
 
     assert_eq!(patch.operations().len(), 1);
-    assert!(
-        elapsed <= Duration::from_secs(5),
-        "64 MiB patch parse took {elapsed:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "exact_limit_parser_budget",
+        elapsed,
+        Duration::from_secs(5),
     );
 }
 #[test]

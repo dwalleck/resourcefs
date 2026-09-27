@@ -764,9 +764,10 @@ fn mount_validation_maximum_stays_within_budget() {
         Duration::from_millis(50)
     };
     eprintln!("maximum Site Mount validation: {elapsed:?}; CI budget: {budget:?}");
-    assert!(
-        elapsed <= budget,
-        "maximum Site Mount validation took {elapsed:?}, exceeding CI budget {budget:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "mount_validation_maximum_stays_within_budget",
+        elapsed,
+        budget,
     );
 }
 

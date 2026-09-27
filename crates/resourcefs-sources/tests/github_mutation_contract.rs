@@ -887,9 +887,10 @@ async fn github_cache_namespace_removal_budget() {
         500
     );
     let elapsed = started.elapsed();
-    assert!(
-        elapsed <= Duration::from_millis(50),
-        "[C13] 500-of-1,000 cache removal took {elapsed:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "github_cache_namespace_removal_budget",
+        elapsed,
+        Duration::from_millis(50),
     );
     assert!(
         session
@@ -1143,9 +1144,10 @@ async fn creation_document_budget() {
     let started = Instant::now();
     MutationAdapter::validate_write(&source, &issue, &document).expect("[C6] maximum document");
     let elapsed = started.elapsed();
-    assert!(
-        elapsed <= Duration::from_millis(100),
-        "[C6] 64 MiB frontmatter/body validation took {elapsed:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "creation_document_budget",
+        elapsed,
+        Duration::from_millis(100),
     );
 }
 

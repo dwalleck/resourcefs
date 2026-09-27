@@ -1671,9 +1671,10 @@ async fn github_facts_production_budget() -> Result<(), &'static str> {
                 "facts_budget phase=wall native_bytes={NATIVE_BYTES} output_bytes={output_bytes} cold_loopback_upper_bound_ns={} local_processing_limit_ns=1000000000",
                 elapsed.as_nanos()
             );
-            assert!(
-                elapsed <= Duration::from_secs(1),
-                "local processing upper bound {elapsed:?}"
+            resourcefs_core::test_support::wall_budget::check_wall_budget(
+                "github_facts_production_budget",
+                elapsed,
+                Duration::from_secs(1),
             );
         }
     }
@@ -1868,9 +1869,10 @@ async fn immutable_commit_production_budget() -> Result<(), &'static str> {
                 "immutable_commit_budget phase=wall body_bytes={COMMIT_BODY_BYTES} output_bytes={output_bytes} elapsed_ns={}",
                 elapsed.as_nanos()
             );
-            assert!(
-                elapsed <= Duration::from_secs(2),
-                "local processing upper bound {elapsed:?}"
+            resourcefs_core::test_support::wall_budget::check_wall_budget(
+                "immutable_commit_production_budget",
+                elapsed,
+                Duration::from_secs(2),
             );
         }
     }
@@ -1949,9 +1951,10 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
     // Release measurement at this revision: 225_837ns average for a 65_536-byte
     // reference with 1_024 segments. The sibling `reference_parse_budget`
     // allows 1ms for a 183-byte input; 5ms is ~70x tighter per byte.
-    assert!(
-        average <= Duration::from_millis(5),
-        "average parser wall time {average:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "immutable_reference_parse_budget#1",
+        average,
+        Duration::from_millis(5),
     );
     assert!(
         incremental_heap <= 16 * EXACT_BYTES + 1_048_576,
@@ -1972,9 +1975,10 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
     // cheap shape's ~6x headroom; the heap bound allows 2x the measured
     // structural cost, so a per-segment regression cannot hide under a bound
     // calibrated on one long segment.
-    assert!(
-        worst_average <= Duration::from_millis(30),
-        "adversarial parser wall time {worst_average:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "immutable_reference_parse_budget#2",
+        worst_average,
+        Duration::from_millis(30),
     );
     assert!(
         worst_heap <= 64 * EXACT_BYTES,
@@ -2016,9 +2020,10 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
     // Release measurement at this revision: 14ns average. One microsecond is
     // ~70x headroom and still catches an accidental per-intersection
     // allocation, which is what this phase exists to bound.
-    assert!(
-        average <= Duration::from_micros(1),
-        "average control construction/intersection time {average:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "immutable_reference_parse_budget#3",
+        average,
+        Duration::from_micros(1),
     );
     println!(
         "immutable_reference_budget phase=controls iterations={CONTROL_ITERATIONS} average_wall_ns={}",
@@ -3641,9 +3646,10 @@ async fn github_collection_production_budget() {
         output_bytes > 6_000_000,
         "production-size output: {output_bytes}"
     );
-    assert!(
-        elapsed < Duration::from_secs(1),
-        "local processing took {elapsed:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "github_collection_production_budget",
+        elapsed,
+        Duration::from_secs(1),
     );
     eprintln!(
         "collection_budget phase=wall records=900 output_bytes={output_bytes} local_processing_ns={} limit_ns=1000000000",
@@ -5145,7 +5151,11 @@ async fn immutable_source_production_budget() -> Result<(), &'static str> {
                 elapsed.as_nanos(),
                 WALL_LIMIT.as_nanos()
             );
-            assert!(elapsed <= WALL_LIMIT, "source read wall time {elapsed:?}");
+            resourcefs_core::test_support::wall_budget::check_wall_budget(
+                "immutable_source_production_budget#1",
+                elapsed,
+                WALL_LIMIT,
+            );
         }
     }
 
@@ -5223,7 +5233,11 @@ async fn immutable_source_production_budget() -> Result<(), &'static str> {
                 elapsed.as_nanos(),
                 WALL_LIMIT.as_nanos()
             );
-            assert!(elapsed <= WALL_LIMIT, "source read wall time {elapsed:?}");
+            resourcefs_core::test_support::wall_budget::check_wall_budget(
+                "immutable_source_production_budget#2",
+                elapsed,
+                WALL_LIMIT,
+            );
         }
     }
 

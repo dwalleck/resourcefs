@@ -551,13 +551,15 @@ mod tests {
         );
 
         let scale = if cfg!(debug_assertions) { 20 } else { 1 };
-        assert!(
-            source_elapsed <= Duration::from_millis(250) * scale,
-            "maximum source catalog took {source_elapsed:?}"
+        resourcefs_core::test_support::wall_budget::check_wall_budget(
+            "catalog_production_budget#1",
+            source_elapsed,
+            Duration::from_millis(250) * scale,
         );
-        assert!(
-            workspace_elapsed <= Duration::from_millis(25) * scale,
-            "maximum workspace catalog took {workspace_elapsed:?}"
+        resourcefs_core::test_support::wall_budget::check_wall_budget(
+            "catalog_production_budget#2",
+            workspace_elapsed,
+            Duration::from_millis(25) * scale,
         );
     }
 }

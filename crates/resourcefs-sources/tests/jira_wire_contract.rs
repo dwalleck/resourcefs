@@ -310,8 +310,9 @@ fn canonical_json_maximum_fixture() {
     } else {
         Duration::from_secs(2)
     };
-    assert!(
-        started.elapsed() <= budget,
-        "maximum canonical JSON must stay within the plan budget"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "canonical_json_maximum_fixture",
+        started.elapsed(),
+        budget,
     );
 }

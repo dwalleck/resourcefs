@@ -857,7 +857,11 @@ async fn artifact_page_production_budget() {
     } else {
         Duration::from_secs(5)
     };
-    assert!(elapsed <= budget, "64 MiB artifact page took {elapsed:?}");
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "artifact_page_production_budget",
+        elapsed,
+        budget,
+    );
 }
 
 #[tokio::test]
@@ -883,9 +887,10 @@ async fn workspace_snapshot_production_budget() {
     } else {
         Duration::from_secs(5)
     };
-    assert!(
-        elapsed <= budget,
-        "64 MiB workspace snapshot page took {elapsed:?}"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "workspace_snapshot_production_budget",
+        elapsed,
+        budget,
     );
 }
 
@@ -910,7 +915,11 @@ async fn inline_artifact_production_budget() {
     } else {
         Duration::from_millis(25)
     };
-    assert!(elapsed <= budget, "49 KiB artifact read took {elapsed:?}");
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "inline_artifact_production_budget",
+        elapsed,
+        budget,
+    );
 }
 
 /// The shared fake reports stored bytes that are not UTF-8 as

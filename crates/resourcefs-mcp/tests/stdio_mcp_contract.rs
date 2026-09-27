@@ -1759,9 +1759,10 @@ fn renders_complete_success_and_errors() {
             maximum_text(),
             "maximum-sized content changed"
         );
-        assert!(
-            elapsed <= Duration::from_millis(250),
-            "maximum-sized MCP read took {elapsed:?}"
+        resourcefs_core::test_support::wall_budget::check_wall_budget(
+            "renders_complete_success_and_errors",
+            elapsed,
+            Duration::from_millis(250),
         );
 
         for (path, category) in [

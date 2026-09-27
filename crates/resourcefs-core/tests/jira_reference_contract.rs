@@ -220,9 +220,10 @@ fn maximum_jira_reference_parse_stays_within_budget() {
     for _ in 0..1_000 {
         PathReference::parse(&reference).expect("maximum Jira reference");
     }
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "1,000 maximum Jira references must average below the 2 ms budget"
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "maximum_jira_reference_parse_stays_within_budget",
+        started.elapsed(),
+        Duration::from_secs(2),
     );
 }
 

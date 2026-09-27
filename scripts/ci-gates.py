@@ -307,7 +307,10 @@ def ignored_budgets():
             result = run([
                 "cargo", "test", *RELEASE, "-p", package_id,
                 "--all-features", *selector, "--", "--ignored", "--exact", name,
-                "--test-threads=1",
+                # One test per invocation, so its output is short. Uncaptured,
+                # a run under RFS_BUDGETS=report prints each measurement
+                # against its ceiling instead of hiding it (rfs-cn1r).
+                "--test-threads=1", "--nocapture",
             ])
             passed = result.returncode == 0 and passed
     missing = BUDGETS - seen

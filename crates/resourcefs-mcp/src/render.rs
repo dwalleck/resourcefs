@@ -721,7 +721,11 @@ mod tests {
         } else {
             Duration::from_millis(25)
         };
-        assert!(elapsed <= budget, "maximum-page render took {elapsed:?}");
+        resourcefs_core::test_support::wall_budget::check_wall_budget(
+            "maximum_page_render_stays_within_budget",
+            elapsed,
+            budget,
+        );
     }
 
     struct Fixture {
@@ -1269,7 +1273,11 @@ mod tests {
         } else {
             Duration::from_millis(25)
         };
-        assert!(elapsed <= budget, "maximum-page render took {elapsed:?}");
+        resourcefs_core::test_support::wall_budget::check_wall_budget(
+            "maximum_search_page_render_stays_within_budget",
+            elapsed,
+            budget,
+        );
     }
 
     #[tokio::test]
@@ -1308,7 +1316,11 @@ mod tests {
         } else {
             Duration::from_millis(25)
         };
-        assert!(elapsed <= budget, "maximum-page render took {elapsed:?}");
+        resourcefs_core::test_support::wall_budget::check_wall_budget(
+            "maximum_glob_page_render_stays_within_budget",
+            elapsed,
+            budget,
+        );
     }
 
     /// A source whose projection names a further upstream page.
@@ -1507,9 +1519,10 @@ mod tests {
             std::hint::black_box(mutation_success(creation.clone()).expect("[C16] budget render"));
         }
         let average = started.elapsed() / iterations;
-        assert!(
-            average <= Duration::from_millis(10),
-            "[C16] ordinary mutation rendering took {average:?}"
+        resourcefs_core::test_support::wall_budget::check_wall_budget(
+            "creation_receipt_renders_nullable_tag_and_canonical_reference",
+            average,
+            Duration::from_millis(10),
         );
         let rendered = mutation_success(creation).expect("[C16] render");
         let value = serde_json::to_value(rendered).expect("[C16] result JSON");

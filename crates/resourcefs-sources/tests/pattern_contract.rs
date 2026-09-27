@@ -302,10 +302,10 @@ fn glob_language_table() {
     } else {
         Duration::from_millis(100)
     };
-    assert!(
-        started.elapsed() <= budget,
-        "C1 glob table exceeded {budget:?}: {:?}",
-        started.elapsed()
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "glob_language_table",
+        started.elapsed(),
+        budget,
     );
 }
 
@@ -334,15 +334,14 @@ fn matcher_selection_unicode_and_work_limits() {
         SearchEngine::RustRegex,
         "C3 maximum engine"
     );
-    assert!(
-        compile_started.elapsed()
-            <= if cfg!(debug_assertions) {
-                Duration::from_secs(40)
-            } else {
-                Duration::from_secs(2)
-            },
-        "C3 maximum compile exceeded two seconds: {:?}",
-        compile_started.elapsed()
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "matcher_selection_unicode_and_work_limits#1",
+        compile_started.elapsed(),
+        if cfg!(debug_assertions) {
+            Duration::from_secs(40)
+        } else {
+            Duration::from_secs(2)
+        },
     );
 
     let mut pcre = SearchMatcher::compile(r"(?<=foo)bar", true).expect("C3 lookbehind");
@@ -377,14 +376,13 @@ fn matcher_selection_unicode_and_work_limits() {
     let mut scan = SearchMatcher::compile("needle$", true).expect("C3 scan pattern");
     let scan_started = Instant::now();
     assert!(scan.is_match(&haystack).expect("C3 maximum scan"));
-    assert!(
-        scan_started.elapsed()
-            <= if cfg!(debug_assertions) {
-                Duration::from_secs(20)
-            } else {
-                Duration::from_secs(1)
-            },
-        "C3 maximum scan exceeded one second: {:?}",
-        scan_started.elapsed()
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "matcher_selection_unicode_and_work_limits#2",
+        scan_started.elapsed(),
+        if cfg!(debug_assertions) {
+            Duration::from_secs(20)
+        } else {
+            Duration::from_secs(1)
+        },
     );
 }

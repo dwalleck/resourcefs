@@ -600,17 +600,22 @@ async fn exact_limit_write_budget_and_one_over_rejection() {
     // 34722270821), on a branch whose only change was 24 lines of JSON, so
     // the miss was the hardware and not the code.
     //
-    // Serialising it is not the lever: the release leg already ran this
-    // target alone under `--test-threads=1` when it missed. 30 s is roughly
-    // twice the worst observed, matching the headroom the heartbeat budget
-    // was given, and still fails long before a regression that made a 64 MiB
-    // write take minutes. See rfs-1e6h.
+    // Serialising it was not the lever: the release leg already ran this
+    // target alone under `--test-threads=1` when it missed. The lever is
+    // where it is enforced. rfs-1e6h raised it to 30 s; rfs-cn1r restores
+    // 5 s because hosted CI now only reports it (`RFS_BUDGETS=report`) and a
+    // controlled host enforces it. Five release runs on a workstation at load
+    // average 26 measured 83-85 ms.
     let budget = if cfg!(debug_assertions) {
         Duration::from_secs(100)
     } else {
-        Duration::from_secs(30)
+        Duration::from_secs(5)
     };
-    assert!(elapsed <= budget, "64 MiB create took {elapsed:?}");
+    resourcefs_core::test_support::wall_budget::check_wall_budget(
+        "exact_limit_write_budget_and_one_over_rejection",
+        elapsed,
+        budget,
+    );
 
     let error = WriteRequest::new(
         reference("over.txt"),

@@ -122,6 +122,14 @@ jobs:
       - name: Repository gates
         if: ${{ !cancelled() }}
         env:
+          # Wall-clock budgets report here and never fail (rfs-cn1r). A hosted
+          # runner is three or four shared cores executing hundreds of test
+          # processes, so a ceiling measured on it samples the machine, not
+          # the code; every raise made to quiet one (rfs-1e6h) weakened it.
+          # Unset, the policy is `enforce`, so the local gate enforces them.
+          # A self-hosted benchmark job can set `enforce` without code
+          # changes. Allocation ceilings and timeout contracts still assert.
+          RFS_BUDGETS: report
           # macOS was the matrix's critical path at 60 min against Windows's 27,
           # and one target was most of the gap:
           # `atlassian_fixture_operator_contract`, 78 tests driving a
