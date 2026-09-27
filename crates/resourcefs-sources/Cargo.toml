@@ -58,6 +58,8 @@ tokio-rustls.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 rstest.workspace = true
+# `time` gives the rfs-a3ag measurement harness a thread CPU clock; tests only.
+rustix = { workspace = true, features = ["time"] }
 
 [[test]]
 name = "secret_contract"
