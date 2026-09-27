@@ -366,23 +366,28 @@ api_request() {
   esac
   response="$RUN_DIR/response-${REQUESTS}"
   err="$RUN_DIR/error-${REQUESTS}"
-  if ! user_json=$(printf '%s' "$email:$token" | jq -Rsr '@json' 2>/dev/null); then
+  # One jq spawn encodes every curl config value (rfs-cbz9): the request loop
+  # used to pay four or five per request, over half of all spawns in the
+  # fixture contract suite. Values travel NUL-separated on stdin, never argv,
+  # so credentials stay out of the process table exactly as before; a Bash
+  # string cannot hold NUL, so the split is unambiguous. @json never emits a
+  # raw newline, so each encoded value is one line, and anything but exactly
+  # five lines fails closed.
+  local encoded_text
+  local -a encoded=()
+  if ! encoded_text=$(
+    printf '%s\0%s\0%s\0%s\0%s' "$email:$token" "$SITE$path" "$method" "$response" "$body" |
+      jq -Rsr 'split("\u0000") | .[] | @json' 2>/dev/null
+  ); then
     die "transport_config actor=$actor operation=$operation"
   fi
-  if ! url_json=$(printf '%s' "$SITE$path" | jq -Rsr '@json' 2>/dev/null); then
-    die "transport_config actor=$actor operation=$operation"
-  fi
-  if ! method_json=$(printf '%s' "$method" | jq -Rsr '@json' 2>/dev/null); then
-    die "transport_config actor=$actor operation=$operation"
-  fi
-  if ! response_json=$(printf '%s' "$response" | jq -Rsr '@json' 2>/dev/null); then
-    die "transport_config actor=$actor operation=$operation"
-  fi
-  if [[ -n "$body" ]]; then
-    if ! body_json=$(printf '%s' "$body" | jq -Rsr '@json' 2>/dev/null); then
-      die "transport_config actor=$actor operation=$operation"
-    fi
-  fi
+  mapfile -t encoded <<<"$encoded_text"
+  (( ${#encoded[@]} == 5 )) || die "transport_config actor=$actor operation=$operation"
+  user_json=${encoded[0]}
+  url_json=${encoded[1]}
+  method_json=${encoded[2]}
+  response_json=${encoded[3]}
+  body_json=${encoded[4]}
   if ! status=$(
     {
       printf 'silent\nshow-error\nconnect-timeout = 10\nmax-time = 30\nmax-filesize = 4194304\nrequest = %s\nurl = %s\nuser = %s\nheader = %s\nheader = %s\noutput = %s\nwrite-out = "%%{http_code}"\n' \
