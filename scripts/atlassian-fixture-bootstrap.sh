@@ -346,13 +346,32 @@ prepare_state_and_lock() {
 }
 
 # Build a curl config on stdin. Credentials never occur in process arguments or files.
+# Writes one `key = "value"` line of curl --config syntax to stdout (rfs-cbz9).
+# Inside double quotes curl decodes exactly \\ \" \t \n \r \v and drops a
+# backslash before any other character (curl(1) --config; confirmed against
+# curl 8.22 for every case). So a backslash must be doubled, a quote escaped,
+# and the line-structure controls written as escapes; every other byte,
+# including non-ASCII UTF-8, passes through literally. This replaced one jq
+# @json spawn per value: @json also emits \uXXXX, \b and \f, which curl does
+# not decode. printf is a builtin, so credentials never reach argv, and no
+# here-string or temp file ever holds them.
+curl_config_line() {
+  local key=$1 value=$2 bs='\' quote='"'
+  value=${value//"$bs"/"$bs$bs"}
+  value=${value//"$quote"/"$bs$quote"}
+  value=${value//$'\n'/"${bs}n"}
+  value=${value//$'\r'/"${bs}r"}
+  value=${value//$'\t'/"${bs}t"}
+  value=${value//$'\v'/"${bs}v"}
+  printf '%s = "%s"\n' "$key" "$value"
+}
+
 api_request() {
   local actor=$1 method=$2 path=$3 body=$4 expected=$5 operation=$6
   (( REQUESTS < MAX_REQUESTS )) ||
     die "request_limit actor=$actor operation=$operation"
   ((REQUESTS += 1))
   local email token response err status
-  local user_json url_json method_json response_json body_json
   case "$actor" in
     provisioner)
       email=$ATLASSIAN_PROVISIONER_EMAIL
@@ -366,36 +385,17 @@ api_request() {
   esac
   response="$RUN_DIR/response-${REQUESTS}"
   err="$RUN_DIR/error-${REQUESTS}"
-  # One jq spawn encodes every curl config value (rfs-cbz9): the request loop
-  # used to pay four or five per request, over half of all spawns in the
-  # fixture contract suite. Values travel NUL-separated on stdin, never argv,
-  # so credentials stay out of the process table exactly as before; a Bash
-  # string cannot hold NUL, so the split is unambiguous. @json never emits a
-  # raw newline, so each encoded value is one line, and anything but exactly
-  # five lines fails closed.
-  local encoded_text
-  local -a encoded=()
-  if ! encoded_text=$(
-    printf '%s\0%s\0%s\0%s\0%s' "$email:$token" "$SITE$path" "$method" "$response" "$body" |
-      jq -Rsr 'split("\u0000") | .[] | @json' 2>/dev/null
-  ); then
-    die "transport_config actor=$actor operation=$operation"
-  fi
-  mapfile -t encoded <<<"$encoded_text"
-  (( ${#encoded[@]} == 5 )) || die "transport_config actor=$actor operation=$operation"
-  user_json=${encoded[0]}
-  url_json=${encoded[1]}
-  method_json=${encoded[2]}
-  response_json=${encoded[3]}
-  body_json=${encoded[4]}
   if ! status=$(
     {
-      printf 'silent\nshow-error\nconnect-timeout = 10\nmax-time = 30\nmax-filesize = 4194304\nrequest = %s\nurl = %s\nuser = %s\nheader = %s\nheader = %s\noutput = %s\nwrite-out = "%%{http_code}"\n' \
-        "$method_json" "$url_json" "$user_json" \
-        '"Accept: application/json"' '"Content-Type: application/json"' \
-        "$response_json"
+      printf 'silent\nshow-error\nconnect-timeout = 10\nmax-time = 30\nmax-filesize = 4194304\n'
+      curl_config_line request "$method"
+      curl_config_line url "$SITE$path"
+      curl_config_line user "$email:$token"
+      printf 'header = "Accept: application/json"\nheader = "Content-Type: application/json"\n'
+      curl_config_line output "$response"
+      printf 'write-out = "%%{http_code}"\n'
       if [[ -n "$body" ]]; then
-        printf 'data-binary = %s\n' "$body_json"
+        curl_config_line data-binary "$body"
       fi
     } | env \
       -u ATLASSIAN_PROVISIONER_EMAIL \

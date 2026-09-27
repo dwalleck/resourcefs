@@ -125,20 +125,39 @@ def temp_contains_canary():
             return True
     return False
 
+# curl(1) --config: inside double quotes exactly these escapes are decoded,
+# and a backslash before any other character is dropped (so "\\u0041" reads as
+# "u0041"). This mirrors real curl rather than JSON, so an encoder that emits
+# JSON-only escapes fails here the way it would upstream (rfs-cbz9).
+CURL_CONFIG_ESCAPES = {"\\": "\\", '"': '"', "t": "\t", "n": "\n", "r": "\r", "v": "\v"}
+
+
 def cfg_value(raw):
     raw = raw.strip()
-    if raw.startswith('"'):
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return raw[1:-1]
-    return raw
+    if not raw.startswith('"'):
+        return raw
+    decoded = []
+    index = 1
+    while index < len(raw):
+        char = raw[index]
+        if char == '"':
+            return "".join(decoded)
+        if char == "\\" and index + 1 < len(raw):
+            following = raw[index + 1]
+            decoded.append(CURL_CONFIG_ESCAPES.get(following, following))
+            index += 2
+            continue
+        decoded.append(char)
+        index += 1
+    raise SystemExit("unterminated_config_quote")
 
 
 def parse_config():
     config = {}
     raw_config = sys.stdin.read()
-    for line in raw_config.splitlines():
+    # curl splits its config on newline only; str.splitlines() would also break
+    # on \v, \f, U+0085 and U+2028, which may legitimately sit inside a value.
+    for line in raw_config.split("\n"):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -936,6 +955,7 @@ def main():
         "path": path,
         "query": query,
         "body": body,
+        "data_binary_present": "data-binary" in config,
         "operation": operation,
         "status": status if status is not None else "transport",
         "scenario": SCENARIO,
