@@ -22,6 +22,25 @@ fn reference(path: &str) -> PathReference {
     PathReference::parse(path).expect("fixture reference should be valid")
 }
 
+/// A search at page zero with default options and limits, which is what most
+/// requests in this file ask for. The message stays per call site, so a
+/// construction failure still names the case that produced it (rfs-exoi).
+fn default_search(target: SearchTarget, pattern: &str, context: &str) -> SearchRequest {
+    SearchRequest::new(
+        target,
+        pattern,
+        SearchOptions::default(),
+        0,
+        SearchLimits::default(),
+    )
+    .expect(context)
+}
+
+/// A glob at page zero with default options and limits (rfs-exoi).
+fn default_glob(target: GlobTarget) -> GlobRequest {
+    GlobRequest::new(target, GlobOptions::default(), 0, GlobLimits::default())
+}
+
 fn create_root() -> (TempDir, std::path::PathBuf) {
     let temporary = TempDir::new().expect("temporary directory");
     let root = temporary.path().join("workspace");
@@ -446,12 +465,7 @@ async fn dangling_absolute_symlinks_preserve_kernel_resolution_errors() {
     let (_cache, _session, engine) = discovery_fixture(source).await;
     let result = engine
         .glob(
-            GlobRequest::new(
-                GlobTarget::new("*").expect("root glob"),
-                GlobOptions::default(),
-                0,
-                GlobLimits::default(),
-            ),
+            default_glob(GlobTarget::new("*").expect("root glob")),
             &OperationGuard::new(),
         )
         .await
@@ -529,14 +543,11 @@ async fn absolute_symlinks_to_workspace_root_support_directory_discovery() {
     for name in ["direct", "aliased"] {
         let result = engine
             .search(
-                SearchRequest::new(
+                default_search(
                     SearchTarget::resource(reference(name)),
                     "root content",
-                    SearchOptions::default(),
-                    0,
-                    SearchLimits::default(),
-                )
-                .expect("root alias search"),
+                    "root alias search",
+                ),
                 &OperationGuard::new(),
             )
             .await
@@ -555,12 +566,7 @@ async fn absolute_symlinks_to_workspace_root_support_directory_discovery() {
     for pattern in ["*.txt", "**/*.txt"] {
         let result = engine
             .glob(
-                GlobRequest::new(
-                    GlobTarget::new(pattern).expect("root alias glob"),
-                    GlobOptions::default(),
-                    0,
-                    GlobLimits::default(),
-                ),
+                default_glob(GlobTarget::new(pattern).expect("root alias glob")),
                 &OperationGuard::new(),
             )
             .await
@@ -1577,14 +1583,7 @@ async fn search_groups_lines_and_reports_partial_failures() {
 
     let result = engine
         .search(
-            SearchRequest::new(
-                SearchTarget::primary(),
-                "needle",
-                SearchOptions::default(),
-                0,
-                SearchLimits::default(),
-            )
-            .expect("C6 search request"),
+            default_search(SearchTarget::primary(), "needle", "C6 search request"),
             &OperationGuard::new(),
         )
         .await
@@ -1620,14 +1619,11 @@ async fn search_groups_lines_and_reports_partial_failures() {
 
     let exact_error = engine
         .search(
-            SearchRequest::new(
+            default_search(
                 SearchTarget::resource(reference("binary.bin")),
                 "needle",
-                SearchOptions::default(),
-                0,
-                SearchLimits::default(),
-            )
-            .expect("C6 exact request"),
+                "C6 exact request",
+            ),
             &OperationGuard::new(),
         )
         .await
@@ -1640,14 +1636,11 @@ async fn search_groups_lines_and_reports_partial_failures() {
 
     let selected = engine
         .search(
-            SearchRequest::new(
+            default_search(
                 SearchTarget::resource(reference("good.txt:2-")),
                 "needle",
-                SearchOptions::default(),
-                0,
-                SearchLimits::default(),
-            )
-            .expect("C6 selected Workspace request"),
+                "C6 selected Workspace request",
+            ),
             &OperationGuard::new(),
         )
         .await
@@ -1662,14 +1655,11 @@ async fn search_groups_lines_and_reports_partial_failures() {
     fs::write(root.join("literal.txt:2"), "literal marker\n").expect("C6 literal colon file");
     let literal = engine
         .search(
-            SearchRequest::new(
+            default_search(
                 SearchTarget::resource(reference("literal.txt:2")),
                 "literal marker",
-                SearchOptions::default(),
-                0,
-                SearchLimits::default(),
-            )
-            .expect("C6 literal request"),
+                "C6 literal request",
+            ),
             &OperationGuard::new(),
         )
         .await
@@ -1723,14 +1713,7 @@ async fn discovery_filters_are_contained_and_explicit() {
 
     let defaults = engine
         .search(
-            SearchRequest::new(
-                SearchTarget::primary(),
-                "needle",
-                SearchOptions::default(),
-                0,
-                SearchLimits::default(),
-            )
-            .expect("C5 default request"),
+            default_search(SearchTarget::primary(), "needle", "C5 default request"),
             &OperationGuard::new(),
         )
         .await
@@ -1781,12 +1764,7 @@ async fn discovery_filters_are_contained_and_explicit() {
     ] {
         let filtered = engine
             .glob(
-                GlobRequest::new(
-                    GlobTarget::new(pattern).expect("C5 filtered glob target"),
-                    GlobOptions::default(),
-                    0,
-                    GlobLimits::default(),
-                ),
+                default_glob(GlobTarget::new(pattern).expect("C5 filtered glob target")),
                 &OperationGuard::new(),
             )
             .await
@@ -1796,14 +1774,11 @@ async fn discovery_filters_are_contained_and_explicit() {
 
     let explicit = engine
         .search(
-            SearchRequest::new(
+            default_search(
                 SearchTarget::resource(reference("ignored.txt")),
                 "needle",
-                SearchOptions::default(),
-                0,
-                SearchLimits::default(),
-            )
-            .expect("C5 explicit request"),
+                "C5 explicit request",
+            ),
             &OperationGuard::new(),
         )
         .await
@@ -1835,14 +1810,11 @@ async fn discovery_filters_are_contained_and_explicit() {
     ] {
         let explicit_directory = engine
             .search(
-                SearchRequest::new(
+                default_search(
                     SearchTarget::resource(reference(path)),
                     "needle",
-                    SearchOptions::default(),
-                    0,
-                    SearchLimits::default(),
-                )
-                .expect("C5 explicit directory request"),
+                    "C5 explicit directory request",
+                ),
                 &OperationGuard::new(),
             )
             .await
@@ -1902,14 +1874,7 @@ fn global_gitignore_is_not_consulted_child() {
         let (_cache, _session, engine) = discovery_fixture(source).await;
         let result = engine
             .search(
-                SearchRequest::new(
-                    SearchTarget::primary(),
-                    "needle",
-                    SearchOptions::default(),
-                    0,
-                    SearchLimits::default(),
-                )
-                .expect("C5 child request"),
+                default_search(SearchTarget::primary(), "needle", "C5 child request"),
                 &OperationGuard::new(),
             )
             .await
@@ -1939,12 +1904,7 @@ async fn glob_language_kinds_and_order() {
 
     let recursive = engine
         .glob(
-            GlobRequest::new(
-                GlobTarget::new("src/**/*.rs").expect("C7 recursive target"),
-                GlobOptions::default(),
-                0,
-                GlobLimits::default(),
-            ),
+            default_glob(GlobTarget::new("src/**/*.rs").expect("C7 recursive target")),
             &OperationGuard::new(),
         )
         .await
@@ -1965,12 +1925,9 @@ async fn glob_language_kinds_and_order() {
 
     let canonical = engine
         .glob(
-            GlobRequest::new(
+            default_glob(
                 GlobTarget::new("rfs://workspace/workspace/src/{main,lib}.rs")
                     .expect("C7 canonical target"),
-                GlobOptions::default(),
-                0,
-                GlobLimits::default(),
             ),
             &OperationGuard::new(),
         )
@@ -2016,12 +1973,7 @@ async fn glob_language_kinds_and_order() {
 
     let directory = engine
         .glob(
-            GlobRequest::new(
-                GlobTarget::new("src").expect("C7 exact directory target"),
-                GlobOptions::default(),
-                0,
-                GlobLimits::default(),
-            ),
+            default_glob(GlobTarget::new("src").expect("C7 exact directory target")),
             &OperationGuard::new(),
         )
         .await
@@ -2042,12 +1994,7 @@ async fn glob_language_kinds_and_order() {
     {
         let escaped = engine
             .glob(
-                GlobRequest::new(
-                    GlobTarget::new(r"literal\*.txt").expect("C7 escaped target"),
-                    GlobOptions::default(),
-                    0,
-                    GlobLimits::default(),
-                ),
+                default_glob(GlobTarget::new(r"literal\*.txt").expect("C7 escaped target")),
                 &OperationGuard::new(),
             )
             .await
@@ -2062,12 +2009,7 @@ async fn glob_language_kinds_and_order() {
 
     let invalid = engine
         .glob(
-            GlobRequest::new(
-                GlobTarget::new("literal\\").expect("C7 shaped dangling escape"),
-                GlobOptions::default(),
-                0,
-                GlobLimits::default(),
-            ),
+            default_glob(GlobTarget::new("literal\\").expect("C7 shaped dangling escape")),
             &OperationGuard::new(),
         )
         .await
@@ -2080,12 +2022,7 @@ async fn glob_language_kinds_and_order() {
 
     let absent = engine
         .glob(
-            GlobRequest::new(
-                GlobTarget::new("missing/**/*.txt").expect("C7 absent-prefix target"),
-                GlobOptions::default(),
-                0,
-                GlobLimits::default(),
-            ),
+            default_glob(GlobTarget::new("missing/**/*.txt").expect("C7 absent-prefix target")),
             &OperationGuard::new(),
         )
         .await
@@ -2150,16 +2087,8 @@ async fn discovery_links_never_escape_or_duplicate() {
 
     let source = single_source(&root).await.expect("C4 filesystem source");
     let (_cache, _session, engine) = discovery_fixture(source).await;
-    let search_request = || {
-        SearchRequest::new(
-            SearchTarget::primary(),
-            "sentinel",
-            SearchOptions::default(),
-            0,
-            SearchLimits::default(),
-        )
-        .expect("C4 search request")
-    };
+    let search_request =
+        || default_search(SearchTarget::primary(), "sentinel", "C4 search request");
     let search = engine
         .search(search_request(), &OperationGuard::new())
         .await
@@ -2184,12 +2113,7 @@ async fn discovery_links_never_escape_or_duplicate() {
 
     let glob = engine
         .glob(
-            GlobRequest::new(
-                GlobTarget::new("**/*.txt").expect("C4 glob target"),
-                GlobOptions::default(),
-                0,
-                GlobLimits::default(),
-            ),
+            default_glob(GlobTarget::new("**/*.txt").expect("C4 glob target")),
             &OperationGuard::new(),
         )
         .await
@@ -2252,14 +2176,7 @@ async fn root_refresh_fences_discovery_delivery() {
     let pending = tokio::spawn(async move {
         pending_engine
             .search(
-                SearchRequest::new(
-                    SearchTarget::primary(),
-                    "sentinel",
-                    SearchOptions::default(),
-                    0,
-                    SearchLimits::default(),
-                )
-                .expect("C14 pending request"),
+                default_search(SearchTarget::primary(), "sentinel", "C14 pending request"),
                 &OperationGuard::new(),
             )
             .await
@@ -2296,14 +2213,7 @@ async fn root_refresh_fences_discovery_delivery() {
 
     let current = engine
         .search(
-            SearchRequest::new(
-                SearchTarget::primary(),
-                "sentinel",
-                SearchOptions::default(),
-                0,
-                SearchLimits::default(),
-            )
-            .expect("C14 current request"),
+            default_search(SearchTarget::primary(), "sentinel", "C14 current request"),
             &OperationGuard::new(),
         )
         .await
@@ -2333,14 +2243,11 @@ async fn cancellation_fences_workspace_discovery_delivery() {
     let pending_search = tokio::spawn(async move {
         pending_engine
             .search(
-                SearchRequest::new(
+                default_search(
                     SearchTarget::primary(),
                     "needle",
-                    SearchOptions::default(),
-                    0,
-                    SearchLimits::default(),
-                )
-                .expect("C14 cancellation search request"),
+                    "C14 cancellation search request",
+                ),
                 &pending_operation,
             )
             .await
@@ -2365,12 +2272,7 @@ async fn cancellation_fences_workspace_discovery_delivery() {
     let pending_glob = tokio::spawn(async move {
         pending_engine
             .glob(
-                GlobRequest::new(
-                    GlobTarget::new("**/*.txt").expect("C14 cancellation glob target"),
-                    GlobOptions::default(),
-                    0,
-                    GlobLimits::default(),
-                ),
+                default_glob(GlobTarget::new("**/*.txt").expect("C14 cancellation glob target")),
                 &pending_operation,
             )
             .await
@@ -2425,12 +2327,7 @@ async fn wide_directory_keeps_pending_handles_bounded() {
 
     let result = engine
         .glob(
-            GlobRequest::new(
-                GlobTarget::new("wide/*").expect("C4 wide glob target"),
-                GlobOptions::default(),
-                0,
-                GlobLimits::default(),
-            ),
+            default_glob(GlobTarget::new("wide/*").expect("C4 wide glob target")),
             &OperationGuard::new(),
         )
         .await
@@ -2486,14 +2383,11 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
         let started = Instant::now();
         let result = engine
             .search(
-                SearchRequest::new(
+                default_search(
                     SearchTarget::resource(reference("tree")),
                     "needle",
-                    SearchOptions::default(),
-                    0,
-                    SearchLimits::default(),
-                )
-                .expect("C6 scale search request"),
+                    "C6 scale search request",
+                ),
                 &OperationGuard::new(),
             )
             .await
@@ -2514,12 +2408,7 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
     let glob_started = Instant::now();
     let glob = engine
         .glob(
-            GlobRequest::new(
-                GlobTarget::new("tree/**/*.txt").expect("C7 scale glob target"),
-                GlobOptions::default(),
-                0,
-                GlobLimits::default(),
-            ),
+            default_glob(GlobTarget::new("tree/**/*.txt").expect("C7 scale glob target")),
             &OperationGuard::new(),
         )
         .await
@@ -2535,14 +2424,11 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
     {
         let partial = engine
             .search(
-                SearchRequest::new(
+                default_search(
                     SearchTarget::resource(reference("tree")),
                     "absent-from-scale-tree",
-                    SearchOptions::default(),
-                    0,
-                    SearchLimits::default(),
-                )
-                .expect("C14 diagnostic request"),
+                    "C14 diagnostic request",
+                ),
                 &OperationGuard::new(),
             )
             .await
@@ -2565,14 +2451,11 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
     let maximum_started = Instant::now();
     let maximum_search = engine
         .search(
-            SearchRequest::new(
+            default_search(
                 SearchTarget::resource(reference("maximum.txt")),
                 "absent-pattern",
-                SearchOptions::default(),
-                0,
-                SearchLimits::default(),
-            )
-            .expect("C6 maximum request"),
+                "C6 maximum request",
+            ),
             &OperationGuard::new(),
         )
         .await

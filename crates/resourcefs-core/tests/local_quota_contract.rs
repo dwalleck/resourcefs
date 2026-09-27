@@ -4,71 +4,13 @@
 //! The oracle is a ledger the test maintains itself plus a raw inventory of the
 //! backing store; neither consults the session's own accounting.
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use resourcefs_core::test_support::MemoryStorage as FakeStorage;
+use std::sync::Arc;
 
-use async_trait::async_trait;
 use resourcefs_core::{
-    ArtifactId, ErrorCategory, LocalName, MAX_SESSION_ARTIFACTS, OperationGuard, PathSession,
-    ResourceError, ServerLimits, ServerLimitsInput, SessionStorage, SessionToken,
-    StorageLimitInput,
+    ErrorCategory, LocalName, MAX_SESSION_ARTIFACTS, OperationGuard, PathSession, ServerLimits,
+    ServerLimitsInput, SessionStorage, SessionToken, StorageLimitInput,
 };
-use tokio::sync::Mutex;
-
-#[derive(Default)]
-struct FakeStorage {
-    content: Mutex<HashMap<ArtifactId, Vec<u8>>>,
-}
-
-impl FakeStorage {
-    /// Raw inventory of every stored object, keyed by its numeric id. Built from
-    /// the store itself so it cannot agree with the session by construction.
-    async fn inventory(&self) -> BTreeMap<u64, Vec<u8>> {
-        self.content
-            .lock()
-            .await
-            .iter()
-            .map(|(id, bytes)| (id.get(), bytes.clone()))
-            .collect()
-    }
-}
-
-#[async_trait]
-impl SessionStorage for FakeStorage {
-    async fn content_equals(&self, id: ArtifactId, content: &[u8]) -> Result<bool, ResourceError> {
-        Ok(self
-            .content
-            .lock()
-            .await
-            .get(&id)
-            .is_some_and(|stored| stored.as_slice() == content))
-    }
-
-    async fn write_atomic(&self, id: ArtifactId, content: &[u8]) -> Result<(), ResourceError> {
-        self.content.lock().await.insert(id, content.to_vec());
-        Ok(())
-    }
-
-    async fn read(&self, id: ArtifactId) -> Result<String, ResourceError> {
-        let content = self.content.lock().await;
-        let bytes = content
-            .get(&id)
-            .ok_or_else(|| ResourceError::new(ErrorCategory::NotFound, "absent fake object"))?;
-        String::from_utf8(bytes.clone())
-            .map_err(|_| ResourceError::new(ErrorCategory::SourceUnavailable, "invalid fake UTF-8"))
-    }
-
-    async fn remove(&self, id: ArtifactId) -> Result<(), ResourceError> {
-        self.content.lock().await.remove(&id);
-        Ok(())
-    }
-
-    async fn mark_disconnected(&self) -> Result<(), ResourceError> {
-        Ok(())
-    }
-}
 
 fn ceilings(object_bytes: usize, session_bytes: usize) -> ServerLimits {
     ServerLimits::new(ServerLimitsInput {
