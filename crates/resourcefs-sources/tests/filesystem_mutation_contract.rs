@@ -17,6 +17,7 @@ use resourcefs_core::{
 };
 use resourcefs_sources::{
     BackingPathVisibility, FilesystemSource, LaunchRoot, LaunchRootSource, MutationGrants,
+    MutationStage,
 };
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -73,7 +74,12 @@ fn session() -> PathSession {
 }
 
 async fn engine(root: &std::path::Path, grants: MutationGrants) -> MutationEngine {
-    let source = FilesystemSource::new(
+    let adapter: Arc<dyn MutationAdapter> = Arc::new(filesystem_source(root, grants).await);
+    MutationEngine::new(adapter, session())
+}
+
+async fn filesystem_source(root: &std::path::Path, grants: MutationGrants) -> FilesystemSource {
+    FilesystemSource::new(
         LaunchRootSource::Profile(vec![LaunchRoot::new(
             WorkspaceRootId::new("workspace").expect("root ID"),
             root.to_owned(),
@@ -83,9 +89,7 @@ async fn engine(root: &std::path::Path, grants: MutationGrants) -> MutationEngin
         BackingPathVisibility::Hidden,
     )
     .await
-    .expect("filesystem source");
-    let adapter: Arc<dyn MutationAdapter> = Arc::new(source);
-    MutationEngine::new(adapter, session())
+    .expect("filesystem source")
 }
 
 fn reference(path: &str) -> PathReference {
@@ -729,4 +733,105 @@ async fn replacement_has_no_missing_window() {
         maximum_replacement <= Duration::from_secs(5),
         "slowest one-MiB replacement took {maximum_replacement:?}"
     );
+}
+
+/// rfs-pk9w: the mutation adapter must not run its file I/O on the runtime
+/// thread. `load` digests the existing file twice and `commit` writes the whole
+/// body and renames it, each up to `MAX_ARTIFACT_BYTES`; the read adapter
+/// already offloads its equivalents.
+///
+/// This is a rendezvous, not a measurement. The armed stage announces entry and
+/// then blocks until released, and the release comes from another task on the
+/// same current-thread runtime, which can only run while the runtime thread is
+/// free. Offloaded, the stage blocks a blocking-pool thread and the release
+/// arrives at once; inline, the stage blocks the runtime thread itself, the
+/// release task never runs, and the watchdog below fails the test instead of
+/// hanging it. Payload size and machine speed do not enter into it.
+///
+/// An earlier version counted ticks of a cooperative task during a 32 MiB
+/// write and required at least 100. That measured how much CPU the runtime
+/// thread happened to get, not where the I/O ran: a loaded 3-4 core macOS
+/// runner gave it 7 ticks with the fix in place (run 36281771884), the same
+/// scheduler-driven failure rfs-1e6h records for wall-clock budgets.
+#[test]
+fn mutation_io_leaves_the_runtime_thread_free() {
+    for stage in [MutationStage::Load, MutationStage::Commit] {
+        assert_stage_runs_off_the_runtime_thread(stage);
+    }
+}
+
+fn assert_stage_runs_off_the_runtime_thread(stage: MutationStage) {
+    const WATCHDOG: Duration = Duration::from_secs(30);
+    let workspace = TempDir::new().expect("workspace");
+    let root = workspace.path().to_owned();
+    fs::write(root.join("seeded.txt"), "seed\n").expect("seed fixture");
+    let (releaser_sender, releaser) = std::sync::mpsc::channel();
+    let (outcome_sender, outcome) = std::sync::mpsc::channel();
+
+    let runtime_thread = thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+        let result = runtime.block_on(async {
+            let source = filesystem_source(&root, MutationGrants::new(true, true, false)).await;
+            let gate = source.arm_test_mutation_stage_gate(stage);
+            releaser_sender
+                .send(gate.releaser())
+                .expect("watchdog receives the releaser");
+            let release = tokio::spawn(gate.release_once_entered());
+            let adapter: Arc<dyn MutationAdapter> = Arc::new(source);
+            let engine = MutationEngine::new(adapter, session());
+            // A replace reaches `load` with existing content; a create of a new
+            // file reaches `commit`. Both pass through `load` and `commit`, and
+            // only the armed stage waits.
+            let (path, expected) = match stage {
+                MutationStage::Load => (
+                    "seeded.txt",
+                    Some(VersionTag::from_content("seed\n".as_bytes())),
+                ),
+                MutationStage::Commit => ("created.txt", None),
+            };
+            let written = engine
+                .write(
+                    WriteRequest::new(reference(path), "written\n".to_owned(), expected, None)
+                        .expect("write request"),
+                    &OperationGuard::new(),
+                )
+                .await;
+            let released = release.await.expect("release task");
+            (written.map(|_| ()), released)
+        });
+        if outcome_sender.send(result).is_err() {
+            eprintln!("rfs-pk9w fence: the watchdog stopped listening");
+        }
+    });
+
+    let releaser = releaser
+        .recv_timeout(WATCHDOG)
+        .expect("the runtime thread armed the stage gate");
+    match outcome.recv_timeout(WATCHDOG) {
+        Ok((written, released)) => {
+            runtime_thread.join().expect("runtime thread");
+            written.unwrap_or_else(|error| panic!("{stage:?} write failed: {error}"));
+            assert!(
+                released,
+                "{stage:?} stage was never reached, so the fence proved nothing"
+            );
+        }
+        Err(_) => {
+            // Free the stage so the runtime thread can finish rather than
+            // outlive the test, then report the defect.
+            if releaser.send(()).is_err() {
+                eprintln!("rfs-pk9w fence: the stage had already released");
+            }
+            if runtime_thread.join().is_err() {
+                eprintln!("rfs-pk9w fence: the runtime thread panicked after release");
+            }
+            panic!(
+                "rfs-pk9w: the {stage:?} stage pinned the runtime thread; a task on the same \
+                 current-thread runtime could not run to release it within {WATCHDOG:?}"
+            );
+        }
+    }
 }
