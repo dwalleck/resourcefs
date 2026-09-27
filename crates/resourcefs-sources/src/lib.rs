@@ -60,12 +60,12 @@ pub use http::{TestRootCertificate, extract_markdown_for_test};
 pub use https::HttpsSource;
 pub use local::LocalSource;
 
-#[cfg(feature = "test-support")]
-pub use filesystem::TestDeliveryGate;
 pub use filesystem::{
     BackingPathVisibility, ClientRoot, FilesystemSource, LaunchRoot, LaunchRootSource,
     RootAcquisition, RootRefresh, RootRefreshOutcome,
 };
+#[cfg(feature = "test-support")]
+pub use filesystem::{MutationStage, TestDeliveryGate, TestMutationStageGate};
 #[cfg(feature = "test-support")]
 pub use probe::saturate_accept_queue;
 pub use probe::{

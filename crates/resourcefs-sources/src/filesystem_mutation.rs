@@ -93,7 +93,9 @@ impl MutationAdapter for FilesystemSource {
         ensure_operation_active(operation)?;
         let authority = self.mutation_authority_guard().await?;
         let target = target.clone();
+        let gate = self.mutation_stage_gate(MutationStage::Load);
         offload(move || {
+            gate.pass();
             let resolved = resolve_target(active_view(&authority), &target)?;
             enforce_grant(resolved.root.grants, access)?;
             let identity = target.canonical_reference().requested();
@@ -121,7 +123,9 @@ impl MutationAdapter for FilesystemSource {
             .into());
         }
         let authority = self.mutation_authority_guard().await?;
+        let gate = self.mutation_stage_gate(MutationStage::Commit);
         offload(move || {
+            gate.pass();
             let view = active_view(&authority);
             match mutation {
                 SourceMutation::Create { target, content } => commit_create(view, target, content),

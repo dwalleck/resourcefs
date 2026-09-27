@@ -17,6 +17,7 @@ use resourcefs_core::{
 };
 use resourcefs_sources::{
     BackingPathVisibility, FilesystemSource, LaunchRoot, LaunchRootSource, MutationGrants,
+    MutationStage,
 };
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -73,7 +74,12 @@ fn session() -> PathSession {
 }
 
 async fn engine(root: &std::path::Path, grants: MutationGrants) -> MutationEngine {
-    let source = FilesystemSource::new(
+    let adapter: Arc<dyn MutationAdapter> = Arc::new(filesystem_source(root, grants).await);
+    MutationEngine::new(adapter, session())
+}
+
+async fn filesystem_source(root: &std::path::Path, grants: MutationGrants) -> FilesystemSource {
+    FilesystemSource::new(
         LaunchRootSource::Profile(vec![LaunchRoot::new(
             WorkspaceRootId::new("workspace").expect("root ID"),
             root.to_owned(),
@@ -83,9 +89,7 @@ async fn engine(root: &std::path::Path, grants: MutationGrants) -> MutationEngin
         BackingPathVisibility::Hidden,
     )
     .await
-    .expect("filesystem source");
-    let adapter: Arc<dyn MutationAdapter> = Arc::new(source);
-    MutationEngine::new(adapter, session())
+    .expect("filesystem source")
 }
 
 fn reference(path: &str) -> PathReference {
@@ -731,103 +735,103 @@ async fn replacement_has_no_missing_window() {
     );
 }
 
-/// Ticks a shared counter every time the runtime polls it, so the count says
-/// how often the runtime thread was free to schedule anything at all.
-fn spawn_ticker() -> (Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
-    let ticks = Arc::new(AtomicUsize::new(0));
-    let handle = {
-        let ticks = Arc::clone(&ticks);
-        tokio::spawn(async move {
-            loop {
-                ticks.fetch_add(1, Ordering::SeqCst);
-                tokio::task::yield_now().await;
-            }
-        })
-    };
-    (ticks, handle)
-}
-
 /// rfs-pk9w: the mutation adapter must not run its file I/O on the runtime
-/// thread. `load` scans the existing file twice (digest before and after
-/// selection) and `commit` writes the whole body and renames it, each up to
-/// `MAX_ARTIFACT_BYTES`; the read adapter already offloads its equivalents.
+/// thread. `load` digests the existing file twice and `commit` writes the whole
+/// body and renames it, each up to `MAX_ARTIFACT_BYTES`; the read adapter
+/// already offloads its equivalents.
 ///
-/// On a current-thread runtime a cooperative ticker task only advances while
-/// the mutation is parked in `.await`. With the I/O inline the runtime thread
-/// is busy for the whole scan and write, so the ticker is starved and the count
-/// stays at zero for the duration of the call. Offloaded, the thread is free
-/// and the ticker advances thousands of times during the same window. The
-/// bound below sits between those two regimes with orders of magnitude to
-/// spare on each side; it is not a wall-clock budget, because a descheduled
-/// process pauses the ticker and the I/O together.
+/// This is a rendezvous, not a measurement. The armed stage announces entry and
+/// then blocks until released, and the release comes from another task on the
+/// same current-thread runtime, which can only run while the runtime thread is
+/// free. Offloaded, the stage blocks a blocking-pool thread and the release
+/// arrives at once; inline, the stage blocks the runtime thread itself, the
+/// release task never runs, and the watchdog below fails the test instead of
+/// hanging it. Payload size and machine speed do not enter into it.
+///
+/// An earlier version counted ticks of a cooperative task during a 32 MiB
+/// write and required at least 100. That measured how much CPU the runtime
+/// thread happened to get, not where the I/O ran: a loaded 3-4 core macOS
+/// runner gave it 7 ticks with the fix in place (run 36281771884), the same
+/// scheduler-driven failure rfs-1e6h records for wall-clock budgets.
 #[test]
 fn mutation_io_leaves_the_runtime_thread_free() {
-    // The create window is one write of this many bytes; the replace window
-    // is two digest passes over the seeded file plus its rewrite, which is
-    // far longer per byte, so the seed can be smaller and the test stays fast.
-    const CREATE_BYTES: usize = 32 * 1024 * 1024;
-    const REPLACE_BYTES: usize = 4 * 1024 * 1024;
-    const MINIMUM_TICKS: usize = 100;
+    for stage in [MutationStage::Load, MutationStage::Commit] {
+        assert_stage_runs_off_the_runtime_thread(stage);
+    }
+}
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("current-thread runtime");
-    runtime.block_on(async {
-        let workspace = TempDir::new().expect("workspace");
-        let seed = "x".repeat(REPLACE_BYTES);
-        fs::write(workspace.path().join("seeded.txt"), &seed).expect("seed fixture");
-        let engine = engine(workspace.path(), MutationGrants::new(true, true, false)).await;
-        let (ticks, ticker) = spawn_ticker();
-        // Let the ticker take its first turn so the count below measures only
-        // what happens during the mutations.
-        tokio::task::yield_now().await;
+fn assert_stage_runs_off_the_runtime_thread(stage: MutationStage) {
+    const WATCHDOG: Duration = Duration::from_secs(30);
+    let workspace = TempDir::new().expect("workspace");
+    let root = workspace.path().to_owned();
+    fs::write(root.join("seeded.txt"), "seed\n").expect("seed fixture");
+    let (releaser_sender, releaser) = std::sync::mpsc::channel();
+    let (outcome_sender, outcome) = std::sync::mpsc::channel();
 
-        let before_create = ticks.load(Ordering::SeqCst);
-        engine
-            .write(
-                WriteRequest::new(reference("created.txt"), "c".repeat(CREATE_BYTES), None, None)
-                    .expect("create request"),
-                &OperationGuard::new(),
-            )
-            .await
-            .expect("create");
-        let during_create = ticks.load(Ordering::SeqCst) - before_create;
-
-        let before_replace = ticks.load(Ordering::SeqCst);
-        engine
-            .write(
-                WriteRequest::new(
-                    reference("seeded.txt"),
-                    "y".repeat(REPLACE_BYTES),
-                    Some(VersionTag::from_content(seed.as_bytes())),
-                    None,
+    let runtime_thread = thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+        let result = runtime.block_on(async {
+            let source = filesystem_source(&root, MutationGrants::new(true, true, false)).await;
+            let gate = source.arm_test_mutation_stage_gate(stage);
+            releaser_sender
+                .send(gate.releaser())
+                .expect("watchdog receives the releaser");
+            let release = tokio::spawn(gate.release_once_entered());
+            let adapter: Arc<dyn MutationAdapter> = Arc::new(source);
+            let engine = MutationEngine::new(adapter, session());
+            // A replace reaches `load` with existing content; a create of a new
+            // file reaches `commit`. Both pass through `load` and `commit`, and
+            // only the armed stage waits.
+            let (path, expected) = match stage {
+                MutationStage::Load => (
+                    "seeded.txt",
+                    Some(VersionTag::from_content("seed\n".as_bytes())),
+                ),
+                MutationStage::Commit => ("created.txt", None),
+            };
+            let written = engine
+                .write(
+                    WriteRequest::new(reference(path), "written\n".to_owned(), expected, None)
+                        .expect("write request"),
+                    &OperationGuard::new(),
                 )
-                .expect("replace request"),
-                &OperationGuard::new(),
-            )
-            .await
-            .expect("replace");
-        let during_replace = ticks.load(Ordering::SeqCst) - before_replace;
-        ticker.abort();
-
-        assert!(
-            during_create >= MINIMUM_TICKS,
-            "create pinned the runtime thread: the ticker advanced {during_create} times during a {CREATE_BYTES}-byte commit"
-        );
-        assert!(
-            during_replace >= MINIMUM_TICKS,
-            "replace pinned the runtime thread: the ticker advanced {during_replace} times during a {REPLACE_BYTES}-byte load and commit"
-        );
-        assert_eq!(
-            fs::read(workspace.path().join("created.txt"))
-                .expect("created bytes")
-                .len(),
-            CREATE_BYTES
-        );
-        assert_eq!(
-            fs::read(workspace.path().join("seeded.txt")).expect("replaced bytes"),
-            "y".repeat(REPLACE_BYTES).into_bytes()
-        );
+                .await;
+            let released = release.await.expect("release task");
+            (written.map(|_| ()), released)
+        });
+        if outcome_sender.send(result).is_err() {
+            eprintln!("rfs-pk9w fence: the watchdog stopped listening");
+        }
     });
+
+    let releaser = releaser
+        .recv_timeout(WATCHDOG)
+        .expect("the runtime thread armed the stage gate");
+    match outcome.recv_timeout(WATCHDOG) {
+        Ok((written, released)) => {
+            runtime_thread.join().expect("runtime thread");
+            written.unwrap_or_else(|error| panic!("{stage:?} write failed: {error}"));
+            assert!(
+                released,
+                "{stage:?} stage was never reached, so the fence proved nothing"
+            );
+        }
+        Err(_) => {
+            // Free the stage so the runtime thread can finish rather than
+            // outlive the test, then report the defect.
+            if releaser.send(()).is_err() {
+                eprintln!("rfs-pk9w fence: the stage had already released");
+            }
+            if runtime_thread.join().is_err() {
+                eprintln!("rfs-pk9w fence: the runtime thread panicked after release");
+            }
+            panic!(
+                "rfs-pk9w: the {stage:?} stage pinned the runtime thread; a task on the same \
+                 current-thread runtime could not run to release it within {WATCHDOG:?}"
+            );
+        }
+    }
 }

@@ -438,6 +438,86 @@ struct ArmedDeliveryGate {
     control: TestDeliveryGate,
 }
 
+/// A synchronous mutation stage the adapter runs on the blocking pool.
+///
+/// Test builds can hold either stage at a rendezvous to prove it is offloaded:
+/// see [`FilesystemSource::arm_test_mutation_stage_gate`] (rfs-pk9w).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationStage {
+    /// The state load that digests the current content before and after selection.
+    Load,
+    /// The commit that writes the temporary body and renames it into place.
+    Commit,
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Debug)]
+struct ArmedMutationStageGate {
+    stage: MutationStage,
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+/// The test's side of an armed mutation stage gate (rfs-pk9w).
+///
+/// The stage announces that it has entered, then blocks until released. The
+/// test releases it only after seeing it enter, from a task on the same
+/// runtime: that task can run only if the stage is blocking some thread other
+/// than the runtime's own.
+#[cfg(feature = "test-support")]
+#[derive(Debug)]
+pub struct TestMutationStageGate {
+    entered: tokio::sync::oneshot::Receiver<()>,
+    release: std::sync::mpsc::Sender<()>,
+}
+
+#[cfg(feature = "test-support")]
+impl TestMutationStageGate {
+    /// A handle that can release the stage from any thread, for example a
+    /// watchdog that must not leave a blocked stage behind when a test fails.
+    pub fn releaser(&self) -> std::sync::mpsc::Sender<()> {
+        self.release.clone()
+    }
+
+    /// Waits for the stage to enter, then releases it. Returns `false` when the
+    /// stage was never reached because its gate was dropped unused.
+    pub async fn release_once_entered(self) -> bool {
+        if self.entered.await.is_err() {
+            return false;
+        }
+        self.release.send(()).is_ok()
+    }
+}
+
+/// The rendezvous one mutation stage passes through before its first I/O.
+///
+/// Outside test builds this is empty and [`MutationStageGate::pass`] does
+/// nothing. With `test-support` it may carry an armed receiver, and `pass`
+/// blocks the calling thread until the test releases it. It is taken on the
+/// async side and passed through inside the offloaded closure, so a stage that
+/// ran inline would block the runtime thread instead of a blocking-pool thread.
+#[derive(Debug)]
+pub(super) struct MutationStageGate {
+    #[cfg(feature = "test-support")]
+    armed: Option<ArmedMutationStageGate>,
+}
+
+impl MutationStageGate {
+    pub(super) fn pass(self) {
+        #[cfg(feature = "test-support")]
+        if let Some(armed) = self.armed {
+            if armed.entered.send(()).is_err() {
+                eprintln!("test mutation stage gate: nobody is waiting for entry");
+            }
+            // A dropped sender also releases the stage: the test gave up, and
+            // the stage must not hang the process it shares with the test.
+            if armed.release.recv().is_err() {
+                eprintln!("test mutation stage gate: sender dropped, releasing");
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct FilesystemSourceInner {
     launch_view: Arc<WorkspaceView>,
@@ -448,6 +528,8 @@ struct FilesystemSourceInner {
     identity_history: Mutex<HashMap<WorkspaceRootId, String>>,
     #[cfg(feature = "test-support")]
     delivery_gate: RwLock<Option<ArmedDeliveryGate>>,
+    #[cfg(feature = "test-support")]
+    mutation_stage_gate: std::sync::Mutex<Option<ArmedMutationStageGate>>,
 }
 
 /// Read-only Source Adapter for one connection-owned, atomically replaceable root set.
@@ -498,6 +580,8 @@ impl FilesystemSource {
                 identity_history: Mutex::new(identity_history),
                 #[cfg(feature = "test-support")]
                 delivery_gate: RwLock::new(None),
+                #[cfg(feature = "test-support")]
+                mutation_stage_gate: std::sync::Mutex::new(None),
             }),
         })
     }
@@ -519,6 +603,46 @@ impl FilesystemSource {
         self.mutation_authority_guard()
             .await
             .map(|guard| TestAuthorityGuard { _guard: guard })
+    }
+
+    /// Holds the next `stage` of this source's mutation path at a rendezvous
+    /// until the returned sender sends, or is dropped.
+    ///
+    /// The stage waits on whichever thread runs it. Offloaded, that is a
+    /// blocking-pool thread and the runtime stays free to run the task that
+    /// releases it; inline, the runtime thread itself would wait, so a
+    /// current-thread runtime could never reach the release (rfs-pk9w).
+    #[cfg(feature = "test-support")]
+    pub fn arm_test_mutation_stage_gate(&self, stage: MutationStage) -> TestMutationStageGate {
+        let (entered_sender, entered) = tokio::sync::oneshot::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        *lock_stage_gate(&self.inner.mutation_stage_gate) = Some(ArmedMutationStageGate {
+            stage,
+            entered: entered_sender,
+            release: release_receiver,
+        });
+        TestMutationStageGate { entered, release }
+    }
+
+    /// Takes the gate armed for `stage`, if any; an unarmed gate passes at once.
+    pub(super) fn mutation_stage_gate(&self, stage: MutationStage) -> MutationStageGate {
+        #[cfg(feature = "test-support")]
+        {
+            let mut armed = lock_stage_gate(&self.inner.mutation_stage_gate);
+            let taken = match armed.take() {
+                Some(gate) if gate.stage == stage => Some(gate),
+                other => {
+                    *armed = other;
+                    None
+                }
+            };
+            MutationStageGate { armed: taken }
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            let _ = stage;
+            MutationStageGate {}
+        }
     }
 
     #[cfg(feature = "test-support")]
@@ -2871,6 +2995,18 @@ fn resource_io_error(identity: &str, operation: &str, error: io::Error) -> Resou
 
 fn limit_error(message: impl Into<String>) -> ResourceError {
     ResourceError::new(ErrorCategory::LimitExceeded, message)
+}
+
+/// Locks the test stage gate, recovering from poison: a panicking test that
+/// held it must not turn every later mutation in the process into a panic.
+#[cfg(feature = "test-support")]
+fn lock_stage_gate(
+    gate: &std::sync::Mutex<Option<ArmedMutationStageGate>>,
+) -> std::sync::MutexGuard<'_, Option<ArmedMutationStageGate>> {
+    gate.lock().unwrap_or_else(|poisoned| {
+        eprintln!("test mutation stage gate: lock poisoned, recovering");
+        poisoned.into_inner()
+    })
 }
 
 #[cfg(test)]
