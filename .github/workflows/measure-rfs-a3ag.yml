@@ -1,0 +1,37 @@
+# TEMPORARY (rfs-a3ag): runs the report-only maximum Site Mount measurement
+# harness on native Windows and a Linux control, on the same hosted runner
+# class where the original overrun was observed. Removed before PR #35 merges.
+name: measure-rfs-a3ag
+
+on:
+  pull_request:
+
+jobs:
+  measure:
+    name: measure (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - name: Maximum Site Mount distribution, release
+        shell: bash
+        env:
+          RFS_MEASURE: "1"
+        run: >
+          cargo test --release --config profile.release.debug-assertions=false
+          -p resourcefs-sources --all-features --test atlassian_jira_adapter_contract
+          measure_mount_validation -- --ignored --nocapture
+      - name: Maximum Site Mount distribution, debug
+        shell: bash
+        env:
+          RFS_MEASURE: "1"
+        run: >
+          cargo test -p resourcefs-sources --all-features --test atlassian_jira_adapter_contract
+          measure_mount_validation -- --ignored --nocapture
