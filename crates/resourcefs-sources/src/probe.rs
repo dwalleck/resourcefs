@@ -106,6 +106,35 @@ impl NetworkProbe {
         }
         false
     }
+
+    /// Dials every endpoint concurrently and reports whether all of them
+    /// connected.
+    ///
+    /// One probe carries every origin of its source, and the probe run is
+    /// bounded by [`PROBE_RUN_DEADLINE`], not by [`NETWORK_PROBE_TIMEOUT`].
+    /// Dialling the endpoints one after another would let a single blackholed
+    /// origin spend that whole deadline before the next origin was ever tried,
+    /// and the source would report unavailable for a fault that was not its
+    /// own — the exact starvation [`ProbeRunner::run`] avoids one level up
+    /// (rfs-0bqa). Every endpoint therefore gets the whole window at once.
+    ///
+    /// The first refusal ends the probe: the outcome is already decided, and
+    /// dropping the set aborts the endpoints still dialling so no connection
+    /// attempt outlives the probe that asked for it.
+    async fn connect_all(&self) -> bool {
+        let mut dialling = tokio::task::JoinSet::new();
+        for (host, port, policy) in &self.endpoints {
+            let host = host.clone();
+            let (port, policy) = (*port, *policy);
+            dialling.spawn(async move { Self::connect_policed(&host, port, policy).await });
+        }
+        while let Some(joined) = dialling.join_next().await {
+            if !matches!(joined, Ok(true)) {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 #[async_trait::async_trait]
@@ -114,14 +143,9 @@ impl SourceProbe for NetworkProbe {
         let connected = tokio::select! {
             biased;
             () = operation.cancelled() => false,
-            result = timeout(NETWORK_PROBE_TIMEOUT, async {
-                for (host, port, policy) in &self.endpoints {
-                    if !Self::connect_policed(host.as_str(), *port, *policy).await {
-                        return false;
-                    }
-                }
-                true
-            }) => matches!(result, Ok(true)),
+            result = timeout(NETWORK_PROBE_TIMEOUT, self.connect_all()) => {
+                matches!(result, Ok(true))
+            }
         };
         ProbeOutcome::new(
             if connected {
