@@ -31,7 +31,7 @@ use std::{
 use resourcefs_core::{ErrorCategory, HttpCeilings, HttpCeilingsInput, OperationGuard};
 use resourcefs_sources::HttpRequest;
 use tls::{
-    FIXTURE_HOST, FixtureResponse, TlsListener, fixture_allowlist, match_cert, settle,
+    FIXTURE_HOST, FixtureIdentity, FixtureResponse, TlsListener, fixture_allowlist, settle,
     tls_substrate_with_ceilings,
 };
 use url::Url;
@@ -69,7 +69,7 @@ const TRICKLE_DELAY: Duration = Duration::from_millis(50);
 #[tokio::test]
 async fn cancelled_read_abandons_connection() {
     // Control — same body, no cancellation: succeeds, whole body retained.
-    let control = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
+    let control = TlsListener::serve_router(LOOPBACK, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::trickle(TRICKLE_LEN, TRICKLE_CHUNK, TRICKLE_DELAY)
     })
     .await;
@@ -94,7 +94,7 @@ async fn cancelled_read_abandons_connection() {
     );
 
     // Cancelled — the same fixture, cancelled while the body is still arriving.
-    let listener = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(LOOPBACK, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::trickle(TRICKLE_LEN, TRICKLE_CHUNK, TRICKLE_DELAY)
     })
     .await;
@@ -144,7 +144,7 @@ async fn cancelled_read_abandons_connection() {
 /// timed-out row cannot pass merely because the fixture is broken.
 #[tokio::test]
 async fn timeout_returns_source_unavailable() {
-    let control = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
+    let control = TlsListener::serve_router(LOOPBACK, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::trickle(TRICKLE_LEN, TRICKLE_CHUNK, TRICKLE_DELAY)
     })
     .await;
@@ -169,7 +169,7 @@ async fn timeout_returns_source_unavailable() {
     );
 
     // The same body under a timeout it cannot possibly meet.
-    let listener = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(LOOPBACK, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::trickle(TRICKLE_LEN, TRICKLE_CHUNK, TRICKLE_DELAY)
     })
     .await;
@@ -201,7 +201,7 @@ async fn retained_body_never_exceeds_the_ceiling() {
     const CEILING: usize = 64 * 1024;
     const BODY: usize = 1024 * 1024;
 
-    let listener = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(LOOPBACK, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::sized(BODY)
     })
     .await;
@@ -240,7 +240,7 @@ async fn retained_body_never_exceeds_the_ceiling() {
 /// C16 — cancelling before the call opens no socket at all.
 #[tokio::test]
 async fn cancellation_before_egress_opens_no_socket() {
-    let listener = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(LOOPBACK, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::sized(1024)
     })
     .await;
@@ -279,7 +279,7 @@ async fn odd_body_framings_stay_bounded() {
     const CEILING: usize = 32 * 1024;
 
     // Declares far more than it sends; the connection close ends the body.
-    let short = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
+    let short = TlsListener::serve_router(LOOPBACK, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::short_count(4 * 1024 * 1024, 8 * 1024)
     })
     .await;
@@ -309,7 +309,7 @@ async fn odd_body_framings_stay_bounded() {
     }
 
     // No declared length: the body is delimited by the connection closing.
-    let undeclared = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
+    let undeclared = TlsListener::serve_router(LOOPBACK, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::undeclared(256 * 1024)
     })
     .await;
@@ -344,10 +344,11 @@ async fn fetch_ceiling_boundary() {
     const CEILING: usize = 8 * 1024;
 
     for (size, expect_ok) in [(CEILING, true), (CEILING + 1, false)] {
-        let listener = TlsListener::serve_router(LOOPBACK, 0, match_cert(), move |_path| {
-            FixtureResponse::sized(size)
-        })
-        .await;
+        let listener =
+            TlsListener::serve_router(LOOPBACK, 0, FixtureIdentity::Match, move |_path| {
+                FixtureResponse::sized(size)
+            })
+            .await;
         let port = listener.address.port();
         let substrate = tls_substrate_with_ceilings(
             fixture_allowlist(port, true),
@@ -393,7 +394,7 @@ async fn over_ceiling_never_extracts() {
     const CEILING: usize = 4 * 1024;
 
     // Control: an in-ceiling document must move the counter.
-    let listener = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(LOOPBACK, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::Body("<html><body><p>ok</p></body></html>".to_owned())
     })
     .await;
@@ -416,7 +417,7 @@ async fn over_ceiling_never_extracts() {
     settle().await;
 
     // The claim: an over-ceiling document must not reach the extractor.
-    let listener = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(LOOPBACK, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::sized(CEILING * 4)
     })
     .await;
@@ -455,26 +456,27 @@ async fn over_ceiling_never_extracts() {
 /// must succeed, so a refusal below cannot be a fixture that never worked.
 #[tokio::test]
 async fn reader_mode_refuses_non_html_inputs() {
-    let listener = TlsListener::serve_router(LOOPBACK, 0, match_cert(), |path| match path {
-        "/pdf" => FixtureResponse::Typed {
-            content_type: "application/pdf".to_owned(),
-            body: b"%PDF-1.7 binary".to_vec(),
-        },
-        "/latin1" => FixtureResponse::Typed {
-            content_type: "text/html; charset=ISO-8859-1".to_owned(),
-            body: b"<p>caf\xe9</p>".to_vec(),
-        },
-        // Declares UTF-8 and is not: the bytes themselves are the last check.
-        "/invalid" => FixtureResponse::Typed {
-            content_type: "text/html; charset=utf-8".to_owned(),
-            body: b"<p>\xff\xfe</p>".to_vec(),
-        },
-        _ => FixtureResponse::Typed {
-            content_type: "text/html; charset=UTF-8".to_owned(),
-            body: b"<p>Fine</p>".to_vec(),
-        },
-    })
-    .await;
+    let listener =
+        TlsListener::serve_router(LOOPBACK, 0, FixtureIdentity::Match, |path| match path {
+            "/pdf" => FixtureResponse::Typed {
+                content_type: "application/pdf".to_owned(),
+                body: b"%PDF-1.7 binary".to_vec(),
+            },
+            "/latin1" => FixtureResponse::Typed {
+                content_type: "text/html; charset=ISO-8859-1".to_owned(),
+                body: b"<p>caf\xe9</p>".to_vec(),
+            },
+            // Declares UTF-8 and is not: the bytes themselves are the last check.
+            "/invalid" => FixtureResponse::Typed {
+                content_type: "text/html; charset=utf-8".to_owned(),
+                body: b"<p>\xff\xfe</p>".to_vec(),
+            },
+            _ => FixtureResponse::Typed {
+                content_type: "text/html; charset=UTF-8".to_owned(),
+                body: b"<p>Fine</p>".to_vec(),
+            },
+        })
+        .await;
     let port = listener.address.port();
     let substrate = tls_substrate_with_ceilings(
         fixture_allowlist(port, true),

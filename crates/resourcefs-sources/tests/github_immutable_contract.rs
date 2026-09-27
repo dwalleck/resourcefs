@@ -179,7 +179,7 @@ async fn fixture_with_limits(
     let listener = TlsListener::serve_request_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         0,
-        tls::match_cert(),
+        tls::FixtureIdentity::Match,
         move |request| {
             let host = format!("{}{api_prefix}", request.host());
             let mut body = match request.target().strip_prefix(api_prefix).expect("configured API prefix") {

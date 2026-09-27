@@ -15,7 +15,9 @@ use resourcefs_core::{ErrorCategory, HttpCeilings, OperationGuard};
 use url::Url;
 
 use super::{HttpReadBudget, HttpRequest, HttpSubstrate, LogicalDeadline};
-use tls::{FIXTURE_HOST, FixtureResponse, TlsListener, fixture_allowlist, fixture_ca, match_cert};
+use tls::{
+    FIXTURE_HOST, FixtureIdentity, FixtureResponse, TlsListener, fixture_allowlist, fixture_ca,
+};
 
 fn loopback() -> IpAddr {
     IpAddr::V4(Ipv4Addr::LOCALHOST)
@@ -56,7 +58,7 @@ fn unavailable(delay: &str) -> FixtureResponse {
 async fn get_replay_preserves_headers_and_shared_retry_is_spent_across_fetches() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&attempts);
-    let listener = TlsListener::serve_router(loopback(), 0, match_cert(), move |_| {
+    let listener = TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, move |_| {
         if counted.fetch_add(1, Ordering::SeqCst) == 1 {
             FixtureResponse::Body("retried".to_owned())
         } else {
@@ -103,7 +105,8 @@ async fn get_replay_preserves_headers_and_shared_retry_is_spent_across_fetches()
 #[tokio::test]
 async fn ordinary_post_and_patch_never_replay_and_preserve_encoded_body() {
     let listener =
-        TlsListener::serve_router(loopback(), 0, match_cert(), |_| unavailable("0")).await;
+        TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, |_| unavailable("0"))
+            .await;
     let substrate = substrate(&listener);
     let operation = OperationGuard::new();
     let read = substrate.begin_read(&operation).expect("logical read");
@@ -141,7 +144,8 @@ async fn ordinary_post_and_patch_never_replay_and_preserve_encoded_body() {
 #[tokio::test]
 async fn physical_attempt_ceiling_counts_retry_and_refuses_eleventh_request() {
     let listener =
-        TlsListener::serve_router(loopback(), 0, match_cert(), |_| unavailable("0")).await;
+        TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, |_| unavailable("0"))
+            .await;
     let substrate = substrate(&listener);
     let operation = OperationGuard::new();
     let read = substrate.begin_read(&operation).expect("logical read");
@@ -176,7 +180,8 @@ async fn physical_attempt_ceiling_counts_retry_and_refuses_eleventh_request() {
 #[tokio::test]
 async fn retry_wait_cancellation_and_over_deadline_delay_send_no_followup() {
     let listener =
-        TlsListener::serve_router(loopback(), 0, match_cert(), |_| unavailable("10")).await;
+        TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, |_| unavailable("10"))
+            .await;
     let mut substrate = substrate(&listener);
     let waiting = Arc::new(tokio::sync::Notify::new());
     let signal = Arc::clone(&waiting);
@@ -220,7 +225,7 @@ async fn retry_wait_cancellation_and_over_deadline_delay_send_no_followup() {
 async fn read_only_post_replays_exact_bytes_and_headers_once_across_pages() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&attempts);
-    let listener = TlsListener::serve_router(loopback(), 0, match_cert(), move |_| {
+    let listener = TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, move |_| {
         if counted.fetch_add(1, Ordering::SeqCst) == 1 {
             FixtureResponse::Body("retried".to_owned())
         } else {
@@ -282,7 +287,8 @@ async fn read_only_post_replays_exact_bytes_and_headers_once_across_pages() {
 #[tokio::test]
 async fn read_only_post_physical_ceiling_counts_retry() {
     let listener =
-        TlsListener::serve_router(loopback(), 0, match_cert(), |_| unavailable("0")).await;
+        TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, |_| unavailable("0"))
+            .await;
     let substrate = substrate(&listener);
     let operation = OperationGuard::new();
     let read = substrate.begin_read(&operation).expect("logical read");
@@ -313,7 +319,7 @@ async fn read_only_post_physical_ceiling_counts_retry() {
 
 #[tokio::test]
 async fn original_deadline_bounds_all_post_and_patch_before_and_during_egress() {
-    let listener = TlsListener::serve_router(loopback(), 0, match_cert(), |path| {
+    let listener = TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, |path| {
         if path == "/control" {
             FixtureResponse::Body("reachable".to_owned())
         } else {
@@ -371,7 +377,8 @@ async fn original_deadline_bounds_all_post_and_patch_before_and_during_egress() 
 #[tokio::test]
 async fn read_only_post_wait_obeys_cancellation_and_remaining_deadline() {
     let listener =
-        TlsListener::serve_router(loopback(), 0, match_cert(), |_| unavailable("10")).await;
+        TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, |_| unavailable("10"))
+            .await;
     let mut substrate = substrate(&listener);
     let waiting = Arc::new(tokio::sync::Notify::new());
     let signal = Arc::clone(&waiting);
@@ -432,7 +439,7 @@ async fn read_only_post_wait_obeys_cancellation_and_remaining_deadline() {
 #[tokio::test]
 async fn read_only_body_ceiling_is_independent_of_mutations_and_debug_is_redacted() {
     const CEILING: usize = 384 * 1024;
-    let listener = TlsListener::serve(loopback(), 0, match_cert(), "accepted").await;
+    let listener = TlsListener::serve(loopback(), 0, FixtureIdentity::Match, "accepted").await;
     let substrate = substrate(&listener);
     let operation = OperationGuard::new();
     let read = substrate.begin_read(&operation).expect("logical read");
@@ -503,16 +510,17 @@ fn read_only_replay_shares_384kib_payload_across_10000_copies() {
 
 #[tokio::test]
 async fn ordinary_mutations_never_replay_without_budget_on_retryable_status_or_disconnect() {
-    let listener = TlsListener::serve_router(loopback(), 0, match_cert(), |path| match path {
-        "/abort" => FixtureResponse::Abort,
-        "/429" => FixtureResponse::Response {
-            status: "429 Too Many Requests",
-            headers: vec![("Retry-After".to_owned(), "0".to_owned())],
-            body: b"busy".to_vec(),
-        },
-        _ => unavailable("0"),
-    })
-    .await;
+    let listener =
+        TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, |path| match path {
+            "/abort" => FixtureResponse::Abort,
+            "/429" => FixtureResponse::Response {
+                status: "429 Too Many Requests",
+                headers: vec![("Retry-After".to_owned(), "0".to_owned())],
+                body: b"busy".to_vec(),
+            },
+            _ => unavailable("0"),
+        })
+        .await;
     let substrate = substrate(&listener);
     let operation = OperationGuard::new();
     let read = substrate.begin_read(&operation).expect("logical read");
@@ -547,17 +555,25 @@ async fn ordinary_mutations_never_replay_without_budget_on_retryable_status_or_d
 async fn read_only_post_requires_valid_retry_after_and_replays_transport_failure() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&attempts);
-    let listener = TlsListener::serve_router(loopback(), 0, match_cert(), move |path| match path {
-        "/missing" => FixtureResponse::Response {
-            status: "503 Service Unavailable",
-            headers: Vec::new(),
-            body: b"busy".to_vec(),
-        },
-        "/malformed" => unavailable("not-a-delay"),
-        "/transport" if counted.fetch_add(1, Ordering::SeqCst) == 0 => FixtureResponse::Abort,
-        _ => FixtureResponse::Body("retried".to_owned()),
-    })
-    .await;
+    let listener =
+        TlsListener::serve_router(
+            loopback(),
+            0,
+            FixtureIdentity::Match,
+            move |path| match path {
+                "/missing" => FixtureResponse::Response {
+                    status: "503 Service Unavailable",
+                    headers: Vec::new(),
+                    body: b"busy".to_vec(),
+                },
+                "/malformed" => unavailable("not-a-delay"),
+                "/transport" if counted.fetch_add(1, Ordering::SeqCst) == 0 => {
+                    FixtureResponse::Abort
+                }
+                _ => FixtureResponse::Body("retried".to_owned()),
+            },
+        )
+        .await;
     let substrate = substrate(&listener);
     let operation = OperationGuard::new();
     let read = substrate.begin_read(&operation).expect("logical read");

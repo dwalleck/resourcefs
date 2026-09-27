@@ -295,7 +295,7 @@ async fn offsite_redirect_never_requested() {
     let listener = tls::TlsListener::serve_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         0,
-        tls::match_cert(),
+        tls::FixtureIdentity::Match,
         |path| {
             if path == "/docs/start" {
                 tls::FixtureResponse::Redirect("/secret".to_owned())
@@ -359,7 +359,7 @@ async fn redirect_with_userinfo_never_requested() {
     let listener = tls::TlsListener::serve_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         port,
-        tls::match_cert(),
+        tls::FixtureIdentity::Match,
         move |path| {
             if path == "/start" {
                 tls::FixtureResponse::Redirect(location.clone())
@@ -405,7 +405,7 @@ async fn redirect_depth_boundary() {
     let listener = tls::TlsListener::serve_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         0,
-        tls::match_cert(),
+        tls::FixtureIdentity::Match,
         |path| {
             let step = |prefix: &str, last: usize| -> Option<tls::FixtureResponse> {
                 let index: usize = path.strip_prefix(prefix)?.parse().ok()?;
@@ -495,7 +495,7 @@ async fn redirect_to_denied_address_is_refused() {
     let listener = tls::TlsListener::serve_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         redirect_port,
-        tls::match_cert(),
+        tls::FixtureIdentity::Match,
         move |path: &str| {
             if path == "/start" {
                 tls::FixtureResponse::Redirect(format!(
@@ -561,8 +561,13 @@ async fn redirect_to_denied_address_is_refused() {
 /// how four earlier fixtures in this change passed while proving nothing.
 #[tokio::test]
 async fn ip_literal_origin_is_authorized_before_connect() {
-    let granted_listener =
-        tls::TlsListener::serve(IpAddr::V4(Ipv4Addr::LOCALHOST), 0, tls::match_cert(), "ok").await;
+    let granted_listener = tls::TlsListener::serve(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+        tls::FixtureIdentity::Match,
+        "ok",
+    )
+    .await;
     let granted_port = granted_listener.address.port();
     let granted = literal_substrate(granted_port, true);
     let granted_url = Url::parse(&format!("https://127.0.0.1:{granted_port}/doc"))
@@ -577,8 +582,13 @@ async fn ip_literal_origin_is_authorized_before_connect() {
          denial row below proves nothing"
     );
 
-    let denied_listener =
-        tls::TlsListener::serve(IpAddr::V4(Ipv4Addr::LOCALHOST), 0, tls::match_cert(), "ok").await;
+    let denied_listener = tls::TlsListener::serve(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+        tls::FixtureIdentity::Match,
+        "ok",
+    )
+    .await;
     let denied_port = denied_listener.address.port();
     let denied = literal_substrate(denied_port, false);
     let denied_url = Url::parse(&format!("https://127.0.0.1:{denied_port}/doc"))
@@ -691,7 +701,7 @@ async fn encoded_url_reaches_wire_unchanged() {
     let server = tls::TlsListener::serve(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         port,
-        tls::match_cert(),
+        tls::FixtureIdentity::Match,
         "<html><body><p>ok</p></body></html>",
     )
     .await;
@@ -744,7 +754,7 @@ async fn https_reader_mode_reports_markdown_for_complete_and_selected() {
     let _server = tls::TlsListener::serve(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         port,
-        tls::match_cert(),
+        tls::FixtureIdentity::Match,
         "<html><body><h1>Title</h1><p>Body text.</p></body></html>",
     )
     .await;

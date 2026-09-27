@@ -13,9 +13,10 @@
 //!
 //! Two leaves chain to the **same** CA and differ only in their subject name:
 //!
-//! - [`match_cert`] covers [`FIXTURE_HOST`] — the name the client requests.
-//! - [`wrong_cert`] covers `mismatch.invalid` — a name the client never asks
-//!   for.
+//! - [`FixtureIdentity::Match`] covers [`FIXTURE_HOST`] — the name the client
+//!   requests.
+//! - [`FixtureIdentity::Wrong`] covers `mismatch.invalid` — a name the client
+//!   never asks for.
 //!
 //! Sharing one CA is the point. If the mismatched leaf were issued by an
 //! untrusted issuer, a rejection would prove only that the client checks
@@ -41,16 +42,12 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
-use tokio_rustls::{
-    TlsAcceptor,
-    rustls::{
-        ServerConfig,
-        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-    },
-};
+use tokio_rustls::TlsAcceptor;
 
 #[path = "certificates.rs"]
 mod certificates;
+#[path = "http_wire.rs"]
+mod http_wire;
 
 use certificates::{TestIdentity, issue_test_certificates};
 
@@ -65,14 +62,26 @@ pub fn fixture_ca() -> &'static [u8] {
     &fixture_certificates().0
 }
 
-/// Leaf whose subject name matches [`FIXTURE_HOST`].
-pub fn match_cert() -> &'static [u8] {
-    &fixture_certificates().1[0].certificate
+/// Which fixture leaf a listener presents. Both chain to [`fixture_ca`].
+///
+/// A listener takes this rather than raw certificate bytes so its certificate
+/// and private key always come from the same issued identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixtureIdentity {
+    /// Leaf whose subject name matches [`FIXTURE_HOST`].
+    Match,
+    /// Leaf for `mismatch.invalid`, trusted but wrong for [`FIXTURE_HOST`].
+    Wrong,
 }
 
-/// Leaf for `mismatch.invalid`, trusted but wrong for [`FIXTURE_HOST`].
-pub fn wrong_cert() -> &'static [u8] {
-    &fixture_certificates().1[1].certificate
+impl FixtureIdentity {
+    fn identity(self) -> &'static TestIdentity {
+        let identities = &fixture_certificates().1;
+        match self {
+            Self::Match => &identities[0],
+            Self::Wrong => &identities[1],
+        }
+    }
 }
 
 /// The host every fixture request names. Never resolved by a system resolver:
@@ -176,47 +185,42 @@ impl FixtureResponse {
     /// [`write_response`] so each write can be counted and paced.
     fn render_head(&self) -> String {
         match self {
-            Self::Body(body) | Self::DelayedBody { body, .. } => format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            ),
-            Self::Redirect(location) => format!(
-                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            ),
+            Self::Body(body) | Self::DelayedBody { body, .. } => {
+                let mut head = http_wire::response_head(
+                    "200 OK",
+                    &[("Content-Type", "text/html")],
+                    Some(body.len()),
+                );
+                head.push_str(body);
+                head
+            }
+            Self::Redirect(location) => {
+                http_wire::response_head("302 Found", &[("Location", location)], Some(0))
+            }
             // Head only: the body may be arbitrary bytes (the invalid-UTF-8
             // row depends on that), so `write_response` writes it separately
             // rather than forcing it through a `String`.
-            Self::Typed { content_type, body } => format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
+            Self::Typed { content_type, body } => http_wire::response_head(
+                "200 OK",
+                &[("Content-Type", content_type)],
+                Some(body.len()),
             ),
             Self::Response {
                 status,
                 headers,
                 body,
             } => {
-                let mut rendered = format!("HTTP/1.1 {status}\r\n");
-                for (name, value) in headers {
-                    rendered.push_str(name);
-                    rendered.push_str(": ");
-                    rendered.push_str(value);
-                    rendered.push_str("\r\n");
-                }
-                rendered.push_str(&format!(
-                    "Content-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                ));
-                rendered
+                let headers: Vec<(&str, &str)> = headers
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str()))
+                    .collect();
+                http_wire::response_head(status, &headers, Some(body.len()))
             }
             Self::Abort => String::new(),
-            Self::Stream {
-                declared: Some(declared),
-                ..
-            } => format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {declared}\r\nConnection: close\r\n\r\n"
-            ),
-            Self::Stream { declared: None, .. } => {
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n".to_owned()
+            // `declared` may disagree with what is sent (the short-count row)
+            // or be absent (the connection-delimited row).
+            Self::Stream { declared, .. } => {
+                http_wire::response_head("200 OK", &[("Content-Type", "text/html")], *declared)
             }
         }
     }
@@ -234,10 +238,12 @@ where
 {
     const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024 + 64 * 1024;
     let mut received = Vec::new();
+    let mut scanned = 0;
     let head_end = loop {
-        if let Some(position) = received.windows(4).position(|window| window == b"\r\n\r\n") {
-            break position + 4;
+        if let Some(end) = http_wire::head_end(&received, scanned) {
+            break end;
         }
+        scanned = received.len();
         if received.len() >= MAX_REQUEST_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -256,11 +262,16 @@ where
     };
     let head = String::from_utf8_lossy(&received[..head_end]).into_owned();
     let line = head.lines().next().unwrap_or("").to_owned();
-    let content_length = head
-        .lines()
-        .filter_map(|line| line.split_once(':'))
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-        .map(|(_, value)| value.trim().parse::<usize>())
+    // Rejected here, before any router sees it, so `FixtureRequest::host` can
+    // rely on it; `profile_tls.rs` rejects the same request the same way.
+    if http_wire::header(&head, "host").is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "request has no Host header",
+        ));
+    }
+    let content_length = http_wire::header(&head, "content-length")
+        .map(str::parse::<usize>)
         .transpose()
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid Content-Length"))?
         .unwrap_or(0);
@@ -314,14 +325,8 @@ impl FixtureRequest {
 
     /// The `Host` header value, which every fixture request carries.
     pub fn host(&self) -> &str {
-        self.head
-            .lines()
-            .find_map(|line| {
-                line.split_once(':')
-                    .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-                    .map(|(_, value)| value.trim())
-            })
-            .expect("Host header")
+        http_wire::header(&self.head, "host")
+            .expect("read_request rejects a request without a Host header")
     }
 
     pub fn body(&self) -> &[u8] {
@@ -403,14 +408,19 @@ pub struct TlsListener {
 }
 
 impl TlsListener {
-    /// Serves `response_body` over TLS using `cert`/`key`, on `ip`.
+    /// Serves `response_body` over TLS presenting `identity`, on `ip`.
     ///
     /// `port` may be reused so two listeners differ only by address — the
     /// client substitutes the URL's port into whatever the resolver returns,
     /// so the address is the only discriminator available to a fixture.
-    pub async fn serve(ip: IpAddr, port: u16, cert: &'static [u8], response_body: &str) -> Self {
+    pub async fn serve(
+        ip: IpAddr,
+        port: u16,
+        identity: FixtureIdentity,
+        response_body: &str,
+    ) -> Self {
         let body = response_body.to_owned();
-        Self::serve_router(ip, port, cert, move |_path| {
+        Self::serve_router(ip, port, identity, move |_path| {
             FixtureResponse::Body(body.clone())
         })
         .await
@@ -422,35 +432,30 @@ impl TlsListener {
     /// (the middle field of the request line) and returns the response to
     /// send. This is what lets one listener host a redirect chain, answering
     /// `/hop1` with a hop to `/hop2` and terminating with a body.
-    pub async fn serve_router<R>(ip: IpAddr, port: u16, cert: &'static [u8], router: R) -> Self
+    pub async fn serve_router<R>(
+        ip: IpAddr,
+        port: u16,
+        identity: FixtureIdentity,
+        router: R,
+    ) -> Self
     where
         R: Fn(&str) -> FixtureResponse + Send + Sync + 'static,
     {
-        Self::serve_request_router(ip, port, cert, move |request| router(request.target())).await
+        Self::serve_request_router(ip, port, identity, move |request| router(request.target()))
+            .await
     }
 
     /// Serves a response chosen from the complete request method/target/body.
     pub async fn serve_request_router<R>(
         ip: IpAddr,
         port: u16,
-        cert: &'static [u8],
+        identity: FixtureIdentity,
         router: R,
     ) -> Self
     where
         R: Fn(&FixtureRequest) -> FixtureResponse + Send + Sync + 'static,
     {
-        let key: &[u8] = if cert == match_cert() {
-            &fixture_certificates().1[0].private_key
-        } else {
-            &fixture_certificates().1[1].private_key
-        };
-        let config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![CertificateDer::from(cert)],
-                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
-            )
-            .expect("fixture certificate and key form a valid server config");
+        let config = identity.identity().server_config();
         let acceptor = TlsAcceptor::from(Arc::new(config));
 
         let listener = TcpListener::bind(SocketAddr::new(ip, port))

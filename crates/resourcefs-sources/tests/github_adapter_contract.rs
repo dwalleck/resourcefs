@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tempfile::TempDir;
-use tls::{FIXTURE_HOST, FixtureResponse, TlsListener, fixture_allowlist, match_cert, settle};
+use tls::{FIXTURE_HOST, FixtureIdentity, FixtureResponse, TlsListener, fixture_allowlist, settle};
 
 const ISSUE: &str = r#"{
   "id":9001,"number":42,"state":"open","title":"Parser bug","body":null,
@@ -159,7 +159,7 @@ where
     R: Fn(&str) -> FixtureResponse + Send + Sync + 'static,
 {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_router(loopback, 0, match_cert(), router).await;
+    let listener = TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, router).await;
     let port = listener.address.port();
     let config = GithubConfig::new(
         "github",
@@ -304,8 +304,7 @@ async fn pr_projection_kinds_remain_distinct_and_patch_absence_is_explicit() {
             r#"{"id":303,"body":"inline","user":{"login":"reviewer","id":3},"path":"src/lib.rs","diff_hunk":"@@ -1 +1 @@","created_at":"2026-08-20T04:00:00Z","updated_at":"2026-08-20T04:00:00Z","pull_request_review_id":null,"pull_request_url":"https://api.github.example/repos/owner/repo/pulls/7"}"#,
         ),
         "/repos/owner/repo/pulls/7/files?per_page=100&page=1" => response(FILES),
-        other => panic!("unexpected route {other}"),
-    })
+        other => panic!("unexpected route {other}")})
     .await;
 
     let aggregate = source
@@ -1272,8 +1271,7 @@ async fn pagination_retries_share_the_original_logical_deadline() {
                 )],
                 b"[]".to_vec(),
             ),
-            _ => response("[]"),
-        },
+            _ => response("[]")},
         ceilings,
         std::time::SystemTime::now(),
         Duration::ZERO,
@@ -1459,8 +1457,7 @@ async fn diff_file_indices_resolve_on_their_listing_page() {
         "/repos/owner/repo/pulls/7/files?per_page=100&page=2" => response(
             r#"[{"filename":"file-101.rs","status":"added","patch":"@@ 101 @@"}]"#,
         ),
-        other => panic!("unexpected route {other}"),
-    })
+        other => panic!("unexpected route {other}")})
     .await;
     let forty_fifth = source
         .read(
@@ -1519,8 +1516,7 @@ async fn object_kinds_and_comment_parents_are_verified() {
         "/repos/owner/repo/pulls/comments/303" => response(
             r#"{"id":303,"body":"inline","user":null,"path":"src/lib.rs","diff_hunk":"@@ -1 +1 @@","created_at":"2026-08-20T04:00:00Z","updated_at":"2026-08-20T04:00:00Z","pull_request_review_id":null,"pull_request_url":"https://api.github.example/repos/owner/repo/pulls/7"}"#,
         ),
-        other => panic!("unexpected route {other}"),
-    })
+        other => panic!("unexpected route {other}")})
     .await;
     for (reference, why) in [
         ("issue://owner/repo/17", "a pull request is not an issue"),

@@ -260,7 +260,7 @@ fn jira_query_stdio_test_host() {
                 let listener = tls::TlsListener::serve_request_router(
                     IpAddr::V4(Ipv4Addr::LOCALHOST),
                     0,
-                    tls::match_cert(),
+                    tls::FixtureIdentity::Match,
                     move |request| {
                         let mut response = fixture_response(request);
                         if let tls::FixtureResponse::Response { body, .. } = &mut response {

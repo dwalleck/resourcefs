@@ -17,16 +17,12 @@ use tokio::{
     net::TcpListener,
     sync::oneshot,
 };
-use tokio_rustls::{
-    TlsAcceptor,
-    rustls::{
-        ServerConfig,
-        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-    },
-};
+use tokio_rustls::TlsAcceptor;
 
 #[path = "../../../resourcefs-sources/tests/support/certificates.rs"]
 mod certificates;
+#[path = "../../../resourcefs-sources/tests/support/http_wire.rs"]
+mod http_wire;
 
 static CERTIFICATES: LazyLock<(Vec<u8>, [certificates::TestIdentity; 1])> =
     LazyLock::new(|| certificates::issue_test_certificates([&["localhost", "127.0.0.1", "::1"]]));
@@ -115,7 +111,7 @@ impl ProfileTlsServer {
                     .expect("profile TLS listener");
                 let address = listener.local_addr().expect("profile TLS address");
                 ready_sender.send(address).expect("publish TLS address");
-                let acceptor = TlsAcceptor::from(Arc::new(server_config()));
+                let acceptor = TlsAcceptor::from(Arc::new(CERTIFICATES.1[0].server_config()));
                 tokio::pin!(shutdown_receiver);
 
                 loop {
@@ -197,17 +193,6 @@ impl Drop for ProfileTlsServer {
     }
 }
 
-fn server_config() -> ServerConfig {
-    let identity = &CERTIFICATES.1[0];
-    ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![CertificateDer::from(identity.certificate.clone())],
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.private_key.clone())),
-        )
-        .expect("profile TLS certificate and key")
-}
-
 async fn serve<S>(
     stream: S,
     acceptor: TlsAcceptor,
@@ -235,7 +220,7 @@ where
 {
     let mut head = Vec::new();
     let mut chunk = [0_u8; 1024];
-    loop {
+    let head_end = loop {
         let read = match tls.read(&mut chunk).await {
             Ok(read) => read,
             Err(error)
@@ -252,9 +237,10 @@ where
         if read == 0 {
             return Ok(());
         }
+        let scanned = head.len();
         head.extend_from_slice(&chunk[..read]);
-        if head.windows(4).any(|window| window == b"\r\n\r\n") {
-            break;
+        if let Some(end) = http_wire::head_end(&head, scanned) {
+            break end;
         }
         if head.len() > MAX_REQUEST_HEAD {
             return Err(io::Error::new(
@@ -262,18 +248,22 @@ where
                 "profile TLS request head exceeded fixture limit",
             ));
         }
-    }
-    let request = std::str::from_utf8(&head)
+    };
+    // Only the head: bytes a client sent after the blank line are not headers
+    // and need not be UTF-8.
+    let request = std::str::from_utf8(&head[..head_end])
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "request head was not UTF-8"))?;
-    let mut lines = request.lines();
-    let mut request_line = lines.next().unwrap_or("").split_whitespace();
+    let mut request_line = request.lines().next().unwrap_or("").split_whitespace();
     let method = request_line.next().unwrap_or("");
     let target = request_line
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing request target"))?;
-    let headers = lines
-        .filter_map(|line| line.split_once(':'))
-        .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
+    // Rejected before the request is recorded, as `tls.rs` rejects it before
+    // routing. Native identity operands name this actual listener.
+    let host = http_wire::header(request, "host")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "request has no Host header"))?;
+    let headers = http_wire::headers(request)
+        .map(|(name, value)| (name.to_ascii_lowercase(), value.to_owned()))
         .collect();
     let sequence = {
         let mut log = requests.lock().expect("profile TLS request log");
@@ -319,27 +309,19 @@ where
             .unwrap_or_default(),
         Responses::Html(_) | Responses::BlockedNative { .. } => Vec::new(),
     };
-    // Native identity operands name this actual listener, not a guessed API.
-    let host = request
-        .lines()
-        .find_map(|line| {
-            line.split_once(':')
-                .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-                .map(|(_, value)| value.trim())
-        })
-        .unwrap_or("");
-    let body = body.replace("@API@", &format!("https://{host}/"));
-    let mut response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n",
-        body.len()
+    let api = format!("https://{host}/");
+    let body = body.replace("@API@", &api);
+    let response_headers: Vec<(String, String)> = response_headers
+        .into_iter()
+        .map(|(name, value)| (name, value.replace("@API@", &api)))
+        .collect();
+    let mut fields = vec![("Content-Type", content_type)];
+    fields.extend(
+        response_headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
     );
-    for (name, value) in response_headers {
-        response.push_str(&format!(
-            "{name}: {}\r\n",
-            value.replace("@API@", &format!("https://{host}/"))
-        ));
-    }
-    response.push_str("Connection: close\r\n\r\n");
+    let response = http_wire::response_head(status, &fields, Some(body.len()));
     let sent = async {
         tls.write_all(response.as_bytes()).await?;
         tls.write_all(body.as_bytes()).await?;
@@ -371,7 +353,10 @@ mod tests {
     use tokio::io::{DuplexStream, ReadBuf, duplex};
     use tokio_rustls::{
         TlsConnector,
-        rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
+        rustls::{
+            ClientConfig, RootCertStore,
+            pki_types::{CertificateDer, ServerName},
+        },
     };
 
     enum Fault {
@@ -469,7 +454,7 @@ mod tests {
                     .with_root_certificates(roots)
                     .with_no_client_auth(),
             ));
-            let acceptor = TlsAcceptor::from(Arc::new(server_config()));
+            let acceptor = TlsAcceptor::from(Arc::new(CERTIFICATES.1[0].server_config()));
             // Both sides must finish successfully before any fault can fire.
             let (client, server) = tokio::join!(
                 connector.connect(
@@ -636,5 +621,39 @@ mod tests {
         );
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].path, "/");
+    }
+
+    // `http_wire.rs` is included by both TLS fixtures; its own rows live here,
+    // in the one binary that includes this file, so they run once.
+    #[test]
+    fn head_end_finds_a_terminator_split_across_reads() {
+        let request = b"GET / HTTP/1.1\r\nHost: a\r\n\r\nbody";
+        let end = request.len() - 4;
+        assert_eq!(super::http_wire::head_end(request, 0), Some(end));
+        // The previous read ended two bytes into the terminator.
+        assert_eq!(super::http_wire::head_end(request, end - 2), Some(end));
+        assert_eq!(super::http_wire::head_end(b"GET / HTTP/1.1\r\n", 0), None);
+    }
+
+    #[test]
+    fn header_lookup_and_header_list_agree() {
+        let head = "GET http://x:1/ HTTP/1.1\r\nHost:  tls.invalid \r\nX-Y: 1\r\n\r\n";
+        let listed: Vec<_> = super::http_wire::headers(head).collect();
+        assert_eq!(listed, [("Host", "tls.invalid"), ("X-Y", "1")]);
+        assert_eq!(super::http_wire::header(head, "host"), Some("tls.invalid"));
+        // The request line's colon is not a header.
+        assert_eq!(super::http_wire::header(head, "get http"), None);
+    }
+
+    #[test]
+    fn response_head_omits_an_absent_length() {
+        assert_eq!(
+            super::http_wire::response_head("200 OK", &[("A", "b")], None),
+            "HTTP/1.1 200 OK\r\nA: b\r\nConnection: close\r\n\r\n"
+        );
+        assert_eq!(
+            super::http_wire::response_head("302 Found", &[], Some(0)),
+            "HTTP/1.1 302 Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
     }
 }

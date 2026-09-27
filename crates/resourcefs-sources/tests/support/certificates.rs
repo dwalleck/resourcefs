@@ -12,6 +12,24 @@ pub struct TestIdentity {
     pub private_key: Vec<u8>,
 }
 
+impl TestIdentity {
+    /// A rustls server configuration presenting this leaf, with no client auth.
+    ///
+    /// Takes `&'static self` so the DER bytes are borrowed rather than copied;
+    /// both fixtures hold their identities in a `static`.
+    pub fn server_config(&'static self) -> tokio_rustls::rustls::ServerConfig {
+        use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+
+        tokio_rustls::rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(self.certificate.as_slice())],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.private_key.as_slice())),
+            )
+            .expect("test certificate and key form a valid server config")
+    }
+}
+
 /// Issues exactly the requested leaves from one fresh CA, valid around this run.
 ///
 /// `CertificateParams::new` encodes IP literals as IP SANs and other names as DNS

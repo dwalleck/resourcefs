@@ -4,7 +4,7 @@
 )]
 use crate::{
     session_support,
-    tls::{self, FIXTURE_HOST, FixtureResponse, TlsListener, match_cert},
+    tls::{self, FIXTURE_HOST, FixtureIdentity, FixtureResponse, TlsListener},
 };
 use resourcefs_core::{
     AllowedOrigin, AtlassianSiteId, HttpCeilings, OperationGuard, OriginAllowlist, PathReference,
@@ -90,21 +90,22 @@ where
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let dynamic_port = Arc::new(AtomicU16::new(0));
     let observed_port = Arc::clone(&dynamic_port);
-    let listener = TlsListener::serve_request_router(loopback, 0, match_cert(), move |request| {
-        let mut response = router(request);
-        if let FixtureResponse::Response { body, .. } = &mut response {
-            let rewritten = String::from_utf8_lossy(body).replace(
-                "https://tls.invalid/",
-                &format!(
-                    "https://tls.invalid:{}/",
-                    observed_port.load(Ordering::Acquire)
-                ),
-            );
-            *body = rewritten.into_bytes();
-        }
-        response
-    })
-    .await;
+    let listener =
+        TlsListener::serve_request_router(loopback, 0, FixtureIdentity::Match, move |request| {
+            let mut response = router(request);
+            if let FixtureResponse::Response { body, .. } = &mut response {
+                let rewritten = String::from_utf8_lossy(body).replace(
+                    "https://tls.invalid/",
+                    &format!(
+                        "https://tls.invalid:{}/",
+                        observed_port.load(Ordering::Acquire)
+                    ),
+                );
+                *body = rewritten.into_bytes();
+            }
+            response
+        })
+        .await;
     let port = listener.address.port();
     dynamic_port.store(port, Ordering::Release);
     let origin = AllowedOrigin::new(&format!("https://{FIXTURE_HOST}:{port}/"), true)
