@@ -14,6 +14,54 @@ use resourcefs_sources::{
 };
 use tempfile::TempDir;
 
+/// `MutationSupport::grants` is the one table the published schema derives
+/// its `const: false` refusals from (rfs-ii60), so it must name exactly the
+/// operations `validate` accepts: nothing the kind refuses, nothing it lacks.
+#[test]
+fn support_grants_name_exactly_the_accepted_operations() {
+    for (support_name, support, expected) in [
+        (
+            "read-only",
+            MutationSupport::READ_ONLY,
+            [false, false, false],
+        ),
+        ("github", MutationSupport::GITHUB, [true, true, false]),
+        ("mutable", MutationSupport::FULL, [true, true, true]),
+    ] {
+        let grants = support.grants();
+        assert_eq!(
+            [grants.create(), grants.update(), grants.delete()],
+            expected,
+            "{support_name}: grants() must list the operations the kind implements"
+        );
+        assert!(
+            support.validate(grants).is_ok(),
+            "{support_name}: a kind must accept its own full authority"
+        );
+        for (operation, broader) in [
+            (
+                "create",
+                MutationGrants::new(true, grants.update(), grants.delete()),
+            ),
+            (
+                "update",
+                MutationGrants::new(grants.create(), true, grants.delete()),
+            ),
+            (
+                "delete",
+                MutationGrants::new(grants.create(), grants.update(), true),
+            ),
+        ] {
+            let already_granted = broader == grants;
+            assert_eq!(
+                support.validate(broader).is_ok(),
+                already_granted,
+                "{support_name}: widening {operation} beyond grants() must be refused"
+            );
+        }
+    }
+}
+
 #[test]
 fn nested_grants_are_subsets() {
     let operations = [

@@ -52,6 +52,17 @@ impl MutationSupport {
     /// A source that supports independent create, update, and delete grants.
     pub const FULL: Self = Self(MutationGrants::new(true, true, true));
 
+    /// The operations this kind can implement.
+    ///
+    /// The published Server Profile schema derives each kind's `grants`
+    /// property from this value, so a kind's mutation authority moves in
+    /// exactly one place and the schema cannot advertise a refusal the
+    /// runtime no longer makes (rfs-ii60).
+    #[must_use]
+    pub const fn grants(self) -> MutationGrants {
+        self.0
+    }
+
     /// Rejects operations that the source kind cannot implement.
     pub fn validate(self, grants: MutationGrants) -> Result<(), ConfigurationError> {
         if grants.is_subset_of(self.0) {
