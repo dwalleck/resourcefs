@@ -1725,6 +1725,8 @@ fn grants_or_default(grants: Option<MutationGrantsProfile>) -> MutationGrants {
 
 #[cfg(test)]
 mod tests {
+    use crate::wall_budget;
+
     use super::{ProfileDocument, github_grants_schema, read_only_grants_schema};
     use crate::logging::{LogDestinationKind, LogLevel};
     use resourcefs_sources::{LaunchRootSource, MutationGrants, MutationSupport};
@@ -1878,7 +1880,7 @@ mod tests {
         .expect("profile bytes");
         let started = Instant::now();
         ProfileDocument::from_slice_in(&encoded, fixture.path()).expect("maximum GitHub profile");
-        resourcefs_core::test_support::wall_budget::check_wall_budget(
+        wall_budget::check_wall_budget(
             "github_profile_validation_budget",
             started.elapsed(),
             Duration::from_millis(50),

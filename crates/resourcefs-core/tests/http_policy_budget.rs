@@ -5,7 +5,13 @@
 //! round trip. The budget is one classification plus one full allowlist pass at
 //! the profile's maximum of 256 declared origins, under 1 ms.
 
-use std::{net::IpAddr, time::Instant};
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
+use std::{
+    net::IpAddr,
+    time::{Duration, Instant},
+};
 
 use resourcefs_core::{AddressClass, AddressPolicy, AllowedOrigin, OriginAllowlist};
 use url::Url;
@@ -46,9 +52,11 @@ fn classification_and_allowlist_pass_fit_the_request_budget() {
     }
     let per_request = started.elapsed() / ITERATIONS;
 
-    assert!(
-        per_request.as_micros() < 1_000,
-        "classification plus a {PRODUCTION_ORIGINS}-origin allowlist pass took {per_request:?} per request, over the 1 ms budget"
+    // Strict, as the `as_micros() < 1_000` it replaced was: whole
+    // microseconds below 1,000 is exactly `per_request < 1 ms`.
+    wall_budget::check_wall_budget_below(
+        "classification_and_allowlist_pass_fit_the_request_budget",
+        per_request,
+        Duration::from_millis(1),
     );
-    println!("per-request policy cost at {PRODUCTION_ORIGINS} origins: {per_request:?}");
 }

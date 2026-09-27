@@ -1,3 +1,6 @@
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     io::Cursor,
     time::{Duration, Instant},
@@ -220,7 +223,7 @@ fn maximum_jira_reference_parse_stays_within_budget() {
     for _ in 0..1_000 {
         PathReference::parse(&reference).expect("maximum Jira reference");
     }
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget_below(
         "maximum_jira_reference_parse_stays_within_budget",
         started.elapsed(),
         Duration::from_secs(2),

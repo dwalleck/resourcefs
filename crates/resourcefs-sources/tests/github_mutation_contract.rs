@@ -2,6 +2,8 @@
 mod session_support;
 #[path = "support/tls.rs"]
 mod tls;
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
 
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -887,7 +889,7 @@ async fn github_cache_namespace_removal_budget() {
         500
     );
     let elapsed = started.elapsed();
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "github_cache_namespace_removal_budget",
         elapsed,
         Duration::from_millis(50),
@@ -1144,7 +1146,7 @@ async fn creation_document_budget() {
     let started = Instant::now();
     MutationAdapter::validate_write(&source, &issue, &document).expect("[C6] maximum document");
     let elapsed = started.elapsed();
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "creation_document_budget",
         elapsed,
         Duration::from_millis(100),

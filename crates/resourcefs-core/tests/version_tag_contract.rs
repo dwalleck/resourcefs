@@ -1,3 +1,6 @@
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::time::{Duration, Instant};
 
 use resourcefs_core::{
@@ -126,7 +129,7 @@ fn hashes_maximum_sized_content_within_budget() {
 
     assert!(tag.as_str().starts_with("sha256:"));
     assert_eq!(tag.as_str().len(), "sha256:".len() + 64);
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "hashes_maximum_sized_content_within_budget",
         elapsed,
         Duration::from_millis(10),

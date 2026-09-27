@@ -1,3 +1,6 @@
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
+
 use std::time::{Duration, Instant};
 
 use resourcefs_core::{ErrorCategory, MAX_HTTP_FETCH_BYTES};
@@ -231,9 +234,5 @@ fn adf_maximum_fixture() {
     } else {
         Duration::from_secs(2)
     };
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
-        "adf_maximum_fixture",
-        started.elapsed(),
-        budget,
-    );
+    wall_budget::check_wall_budget("adf_maximum_fixture", started.elapsed(), budget);
 }

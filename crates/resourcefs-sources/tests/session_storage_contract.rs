@@ -1,5 +1,8 @@
 #![cfg(feature = "test-support")]
 
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -360,7 +363,7 @@ async fn heartbeat_updates_persisted_liveness_within_budget() {
     } else {
         Duration::from_millis(100)
     };
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "heartbeat_updates_persisted_liveness_within_budget",
         elapsed,
         budget,
@@ -510,7 +513,7 @@ async fn durable_write_at_object_ceiling_within_budget() {
     } else {
         Duration::from_secs(5)
     };
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "durable_write_at_object_ceiling_within_budget",
         elapsed,
         budget,

@@ -1,3 +1,6 @@
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     fs,
     io::{self, BufReader, Read, Write},
@@ -1759,7 +1762,7 @@ fn renders_complete_success_and_errors() {
             maximum_text(),
             "maximum-sized content changed"
         );
-        resourcefs_core::test_support::wall_budget::check_wall_budget(
+        wall_budget::check_wall_budget(
             "renders_complete_success_and_errors",
             elapsed,
             Duration::from_millis(250),

@@ -1,3 +1,6 @@
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     sync::{
@@ -392,7 +395,7 @@ async fn search_and_glob_are_session_isolated() {
         )
         .await
         .expect("C8 selected search");
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "search_and_glob_are_session_isolated#1",
         search_started.elapsed(),
         Duration::from_secs(10),
@@ -430,7 +433,7 @@ async fn search_and_glob_are_session_isolated() {
         )
         .await
         .expect("C8 session glob");
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "search_and_glob_are_session_isolated#2",
         glob_started.elapsed(),
         Duration::from_millis(250),
@@ -491,7 +494,7 @@ async fn search_and_glob_are_session_isolated() {
         .expect("C8 maximum selected-Artifact search");
     let maximum_peak = measured_peak_bytes(allocation_baseline);
     assert_eq!(maximum_search.total_records(), 0, "C8 maximum no-match");
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "search_and_glob_are_session_isolated#3",
         maximum_started.elapsed(),
         Duration::from_secs(10),
@@ -707,7 +710,7 @@ async fn glob_snapshot_excludes_its_recovery_artifact() {
         .await
         .expect("C8 spilling glob");
     let peak_bytes = measured_peak_bytes(allocation_baseline);
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "glob_snapshot_excludes_its_recovery_artifact",
         started.elapsed(),
         Duration::from_millis(250),

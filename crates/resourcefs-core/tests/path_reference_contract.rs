@@ -1,3 +1,6 @@
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -277,7 +280,7 @@ fn parses_production_shaped_reference_within_budget() {
         address_observation(reference.workspace_address().expect("workspace address")),
         ("relative", file_name, None)
     );
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "parses_production_shaped_reference_within_budget",
         elapsed,
         Duration::from_millis(5),
@@ -580,7 +583,7 @@ fn maximum_reference_parses_within_boundary_budget() {
     PathReference::parse(input).expect("maximum reference must parse");
     let elapsed = started.elapsed();
 
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "maximum_reference_parses_within_boundary_budget",
         elapsed,
         Duration::from_millis(50),

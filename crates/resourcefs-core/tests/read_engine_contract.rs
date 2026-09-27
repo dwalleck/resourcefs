@@ -1,3 +1,6 @@
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     io::Cursor,
     sync::{
@@ -857,11 +860,7 @@ async fn artifact_page_production_budget() {
     } else {
         Duration::from_secs(5)
     };
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
-        "artifact_page_production_budget",
-        elapsed,
-        budget,
-    );
+    wall_budget::check_wall_budget("artifact_page_production_budget", elapsed, budget);
 }
 
 #[tokio::test]
@@ -887,11 +886,7 @@ async fn workspace_snapshot_production_budget() {
     } else {
         Duration::from_secs(5)
     };
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
-        "workspace_snapshot_production_budget",
-        elapsed,
-        budget,
-    );
+    wall_budget::check_wall_budget("workspace_snapshot_production_budget", elapsed, budget);
 }
 
 #[tokio::test]
@@ -915,11 +910,7 @@ async fn inline_artifact_production_budget() {
     } else {
         Duration::from_millis(25)
     };
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
-        "inline_artifact_production_budget",
-        elapsed,
-        budget,
-    );
+    wall_budget::check_wall_budget("inline_artifact_production_budget", elapsed, budget);
 }
 
 /// The shared fake reports stored bytes that are not UTF-8 as

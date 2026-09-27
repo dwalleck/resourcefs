@@ -142,34 +142,45 @@ impl SessionStorage for MemoryStorage {
 /// Enforcement therefore belongs to a controlled host, and a shared runner
 /// should report the number without failing on it.
 ///
-/// `RFS_BUDGETS` selects the policy:
+/// This module is the policy and holds no I/O, because `resourcefs-core`'s
+/// modules hold no platform I/O (`core_holds_no_platform_io`). Test targets
+/// apply it through `crates/resourcefs-core/tests/support/wall_budget.rs`,
+/// included with `#[path]`, which also appends each line to the file named
+/// by [`BUDGET_REPORT_VARIABLE`].
+///
+/// `RFS_BUDGETS` selects the policy, read once per process:
 ///
 /// - unset or `enforce`: an over-budget measurement fails the test. This is
 ///   the default, so a local run of `scripts/ci-gates.py` enforces.
-/// - `report`: every measurement prints one line,
-///   `budget <name>: <elapsed> against <budget> (<verdict>)`, and never fails.
-///   The GitHub-hosted CI legs set this.
+/// - `report`: an over-budget measurement never fails. The GitHub-hosted CI
+///   legs set this.
 ///
 /// Any other value is a configuration error and panics rather than silently
-/// picking a policy.
+/// picking a policy; `scripts/ci-gates.py` rejects it before building.
 ///
-/// Only host-dominated wall-clock ceilings go through here. Allocation
-/// ceilings, timeout and cancellation contracts ("refused without waiting for
-/// the deadline"), fixture control deadlines, and liveness backstops are not
+/// Every measurement produces one line,
+/// `budget <name>: <elapsed> against <budget> (<verdict>)`.
+///
+/// Only host-dominated wall-clock ceilings belong here. Allocation ceilings,
+/// timeout and cancellation contracts ("refused without waiting for the
+/// deadline"), fixture control deadlines, and liveness backstops are not
 /// budgets and keep asserting directly.
 pub mod wall_budget {
-
-    use std::time::Duration;
+    use std::{sync::OnceLock, time::Duration};
 
     /// The environment variable that selects the budget policy.
     pub const BUDGET_POLICY_VARIABLE: &str = "RFS_BUDGETS";
+
+    /// The environment variable naming a file each measurement is appended
+    /// to by the test-target support module.
+    pub const BUDGET_REPORT_VARIABLE: &str = "RFS_BUDGET_REPORT";
 
     /// Whether an over-budget measurement fails or is only reported.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum BudgetPolicy {
         /// Fail the test when the measurement exceeds its budget.
         Enforce,
-        /// Print the measurement and its verdict, never fail.
+        /// Record the measurement, never fail.
         Report,
     }
 
@@ -187,90 +198,92 @@ pub mod wall_budget {
             }
         }
 
-        /// Reads the policy from the environment.
+        /// The policy selected by the environment, read and validated once.
         ///
         /// # Panics
         ///
-        /// Panics when the variable is set to a value that is not a policy, or is
-        /// not valid Unicode.
+        /// Panics when the variable is set to a value that is not a policy, or
+        /// is not valid Unicode.
         #[must_use]
         pub fn from_environment() -> Self {
-            let value = match std::env::var(BUDGET_POLICY_VARIABLE) {
-                Ok(value) => Some(value),
-                Err(std::env::VarError::NotPresent) => None,
-                Err(std::env::VarError::NotUnicode(_)) => {
-                    panic!(
+            static POLICY: OnceLock<BudgetPolicy> = OnceLock::new();
+            *POLICY.get_or_init(|| {
+                let value = match std::env::var(BUDGET_POLICY_VARIABLE) {
+                    Ok(value) => Some(value),
+                    Err(std::env::VarError::NotPresent) => None,
+                    Err(std::env::VarError::NotUnicode(_)) => panic!(
                         "{BUDGET_POLICY_VARIABLE} must be `enforce` or `report`, not non-Unicode bytes"
+                    ),
+                };
+                Self::parse(value.as_deref()).unwrap_or_else(|rejected| {
+                    panic!(
+                        "{BUDGET_POLICY_VARIABLE} must be `enforce` or `report`, not {rejected:?}"
                     )
-                }
-            };
-            Self::parse(value.as_deref()).unwrap_or_else(|rejected| {
-                panic!("{BUDGET_POLICY_VARIABLE} must be `enforce` or `report`, not {rejected:?}")
+                })
             })
         }
     }
 
-    /// What a measurement means under a policy.
+    /// How a measurement is compared with its budget, so each converted
+    /// assertion keeps the comparison it had.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum BudgetVerdict {
-        /// Within budget.
-        Within,
-        /// Over budget and the policy enforces: the caller must fail.
-        Exceeded,
-        /// Over budget but only reported.
-        ExceededReported,
+    pub enum Bound {
+        /// Within budget while `elapsed <= budget`.
+        AtMost,
+        /// Within budget only while `elapsed < budget`.
+        Below,
     }
 
-    /// Classifies one measurement without side effects.
-    #[must_use]
-    pub fn evaluate(policy: BudgetPolicy, elapsed: Duration, budget: Duration) -> BudgetVerdict {
-        if elapsed <= budget {
-            BudgetVerdict::Within
-        } else {
-            match policy {
-                BudgetPolicy::Enforce => BudgetVerdict::Exceeded,
-                BudgetPolicy::Report => BudgetVerdict::ExceededReported,
+    impl Bound {
+        /// Whether `elapsed` breaks this bound.
+        #[must_use]
+        pub fn is_over(self, elapsed: Duration, budget: Duration) -> bool {
+            match self {
+                Self::AtMost => elapsed > budget,
+                Self::Below => elapsed >= budget,
             }
         }
     }
 
-    /// Applies `policy` to one measurement: reports it, and panics only when an
-    /// enforcing policy sees it over budget.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `policy` is [`BudgetPolicy::Enforce`] and `elapsed` exceeds
-    /// `budget`.
-    pub fn check_wall_budget_with(
+    /// What one measurement means under a policy.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Judgement {
+        line: String,
+        failure: Option<String>,
+    }
+
+    impl Judgement {
+        /// The measurement's one-line record.
+        #[must_use]
+        pub fn line(&self) -> &str {
+            &self.line
+        }
+
+        /// The message the test must fail with, if the policy fails it.
+        #[must_use]
+        pub fn failure(&self) -> Option<&str> {
+            self.failure.as_deref()
+        }
+    }
+
+    /// Judges one measurement without side effects.
+    #[must_use]
+    pub fn judge(
         policy: BudgetPolicy,
+        bound: Bound,
         name: &str,
         elapsed: Duration,
         budget: Duration,
-    ) {
-        let verdict = evaluate(policy, elapsed, budget);
-        if policy == BudgetPolicy::Report {
-            let label = match verdict {
-                BudgetVerdict::Within => "within",
-                BudgetVerdict::Exceeded | BudgetVerdict::ExceededReported => {
-                    "OVER, not enforced here"
-                }
-            };
-            eprintln!("budget {name}: {elapsed:?} against {budget:?} ({label})");
-        }
-        assert!(
-            verdict != BudgetVerdict::Exceeded,
-            "budget {name}: {elapsed:?} exceeded {budget:?}"
-        );
-    }
-
-    /// Applies the policy selected by [`BUDGET_POLICY_VARIABLE`] to one
-    /// measurement. See the module documentation.
-    ///
-    /// # Panics
-    ///
-    /// Panics when enforcing and over budget, or when the variable is invalid.
-    pub fn check_wall_budget(name: &str, elapsed: Duration, budget: Duration) {
-        check_wall_budget_with(BudgetPolicy::from_environment(), name, elapsed, budget);
+    ) -> Judgement {
+        let over = bound.is_over(elapsed, budget);
+        let verdict = match (policy, over) {
+            (_, false) => "within",
+            (BudgetPolicy::Report, true) => "OVER, not enforced here",
+            (BudgetPolicy::Enforce, true) => "OVER",
+        };
+        let line = format!("budget {name}: {elapsed:?} against {budget:?} ({verdict})");
+        let failure = (policy == BudgetPolicy::Enforce && over).then(|| line.clone());
+        Judgement { line, failure }
     }
 
     #[cfg(test)]
@@ -300,31 +313,38 @@ pub mod wall_budget {
 
         #[test]
         fn report_never_fails_even_far_over_budget() {
-            check_wall_budget_with(
-                BudgetPolicy::Report,
-                "report_over",
-                Duration::from_secs(3600),
-                BUDGET,
-            );
+            for bound in [Bound::AtMost, Bound::Below] {
+                let judgement = judge(
+                    BudgetPolicy::Report,
+                    bound,
+                    "report_over",
+                    Duration::from_secs(3600),
+                    BUDGET,
+                );
+                assert_eq!(judgement.failure(), None);
+                assert!(judgement.line().ends_with("(OVER, not enforced here)"));
+            }
+        }
+
+        #[test]
+        fn at_most_admits_the_budget_exactly_and_below_does_not() {
+            let at_most = judge(BudgetPolicy::Enforce, Bound::AtMost, "at", BUDGET, BUDGET);
+            assert_eq!(at_most.failure(), None);
+            assert_eq!(at_most.line(), "budget at: 100ms against 100ms (within)");
+            let below = judge(BudgetPolicy::Enforce, Bound::Below, "at", BUDGET, BUDGET);
             assert_eq!(
-                evaluate(BudgetPolicy::Report, OVER, BUDGET),
-                BudgetVerdict::ExceededReported
+                below.failure(),
+                Some("budget at: 100ms against 100ms (OVER)")
             );
         }
 
         #[test]
-        fn enforce_passes_at_the_budget_exactly() {
-            check_wall_budget_with(BudgetPolicy::Enforce, "enforce_at", BUDGET, BUDGET);
-            assert_eq!(
-                evaluate(BudgetPolicy::Enforce, BUDGET, BUDGET),
-                BudgetVerdict::Within
-            );
-        }
-
-        #[test]
-        #[should_panic(expected = "budget enforce_over: 101ms exceeded 100ms")]
         fn enforce_fails_over_budget() {
-            check_wall_budget_with(BudgetPolicy::Enforce, "enforce_over", OVER, BUDGET);
+            let judgement = judge(BudgetPolicy::Enforce, Bound::AtMost, "over", OVER, BUDGET);
+            assert_eq!(
+                judgement.failure(),
+                Some("budget over: 101ms against 100ms (OVER)")
+            );
         }
     }
 }

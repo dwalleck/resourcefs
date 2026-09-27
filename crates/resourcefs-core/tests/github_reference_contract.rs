@@ -1,3 +1,6 @@
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::time::{Duration, Instant};
 
 use resourcefs_core::{
@@ -347,11 +350,7 @@ fn reference_parse_budget() {
         assert_eq!(parsed.requested(), input);
     }
     let average = started.elapsed() / iterations;
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
-        "reference_parse_budget",
-        average,
-        Duration::from_millis(1),
-    );
+    wall_budget::check_wall_budget("reference_parse_budget", average, Duration::from_millis(1));
 }
 
 #[test]

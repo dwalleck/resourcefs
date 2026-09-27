@@ -1,3 +1,6 @@
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     fs,
     sync::{
@@ -611,7 +614,7 @@ async fn exact_limit_write_budget_and_one_over_rejection() {
     } else {
         Duration::from_secs(5)
     };
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "exact_limit_write_budget_and_one_over_rejection",
         elapsed,
         budget,
@@ -689,9 +692,10 @@ async fn replacement_has_no_missing_window() {
 
     assert_eq!(invalid.load(Ordering::Acquire), 0);
     assert_eq!(read_errors.load(Ordering::Acquire), 0);
-    assert!(
-        maximum_replacement <= Duration::from_secs(5),
-        "slowest one-MiB replacement took {maximum_replacement:?}"
+    wall_budget::check_wall_budget(
+        "replacement_has_no_missing_window",
+        maximum_replacement,
+        Duration::from_secs(5),
     );
 }
 

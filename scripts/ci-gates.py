@@ -307,10 +307,7 @@ def ignored_budgets():
             result = run([
                 "cargo", "test", *RELEASE, "-p", package_id,
                 "--all-features", *selector, "--", "--ignored", "--exact", name,
-                # One test per invocation, so its output is short. Uncaptured,
-                # a run under RFS_BUDGETS=report prints each measurement
-                # against its ceiling instead of hiding it (rfs-cn1r).
-                "--test-threads=1", "--nocapture",
+                "--test-threads=1",
             ])
             passed = result.returncode == 0 and passed
     missing = BUDGETS - seen
@@ -335,6 +332,55 @@ def ignored_budgets():
 # never running in CI.
 PHASES = ("debug", "release")
 
+# Wall-clock budgets (rfs-cn1r). RFS_BUDGETS selects enforce (the default,
+# unset) or report; the test helper panics on anything else, but only inside
+# the first test that measures one, so the value is checked here before a
+# minute of compilation is spent on a typo.
+BUDGET_POLICIES = ("enforce", "report")
+# Each measurement is appended to the file this names. nextest discards a
+# passing test's output and the release leg runs libtest captured, so without
+# the file a report-mode number never reaches the log.
+BUDGET_REPORT_VARIABLE = "RFS_BUDGET_REPORT"
+
+
+def budget_policy_error():
+    """A message when RFS_BUDGETS is set to something the helper rejects."""
+    value = os.environ.get("RFS_BUDGETS")
+    if value is None or value in BUDGET_POLICIES:
+        return None
+    return (
+        f"RFS_BUDGETS must be one of {', '.join(BUDGET_POLICIES)} or unset, "
+        f"not {value!r}"
+    )
+
+
+def budget_report_dir():
+    """The cargo target directory's budget-report folder, created empty."""
+    result = run(["cargo", "metadata", "--format-version", "1", "--no-deps"], capture=True)
+    if result.returncode:
+        raise ValueError("cargo metadata failed; cannot place the budget report")
+    folder = Path(json.loads(result.stdout)["target_directory"]) / "budget-report"
+    folder.mkdir(parents=True, exist_ok=True)
+    for stale in folder.glob("*.log"):
+        stale.unlink()
+    return folder
+
+
+def print_budget_report(phase, path):
+    """Prints one phase's collected measurements, over-budget lines first."""
+    print(f"\n=== Wall-clock budgets, {phase} phase ===", flush=True)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        print("No wall-clock budget was measured in this phase.")
+        return
+    over = [line for line in lines if "(OVER" in line]
+    within = [line for line in lines if "(OVER" not in line]
+    policy = os.environ.get("RFS_BUDGETS") or "enforce"
+    print(f"{len(lines)} measured, {len(over)} over budget, policy {policy}.")
+    for line in over + within:
+        print(line)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run the repository gates.")
@@ -343,6 +389,10 @@ def main():
         help="run only this phase; omit to run every gate, as a local run does",
     )
     arguments = parser.parse_args()
+    policy_error = budget_policy_error()
+    if policy_error:
+        print(policy_error, file=sys.stderr)
+        return 2
     gates = [
         ("debug", "Formatting", ["cargo", "fmt", "--all", "--", "--check"]),
         ("debug", "Lints", ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]),
@@ -386,7 +436,15 @@ def main():
             print(f"No gates in phase {arguments.phase}", file=sys.stderr)
             return 1
     failed = []
-    for _phase, name, command in gates:
+    try:
+        report_dir = budget_report_dir()
+    except (OSError, ValueError, KeyError) as error:
+        print(f"Budget report: {error}", file=sys.stderr)
+        return 1
+    last_gate_of_phase = {phase: index for index, (phase, _, _) in enumerate(gates)}
+    for index, (phase, name, command) in enumerate(gates):
+        report = report_dir / f"{phase}.log"
+        ENV[BUDGET_REPORT_VARIABLE] = str(report)
         print(f"\n=== {name} ===", flush=True)
         try:
             passed = command() if callable(command) else run(command).returncode == 0
@@ -395,6 +453,8 @@ def main():
             passed = False
         if not passed:
             failed.append(name)
+        if last_gate_of_phase[phase] == index:
+            print_budget_report(phase, report)
     if failed:
         print(f"Failed gates: {', '.join(failed)}", file=sys.stderr)
         return 1

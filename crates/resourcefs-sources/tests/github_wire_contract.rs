@@ -1,3 +1,6 @@
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
+
 use std::time::{Duration, Instant};
 
 use resourcefs_core::ErrorCategory;
@@ -152,7 +155,7 @@ fn github_wire_decode_budget() {
     let observed = inspect_github_wire_for_test(GithubWireKindForTest::Issue, document.as_bytes())
         .expect("maximum issue");
     let elapsed = started.elapsed();
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "github_wire_decode_budget",
         elapsed,
         Duration::from_millis(250),

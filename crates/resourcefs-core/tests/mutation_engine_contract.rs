@@ -1,3 +1,6 @@
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     sync::{
         Arc,
@@ -569,7 +572,7 @@ async fn operation_journal_budget() {
         )));
     }
     let count_elapsed = started.elapsed();
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "operation_journal_budget#1",
         count_elapsed,
         Duration::from_millis(count_budget),
@@ -613,7 +616,7 @@ async fn operation_journal_budget() {
         MutationOperationStart::Owner(_)
     ));
     let yield_elapsed = started.elapsed();
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "operation_journal_budget#2",
         yield_elapsed,
         Duration::from_millis(yield_budget),
@@ -655,7 +658,7 @@ async fn operation_journal_budget() {
         MutationOperationStart::Owner(_)
     ));
     let compare_elapsed = started.elapsed();
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "operation_journal_budget#3",
         compare_elapsed,
         Duration::from_millis(compare_budget),
@@ -901,7 +904,7 @@ async fn target_mode_outcome_matrix() {
         );
     }
     let mismatch_average = mismatch_started.elapsed() / 6;
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "target_mode_outcome_matrix",
         mismatch_average,
         Duration::from_millis(1),
@@ -1227,11 +1230,7 @@ async fn exact_limit_edit_budget() {
     } else {
         Duration::from_secs(5)
     };
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
-        "exact_limit_edit_budget",
-        elapsed,
-        budget,
-    );
+    wall_budget::check_wall_budget("exact_limit_edit_budget", elapsed, budget);
 }
 
 #[tokio::test]

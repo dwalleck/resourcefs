@@ -1,5 +1,7 @@
 #[path = "../src/pattern.rs"]
 mod pattern;
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
 
 use std::time::{Duration, Instant};
 
@@ -302,11 +304,7 @@ fn glob_language_table() {
     } else {
         Duration::from_millis(100)
     };
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
-        "glob_language_table",
-        started.elapsed(),
-        budget,
-    );
+    wall_budget::check_wall_budget("glob_language_table", started.elapsed(), budget);
 }
 
 #[test]
@@ -334,7 +332,7 @@ fn matcher_selection_unicode_and_work_limits() {
         SearchEngine::RustRegex,
         "C3 maximum engine"
     );
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "matcher_selection_unicode_and_work_limits#1",
         compile_started.elapsed(),
         if cfg!(debug_assertions) {
@@ -376,7 +374,7 @@ fn matcher_selection_unicode_and_work_limits() {
     let mut scan = SearchMatcher::compile("needle$", true).expect("C3 scan pattern");
     let scan_started = Instant::now();
     assert!(scan.is_match(&haystack).expect("C3 maximum scan"));
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "matcher_selection_unicode_and_work_limits#2",
         scan_started.elapsed(),
         if cfg!(debug_assertions) {

@@ -7,6 +7,8 @@
 //! is the assertion.
 #[path = "support/tls.rs"]
 mod tls;
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
 
 use std::{
     io,
@@ -154,7 +156,7 @@ fn basic_credential_maximum_stays_within_budget() {
         OriginCredential::basic(origin.clone(), &username, &token)
             .expect("maximum bounded Basic credential");
     }
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget_below(
         "basic_credential_maximum_stays_within_budget",
         started.elapsed(),
         Duration::from_secs(5),
@@ -363,7 +365,7 @@ async fn http_mutation_request_budget() {
     assert_eq!(response.status(), 201);
     let elapsed = started.elapsed();
     // Fresh TLS plus full-body capture; investigate native cost in rfs-q5l8.
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "http_mutation_request_budget",
         elapsed,
         Duration::from_millis(500),
@@ -694,9 +696,5 @@ fn http_metadata_budget() {
         std::hint::black_box(request);
     }
     let average = started.elapsed() / iterations;
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
-        "http_metadata_budget",
-        average,
-        Duration::from_millis(1),
-    );
+    wall_budget::check_wall_budget("http_metadata_budget", average, Duration::from_millis(1));
 }

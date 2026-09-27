@@ -4,6 +4,8 @@ mod jira;
 mod session_support;
 #[path = "support/tls.rs"]
 mod tls;
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
 use jira::{fixture_source, fixture_source_with_ceilings, protocol_response, response};
 
 use std::{
@@ -763,8 +765,7 @@ fn mount_validation_maximum_stays_within_budget() {
     } else {
         Duration::from_millis(50)
     };
-    eprintln!("maximum Site Mount validation: {elapsed:?}; CI budget: {budget:?}");
-    resourcefs_core::test_support::wall_budget::check_wall_budget(
+    wall_budget::check_wall_budget(
         "mount_validation_maximum_stays_within_budget",
         elapsed,
         budget,

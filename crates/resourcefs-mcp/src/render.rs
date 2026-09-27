@@ -636,6 +636,8 @@ pub(crate) fn glob_failure(
 
 #[cfg(test)]
 mod tests {
+    use crate::wall_budget;
+
     use std::{
         fs,
         sync::Arc,
@@ -721,11 +723,7 @@ mod tests {
         } else {
             Duration::from_millis(25)
         };
-        resourcefs_core::test_support::wall_budget::check_wall_budget(
-            "maximum_page_render_stays_within_budget",
-            elapsed,
-            budget,
-        );
+        wall_budget::check_wall_budget("maximum_page_render_stays_within_budget", elapsed, budget);
     }
 
     struct Fixture {
@@ -1273,7 +1271,7 @@ mod tests {
         } else {
             Duration::from_millis(25)
         };
-        resourcefs_core::test_support::wall_budget::check_wall_budget(
+        wall_budget::check_wall_budget(
             "maximum_search_page_render_stays_within_budget",
             elapsed,
             budget,
@@ -1316,7 +1314,7 @@ mod tests {
         } else {
             Duration::from_millis(25)
         };
-        resourcefs_core::test_support::wall_budget::check_wall_budget(
+        wall_budget::check_wall_budget(
             "maximum_glob_page_render_stays_within_budget",
             elapsed,
             budget,
@@ -1519,7 +1517,7 @@ mod tests {
             std::hint::black_box(mutation_success(creation.clone()).expect("[C16] budget render"));
         }
         let average = started.elapsed() / iterations;
-        resourcefs_core::test_support::wall_budget::check_wall_budget(
+        wall_budget::check_wall_budget(
             "creation_receipt_renders_nullable_tag_and_canonical_reference",
             average,
             Duration::from_millis(10),
