@@ -332,15 +332,22 @@ def ignored_budgets():
 # never running in CI.
 PHASES = ("debug", "release")
 
-# Wall-clock budgets (rfs-cn1r). RFS_BUDGETS selects enforce (the default,
-# unset) or report; the test helper panics on anything else, but only inside
-# the first test that measures one, so the value is checked here before a
-# minute of compilation is spent on a typo.
-BUDGET_POLICIES = ("enforce", "report")
+# Wall-clock budgets (rfs-cn1r). RFS_BUDGETS selects report (the default,
+# unset: an over-budget row passes unless it reaches 10x its budget) or
+# enforce (over budget fails; the dedicated benchmark runner of rfs-63xx sets
+# it). The test helper panics on anything else, but only inside the first
+# test that measures one, so the value is checked here before a minute of
+# compilation is spent on a typo.
+BUDGET_POLICIES = ("report", "enforce")
 # Each measurement is appended to the file this names. nextest discards a
 # passing test's output and the release leg runs libtest captured, so without
 # the file a report-mode number never reaches the log.
 BUDGET_REPORT_VARIABLE = "RFS_BUDGET_REPORT"
+
+
+def budget_policy():
+    """The effective policy: RFS_BUDGETS, or report when it is unset."""
+    return os.environ.get("RFS_BUDGETS") or "report"
 
 
 def budget_policy_error():
@@ -376,8 +383,7 @@ def print_budget_report(phase, path):
         return
     over = [line for line in lines if "(OVER" in line]
     within = [line for line in lines if "(OVER" not in line]
-    policy = os.environ.get("RFS_BUDGETS") or "enforce"
-    print(f"{len(lines)} measured, {len(over)} over budget, policy {policy}.")
+    print(f"{len(lines)} measured, {len(over)} over budget, policy {budget_policy()}.")
     for line in over + within:
         print(line)
 
@@ -393,6 +399,16 @@ def main():
     if policy_error:
         print(policy_error, file=sys.stderr)
         return 2
+    if budget_policy() == "report":
+        print(
+            "Wall-clock budgets: report (RFS_BUDGETS unset or report). An over-budget "
+            "row passes unless it reaches 10x its budget (REPORT_HARD_CEILING_FACTOR in "
+            "resourcefs-core test_support); RFS_BUDGETS=enforce fails "
+            "at 1x.",
+            flush=True,
+        )
+    else:
+        print("Wall-clock budgets: enforce. Any over-budget row fails.", flush=True)
     gates = [
         ("debug", "Formatting", ["cargo", "fmt", "--all", "--", "--check"]),
         ("debug", "Lints", ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]),

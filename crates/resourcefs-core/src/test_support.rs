@@ -148,12 +148,18 @@ impl SessionStorage for MemoryStorage {
 /// included with `#[path]`, which also appends each line to the file named
 /// by [`BUDGET_REPORT_VARIABLE`].
 ///
-/// `RFS_BUDGETS` selects the policy, read once per process:
+/// `RFS_BUDGETS` selects the policy, read once per process. There are three
+/// behaviors:
 ///
-/// - unset or `enforce`: an over-budget measurement fails the test. This is
-///   the default, so a local run of `scripts/ci-gates.py` enforces.
-/// - `report`: an over-budget measurement never fails. The GitHub-hosted CI
-///   legs set this.
+/// - unset or `report` (the default): a measurement between its budget and
+///   [`REPORT_HARD_CEILING_FACTOR`] times its budget is recorded as over and
+///   passes. Contended hosts, meaning hosted CI and developer machines, run
+///   this way, and `.github/workflows/ci.yml` also sets it explicitly.
+/// - report's hard ceiling: at or over that factor, the test fails anyway,
+///   because no host noise on record comes close and the overrun is a code
+///   regression.
+/// - `enforce`: over budget at all fails the test. The dedicated quiet
+///   benchmark runner sets this once rfs-63xx lands; until then it is opt-in.
 ///
 /// Any other value is a configuration error and panics rather than silently
 /// picking a policy; `scripts/ci-gates.py` rejects it before building.
@@ -175,12 +181,26 @@ pub mod wall_budget {
     /// to by the test-target support module.
     pub const BUDGET_REPORT_VARIABLE: &str = "RFS_BUDGET_REPORT";
 
+    /// How far over its budget a measurement may be in report mode before it
+    /// fails anyway.
+    ///
+    /// Host noise is real but bounded. The worst on record is rfs-1e6h's fifth
+    /// instance: a CPU-bound task of about 7 ms took 108 ms on a contended
+    /// hosted runner, roughly 15x its own work. That row's budget was already
+    /// 14x that work, so even then it missed by 1.08x. Against their budgets,
+    /// the largest recorded miss on any row routed here is the heartbeat,
+    /// 505 ms on windows-latest against today's 100 ms: about 5x. The rows
+    /// are dominated by real work rather than scheduling, so one taking 10x
+    /// its budget is a code regression, not a noisy host.
+    pub const REPORT_HARD_CEILING_FACTOR: u32 = 10;
+
     /// Whether an over-budget measurement fails or is only reported.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum BudgetPolicy {
         /// Fail the test when the measurement exceeds its budget.
         Enforce,
-        /// Record the measurement, never fail.
+        /// Record an over-budget measurement and pass, unless it reaches
+        /// [`REPORT_HARD_CEILING_FACTOR`] times its budget.
         Report,
     }
 
@@ -192,8 +212,8 @@ pub mod wall_budget {
         /// Returns the rejected value when it names no policy.
         pub fn parse(value: Option<&str>) -> Result<Self, String> {
             match value {
-                None | Some("enforce") => Ok(Self::Enforce),
-                Some("report") => Ok(Self::Report),
+                None | Some("report") => Ok(Self::Report),
+                Some("enforce") => Ok(Self::Enforce),
                 Some(other) => Err(other.to_owned()),
             }
         }
@@ -276,13 +296,23 @@ pub mod wall_budget {
         budget: Duration,
     ) -> Judgement {
         let over = bound.is_over(elapsed, budget);
-        let verdict = match (policy, over) {
-            (_, false) => "within",
-            (BudgetPolicy::Report, true) => "OVER, not enforced here",
-            (BudgetPolicy::Enforce, true) => "OVER",
+        let hard_ceiling = budget.saturating_mul(REPORT_HARD_CEILING_FACTOR);
+        let (verdict, fails) = match (policy, over) {
+            (_, false) => ("within", false),
+            (BudgetPolicy::Enforce, true) => ("OVER", true),
+            (BudgetPolicy::Report, true) if elapsed >= hard_ceiling => {
+                ("OVER the report hard ceiling", true)
+            }
+            (BudgetPolicy::Report, true) => ("OVER, not enforced here", false),
         };
         let line = format!("budget {name}: {elapsed:?} against {budget:?} ({verdict})");
-        let failure = (policy == BudgetPolicy::Enforce && over).then(|| line.clone());
+        let failure = fails.then(|| match policy {
+            BudgetPolicy::Enforce => line.clone(),
+            BudgetPolicy::Report => format!(
+                "budget {name}: {elapsed:?} is over {REPORT_HARD_CEILING_FACTOR}x its \
+                 {budget:?} budget; that is a regression, not host noise"
+            ),
+        });
         Judgement { line, failure }
     }
 
@@ -294,8 +324,8 @@ pub mod wall_budget {
         const OVER: Duration = Duration::from_millis(101);
 
         #[test]
-        fn policy_defaults_to_enforce_and_rejects_unknown_values() {
-            assert_eq!(BudgetPolicy::parse(None), Ok(BudgetPolicy::Enforce));
+        fn policy_defaults_to_report_and_rejects_unknown_values() {
+            assert_eq!(BudgetPolicy::parse(None), Ok(BudgetPolicy::Report));
             assert_eq!(
                 BudgetPolicy::parse(Some("enforce")),
                 Ok(BudgetPolicy::Enforce)
@@ -312,17 +342,36 @@ pub mod wall_budget {
         }
 
         #[test]
-        fn report_never_fails_even_far_over_budget() {
+        fn report_passes_between_the_budget_and_its_hard_ceiling() {
+            let just_under_ceiling = BUDGET * REPORT_HARD_CEILING_FACTOR - Duration::from_nanos(1);
             for bound in [Bound::AtMost, Bound::Below] {
-                let judgement = judge(
-                    BudgetPolicy::Report,
-                    bound,
-                    "report_over",
-                    Duration::from_secs(3600),
-                    BUDGET,
-                );
-                assert_eq!(judgement.failure(), None);
-                assert!(judgement.line().ends_with("(OVER, not enforced here)"));
+                for elapsed in [OVER, just_under_ceiling] {
+                    let judgement = judge(BudgetPolicy::Report, bound, "noisy", elapsed, BUDGET);
+                    assert_eq!(judgement.failure(), None, "{}", judgement.line());
+                    assert!(judgement.line().ends_with("(OVER, not enforced here)"));
+                }
+            }
+        }
+
+        #[test]
+        fn report_fails_at_its_hard_ceiling() {
+            let at_ceiling = BUDGET * REPORT_HARD_CEILING_FACTOR;
+            for bound in [Bound::AtMost, Bound::Below] {
+                for elapsed in [at_ceiling, Duration::from_secs(3600)] {
+                    let judgement =
+                        judge(BudgetPolicy::Report, bound, "regressed", elapsed, BUDGET);
+                    assert_eq!(
+                        judgement.failure(),
+                        Some(
+                            format!(
+                                "budget regressed: {elapsed:?} is over 10x its 100ms budget; \
+                                 that is a regression, not host noise"
+                            )
+                            .as_str()
+                        )
+                    );
+                    assert!(judgement.line().ends_with("(OVER the report hard ceiling)"));
+                }
             }
         }
 
@@ -339,7 +388,7 @@ pub mod wall_budget {
         }
 
         #[test]
-        fn enforce_fails_over_budget() {
+        fn enforce_fails_at_one_times_its_budget() {
             let judgement = judge(BudgetPolicy::Enforce, Bound::AtMost, "over", OVER, BUDGET);
             assert_eq!(
                 judgement.failure(),
