@@ -2374,3 +2374,53 @@ fn names_titles_and_markers_reach_upstream_byte_exact() {
         stored("pages", "title")
     );
 }
+
+/// rfs-cbz9: every paginated list is now read by one jq per page. A list
+/// element that is not an object used to reach a per-row jq that raised, and
+/// `set -e` ended the run with jq's status 5 and its raw message. It now fails
+/// with the same `invalid_response` a malformed page gets, at the same row.
+/// Jira comment lists read their match through `.body?`, which never raised on
+/// such a row, so there the element is still skipped and the run succeeds.
+#[rstest]
+#[case::jira_projects("bootstrap", "project_search", "values", Some("project_search"))]
+#[case::jira_issues("bootstrap", "issue_search", "issues", Some("issue_search"))]
+#[case::jira_comments("bootstrap", "comment_list", "comments", None)]
+#[case::confluence_spaces("bootstrap", "space_list", "results", Some("space_list"))]
+#[case::confluence_pages("bootstrap", "page_list", "results", Some("page_list"))]
+#[case::confluence_comments("bootstrap", "comment_list", "results", Some("comment_list"))]
+#[case::reader_spaces("verify", "reader_space_list", "results", Some("reader_space_list"))]
+fn non_object_list_rows_fail_as_invalid_response(
+    default_bootstrap: &BootstrapSnapshot,
+    #[case] mode: &str,
+    #[case] operation: &str,
+    #[case] list: &str,
+    #[case] failing_operation: Option<&str>,
+) {
+    let harness = Harness::new();
+    let mut store = if mode == "verify" {
+        harness.materialize(default_bootstrap);
+        harness.read_store()
+    } else {
+        json!({})
+    };
+    store["scalar_row"] = json!({"operation": operation, "list": list});
+    harness.write_store(&store);
+
+    let output = harness.command(mode);
+    assert!(
+        harness.read_store()["faults"]["scalar_row"] == true,
+        "the {operation} fault was never served"
+    );
+    match failing_operation {
+        Some(failing) => {
+            assert_failure(&output, &format!("invalid_response operation={failing}"));
+            assert_eq!(output.status.code(), Some(1), "die exits 1, not jq's 5");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !stderr.contains("jq: error"),
+                "jq's own message leaked: {stderr:?}"
+            );
+        }
+        None => assert_success(&output),
+    }
+}

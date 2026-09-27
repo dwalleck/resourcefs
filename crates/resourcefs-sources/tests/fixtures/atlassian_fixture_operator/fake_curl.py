@@ -890,6 +890,18 @@ def main():
         status, payload, operation = 404, {}, "collection_fault"
     else:
         status, payload, operation = handle(config, store, actor, method, path, query, body)
+    # Test-selected: prepend one element that is not an object to a list page,
+    # once, so the operator's handling of a malformed row is observable (rfs-cbz9).
+    scalar_row = store.get("scalar_row", {})
+    scalar_list = scalar_row.get("list")
+    if (
+        scalar_row.get("operation") == operation
+        and isinstance(payload, dict)
+        and isinstance(payload.get(scalar_list), list)
+        and not store["faults"].get("scalar_row")
+    ):
+        payload = {**payload, scalar_list: [42, *payload[scalar_list]]}
+        store["faults"]["scalar_row"] = True
     task_fault = store.get("task_fault")
     if operation == "space_delete_poll" and task_fault is not None:
         # A task may finish independently while its response is lost or invalid.
