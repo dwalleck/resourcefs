@@ -860,7 +860,7 @@ async fn artifact_page_production_budget() {
     } else {
         Duration::from_secs(5)
     };
-    wall_budget::check_wall_budget("artifact_page_production_budget", elapsed, budget);
+    wall_budget::check_wall_budget("64 MiB artifact page", elapsed, budget);
 }
 
 #[tokio::test]
@@ -886,7 +886,7 @@ async fn workspace_snapshot_production_budget() {
     } else {
         Duration::from_secs(5)
     };
-    wall_budget::check_wall_budget("workspace_snapshot_production_budget", elapsed, budget);
+    wall_budget::check_wall_budget("64 MiB workspace snapshot page", elapsed, budget);
 }
 
 #[tokio::test]
@@ -910,7 +910,7 @@ async fn inline_artifact_production_budget() {
     } else {
         Duration::from_millis(25)
     };
-    wall_budget::check_wall_budget("inline_artifact_production_budget", elapsed, budget);
+    wall_budget::check_wall_budget("49 KiB artifact read", elapsed, budget);
 }
 
 /// The shared fake reports stored bytes that are not UTF-8 as

@@ -55,7 +55,7 @@ fn classification_and_allowlist_pass_fit_the_request_budget() {
     // Strict, as the `as_micros() < 1_000` it replaced was: whole
     // microseconds below 1,000 is exactly `per_request < 1 ms`.
     wall_budget::check_wall_budget_below(
-        "classification_and_allowlist_pass_fit_the_request_budget",
+        "256-origin allowlist pass per request",
         per_request,
         Duration::from_millis(1),
     );

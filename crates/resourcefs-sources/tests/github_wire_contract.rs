@@ -155,10 +155,6 @@ fn github_wire_decode_budget() {
     let observed = inspect_github_wire_for_test(GithubWireKindForTest::Issue, document.as_bytes())
         .expect("maximum issue");
     let elapsed = started.elapsed();
-    wall_budget::check_wall_budget(
-        "github_wire_decode_budget",
-        elapsed,
-        Duration::from_millis(250),
-    );
+    wall_budget::check_wall_budget("decode", elapsed, Duration::from_millis(250));
     assert!(observed.retained_bytes() <= 24 * 1024 * 1024);
 }

@@ -304,7 +304,7 @@ fn glob_language_table() {
     } else {
         Duration::from_millis(100)
     };
-    wall_budget::check_wall_budget("glob_language_table", started.elapsed(), budget);
+    wall_budget::check_wall_budget("C1 glob table", started.elapsed(), budget);
 }
 
 #[test]
@@ -333,7 +333,7 @@ fn matcher_selection_unicode_and_work_limits() {
         "C3 maximum engine"
     );
     wall_budget::check_wall_budget(
-        "matcher_selection_unicode_and_work_limits#1",
+        "C3 maximum compile",
         compile_started.elapsed(),
         if cfg!(debug_assertions) {
             Duration::from_secs(40)
@@ -375,7 +375,7 @@ fn matcher_selection_unicode_and_work_limits() {
     let scan_started = Instant::now();
     assert!(scan.is_match(&haystack).expect("C3 maximum scan"));
     wall_budget::check_wall_budget(
-        "matcher_selection_unicode_and_work_limits#2",
+        "C3 maximum scan",
         scan_started.elapsed(),
         if cfg!(debug_assertions) {
             Duration::from_secs(20)

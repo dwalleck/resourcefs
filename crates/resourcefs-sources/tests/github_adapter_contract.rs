@@ -1698,7 +1698,7 @@ async fn github_pagination_cache_budget() {
         .expect("1,000-object listing");
     assert_eq!(listed.content().matches("- issue://").count(), 1_000);
     wall_budget::check_wall_budget(
-        "github_pagination_cache_budget",
+        "1,000 issues across 10 pages",
         started.elapsed(),
         Duration::from_secs(30),
     );
@@ -1746,7 +1746,7 @@ async fn github_search_budget() {
         .expect("search");
     assert_eq!(result.total_records(), 1);
     wall_budget::check_wall_budget(
-        "github_search_budget",
+        "maximum GitHub search",
         started.elapsed(),
         Duration::from_secs(1),
     );
@@ -1765,7 +1765,7 @@ fn github_single_resource_render_budget() {
     assert!(rendered.len() >= body.len());
     assert!(rendered.starts_with("# Issue #1: large"));
     wall_budget::check_wall_budget(
-        "github_single_resource_render_budget",
+        "maximum issue decode/render",
         elapsed,
         Duration::from_millis(250),
     );

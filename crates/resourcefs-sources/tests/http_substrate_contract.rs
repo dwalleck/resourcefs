@@ -157,7 +157,7 @@ fn basic_credential_maximum_stays_within_budget() {
             .expect("maximum bounded Basic credential");
     }
     wall_budget::check_wall_budget_below(
-        "basic_credential_maximum_stays_within_budget",
+        "1,000 maximum Basic credentials",
         started.elapsed(),
         Duration::from_secs(5),
     );
@@ -366,7 +366,7 @@ async fn http_mutation_request_budget() {
     let elapsed = started.elapsed();
     // Fresh TLS plus full-body capture; investigate native cost in rfs-q5l8.
     wall_budget::check_wall_budget(
-        "http_mutation_request_budget",
+        "[C15] 64 MiB loopback mutation request",
         elapsed,
         Duration::from_millis(500),
     );
@@ -696,5 +696,9 @@ fn http_metadata_budget() {
         std::hint::black_box(request);
     }
     let average = started.elapsed() / iterations;
-    wall_budget::check_wall_budget("http_metadata_budget", average, Duration::from_millis(1));
+    wall_budget::check_wall_budget(
+        "maximum HTTP metadata construction",
+        average,
+        Duration::from_millis(1),
+    );
 }

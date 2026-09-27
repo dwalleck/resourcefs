@@ -213,7 +213,7 @@ fn stress_selection_budget() {
     } else {
         Duration::from_secs(10)
     };
-    wall_budget::check_wall_budget("stress_selection_budget", elapsed, budget);
+    wall_budget::check_wall_budget("selection", elapsed, budget);
 }
 
 #[derive(Debug)]

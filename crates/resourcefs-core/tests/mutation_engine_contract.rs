@@ -573,7 +573,7 @@ async fn operation_journal_budget() {
     }
     let count_elapsed = started.elapsed();
     wall_budget::check_wall_budget(
-        "operation_journal_budget#1",
+        "[C4] 10,000 journal transitions",
         count_elapsed,
         Duration::from_millis(count_budget),
     );
@@ -617,7 +617,7 @@ async fn operation_journal_budget() {
     ));
     let yield_elapsed = started.elapsed();
     wall_budget::check_wall_budget(
-        "operation_journal_budget#2",
+        "[C4] worst-case cache yield",
         yield_elapsed,
         Duration::from_millis(yield_budget),
     );
@@ -659,7 +659,7 @@ async fn operation_journal_budget() {
     ));
     let compare_elapsed = started.elapsed();
     wall_budget::check_wall_budget(
-        "operation_journal_budget#3",
+        "[C4] 64 MiB fingerprint and exact comparison",
         compare_elapsed,
         Duration::from_millis(compare_budget),
     );
@@ -905,7 +905,7 @@ async fn target_mode_outcome_matrix() {
     }
     let mismatch_average = mismatch_started.elapsed() / 6;
     wall_budget::check_wall_budget(
-        "target_mode_outcome_matrix",
+        "[C7] target/outcome dispatch average",
         mismatch_average,
         Duration::from_millis(1),
     );
@@ -1230,7 +1230,7 @@ async fn exact_limit_edit_budget() {
     } else {
         Duration::from_secs(5)
     };
-    wall_budget::check_wall_budget("exact_limit_edit_budget", elapsed, budget);
+    wall_budget::check_wall_budget("64 MiB edit", elapsed, budget);
 }
 
 #[tokio::test]

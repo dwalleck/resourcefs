@@ -684,7 +684,7 @@ async fn reads_maximum_sized_file_within_budget() {
     } else {
         Duration::from_millis(100)
     };
-    wall_budget::check_wall_budget("reads_maximum_sized_file_within_budget", elapsed, budget);
+    wall_budget::check_wall_budget("maximum-sized read", elapsed, budget);
 }
 
 #[tokio::test]
@@ -731,7 +731,7 @@ async fn filesystem_streams_narrow_large_range() {
     } else {
         Duration::from_secs(10)
     };
-    wall_budget::check_wall_budget("filesystem_streams_narrow_large_range", elapsed, budget);
+    wall_budget::check_wall_budget("256 MiB selection", elapsed, budget);
 }
 
 #[cfg(feature = "test-support")]
@@ -2398,7 +2398,7 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
             .await
             .expect("C6 scale search");
         wall_budget::check_wall_budget(
-            &format!("workspace_discovery_scale_is_bounded_and_deterministic#1 run {run}"),
+            &format!("C6 scale search run {run}"),
             started.elapsed(),
             Duration::from_secs(10),
         );
@@ -2419,7 +2419,7 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
         .await
         .expect("C7 scale glob");
     wall_budget::check_wall_budget(
-        "workspace_discovery_scale_is_bounded_and_deterministic#2",
+        "C7 scale glob",
         glob_started.elapsed(),
         Duration::from_secs(10),
     );
@@ -2471,7 +2471,7 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
         "C6 maximum no-match count"
     );
     wall_budget::check_wall_budget(
-        "workspace_discovery_scale_is_bounded_and_deterministic#3",
+        "C6 maximum exact search",
         maximum_started.elapsed(),
         Duration::from_secs(2),
     );

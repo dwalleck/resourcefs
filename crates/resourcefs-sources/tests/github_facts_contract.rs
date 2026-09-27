@@ -1674,7 +1674,7 @@ async fn github_facts_production_budget() -> Result<(), &'static str> {
                 "facts_budget phase=wall native_bytes={NATIVE_BYTES} output_bytes={output_bytes}"
             );
             wall_budget::check_wall_budget(
-                "github_facts_production_budget",
+                "local processing upper bound",
                 elapsed,
                 Duration::from_secs(1),
             );
@@ -1872,7 +1872,7 @@ async fn immutable_commit_production_budget() -> Result<(), &'static str> {
                 "immutable_commit_budget phase=wall body_bytes={COMMIT_BODY_BYTES} output_bytes={output_bytes}"
             );
             wall_budget::check_wall_budget(
-                "immutable_commit_production_budget",
+                "local processing upper bound",
                 elapsed,
                 Duration::from_secs(2),
             );
@@ -1954,7 +1954,7 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
     // reference with 1_024 segments. The sibling `reference_parse_budget`
     // allows 1ms for a 183-byte input; 5ms is ~70x tighter per byte.
     wall_budget::check_wall_budget(
-        "immutable_reference_parse_budget#1",
+        "average parser wall time",
         average,
         Duration::from_millis(5),
     );
@@ -1978,7 +1978,7 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
     // structural cost, so a per-segment regression cannot hide under a bound
     // calibrated on one long segment.
     wall_budget::check_wall_budget(
-        "immutable_reference_parse_budget#2",
+        "adversarial parser wall time",
         worst_average,
         Duration::from_millis(30),
     );
@@ -2022,10 +2022,12 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
     // ~70x headroom and still catches an accidental per-intersection
     // allocation, which is what this phase exists to bound.
     wall_budget::check_wall_budget(
-        "immutable_reference_parse_budget#3",
+        "average control construction/intersection",
         average,
         Duration::from_micros(1),
     );
+    // The helper's line carries the time; this keeps the iteration count.
+    println!("immutable_reference_budget phase=controls iterations={CONTROL_ITERATIONS}");
     Ok(())
 }
 
@@ -3643,11 +3645,7 @@ async fn github_collection_production_budget() {
         output_bytes > 6_000_000,
         "production-size output: {output_bytes}"
     );
-    wall_budget::check_wall_budget_below(
-        "github_collection_production_budget",
-        elapsed,
-        Duration::from_secs(1),
-    );
+    wall_budget::check_wall_budget_below("local processing", elapsed, Duration::from_secs(1));
     // The helper's line carries the time; this keeps the sizes.
     eprintln!("collection_budget phase=wall records=900 output_bytes={output_bytes}");
 }
@@ -5145,11 +5143,7 @@ async fn immutable_source_production_budget() -> Result<(), &'static str> {
             println!(
                 "immutable_source_budget phase=wall native_response_bytes={native_response_bytes} output_bytes={output_bytes}"
             );
-            wall_budget::check_wall_budget(
-                "immutable_source_production_budget#1",
-                elapsed,
-                WALL_LIMIT,
-            );
+            wall_budget::check_wall_budget("source read wall time", elapsed, WALL_LIMIT);
         }
     }
 
@@ -5226,11 +5220,7 @@ async fn immutable_source_production_budget() -> Result<(), &'static str> {
             println!(
                 "immutable_source_budget corner=wide_tree phase=wall native_response_bytes={native_response_bytes} output_bytes={output_bytes}"
             );
-            wall_budget::check_wall_budget(
-                "immutable_source_production_budget#2",
-                elapsed,
-                WALL_LIMIT,
-            );
+            wall_budget::check_wall_budget("source read wall time, wide tree", elapsed, WALL_LIMIT);
         }
     }
 

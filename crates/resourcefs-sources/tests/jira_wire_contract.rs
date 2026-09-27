@@ -313,5 +313,5 @@ fn canonical_json_maximum_fixture() {
     } else {
         Duration::from_secs(2)
     };
-    wall_budget::check_wall_budget("canonical_json_maximum_fixture", started.elapsed(), budget);
+    wall_budget::check_wall_budget("maximum canonical JSON", started.elapsed(), budget);
 }

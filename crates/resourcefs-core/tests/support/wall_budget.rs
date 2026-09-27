@@ -27,12 +27,20 @@ use resourcefs_core::test_support::wall_budget::{
 
 /// Checks `elapsed <= budget` under the environment's policy.
 ///
+/// The measurement is named after the running test, taken from the test
+/// thread's name, which libtest and nextest both set to the test's path; call
+/// this on that thread, not from a spawned one. `label` is free text that
+/// says what was measured, typically the plan criterion and subject the old
+/// assertion message carried (`"[C4] 10,000 journal transitions"`), or `""`.
+/// The line reads `budget <test>[ <label>]: <elapsed> against <budget> ...`.
+///
 /// # Panics
 ///
 /// Panics when the policy fails the measurement, when either variable is
-/// invalid, or when the report file cannot be written.
-pub fn check_wall_budget(name: &str, elapsed: Duration, budget: Duration) {
-    apply(Bound::AtMost, name, elapsed, budget);
+/// invalid, when called off a named test thread, or when the report file
+/// cannot be written.
+pub fn check_wall_budget(label: &str, elapsed: Duration, budget: Duration) {
+    apply(Bound::AtMost, label, elapsed, budget);
 }
 
 /// Checks `elapsed < budget` under the environment's policy, for a ceiling
@@ -41,13 +49,32 @@ pub fn check_wall_budget(name: &str, elapsed: Duration, budget: Duration) {
 /// # Panics
 ///
 /// As [`check_wall_budget`].
-pub fn check_wall_budget_below(name: &str, elapsed: Duration, budget: Duration) {
-    apply(Bound::Below, name, elapsed, budget);
+pub fn check_wall_budget_below(label: &str, elapsed: Duration, budget: Duration) {
+    apply(Bound::Below, label, elapsed, budget);
 }
 
-fn apply(bound: Bound, name: &str, elapsed: Duration, budget: Duration) {
+/// The running test's name, with `label` appended when there is one.
+///
+/// # Panics
+///
+/// Panics on an unnamed thread: the harness names each test's thread, so an
+/// unnamed one means the call moved off it and the line would not say which
+/// test it measured.
+fn measurement_name(label: &str) -> String {
+    let current = std::thread::current();
+    let test = current.name().unwrap_or_else(|| {
+        panic!("check_wall_budget must run on the test's own thread, which the harness names")
+    });
+    if label.is_empty() {
+        test.to_owned()
+    } else {
+        format!("{test} {label}")
+    }
+}
+
+fn apply(bound: Bound, label: &str, elapsed: Duration, budget: Duration) {
     let policy = BudgetPolicy::from_environment();
-    let judgement = judge(policy, bound, name, elapsed, budget);
+    let judgement = judge(policy, bound, &measurement_name(label), elapsed, budget);
     if let Some(path) = report_path() {
         append_report_line(path, judgement.line());
     }

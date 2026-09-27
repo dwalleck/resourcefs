@@ -720,7 +720,7 @@ async fn query_production_scale_thousand_rows_preserves_order_and_wall_bound() {
     assert_eq!(listener.requests().len(), 10);
     let bound = Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 2 });
     wall_budget::check_wall_budget(
-        "query_production_scale_thousand_rows_preserves_order_and_wall_bound",
+        "C6/C9 1,000 rows x 4 KiB, includes loopback TLS",
         elapsed,
         bound,
     );

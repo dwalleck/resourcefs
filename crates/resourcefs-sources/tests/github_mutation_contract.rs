@@ -890,7 +890,7 @@ async fn github_cache_namespace_removal_budget() {
     );
     let elapsed = started.elapsed();
     wall_budget::check_wall_budget(
-        "github_cache_namespace_removal_budget",
+        "[C13] 500-of-1,000 cache removal",
         elapsed,
         Duration::from_millis(50),
     );
@@ -1147,7 +1147,7 @@ async fn creation_document_budget() {
     MutationAdapter::validate_write(&source, &issue, &document).expect("[C6] maximum document");
     let elapsed = started.elapsed();
     wall_budget::check_wall_budget(
-        "creation_document_budget",
+        "[C6] 64 MiB frontmatter/body validation",
         elapsed,
         Duration::from_millis(100),
     );

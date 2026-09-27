@@ -396,7 +396,7 @@ async fn search_and_glob_are_session_isolated() {
         .await
         .expect("C8 selected search");
     wall_budget::check_wall_budget(
-        "search_and_glob_are_session_isolated#1",
+        "C8 search",
         search_started.elapsed(),
         Duration::from_secs(10),
     );
@@ -434,7 +434,7 @@ async fn search_and_glob_are_session_isolated() {
         .await
         .expect("C8 session glob");
     wall_budget::check_wall_budget(
-        "search_and_glob_are_session_isolated#2",
+        "C8 glob",
         glob_started.elapsed(),
         Duration::from_millis(250),
     );
@@ -495,7 +495,7 @@ async fn search_and_glob_are_session_isolated() {
     let maximum_peak = measured_peak_bytes(allocation_baseline);
     assert_eq!(maximum_search.total_records(), 0, "C8 maximum no-match");
     wall_budget::check_wall_budget(
-        "search_and_glob_are_session_isolated#3",
+        "C8 maximum search",
         maximum_started.elapsed(),
         Duration::from_secs(10),
     );
@@ -711,7 +711,7 @@ async fn glob_snapshot_excludes_its_recovery_artifact() {
         .expect("C8 spilling glob");
     let peak_bytes = measured_peak_bytes(allocation_baseline);
     wall_budget::check_wall_budget(
-        "glob_snapshot_excludes_its_recovery_artifact",
+        "C8 999-entry glob",
         started.elapsed(),
         Duration::from_millis(250),
     );

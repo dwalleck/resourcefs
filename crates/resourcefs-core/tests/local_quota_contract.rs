@@ -217,7 +217,7 @@ async fn scratch_name_enumeration_fits_its_budget() {
         std::time::Duration::from_millis(1)
     };
     wall_budget::check_wall_budget_below(
-        "scratch_name_enumeration_fits_its_budget",
+        "scratch names at the production ceiling",
         elapsed,
         budget,
     );

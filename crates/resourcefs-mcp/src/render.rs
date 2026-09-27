@@ -723,7 +723,7 @@ mod tests {
         } else {
             Duration::from_millis(25)
         };
-        wall_budget::check_wall_budget("maximum_page_render_stays_within_budget", elapsed, budget);
+        wall_budget::check_wall_budget("maximum-page render", elapsed, budget);
     }
 
     struct Fixture {
@@ -1271,11 +1271,7 @@ mod tests {
         } else {
             Duration::from_millis(25)
         };
-        wall_budget::check_wall_budget(
-            "maximum_search_page_render_stays_within_budget",
-            elapsed,
-            budget,
-        );
+        wall_budget::check_wall_budget("maximum-page render", elapsed, budget);
     }
 
     #[tokio::test]
@@ -1314,11 +1310,7 @@ mod tests {
         } else {
             Duration::from_millis(25)
         };
-        wall_budget::check_wall_budget(
-            "maximum_glob_page_render_stays_within_budget",
-            elapsed,
-            budget,
-        );
+        wall_budget::check_wall_budget("maximum-page render", elapsed, budget);
     }
 
     /// A source whose projection names a further upstream page.
@@ -1518,7 +1510,7 @@ mod tests {
         }
         let average = started.elapsed() / iterations;
         wall_budget::check_wall_budget(
-            "creation_receipt_renders_nullable_tag_and_canonical_reference",
+            "[C16] ordinary mutation rendering average",
             average,
             Duration::from_millis(10),
         );

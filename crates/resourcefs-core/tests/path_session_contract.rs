@@ -626,11 +626,7 @@ async fn artifact_catalog_is_ordered_and_live() {
         canonical_payload_bytes <= 256 * 1024,
         "C15 canonical address payload exceeds 256 KiB"
     );
-    wall_budget::check_wall_budget(
-        "artifact_catalog_is_ordered_and_live",
-        elapsed,
-        Duration::from_millis(250),
-    );
+    wall_budget::check_wall_budget("C15 catalog", elapsed, Duration::from_millis(250));
 
     let foreign_storage = Arc::new(FakeStorage::default());
     foreign_storage.skip_write_delays();

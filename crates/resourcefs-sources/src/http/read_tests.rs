@@ -501,11 +501,7 @@ fn read_only_replay_shares_384kib_payload_across_10000_copies() {
     }
     let elapsed = started.elapsed();
     let ceiling = Duration::from_secs(if cfg!(debug_assertions) { 5 } else { 1 });
-    wall_budget::check_wall_budget(
-        "read_only_replay_shares_384kib_payload_across_10000_copies",
-        elapsed,
-        ceiling,
-    );
+    wall_budget::check_wall_budget("C7 384 KiB / 10,000 replay copies", elapsed, ceiling);
 }
 
 #[tokio::test]

@@ -280,11 +280,7 @@ fn parses_production_shaped_reference_within_budget() {
         address_observation(reference.workspace_address().expect("workspace address")),
         ("relative", file_name, None)
     );
-    wall_budget::check_wall_budget(
-        "parses_production_shaped_reference_within_budget",
-        elapsed,
-        Duration::from_millis(5),
-    );
+    wall_budget::check_wall_budget("4 KiB reference parse", elapsed, Duration::from_millis(5));
 }
 
 /// Expected outcome for one row of the hand-authored `local://` grammar oracle.
@@ -583,11 +579,7 @@ fn maximum_reference_parses_within_boundary_budget() {
     PathReference::parse(input).expect("maximum reference must parse");
     let elapsed = started.elapsed();
 
-    wall_budget::check_wall_budget(
-        "maximum_reference_parses_within_boundary_budget",
-        elapsed,
-        Duration::from_millis(50),
-    );
+    wall_budget::check_wall_budget("64 KiB reference parse", elapsed, Duration::from_millis(50));
 }
 
 /// C19 — the encoded-separator guard covers exactly the forms that reach

@@ -554,12 +554,12 @@ mod tests {
 
         let scale = if cfg!(debug_assertions) { 20 } else { 1 };
         wall_budget::check_wall_budget(
-            "catalog_production_budget#1",
+            "maximum source catalog",
             source_elapsed,
             Duration::from_millis(250) * scale,
         );
         wall_budget::check_wall_budget(
-            "catalog_production_budget#2",
+            "maximum workspace catalog",
             workspace_elapsed,
             Duration::from_millis(25) * scale,
         );

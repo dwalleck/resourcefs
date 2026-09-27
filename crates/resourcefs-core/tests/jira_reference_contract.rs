@@ -224,7 +224,7 @@ fn maximum_jira_reference_parse_stays_within_budget() {
         PathReference::parse(&reference).expect("maximum Jira reference");
     }
     wall_budget::check_wall_budget_below(
-        "maximum_jira_reference_parse_stays_within_budget",
+        "1,000 maximum Jira references",
         started.elapsed(),
         Duration::from_secs(2),
     );

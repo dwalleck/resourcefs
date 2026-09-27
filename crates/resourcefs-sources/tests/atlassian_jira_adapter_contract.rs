@@ -765,11 +765,7 @@ fn mount_validation_maximum_stays_within_budget() {
     } else {
         Duration::from_millis(50)
     };
-    wall_budget::check_wall_budget(
-        "mount_validation_maximum_stays_within_budget",
-        elapsed,
-        budget,
-    );
+    wall_budget::check_wall_budget("maximum Site Mount validation", elapsed, budget);
 }
 
 /// A 2xx that is not exactly `200` is a success, not an outage.

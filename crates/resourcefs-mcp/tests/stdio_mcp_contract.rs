@@ -1763,7 +1763,7 @@ fn renders_complete_success_and_errors() {
             "maximum-sized content changed"
         );
         wall_budget::check_wall_budget(
-            "renders_complete_success_and_errors",
+            "maximum-sized MCP read",
             elapsed,
             Duration::from_millis(250),
         );

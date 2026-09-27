@@ -1881,7 +1881,7 @@ mod tests {
         let started = Instant::now();
         ProfileDocument::from_slice_in(&encoded, fixture.path()).expect("maximum GitHub profile");
         wall_budget::check_wall_budget(
-            "github_profile_validation_budget",
+            "4,096-repository profile validation",
             started.elapsed(),
             Duration::from_millis(50),
         );

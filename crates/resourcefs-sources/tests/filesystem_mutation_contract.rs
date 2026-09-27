@@ -606,19 +606,16 @@ async fn exact_limit_write_budget_and_one_over_rejection() {
     // Serialising it was not the lever: the release leg already ran this
     // target alone under `--test-threads=1` when it missed. The lever is
     // where it is enforced. rfs-1e6h raised it to 30 s; rfs-cn1r restores
-    // 5 s because hosted CI now only reports it (`RFS_BUDGETS=report`) and a
-    // controlled host enforces it. Five release runs on a workstation at load
-    // average 26 measured 83-85 ms.
+    // 5 s because contended hosts now only report it (`RFS_BUDGETS=report`,
+    // failing only at 10x) and 1x enforcement moves to the dedicated benchmark
+    // runner of rfs-63xx, not yet built. Five release runs on a workstation at
+    // load average 26 measured 83-85 ms.
     let budget = if cfg!(debug_assertions) {
         Duration::from_secs(100)
     } else {
         Duration::from_secs(5)
     };
-    wall_budget::check_wall_budget(
-        "exact_limit_write_budget_and_one_over_rejection",
-        elapsed,
-        budget,
-    );
+    wall_budget::check_wall_budget("64 MiB create", elapsed, budget);
 
     let error = WriteRequest::new(
         reference("over.txt"),
@@ -693,7 +690,7 @@ async fn replacement_has_no_missing_window() {
     assert_eq!(invalid.load(Ordering::Acquire), 0);
     assert_eq!(read_errors.load(Ordering::Acquire), 0);
     wall_budget::check_wall_budget(
-        "replacement_has_no_missing_window",
+        "slowest one-MiB replacement",
         maximum_replacement,
         Duration::from_secs(5),
     );

@@ -139,8 +139,9 @@ impl SessionStorage for MemoryStorage {
 /// workstation `100 ms` is a real assertion; on a shared three-core CI runner
 /// executing hundreds of test processes the same number is a coin flip, and
 /// every raise made to quiet it (rfs-1e6h) weakened what it could catch.
-/// Enforcement therefore belongs to a controlled host, and a shared runner
-/// should report the number without failing on it.
+/// Enforcement therefore belongs to a quiet dedicated host (rfs-63xx, not
+/// yet built), and a contended one should report the number without failing
+/// on it short of a gross regression.
 ///
 /// This module is the policy and holds no I/O, because `resourcefs-core`'s
 /// modules hold no platform I/O (`core_holds_no_platform_io`). Test targets
@@ -165,7 +166,7 @@ impl SessionStorage for MemoryStorage {
 /// picking a policy; `scripts/ci-gates.py` rejects it before building.
 ///
 /// Every measurement produces one line,
-/// `budget <name>: <elapsed> against <budget> (<verdict>)`.
+/// `budget <test>[ <label>]: <elapsed> against <budget> (<verdict>)`.
 ///
 /// Only host-dominated wall-clock ceilings belong here. Allocation ceilings,
 /// timeout and cancellation contracts ("refused without waiting for the
@@ -181,6 +182,15 @@ pub mod wall_budget {
     /// to by the test-target support module.
     pub const BUDGET_REPORT_VARIABLE: &str = "RFS_BUDGET_REPORT";
 
+    /// The [`BUDGET_POLICY_VARIABLE`] value for [`BudgetPolicy::Report`], also
+    /// what an unset variable means. `scripts/ci-gates.py` reads this
+    /// declaration, so the policy names and the default live in one place.
+    pub const REPORT_POLICY: &str = "report";
+
+    /// The [`BUDGET_POLICY_VARIABLE`] value for [`BudgetPolicy::Enforce`].
+    /// `scripts/ci-gates.py` reads this declaration too.
+    pub const ENFORCE_POLICY: &str = "enforce";
+
     /// How far over its budget a measurement may be in report mode before it
     /// fails anyway.
     ///
@@ -192,6 +202,9 @@ pub mod wall_budget {
     /// 505 ms on windows-latest against today's 100 ms: about 5x. The rows
     /// are dominated by real work rather than scheduling, so one taking 10x
     /// its budget is a code regression, not a noisy host.
+    ///
+    /// `scripts/ci-gates.py` reads this declaration for its startup banner;
+    /// keep it a plain integer literal.
     pub const REPORT_HARD_CEILING_FACTOR: u32 = 10;
 
     /// Whether an over-budget measurement fails or is only reported.
@@ -212,8 +225,8 @@ pub mod wall_budget {
         /// Returns the rejected value when it names no policy.
         pub fn parse(value: Option<&str>) -> Result<Self, String> {
             match value {
-                None | Some("report") => Ok(Self::Report),
-                Some("enforce") => Ok(Self::Enforce),
+                None | Some(REPORT_POLICY) => Ok(Self::Report),
+                Some(ENFORCE_POLICY) => Ok(Self::Enforce),
                 Some(other) => Err(other.to_owned()),
             }
         }
