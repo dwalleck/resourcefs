@@ -4,12 +4,10 @@ use super::*;
 use crate::acquisition::{AcquisitionInput, describe_limit_rejection};
 
 /// Mirrors the error `ReadEngine` reports at its next liveness checkpoint after
-/// cancellation, preserving the established read cancellation category.
+/// cancellation: a stopped read is `cancelled`, never an inactive Path Session
+/// (rfs-x2gt).
 fn cancelled_read_error() -> ResourceError {
-    ResourceError::new(
-        ErrorCategory::SourceUnavailable,
-        "Path Session is no longer active",
-    )
+    ResourceError::new(ErrorCategory::Cancelled, "read operation was cancelled")
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]

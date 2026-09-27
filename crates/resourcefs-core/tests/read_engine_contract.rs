@@ -300,13 +300,119 @@ async fn read_forwards_the_callers_guard_to_the_source() {
     // comes from the engine's post-read liveness check rather than from the
     // source. A source that honours the guard — the HTTPS one does — refuses
     // with `cancelled` from inside the read instead, which is what
-    // `resourcefs-sources` fences end to end.
+    // `resourcefs-sources` fences end to end. Either way the caller learns it
+    // was cancelled, not that the session died (rfs-x2gt).
     assert_eq!(
         refusal.category(),
-        ErrorCategory::SourceUnavailable,
+        ErrorCategory::Cancelled,
         "the engine's own liveness check refuses a cancelled operation: {}",
         refusal.message()
     );
+}
+
+/// A source that ignores its guard: it cancels the caller's operation from
+/// inside the read when told to, then returns successfully anyway. That is the
+/// case rfs-x2gt names as the one that makes the defect observable — the
+/// refusal can come only from the engine's own liveness check, never from the
+/// source — and it needs no timing, unlike a source that waits to be cancelled.
+struct GuardIgnoringSource {
+    cancel_while_reading: Option<OperationGuard>,
+}
+
+#[async_trait]
+impl SourceAdapter for GuardIgnoringSource {
+    async fn read(
+        &self,
+        _reference: &PathReference,
+        _operation: &OperationGuard,
+        _acquisition: Option<&resourcefs_core::ReadAcquisitionLimits>,
+    ) -> Result<SourceResource, ResourceError> {
+        if let Some(guard) = &self.cancel_while_reading {
+            guard.cancel();
+        }
+        SourceResource::text(workspace_reference(), "fixture\n".to_owned())
+    }
+}
+
+fn engine_over(source: Arc<dyn SourceAdapter>) -> (ReadEngine, PathSession) {
+    let limits = ServerLimits::default();
+    let session = PathSession::new(
+        SessionToken::parse("00000000000000000000000000000042").expect("session token"),
+        Arc::new(MemoryStorage::default()),
+        limits,
+    );
+    (ReadEngine::new(source, session.clone(), limits), session)
+}
+
+fn fixture_request() -> ReadRequest {
+    ReadRequest {
+        reference: workspace_reference(),
+        limits: TextLimits::default(),
+        numbered: false,
+        acquisition: None,
+    }
+}
+
+/// rfs-x2gt: a read whose operation was cancelled reports `cancelled`, with a
+/// message naming cancellation, rather than `source_unavailable` dressed as an
+/// inactive Path Session. Anchored at `ReadEngine`, the level the claim names.
+#[tokio::test]
+async fn cancelled_read_is_reported_as_cancelled() {
+    let guard = OperationGuard::new();
+    let (engine, _session) = engine_over(Arc::new(GuardIgnoringSource {
+        cancel_while_reading: Some(guard.clone()),
+    }));
+
+    let refusal = engine
+        .read(fixture_request(), &guard)
+        .await
+        .expect_err("a read cancelled mid-flight is refused");
+
+    assert_eq!(
+        refusal.category(),
+        ErrorCategory::Cancelled,
+        "cancellation must not be reported as an inactive session: {}",
+        refusal.message()
+    );
+    assert_eq!(refusal.message(), "read operation was cancelled");
+}
+
+/// Positive control for the fence above: the same guard-ignoring source, left
+/// alone, completes the read, so the `cancelled` refusal is not an unrelated
+/// failure that happened to carry the right category.
+#[tokio::test]
+async fn uncancelled_read_through_a_guard_ignoring_source_completes() {
+    let (engine, _session) = engine_over(Arc::new(GuardIgnoringSource {
+        cancel_while_reading: None,
+    }));
+
+    let resource = engine
+        .read(fixture_request(), &OperationGuard::new())
+        .await
+        .expect("an uncancelled read completes");
+
+    assert_eq!(resource.content(), "fixture\n");
+}
+
+/// rfs-x2gt: a genuinely inactive Path Session keeps its own category and its
+/// existing message, so the two refusals differ by category and by text.
+#[tokio::test]
+async fn inactive_session_is_reported_as_source_unavailable() {
+    let (engine, session) = engine_over(Arc::new(GuardIgnoringSource {
+        cancel_while_reading: None,
+    }));
+    session
+        .mark_disconnected()
+        .await
+        .expect("session disconnects");
+
+    let refusal = engine
+        .read(fixture_request(), &OperationGuard::new())
+        .await
+        .expect_err("a disconnected session refuses reads");
+
+    assert_eq!(refusal.category(), ErrorCategory::SourceUnavailable);
+    assert_eq!(refusal.message(), "Path Session is no longer active");
 }
 
 /// A source whose projection is complete on its side but names a further

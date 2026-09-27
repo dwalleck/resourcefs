@@ -353,13 +353,24 @@ fn count_line_terminators(content: &str) -> u64 {
 }
 
 fn ensure_live(session: &PathSession, operation: &OperationGuard) -> Result<(), ResourceError> {
-    if !operation.is_active() || !session.is_active() {
+    // Cancellation is checked first and reported under its own category: a
+    // caller that stopped the read must not be told the Path Session died
+    // underneath it (rfs-x2gt). The session check keeps its message so the two
+    // cases stay distinguishable by category and by text.
+    if !operation.is_active() {
+        return Err(cancelled());
+    }
+    if !session.is_active() {
         return Err(ResourceError::new(
             ErrorCategory::SourceUnavailable,
             "Path Session is no longer active",
         ));
     }
     Ok(())
+}
+
+fn cancelled() -> ResourceError {
+    ResourceError::new(ErrorCategory::Cancelled, "read operation was cancelled")
 }
 
 fn continuation_overflow() -> ResourceError {
