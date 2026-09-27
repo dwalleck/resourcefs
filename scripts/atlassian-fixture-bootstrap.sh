@@ -444,6 +444,26 @@ response_id() {
   fi
   printf '%s' "$value"
 }
+# Restores one free-text manifest field (name, title, marker) read through jq
+# @tsv and `read -r`, in place, with no subprocess (rfs-cbz9). @tsv escapes
+# exactly backslash, tab, newline and CR as \\ \t \n \r -- identical on jq 1.6,
+# 1.7.1 and 1.8.2 -- and `read -r` keeps them escaped, so each would reach the
+# upstream as a literal escape. Manifest `text` admits no other control
+# character, so \001 can hold an escaped backslash while the rest are restored.
+# The jq side prefixes the field with "=": tab is IFS whitespace, so without it
+# an empty field would collapse into its neighbour and shift the rest.
+tsv_text() {
+  local tsv_target=$1 tsv_value=$2 tsv_bs='\' tsv_held=$'\001'
+  [[ "$tsv_value" == =* ]] || die "invalid_manifest"
+  tsv_value=${tsv_value#=}
+  tsv_value=${tsv_value//"$tsv_bs$tsv_bs"/"$tsv_held"}
+  tsv_value=${tsv_value//"${tsv_bs}t"/$'\t'}
+  tsv_value=${tsv_value//"${tsv_bs}n"/$'\n'}
+  tsv_value=${tsv_value//"${tsv_bs}r"/$'\r'}
+  tsv_value=${tsv_value//"$tsv_held"/"$tsv_bs"}
+  printf -v "$tsv_target" '%s' "$tsv_value"
+}
+
 decode_json_field() {
   local encoded=$1
   jq -Rrn --arg encoded "$encoded" '$encoded | @base64d' 2>/dev/null ||
@@ -532,9 +552,11 @@ recover_pending_receipt() {
   if [[ "$kind" == page ]]; then
     record=$(jq -er --arg id "$logical" '
       [.confluence.pages[] | select(.id == $id)] |
-      if length == 1 then .[0] | [.space,.title,.marker,(.body|tojson|@base64),(.parent // "")] | @tsv else error end
+      if length == 1 then .[0] | [.space,("=" + .title),("=" + .marker),(.body|tojson|@base64),(.parent // "")] | @tsv else error end
     ' "$MANIFEST_PATH" 2>/dev/null) || die "pending_manifest_missing"
     IFS=$'\t' read -r space title marker body manifest_parent <<<"$record"
+    tsv_text title "$title"
+    tsv_text marker "$marker"
     body=$(decode_json_field "$body")
     if [[ -z "$manifest_parent" ]]; then
       [[ -z "$parent" ]] || die "identity_mismatch logical=page"
@@ -546,9 +568,11 @@ recover_pending_receipt() {
     object_response=$RESPONSE_FILE
     space_record=$(jq -er --arg id "$space" '
       [.confluence.spaces[] | select(.id == $id)] |
-      if length == 1 then .[0] | [.key,.name,.marker] | @tsv else error end
+      if length == 1 then .[0] | [.key,("=" + .name),("=" + .marker)] | @tsv else error end
     ' "$MANIFEST_PATH" 2>/dev/null) || die "pending_manifest_missing"
     IFS=$'\t' read -r space_key space_name space_marker <<<"$space_record"
+    tsv_text space_name "$space_name"
+    tsv_text space_marker "$space_marker"
     api_request provisioner GET "/wiki/api/v2/spaces/${container}?description-format=plain" '' 200 pending_space_get
     space_response=$RESPONSE_FILE
     homepage=$(jq -er '
@@ -574,9 +598,10 @@ recover_pending_receipt() {
     if [[ -n "$parent" ]]; then
       parent_record=$(jq -er --arg id "$manifest_parent" '
         [.confluence.pages[] | select(.id == $id)] |
-        if length == 1 then .[0] | [.space,.marker] | @tsv else error end
+        if length == 1 then .[0] | [.space,("=" + .marker)] | @tsv else error end
       ' "$MANIFEST_PATH" 2>/dev/null) || die "pending_manifest_missing"
       IFS=$'\t' read -r parent_space parent_marker <<<"$parent_record"
+      tsv_text parent_marker "$parent_marker"
       [[ "$parent_space" == "$space" ]] || die "identity_mismatch logical=page_parent"
       api_request provisioner GET "/wiki/api/v2/pages/${parent}?body-format=storage" '' 200 pending_parent_page_get
       parent_response=$RESPONSE_FILE
@@ -596,9 +621,10 @@ recover_pending_receipt() {
   else
     record=$(jq -er --arg id "$logical" '
       [.confluence.comments[] | select(.id == $id)] |
-      if length == 1 then .[0] | [.page,.marker,(.body|tojson|@base64),(.parent // "")] | @tsv else error end
+      if length == 1 then .[0] | [.page,("=" + .marker),(.body|tojson|@base64),(.parent // "")] | @tsv else error end
     ' "$MANIFEST_PATH" 2>/dev/null) || die "pending_manifest_missing"
     IFS=$'\t' read -r page marker body manifest_parent <<<"$record"
+    tsv_text marker "$marker"
     body=$(decode_json_field "$body")
     if [[ -z "$manifest_parent" ]]; then
       [[ -z "$parent" ]] || die "identity_mismatch logical=comment"
@@ -1076,6 +1102,8 @@ bootstrap_jira_projects() {
   [[ "$account_id" =~ ^[A-Za-z0-9:_-]{1,128}$ ]] ||
     die "invalid_response operation=account_get"
   while IFS=$'\t' read -r id key name marker; do
+    tsv_text name "$name"
+    tsv_text marker "$marker"
     find_jira_project "$key" "$marker"
     if [[ -n "$FOUND_ID" ]]; then
       project_id=$FOUND_ID
@@ -1107,7 +1135,7 @@ bootstrap_jira_projects() {
     JIRA_PROJECT_IDS[$id]=$project_id
     JIRA_PROJECT_KEYS[$id]=$key
     load_jira_issue_types "$id" "$key"
-  done < <(jq -r '.jira.projects[] | [.id,.key,.name,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.projects[] | [.id,.key,("=" + .name),("=" + .marker)] | @tsv' "$MANIFEST_PATH")
 }
 
 bootstrap_jira_issues() {
@@ -1117,6 +1145,7 @@ bootstrap_jira_issues() {
   # with the description in one base64 JSON object, decoded by the same single
   # jq call per row, and is only ever read back inside jq.
   while IFS=$'\t' read -r id project marker issue parent; do
+    tsv_text marker "$marker"
     issue=$(decode_json_field "$issue")
     local project_key=${JIRA_PROJECT_KEYS[$project]-}
     [[ -n "$project_key" ]] || die "manifest_parent_missing logical=issue"
@@ -1181,6 +1210,7 @@ bootstrap_jira_issues() {
 
     local comment_id comment_marker comment_body comment_id_value
     while IFS=$'\t' read -r comment_id comment_marker comment_body; do
+      tsv_text comment_marker "$comment_marker"
       comment_body=$(decode_json_field "$comment_body")
       find_jira_comment "$issue_id" "$comment_marker"
       if [[ -n "$FOUND_ID" ]]; then
@@ -1207,8 +1237,8 @@ bootstrap_jira_issues() {
       [[ "$comment_id_value" =~ ^[0-9]+$ ]] ||
         die "invalid_response operation=comment_create"
       JIRA_COMMENT_IDS[$comment_id]=$comment_id_value
-    done < <(jq -r --arg id "$id" '.jira.issues[] | select(.id==$id) | (.comments // [])[]? | [.id,.marker,(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
-  done < <(jq -r '.jira.issues[] | [.id,.project,.marker,({summary,description}|tojson|@base64),(.parent // "null")] | @tsv' "$MANIFEST_PATH")
+    done < <(jq -r --arg id "$id" '.jira.issues[] | select(.id==$id) | (.comments // [])[]? | [.id,("=" + .marker),(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.issues[] | [.id,.project,("=" + .marker),({summary,description}|tojson|@base64),(.parent // "null")] | @tsv' "$MANIFEST_PATH")
 }
 
 bootstrap_confluence_spaces() {
@@ -1218,6 +1248,8 @@ bootstrap_confluence_spaces() {
     elif (.homepageId|type) == "string" and (.homepageId|test("^[0-9]+$")) then .homepageId
     else error end'
   while IFS=$'\t' read -r id key name marker private; do
+    tsv_text name "$name"
+    tsv_text marker "$marker"
     find_confluence_space "$key" "$marker"
     space_id=$FOUND_ID
     if [[ -n "$space_id" ]]; then
@@ -1262,12 +1294,14 @@ bootstrap_confluence_spaces() {
     fi
     [[ "$space_id" =~ ^[0-9]+$ ]] || die "invalid_response operation=space_create"
     CONF_SPACE_IDS[$id]=$space_id
-  done < <(jq -r '.confluence.spaces[] | [.id,.key,.name,.marker,.private] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.spaces[] | [.id,.key,("=" + .name),("=" + .marker),.private] | @tsv' "$MANIFEST_PATH")
 }
 
 bootstrap_confluence_pages() {
   local id space title marker parent body response_body page_id parent_id homepage
   while IFS=$'\t' read -r id space title marker parent response_body; do
+    tsv_text title "$title"
+    tsv_text marker "$marker"
     response_body=$(decode_json_field "$response_body")
     local space_id=${CONF_SPACE_IDS[$space]-}
     [[ -n "$space_id" ]] || die "manifest_parent_missing logical=page"
@@ -1310,12 +1344,13 @@ bootstrap_confluence_pages() {
     fi
     [[ "$page_id" =~ ^[0-9]+$ ]] || die "invalid_response operation=page_create"
     CONF_PAGE_IDS[$id]=$page_id
-  done < <(jq -r '.confluence.pages[] | [.id,.space,.title,.marker,(.parent // "null"),(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.pages[] | [.id,.space,("=" + .title),("=" + .marker),(.parent // "null"),(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
 }
 
 bootstrap_confluence_comments() {
   local id page marker expected_body parent request_body page_id comment_id parent_id
   while IFS=$'\t' read -r id page marker expected_body parent; do
+    tsv_text marker "$marker"
     expected_body=$(decode_json_field "$expected_body")
     page_id=${CONF_PAGE_IDS[$page]-}
     [[ -n "$page_id" ]] || die "manifest_parent_missing logical=comment"
@@ -1355,7 +1390,7 @@ bootstrap_confluence_comments() {
     fi
     [[ "$comment_id" =~ ^[0-9]+$ ]] || die "invalid_response operation=comment_create"
     CONF_COMMENT_IDS[$id]=$comment_id
-  done < <(jq -r '.confluence.comments[] | [.id,.page,.marker,(.body|tojson|@base64),(.parent // "null")] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.comments[] | [.id,.page,("=" + .marker),(.body|tojson|@base64),(.parent // "null")] | @tsv' "$MANIFEST_PATH")
 }
 
 write_state() {
@@ -1487,13 +1522,15 @@ load_state() {
 verify_jira() {
   local id key name marker issue_id issue project parent parent_id comment_id comment_body issue_logical
   while IFS=$'\t' read -r id key name marker; do
+    tsv_text name "$name"
+    tsv_text marker "$marker"
     api_request provisioner GET "/rest/api/3/project/${key}" '' 200 project_get
     jq -e --arg expected_id "${JIRA_PROJECT_IDS[$id]-}" --arg expected_key "$key" \
       --arg expected_name "$name" --arg expected_marker "$marker" '
         .id == $expected_id and .key == $expected_key and
         .name == $expected_name and .description == $expected_marker
       ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "authority_mismatch logical=project"
-  done < <(jq -r '.jira.projects[] | [.id,.key,.name,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.projects[] | [.id,.key,("=" + .name),("=" + .marker)] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r id issue project parent; do
     issue=$(decode_json_field "$issue")
@@ -1527,21 +1564,24 @@ verify_jira() {
 verify_jira_pagination() {
   local id key marker project issue_id comment_id issue_logical
   while IFS=$'\t' read -r id key marker; do
+    tsv_text marker "$marker"
     find_jira_project "$key" "$marker"
     [[ "$FOUND_ID" == "${JIRA_PROJECT_IDS[$id]-}" ]] ||
       die "pagination_authority logical=project"
-  done < <(jq -r '.jira.projects[] | [.id,.key,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.projects[] | [.id,.key,("=" + .marker)] | @tsv' "$MANIFEST_PATH")
   while IFS=$'\t' read -r id project marker; do
+    tsv_text marker "$marker"
     find_jira_issue "${JIRA_PROJECT_KEYS[$project]-}" "$marker"
     [[ "$FOUND_ID" == "${JIRA_ISSUE_IDS[$id]-}" && "$FOUND_KEY" == "${JIRA_ISSUE_KEYS[$id]-}" ]] ||
       die "pagination_authority logical=issue"
-  done < <(jq -r '.jira.issues[] | [.id,.project,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.issues[] | [.id,.project,("=" + .marker)] | @tsv' "$MANIFEST_PATH")
   while IFS=$'\t' read -r comment_id issue_logical marker; do
+    tsv_text marker "$marker"
     issue_id=${JIRA_ISSUE_IDS[$issue_logical]-}
     find_jira_comment "$issue_id" "$marker"
     [[ "$FOUND_ID" == "${JIRA_COMMENT_IDS[$comment_id]-}" ]] ||
       die "pagination_authority logical=comment"
-  done < <(jq -r '.jira.issues[] as $issue | ($issue.comments // [])[]? | [.id,$issue.id,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.issues[] as $issue | ($issue.comments // [])[]? | [.id,$issue.id,("=" + .marker)] | @tsv' "$MANIFEST_PATH")
 }
 
 verify_confluence() {
@@ -1551,6 +1591,8 @@ verify_confluence() {
     elif (.homepageId|type) == "string" and (.homepageId|test("^[0-9]+$")) then .homepageId
     else error end'
   while IFS=$'\t' read -r id key name marker; do
+    tsv_text name "$name"
+    tsv_text marker "$marker"
     sid=${CONF_SPACE_IDS[$id]-}
     api_request provisioner GET "/wiki/api/v2/spaces/${sid}?description-format=plain" '' 200 space_get
     jq -e --arg expected_id "$sid" --arg expected_key "$key" --arg expected_name "$name" --arg expected_marker "$marker" '
@@ -1563,9 +1605,10 @@ verify_confluence() {
     ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "authority_mismatch logical=space"
     homepage=$(response_string "$homepage_validate" space_get)
     CONF_SPACE_HOMEPAGE[$id]=$homepage
-  done < <(jq -r '.confluence.spaces[] | [.id,.key,.name,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.spaces[] | [.id,.key,("=" + .name),("=" + .marker)] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r id title space parent expected; do
+    tsv_text title "$title"
     expected=$(decode_json_field "$expected")
     page_id=${CONF_PAGE_IDS[$id]-}
     parent_id=''
@@ -1586,7 +1629,7 @@ verify_confluence() {
     read_owner_property provisioner "$page_id"
     [[ "$OWNER_PROPERTY_VALUE" == "$(jq -r --arg id "$id" '.confluence.pages[] | select(.id==$id) | .marker' "$MANIFEST_PATH")" ]] ||
       die "authority_mismatch logical=page"
-  done < <(jq -r '.confluence.pages[] | [.id,.title,.space,(.parent // "null"),(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.pages[] | [.id,("=" + .title),.space,(.parent // "null"),(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r id page parent expected; do
     expected=$(decode_json_field "$expected")
@@ -1612,16 +1655,20 @@ verify_confluence() {
 verify_confluence_pagination() {
   local id key marker space title page parent parent_id
   while IFS=$'\t' read -r id key marker; do
+    tsv_text marker "$marker"
     find_confluence_space "$key" "$marker"
     [[ "$FOUND_ID" == "${CONF_SPACE_IDS[$id]-}" ]] ||
       die "pagination_authority logical=space"
-  done < <(jq -r '.confluence.spaces[] | [.id,.key,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.spaces[] | [.id,.key,("=" + .marker)] | @tsv' "$MANIFEST_PATH")
   while IFS=$'\t' read -r id space title marker; do
+    tsv_text title "$title"
+    tsv_text marker "$marker"
     find_confluence_page "${CONF_SPACE_IDS[$space]-}" "$title" "$marker" "$id"
     [[ "$FOUND_ID" == "${CONF_PAGE_IDS[$id]-}" ]] ||
       die "pagination_authority logical=page"
-  done < <(jq -r '.confluence.pages[] | [.id,.space,.title,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.pages[] | [.id,.space,("=" + .title),("=" + .marker)] | @tsv' "$MANIFEST_PATH")
   while IFS=$'\t' read -r id page marker parent; do
+    tsv_text marker "$marker"
     parent_id=''
     if [[ "$parent" != null && -n "$parent" ]]; then
       parent_id=${CONF_COMMENT_IDS[$parent]-}
@@ -1630,7 +1677,7 @@ verify_confluence_pagination() {
     find_confluence_comment "${CONF_PAGE_IDS[$page]-}" "$marker" "$parent_id"
     [[ "$FOUND_ID" == "${CONF_COMMENT_IDS[$id]-}" ]] ||
       die "pagination_authority logical=comment"
-  done < <(jq -r '.confluence.comments[] | [.id,.page,.marker,(.parent // "null")] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.comments[] | [.id,.page,("=" + .marker),(.parent // "null")] | @tsv' "$MANIFEST_PATH")
 }
 
 verify_reader_visibility() {
@@ -1663,6 +1710,8 @@ verify_reader_visibility() {
   done
 
   while IFS=$'\t' read -r id key name marker private; do
+    tsv_text name "$name"
+    tsv_text marker "$marker"
     if [[ "$private" == true ]]; then
       api_request reader GET "/wiki/api/v2/spaces/${CONF_SPACE_IDS[$id]}?description-format=plain" '' 403,404 reader_private_space_get
     else
@@ -1683,9 +1732,10 @@ verify_reader_visibility() {
         else error end' "$RESPONSE_FILE" 2>/dev/null) || die "invalid_response operation=reader_space_get"
       CONF_SPACE_HOMEPAGE[$id]=$homepage
     fi
-  done < <(jq -r '.confluence.spaces[] | [.id,.key,.name,.marker,.private] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.spaces[] | [.id,.key,("=" + .name),("=" + .marker),.private] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r id space title parent expected; do
+    tsv_text title "$title"
     expected=$(decode_json_field "$expected")
     page_id=${CONF_PAGE_IDS[$id]-}
     private=$(jq -r --arg id "$space" '.confluence.spaces[] | select(.id==$id) | .private' "$MANIFEST_PATH")
@@ -1709,7 +1759,7 @@ verify_reader_visibility() {
            ($expected_parent != "" and (.parentId|tostring) == $expected_parent))
         ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "reader_missing logical=page"
     fi
-  done < <(jq -r '.confluence.pages[] | [.id,.space,.title,(.parent // "null"),(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.pages[] | [.id,.space,("=" + .title),(.parent // "null"),(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r id page parent body; do
     body=$(decode_json_field "$body")
@@ -1735,13 +1785,15 @@ verify_reader_visibility() {
   done < <(jq -r '.confluence.comments[] | [.id,.page,(.parent // "null"),(.body|tojson|@base64)] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r id key name marker; do
+    tsv_text name "$name"
+    tsv_text marker "$marker"
     api_request reader GET "/rest/api/3/project/${key}" '' 200 reader_project_get
     jq -e --arg expected_id "${JIRA_PROJECT_IDS[$id]-}" --arg expected_key "$key" \
       --arg expected_name "$name" --arg expected_marker "$marker" '
         (.id|tostring) == $expected_id and .key == $expected_key and
         .name == $expected_name and .description == $expected_marker
       ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "reader_missing logical=project"
-  done < <(jq -r '.jira.projects[] | [.id,.key,.name,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.projects[] | [.id,.key,("=" + .name),("=" + .marker)] | @tsv' "$MANIFEST_PATH")
   while IFS=$'\t' read -r id issue project parent; do
     issue=$(decode_json_field "$issue")
     issue_id=${JIRA_ISSUE_IDS[$id]-}
@@ -2025,6 +2077,7 @@ discover_cleanup_objects() {
   local logical key marker project issue space title page parent
   local search_project search_space page_id parent_id
   while IFS=$'\t' read -r logical key marker; do
+    tsv_text marker "$marker"
     JIRA_PROJECT_KEYS[$logical]=${JIRA_PROJECT_KEYS[$logical]-$key}
     find_jira_project "$key" "$marker"
     if [[ -n "$FOUND_ID" ]]; then
@@ -2036,9 +2089,10 @@ discover_cleanup_objects() {
       find_jira_project "$key" "$marker" deleted
       [[ -z "$FOUND_ID" ]] || cleanup_add_target jira_project "$logical" "$FOUND_ID"
     fi
-  done < <(jq -r '.jira.projects[] | [.id,.key,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.projects[] | [.id,.key,("=" + .marker)] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r logical project marker; do
+    tsv_text marker "$marker"
     [[ -n "${JIRA_ISSUE_SEARCH_PROJECT[$logical]-}" || -n "${JIRA_PROJECT_IDS[$project]-}" ]] || continue
     search_project=${JIRA_ISSUE_SEARCH_PROJECT[$logical]-${JIRA_PROJECT_KEYS[$project]-}}
     [[ -n "$search_project" ]] || continue
@@ -2049,9 +2103,10 @@ discover_cleanup_objects() {
       cleanup_add_target jira_issue "$logical" "$FOUND_ID"
       JIRA_ISSUE_SEARCH_PROJECT[$logical]=$search_project
     fi
-  done < <(jq -r '.jira.issues[] | [.id,.project,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.issues[] | [.id,.project,("=" + .marker)] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r logical issue marker; do
+    tsv_text marker "$marker"
     issue_id=${JIRA_ISSUE_IDS[$issue]-}
     [[ -n "$issue_id" ]] || continue
     find_jira_comment "$issue_id" "$marker"
@@ -2060,9 +2115,10 @@ discover_cleanup_objects() {
       CLEANUP_JIRA_COMMENT_ISSUE[$logical]=$issue_id
       cleanup_add_target jira_comment "$logical" "$FOUND_ID"
     fi
-  done < <(jq -r '.jira.issues[] as $issue | ($issue.comments // [])[]? | [.id,$issue.id,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.jira.issues[] as $issue | ($issue.comments // [])[]? | [.id,$issue.id,("=" + .marker)] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r logical key marker; do
+    tsv_text marker "$marker"
     CONF_SPACE_KEYS[$logical]=${CONF_SPACE_KEYS[$logical]-$key}
     find_confluence_space "$key" "$marker"
     if [[ -n "$FOUND_ID" ]]; then
@@ -2070,9 +2126,11 @@ discover_cleanup_objects() {
       CONF_SPACE_KEYS[$logical]=$FOUND_KEY
       cleanup_add_target conf_space "$logical" "$FOUND_ID"
     fi
-  done < <(jq -r '.confluence.spaces[] | [.id,.key,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.spaces[] | [.id,.key,("=" + .marker)] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r logical space title marker; do
+    tsv_text title "$title"
+    tsv_text marker "$marker"
     search_space=${CONF_PAGE_SEARCH_SPACE[$logical]-${CONF_SPACE_IDS[$space]-}}
     [[ -n "$search_space" ]] || continue
     find_confluence_page "$search_space" "$title" "$marker" "$logical"
@@ -2081,9 +2139,10 @@ discover_cleanup_objects() {
       CONF_PAGE_SEARCH_SPACE[$logical]=$search_space
       cleanup_add_target conf_page "$logical" "$FOUND_ID"
     fi
-  done < <(jq -r '.confluence.pages[] | [.id,.space,.title,.marker] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.pages[] | [.id,.space,("=" + .title),("=" + .marker)] | @tsv' "$MANIFEST_PATH")
 
   while IFS=$'\t' read -r logical page marker parent; do
+    tsv_text marker "$marker"
     page_id=${CONF_COMMENT_SEARCH_PAGE[$logical]-${CONF_PAGE_IDS[$page]-}}
     [[ -n "$page_id" ]] || continue
     parent_id=${CONF_COMMENT_SEARCH_PARENT[$logical]-}
@@ -2104,7 +2163,7 @@ discover_cleanup_objects() {
       CONF_COMMENT_SEARCH_PARENT[$logical]=$parent_id
       cleanup_add_target conf_comment "$logical" "$FOUND_ID"
     fi
-  done < <(jq -r '.confluence.comments[] | [.id,.page,.marker,(.parent // "null")] | @tsv' "$MANIFEST_PATH")
+  done < <(jq -r '.confluence.comments[] | [.id,.page,("=" + .marker),(.parent // "null")] | @tsv' "$MANIFEST_PATH")
 }
 
 cleanup_assert_absent() {

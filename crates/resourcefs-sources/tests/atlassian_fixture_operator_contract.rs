@@ -2315,3 +2315,62 @@ fn issue_summary_with_tab_newline_and_backslash_reaches_upstream_byte_exact() {
         "no stored issue carries the summary byte-exact: {summaries:?}"
     );
 }
+
+/// rfs-cbz9: names, titles and markers are manifest `text` too, and every
+/// place the script reads them went through jq `@tsv` and `read -r`, which left
+/// backslash, tab and newline escaped. They are now restored in place by
+/// `tsv_text`. A Jira project name and marker, a Confluence space name and a
+/// page title carrying all three must reach the store byte-exact and survive
+/// both verify passes, whose ownership checks compare the markers.
+#[test]
+fn names_titles_and_markers_reach_upstream_byte_exact() {
+    let harness = Harness::new();
+    let mut custom = manifest();
+    let project_name = "project \\ name\twith tab\nand newline";
+    let project_marker = "rfs-owner:rfs-cbz9:project \\ marker\ttab\nnewline";
+    let space_name = "space \\ name\twith tab\nand newline";
+    let page_title = "page \\ title\twith tab\nand newline";
+    custom["jira"]["projects"][0]["name"] = Value::String(project_name.to_owned());
+    custom["jira"]["projects"][0]["marker"] = Value::String(project_marker.to_owned());
+    custom["confluence"]["spaces"][0]["name"] = Value::String(space_name.to_owned());
+    custom["confluence"]["pages"][0]["title"] = Value::String(page_title.to_owned());
+    let manifest_path = harness.write_manifest(&custom);
+
+    assert_success(&harness.command_with("bootstrap", SITE, Some(&manifest_path), None, "normal"));
+    assert_success(&harness.command_with("verify", SITE, Some(&manifest_path), None, "normal"));
+
+    let store = harness.read_store();
+    let has = |collection: &str, field: &str, expected: &str| {
+        store[collection]
+            .as_array()
+            .unwrap_or_else(|| panic!("fake store {collection}"))
+            .iter()
+            .any(|row| row[field].as_str() == Some(expected))
+    };
+    let stored = |collection: &str, field: &str| -> Vec<Value> {
+        store[collection]
+            .as_array()
+            .map(|rows| rows.iter().map(|row| row[field].clone()).collect())
+            .unwrap_or_default()
+    };
+    assert!(
+        has("projects", "name", project_name),
+        "project name not byte-exact: {:?}",
+        stored("projects", "name")
+    );
+    assert!(
+        has("projects", "description", project_marker),
+        "project marker not byte-exact: {:?}",
+        stored("projects", "description")
+    );
+    assert!(
+        has("spaces", "name", space_name),
+        "space name not byte-exact: {:?}",
+        stored("spaces", "name")
+    );
+    assert!(
+        has("pages", "title", page_title),
+        "page title not byte-exact: {:?}",
+        stored("pages", "title")
+    );
+}
