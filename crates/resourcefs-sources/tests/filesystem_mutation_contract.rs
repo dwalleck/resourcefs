@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fs,
     sync::{
         Arc,
@@ -9,61 +8,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use async_trait::async_trait;
+use resourcefs_core::test_support::MemoryStorage;
 use resourcefs_core::{
-    ArtifactId, ErrorCategory, MAX_ARTIFACT_BYTES, MutationAdapter, MutationEngine,
-    MutationOperation, OperationGuard, PathReference, PathSession, ResourceError, ServerLimits,
-    SessionStorage, SessionToken, VersionTag, WorkspaceRootId, WriteRequest,
+    ErrorCategory, MAX_ARTIFACT_BYTES, MutationAdapter, MutationEngine, MutationOperation,
+    OperationGuard, PathReference, PathSession, ServerLimits, SessionToken, VersionTag,
+    WorkspaceRootId, WriteRequest,
 };
 use resourcefs_sources::{
     BackingPathVisibility, FilesystemSource, LaunchRoot, LaunchRootSource, MutationGrants,
     MutationStage,
 };
 use tempfile::TempDir;
-use tokio::sync::Mutex;
-
-#[derive(Default)]
-struct MemoryStorage {
-    content: Mutex<HashMap<ArtifactId, Vec<u8>>>,
-}
-
-#[async_trait]
-impl SessionStorage for MemoryStorage {
-    async fn content_equals(&self, id: ArtifactId, content: &[u8]) -> Result<bool, ResourceError> {
-        Ok(self
-            .content
-            .lock()
-            .await
-            .get(&id)
-            .is_some_and(|stored| stored == content))
-    }
-
-    async fn write_atomic(&self, id: ArtifactId, content: &[u8]) -> Result<(), ResourceError> {
-        self.content.lock().await.insert(id, content.to_vec());
-        Ok(())
-    }
-
-    async fn read(&self, id: ArtifactId) -> Result<String, ResourceError> {
-        let bytes = self
-            .content
-            .lock()
-            .await
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| ResourceError::new(ErrorCategory::NotFound, "missing"))?;
-        String::from_utf8(bytes)
-            .map_err(|_| ResourceError::new(ErrorCategory::SourceUnavailable, "invalid UTF-8"))
-    }
-
-    async fn remove(&self, id: ArtifactId) -> Result<(), ResourceError> {
-        self.content.lock().await.remove(&id);
-        Ok(())
-    }
-
-    async fn mark_disconnected(&self) -> Result<(), ResourceError> {
-        Ok(())
-    }
-}
 
 fn session() -> PathSession {
     PathSession::new(

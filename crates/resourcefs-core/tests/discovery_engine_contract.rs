@@ -1,6 +1,5 @@
 use std::{
     alloc::{GlobalAlloc, Layout, System},
-    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -9,6 +8,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use resourcefs_core::test_support::MemoryStorage;
 use resourcefs_core::{
     DiscoveryAdapter, DiscoveryDiagnostic, DiscoveryEngine, DiscoveryLimitInput,
     DiscoveryRetainGate, ErrorCategory, GlobEntry, GlobKind, GlobLimits, GlobOptions, GlobRequest,
@@ -74,66 +74,6 @@ fn measured_peak_bytes(baseline: usize) -> usize {
     PEAK_ALLOCATED
         .load(Ordering::Acquire)
         .saturating_sub(baseline)
-}
-
-#[derive(Default)]
-struct MemoryStorage {
-    content: Mutex<HashMap<u64, Vec<u8>>>,
-}
-
-impl MemoryStorage {
-    async fn count(&self) -> usize {
-        self.content.lock().await.len()
-    }
-}
-
-#[async_trait]
-impl SessionStorage for MemoryStorage {
-    async fn content_equals(
-        &self,
-        id: resourcefs_core::ArtifactId,
-        content: &[u8],
-    ) -> Result<bool, ResourceError> {
-        Ok(self
-            .content
-            .lock()
-            .await
-            .get(&id.get())
-            .is_some_and(|stored| stored == content))
-    }
-
-    async fn write_atomic(
-        &self,
-        id: resourcefs_core::ArtifactId,
-        content: &[u8],
-    ) -> Result<(), ResourceError> {
-        self.content.lock().await.insert(id.get(), content.to_vec());
-        Ok(())
-    }
-
-    async fn read(&self, id: resourcefs_core::ArtifactId) -> Result<String, ResourceError> {
-        let bytes = self
-            .content
-            .lock()
-            .await
-            .get(&id.get())
-            .cloned()
-            .ok_or_else(|| {
-                ResourceError::new(ErrorCategory::NotFound, "missing fixture artifact")
-            })?;
-        String::from_utf8(bytes).map_err(|_| {
-            ResourceError::new(ErrorCategory::SourceUnavailable, "invalid fixture UTF-8")
-        })
-    }
-
-    async fn remove(&self, id: resourcefs_core::ArtifactId) -> Result<(), ResourceError> {
-        self.content.lock().await.remove(&id.get());
-        Ok(())
-    }
-
-    async fn mark_disconnected(&self) -> Result<(), ResourceError> {
-        Ok(())
-    }
 }
 
 #[derive(Default)]

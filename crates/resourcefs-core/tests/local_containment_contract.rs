@@ -5,69 +5,14 @@
 //! name. The oracle is the allocation sequence the test computes for itself plus
 //! the raw ids the store was handed.
 
-use std::{
-    collections::{BTreeSet, HashMap},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, sync::Arc};
 
-use async_trait::async_trait;
 use resourcefs_core::{
-    ArtifactId, ErrorCategory, LocalName, OperationGuard, PathSession, ResourceError, ServerLimits,
-    SessionStorage, SessionToken,
+    ArtifactId, LocalName, OperationGuard, PathSession, ServerLimits, SessionStorage, SessionToken,
+    test_support::MemoryStorage,
 };
-use tokio::sync::Mutex;
 
-#[derive(Default)]
-struct FakeStorage {
-    content: Mutex<HashMap<ArtifactId, Vec<u8>>>,
-    written_ids: Mutex<Vec<u64>>,
-}
-
-impl FakeStorage {
-    /// Every id the store was handed, in write order — the only channel through
-    /// which a name could reach storage.
-    async fn written_ids(&self) -> Vec<u64> {
-        self.written_ids.lock().await.clone()
-    }
-}
-
-#[async_trait]
-impl SessionStorage for FakeStorage {
-    async fn content_equals(&self, id: ArtifactId, content: &[u8]) -> Result<bool, ResourceError> {
-        Ok(self
-            .content
-            .lock()
-            .await
-            .get(&id)
-            .is_some_and(|stored| stored.as_slice() == content))
-    }
-
-    async fn write_atomic(&self, id: ArtifactId, content: &[u8]) -> Result<(), ResourceError> {
-        self.written_ids.lock().await.push(id.get());
-        self.content.lock().await.insert(id, content.to_vec());
-        Ok(())
-    }
-
-    async fn read(&self, id: ArtifactId) -> Result<String, ResourceError> {
-        let content = self.content.lock().await;
-        let bytes = content
-            .get(&id)
-            .ok_or_else(|| ResourceError::new(ErrorCategory::NotFound, "absent fake object"))?;
-        String::from_utf8(bytes.clone())
-            .map_err(|_| ResourceError::new(ErrorCategory::SourceUnavailable, "invalid fake UTF-8"))
-    }
-
-    async fn remove(&self, id: ArtifactId) -> Result<(), ResourceError> {
-        self.content.lock().await.remove(&id);
-        Ok(())
-    }
-
-    async fn mark_disconnected(&self) -> Result<(), ResourceError> {
-        Ok(())
-    }
-}
-
-fn new_session(value: u8, storage: Arc<FakeStorage>) -> PathSession {
+fn new_session(value: u8, storage: Arc<MemoryStorage>) -> PathSession {
     let trait_storage: Arc<dyn SessionStorage> = storage;
     PathSession::new(
         SessionToken::parse(format!("{value:032x}")).expect("fixture token"),
@@ -100,7 +45,7 @@ async fn names_cannot_escape() {
         );
     }
 
-    let storage = Arc::new(FakeStorage::default());
+    let storage = Arc::new(MemoryStorage::default());
     let session = new_session(9, Arc::clone(&storage));
     let guard = OperationGuard::new();
 
@@ -124,9 +69,13 @@ async fn names_cannot_escape() {
     }
 
     // Oracle: the ids handed to storage are exactly the sequence the session
-    // allocates, computed here without consulting the session.
+    // allocates, computed here without consulting the session. The write log is
+    // every id the store was handed, in order: the only channel through which a
+    // name could reach storage, so a name-derived key would show up here.
     let observed = storage.written_ids().await;
-    let expected = (1..=names.len() as u64).collect::<Vec<_>>();
+    let expected = (1..=names.len() as u64)
+        .map(|value| ArtifactId::new(value).expect("allocated artifact id"))
+        .collect::<Vec<_>>();
     assert_eq!(
         observed, expected,
         "scratch object ids must be the allocated sequence, never derived from the name"
@@ -180,9 +129,9 @@ async fn names_cannot_escape() {
 
 #[tokio::test]
 async fn scratch_names_are_sorted_and_session_scoped() {
-    let first_storage = Arc::new(FakeStorage::default());
+    let first_storage = Arc::new(MemoryStorage::default());
     let first = new_session(10, Arc::clone(&first_storage));
-    let second = new_session(11, Arc::new(FakeStorage::default()));
+    let second = new_session(11, Arc::new(MemoryStorage::default()));
     let guard = OperationGuard::new();
 
     for raw in ["zebra.md", "alpha.md", "middle.md"] {

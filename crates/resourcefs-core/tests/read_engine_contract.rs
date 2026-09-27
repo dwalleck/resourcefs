@@ -1,9 +1,8 @@
 use std::{
-    collections::HashMap,
     io::Cursor,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -15,52 +14,8 @@ use resourcefs_core::{
     ProjectionSelector, ReadEngine, ReadRequest, ResourceAddress, ResourceError, ServerLimits,
     ServerLimitsInput, SessionStorage, SessionToken, SourceAdapter, SourceResource, TextLimitInput,
     TextLimits, VersionTag, WorkspacePath, WorkspaceRootId, select_utf8,
+    test_support::MemoryStorage,
 };
-use tokio::sync::Mutex;
-
-#[derive(Default)]
-struct MemoryStorage {
-    objects: Mutex<HashMap<ArtifactId, Vec<u8>>>,
-    write_calls: AtomicUsize,
-}
-
-#[async_trait]
-impl SessionStorage for MemoryStorage {
-    async fn content_equals(&self, id: ArtifactId, content: &[u8]) -> Result<bool, ResourceError> {
-        Ok(self
-            .objects
-            .lock()
-            .await
-            .get(&id)
-            .is_some_and(|stored| stored == content))
-    }
-
-    async fn write_atomic(&self, id: ArtifactId, content: &[u8]) -> Result<(), ResourceError> {
-        self.write_calls.fetch_add(1, Ordering::SeqCst);
-        self.objects.lock().await.insert(id, content.to_vec());
-        Ok(())
-    }
-
-    async fn read(&self, id: ArtifactId) -> Result<String, ResourceError> {
-        let bytes = self
-            .objects
-            .lock()
-            .await
-            .get(&id)
-            .cloned()
-            .ok_or_else(not_found)?;
-        String::from_utf8(bytes).map_err(|_| not_found())
-    }
-
-    async fn remove(&self, id: ArtifactId) -> Result<(), ResourceError> {
-        self.objects.lock().await.remove(&id);
-        Ok(())
-    }
-
-    async fn mark_disconnected(&self) -> Result<(), ResourceError> {
-        Ok(())
-    }
-}
 
 #[derive(Clone)]
 struct SessionBackedSource {
@@ -617,10 +572,6 @@ fn invalid_page() -> ResourceError {
     ResourceError::new(ErrorCategory::InvalidReference, "invalid test page")
 }
 
-fn not_found() -> ResourceError {
-    ResourceError::new(ErrorCategory::NotFound, "missing test artifact")
-}
-
 fn sized_lines(bytes: usize) -> String {
     let mut content = String::with_capacity(bytes);
     while bytes - content.len() > 17 {
@@ -815,7 +766,7 @@ async fn repeated_identical_spill_reuses_one_root_and_one_charge() {
     assert_eq!(harness.session.artifact_count().await, 1);
     assert!(first_charge > 6_002, "snapshot metadata must be charged");
     assert_eq!(harness.session.used_bytes().await, first_charge);
-    assert_eq!(harness.storage.write_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(harness.storage.write_calls().await, 1);
 }
 
 #[tokio::test]
@@ -847,7 +798,7 @@ async fn snapshot_quota_failure_does_not_publish_recovery_artifact() {
     assert_eq!(error.category(), ErrorCategory::LimitExceeded);
     assert_eq!(harness.session.artifact_count().await, 0);
     assert_eq!(harness.session.used_bytes().await, 0);
-    assert_eq!(harness.storage.write_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(harness.storage.write_calls().await, 0);
 }
 
 #[tokio::test]
@@ -874,7 +825,7 @@ async fn one_byte_over_object_ceiling_fails_without_artifact() {
         "{error}"
     );
     assert_eq!(harness.session.artifact_count().await, 0);
-    assert_eq!(harness.storage.write_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(harness.storage.write_calls().await, 0);
 }
 
 #[tokio::test]
@@ -960,4 +911,25 @@ async fn inline_artifact_production_budget() {
         Duration::from_millis(25)
     };
     assert!(elapsed <= budget, "49 KiB artifact read took {elapsed:?}");
+}
+
+/// The shared fake reports stored bytes that are not UTF-8 as
+/// `source_unavailable`, distinct from a missing object's `not_found`: missing
+/// and corrupt are different failures. This read-engine copy used to answer
+/// `not_found` for both; the shared fake pins the distinction (rfs-exoi).
+#[tokio::test]
+async fn memory_storage_reports_corrupt_bytes_distinctly_from_missing() {
+    let storage = MemoryStorage::default();
+    let corrupt = ArtifactId::new(1).expect("artifact id");
+    storage
+        .write_atomic(corrupt, &[0xff, 0xfe])
+        .await
+        .expect("store invalid UTF-8");
+
+    let error = storage.read(corrupt).await.expect_err("invalid UTF-8");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+
+    let missing = ArtifactId::new(2).expect("artifact id");
+    let error = storage.read(missing).await.expect_err("missing object");
+    assert_eq!(error.category(), ErrorCategory::NotFound);
 }

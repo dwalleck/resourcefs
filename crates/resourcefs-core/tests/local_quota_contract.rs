@@ -4,71 +4,13 @@
 //! The oracle is a ledger the test maintains itself plus a raw inventory of the
 //! backing store; neither consults the session's own accounting.
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::sync::Arc;
 
-use async_trait::async_trait;
 use resourcefs_core::{
-    ArtifactId, ErrorCategory, LocalName, MAX_SESSION_ARTIFACTS, OperationGuard, PathSession,
-    ResourceError, ServerLimits, ServerLimitsInput, SessionStorage, SessionToken,
-    StorageLimitInput,
+    ErrorCategory, LocalName, MAX_SESSION_ARTIFACTS, OperationGuard, PathSession, ServerLimits,
+    ServerLimitsInput, SessionStorage, SessionToken, StorageLimitInput,
+    test_support::MemoryStorage,
 };
-use tokio::sync::Mutex;
-
-#[derive(Default)]
-struct FakeStorage {
-    content: Mutex<HashMap<ArtifactId, Vec<u8>>>,
-}
-
-impl FakeStorage {
-    /// Raw inventory of every stored object, keyed by its numeric id. Built from
-    /// the store itself so it cannot agree with the session by construction.
-    async fn inventory(&self) -> BTreeMap<u64, Vec<u8>> {
-        self.content
-            .lock()
-            .await
-            .iter()
-            .map(|(id, bytes)| (id.get(), bytes.clone()))
-            .collect()
-    }
-}
-
-#[async_trait]
-impl SessionStorage for FakeStorage {
-    async fn content_equals(&self, id: ArtifactId, content: &[u8]) -> Result<bool, ResourceError> {
-        Ok(self
-            .content
-            .lock()
-            .await
-            .get(&id)
-            .is_some_and(|stored| stored.as_slice() == content))
-    }
-
-    async fn write_atomic(&self, id: ArtifactId, content: &[u8]) -> Result<(), ResourceError> {
-        self.content.lock().await.insert(id, content.to_vec());
-        Ok(())
-    }
-
-    async fn read(&self, id: ArtifactId) -> Result<String, ResourceError> {
-        let content = self.content.lock().await;
-        let bytes = content
-            .get(&id)
-            .ok_or_else(|| ResourceError::new(ErrorCategory::NotFound, "absent fake object"))?;
-        String::from_utf8(bytes.clone())
-            .map_err(|_| ResourceError::new(ErrorCategory::SourceUnavailable, "invalid fake UTF-8"))
-    }
-
-    async fn remove(&self, id: ArtifactId) -> Result<(), ResourceError> {
-        self.content.lock().await.remove(&id);
-        Ok(())
-    }
-
-    async fn mark_disconnected(&self) -> Result<(), ResourceError> {
-        Ok(())
-    }
-}
 
 fn ceilings(object_bytes: usize, session_bytes: usize) -> ServerLimits {
     ServerLimits::new(ServerLimitsInput {
@@ -81,7 +23,7 @@ fn ceilings(object_bytes: usize, session_bytes: usize) -> ServerLimits {
     .expect("lower-only storage ceilings")
 }
 
-fn new_session(value: u8, storage: Arc<FakeStorage>, limits: ServerLimits) -> PathSession {
+fn new_session(value: u8, storage: Arc<MemoryStorage>, limits: ServerLimits) -> PathSession {
     let trait_storage: Arc<dyn SessionStorage> = storage;
     PathSession::new(
         SessionToken::parse(format!("{value:032x}")).expect("fixture token"),
@@ -96,7 +38,7 @@ fn name(value: &str) -> LocalName {
 
 #[tokio::test]
 async fn scratch_shares_and_never_evicts() {
-    let storage = Arc::new(FakeStorage::default());
+    let storage = Arc::new(MemoryStorage::default());
     let session = new_session(1, Arc::clone(&storage), ceilings(1024, 4096));
     let guard = OperationGuard::new();
 
@@ -168,7 +110,7 @@ async fn scratch_shares_and_never_evicts() {
     }
 
     // The object ceiling is shared with artifacts and enforced before commit.
-    let counted = Arc::new(FakeStorage::default());
+    let counted = Arc::new(MemoryStorage::default());
     let counting = new_session(2, Arc::clone(&counted), ceilings(1024, 8 * 1024 * 1024));
     for index in 0..MAX_SESSION_ARTIFACTS {
         counting
@@ -186,7 +128,7 @@ async fn scratch_shares_and_never_evicts() {
     assert_eq!(counted.inventory().await, before_objects);
 
     // The per-object ceiling: exact is accepted, one byte over is refused.
-    let object = Arc::new(FakeStorage::default());
+    let object = Arc::new(MemoryStorage::default());
     let object_session = new_session(3, Arc::clone(&object), ceilings(1024, 8 * 1024 * 1024));
     object_session
         .scratch_put(&name("exact.md"), &"e".repeat(1024), &guard)
@@ -203,7 +145,7 @@ async fn scratch_shares_and_never_evicts() {
 
 #[tokio::test]
 async fn replacing_scratch_releases_its_previous_bytes() {
-    let storage = Arc::new(FakeStorage::default());
+    let storage = Arc::new(MemoryStorage::default());
     let session = new_session(4, Arc::clone(&storage), ceilings(1024, 2048));
     let guard = OperationGuard::new();
 
@@ -247,7 +189,7 @@ async fn replacing_scratch_releases_its_previous_bytes() {
 #[tokio::test]
 async fn scratch_name_enumeration_fits_its_budget() {
     // Release budget: enumeration of the 1,000-name production ceiling < 1 ms.
-    let storage = Arc::new(FakeStorage::default());
+    let storage = Arc::new(MemoryStorage::default());
     let session = new_session(5, Arc::clone(&storage), ceilings(1024, 8 * 1024 * 1024));
     let guard = OperationGuard::new();
     for index in 0..MAX_SESSION_ARTIFACTS {
