@@ -205,7 +205,11 @@ pub mod wall_budget {
     /// the largest recorded miss on any row routed here is the heartbeat,
     /// 505 ms on windows-latest against today's 100 ms: about 5x. The rows
     /// are dominated by real work rather than scheduling, so one taking 10x
-    /// its budget is a code regression, not a noisy host.
+    /// its budget is a code regression, not a noisy host. When this was set,
+    /// no routed row's budget was close enough to its measured work for
+    /// contended noise to reach 10x: the tightest headroom across 71 release
+    /// and 50 debug measurements was 3.9x (`operation_journal_budget`'s 10,000
+    /// journal transitions, 6.4 ms against 25 ms).
     ///
     /// `scripts/ci-gates.py` reads this declaration for its startup banner;
     /// keep it a plain integer literal.
@@ -266,8 +270,9 @@ pub mod wall_budget {
     /// [`REPORT_HARD_CEILING_FACTOR`] times the budget is right for most rows.
     /// A row overrides it when 10x is wrong for it: an absolute ceiling keeps
     /// a row CI previously held at a raised bound from getting looser than
-    /// that bound, and a larger factor keeps a row whose budget sits close to
-    /// its contended work clear of host noise.
+    /// that bound, which is what the two 64 MiB write rows do. A larger factor
+    /// would keep a row whose budget sits close to its contended work clear of
+    /// host noise; no row needs one today.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum HardCeiling {
         /// Fail at or over this many times the budget.
