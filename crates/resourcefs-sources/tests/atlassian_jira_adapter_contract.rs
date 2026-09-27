@@ -841,6 +841,10 @@ fn thread_cpu_time() -> Duration {
     Duration::new(seconds, nanos)
 }
 
+/// On Windows this series is informational only: `GetThreadTimes` advances in
+/// scheduler ticks (about 15.6 ms on hosted runners), so a millisecond-scale
+/// iteration reads as either zero or one whole tick. Measured on
+/// `windows-latest` for rfs-a3ag; use the wall series there.
 #[cfg(windows)]
 fn thread_cpu_time() -> Duration {
     use windows_sys::Win32::Foundation::FILETIME;
@@ -986,6 +990,12 @@ fn measure_mount_validation_maximum_distribution() {
         cfg!(debug_assertions),
         MAX_CONFIGURATION_ENTRIES,
     );
+    if cfg!(windows) {
+        eprintln!(
+            "note: Windows thread CPU is quantized to the scheduler tick by GetThreadTimes; \
+             read the wall series"
+        );
+    }
     measure_report("sites build (untimed by guard)", &mut sites_wall);
     measure_report("origin serialization only", &mut serialize_wall);
     measure_report("constructor wall", &mut construct_wall);
