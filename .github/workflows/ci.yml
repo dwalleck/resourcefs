@@ -122,15 +122,16 @@ jobs:
       - name: Repository gates
         if: ${{ !cancelled() }}
         env:
-          # Wall-clock budgets report here (rfs-cn1r). A hosted runner is
-          # three or four shared cores executing hundreds of test processes,
-          # so a ceiling measured on it samples the machine, not the code;
-          # every raise made to quiet one (rfs-1e6h) weakened it. `report` is
-          # also the default when unset and is spelled out so this step
-          # documents itself. A row between 1x and 10x its budget passes as
-          # OVER; at 10x it fails, because no recorded host noise comes near
-          # that. The dedicated benchmark runner (rfs-63xx) sets `enforce`,
-          # which fails at 1x. Allocation ceilings and timeout contracts still
+          # Wall-clock budgets report here, on every leg (rfs-cn1r). A hosted
+          # runner is three or four shared cores executing hundreds of test
+          # processes, so a ceiling measured on it samples the machine, not
+          # the code; every raise made to quiet one (rfs-1e6h) weakened it.
+          # This must stay explicit: with RFS_BUDGETS unset, ci-gates.py runs
+          # the serial ignored production budgets under `enforce`, which is
+          # right on a developer's machine and wrong here. A row over budget
+          # passes as OVER until its hard ceiling, 10x unless the row sets its
+          # own, where it fails. The dedicated benchmark runner (rfs-63xx)
+          # sets `enforce`, which fails at 1x. Allocation ceilings and timeout contracts still
           # assert, and so does retry_policy_budget, frozen by the module
           # ledger until rfs-y6ro routes it. The runner prints each phase's
           # measurements, over-budget first.

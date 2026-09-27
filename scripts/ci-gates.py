@@ -128,10 +128,10 @@ def exclusion_reason(name):
     return None
 
 
-def run(command, *, capture=False):
+def run(command, *, capture=False, env=None):
     print("+ " + " ".join(map(str, command)), flush=True)
     return subprocess.run(
-        command, cwd=ROOT, env=ENV, check=False,
+        command, cwd=ROOT, env=ENV if env is None else env, check=False,
         stdout=subprocess.PIPE if capture else None, text=True, encoding="utf-8",
     )
 
@@ -309,7 +309,7 @@ def ignored_budgets():
                 "cargo", "test", *RELEASE, "-p", package_id,
                 "--all-features", *selector, "--", "--ignored", "--exact", name,
                 "--test-threads=1",
-            ])
+            ], env={**ENV, "RFS_BUDGETS": IGNORED_BUDGET_POLICY})
             passed = result.returncode == 0 and passed
     missing = BUDGETS - seen
     if missing:
@@ -363,27 +363,54 @@ def budget_policy_facts():
     return report, enforce, factor
 
 
-def budget_policy_banner():
-    """The effective policy, or an error message, from RFS_BUDGETS.
+# The policy the ignored production budgets run under, set by main(). That leg
+# runs each budget alone with --exact and --test-threads=1, the most
+# controlled measurement the repository has, so when RFS_BUDGETS is unset it
+# enforces even though the parallel legs only report (rfs-cn1r). An explicit
+# RFS_BUDGETS, which ci.yml always sets, applies to every leg.
+IGNORED_BUDGET_POLICY = None
 
-    The test helper panics on an unknown value, but only inside the first test
-    that measures a budget, so it is checked here before a minute of
-    compilation is spent on a typo. Returns (message, policy), with policy
-    None when the value is rejected and message then saying why.
+
+def budget_policies():
+    """The effective policies, or an error message, from RFS_BUDGETS.
+
+    Returns (message, leg_policy, ignored_policy): the banner to print, the
+    policy for the functional and release legs, and the policy for the
+    serial ignored-budget leg. Both policies are None when the value is
+    rejected, and the message then says why. The test helper would panic on
+    an unknown value too, but only inside the first test that measures a
+    budget, so it is checked here before a minute of compilation is spent on
+    a typo.
     """
     report, enforce, factor = budget_policy_facts()
-    value = os.environ.get("RFS_BUDGETS", report)
+    value = os.environ.get("RFS_BUDGETS")
+    ceiling = f"its hard ceiling, {factor}x its budget unless the row sets its own"
+    if value is None:
+        return (
+            f"Wall-clock budgets (RFS_BUDGETS unset): {report} on the functional and "
+            f"release legs, where an over-budget row passes unless it reaches {ceiling}; "
+            f"{enforce} on the serial ignored production budgets, where any over-budget "
+            f"row fails. Set RFS_BUDGETS to use one policy on every leg.",
+            report,
+            enforce,
+        )
     if value == report:
         return (
-            f"Wall-clock budgets: {report} (RFS_BUDGETS unset or {report}). An "
-            f"over-budget row passes unless it reaches {factor}x its budget; "
-            f"RFS_BUDGETS={enforce} fails at 1x.",
+            f"Wall-clock budgets (RFS_BUDGETS={report}): {report} on every leg. An "
+            f"over-budget row passes unless it reaches {ceiling}.",
+            report,
             report,
         )
     if value == enforce:
-        return f"Wall-clock budgets: {enforce}. Any over-budget row fails.", enforce
+        return (
+            f"Wall-clock budgets (RFS_BUDGETS={enforce}): {enforce} on every leg. Any "
+            f"over-budget row fails.",
+            enforce,
+            enforce,
+        )
     return (
         f"RFS_BUDGETS must be {report}, {enforce}, or unset, not {value!r}",
+        None,
         None,
     )
 
@@ -433,8 +460,9 @@ def main():
         help="run only this phase; omit to run every gate, as a local run does",
     )
     arguments = parser.parse_args()
+    global IGNORED_BUDGET_POLICY
     try:
-        banner, policy = budget_policy_banner()
+        banner, policy, IGNORED_BUDGET_POLICY = budget_policies()
     except (OSError, ValueError) as error:
         print(f"Budget policy: {error}", file=sys.stderr)
         return 1
@@ -442,6 +470,11 @@ def main():
         print(banner, file=sys.stderr)
         return 2
     print(banner, flush=True)
+    phase_policy = {
+        phase: policy if phase != "release" or policy == IGNORED_BUDGET_POLICY
+        else f"{policy}, ignored budgets {IGNORED_BUDGET_POLICY}"
+        for phase in PHASES
+    }
     gates = [
         ("debug", "Formatting", ["cargo", "fmt", "--all", "--", "--check"]),
         ("debug", "Lints", ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]),
@@ -503,7 +536,7 @@ def main():
         if not passed:
             failed.append(name)
         if last_gate_of_phase[phase] == index:
-            print_budget_report(phase, report, policy)
+            print_budget_report(phase, report, phase_policy[phase])
     if failed:
         print(f"Failed gates: {', '.join(failed)}", file=sys.stderr)
         return 1

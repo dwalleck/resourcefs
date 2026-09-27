@@ -2021,10 +2021,13 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
     // Release measurement at this revision: 14ns average. One microsecond is
     // ~70x headroom and still catches an accidental per-intersection
     // allocation, which is what this phase exists to bound.
-    wall_budget::check_wall_budget(
+    // 25x rather than the default 10x: a 1 µs average is small enough that
+    // scheduler noise, not work, dominates a contended sample (rfs-cn1r).
+    wall_budget::check_wall_budget_capped(
         "average control construction/intersection",
         average,
         Duration::from_micros(1),
+        wall_budget::HardCeiling::Factor(25),
     );
     // The helper's line carries the time; this keeps the iteration count.
     println!("immutable_reference_budget phase=controls iterations={CONTROL_ITERATIONS}");

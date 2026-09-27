@@ -765,7 +765,16 @@ fn mount_validation_maximum_stays_within_budget() {
     } else {
         Duration::from_millis(50)
     };
-    wall_budget::check_wall_budget("maximum Site Mount validation", elapsed, budget);
+    // 25x rather than the default 10x: the debug budget is only twice the
+    // release one, so this row is named noise-prone in the rfs-cn1r review.
+    // Measured, it has room either way: native Windows at most 3.4 ms release
+    // and 8.5 ms debug (rfs-a3ag, run 36286360340), against 50 ms and 100 ms.
+    wall_budget::check_wall_budget_capped(
+        "maximum Site Mount validation",
+        elapsed,
+        budget,
+        wall_budget::HardCeiling::Factor(25),
+    );
 }
 
 /// A 2xx that is not exactly `200` is a success, not an outage.

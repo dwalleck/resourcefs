@@ -364,6 +364,9 @@ async fn heartbeat_updates_persisted_liveness_within_budget() {
     } else {
         Duration::from_millis(100)
     };
+    // The default hard ceiling, 10x, is 1000 ms in release: exactly rfs-1e6h's
+    // old raise, so CI is no looser on this row than before rfs-cn1r. The
+    // worst recorded run is 505 ms on windows-latest.
     wall_budget::check_wall_budget("heartbeat", elapsed, budget);
 }
 
@@ -505,10 +508,19 @@ async fn durable_write_at_object_ceiling_within_budget() {
     // because contended hosts now only report it (failing only at 10x) and 1x
     // enforcement moves to the dedicated runner of rfs-63xx, not yet built.
     // Five release runs on a workstation at load average 26 measured 82-87 ms.
-    let budget = if cfg!(debug_assertions) {
-        Duration::from_secs(100)
+    // Report mode's hard ceiling is the bound CI enforced before rfs-cn1r --
+    // rfs-1e6h's 30 s raise in release, the unchanged 100 s in debug -- so CI
+    // is never looser on this row than it was. The worst recorded run is the
+    // sibling 64 MiB create at 13.57 s on windows-latest.
+    let (budget, hard) = if cfg!(debug_assertions) {
+        (Duration::from_secs(100), Duration::from_secs(100))
     } else {
-        Duration::from_secs(5)
+        (Duration::from_secs(5), Duration::from_secs(30))
     };
-    wall_budget::check_wall_budget("64 MiB durable admission", elapsed, budget);
+    wall_budget::check_wall_budget_capped(
+        "64 MiB durable admission",
+        elapsed,
+        budget,
+        wall_budget::HardCeiling::At(hard),
+    );
 }

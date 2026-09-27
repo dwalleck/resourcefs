@@ -21,6 +21,7 @@ use std::{
     time::Duration,
 };
 
+pub use resourcefs_core::test_support::wall_budget::HardCeiling;
 use resourcefs_core::test_support::wall_budget::{
     BUDGET_REPORT_VARIABLE, Bound, BudgetPolicy, judge,
 };
@@ -40,7 +41,22 @@ use resourcefs_core::test_support::wall_budget::{
 /// invalid, when called off a named test thread, or when the report file
 /// cannot be written.
 pub fn check_wall_budget(label: &str, elapsed: Duration, budget: Duration) {
-    apply(Bound::AtMost, label, elapsed, budget);
+    apply(Bound::AtMost, HardCeiling::DEFAULT, label, elapsed, budget);
+}
+
+/// [`check_wall_budget`] with this row's own report-mode hard ceiling, for a
+/// row where the default of 10x its budget is wrong. Say why at the call site.
+///
+/// # Panics
+///
+/// As [`check_wall_budget`], and when `hard` is below `budget`.
+pub fn check_wall_budget_capped(
+    label: &str,
+    elapsed: Duration,
+    budget: Duration,
+    hard: HardCeiling,
+) {
+    apply(Bound::AtMost, hard, label, elapsed, budget);
 }
 
 /// Checks `elapsed < budget` under the environment's policy, for a ceiling
@@ -50,7 +66,7 @@ pub fn check_wall_budget(label: &str, elapsed: Duration, budget: Duration) {
 ///
 /// As [`check_wall_budget`].
 pub fn check_wall_budget_below(label: &str, elapsed: Duration, budget: Duration) {
-    apply(Bound::Below, label, elapsed, budget);
+    apply(Bound::Below, HardCeiling::DEFAULT, label, elapsed, budget);
 }
 
 /// The running test's name, with `label` appended when there is one.
@@ -72,9 +88,16 @@ fn measurement_name(label: &str) -> String {
     }
 }
 
-fn apply(bound: Bound, label: &str, elapsed: Duration, budget: Duration) {
+fn apply(bound: Bound, hard: HardCeiling, label: &str, elapsed: Duration, budget: Duration) {
     let policy = BudgetPolicy::from_environment();
-    let judgement = judge(policy, bound, &measurement_name(label), elapsed, budget);
+    let judgement = judge(
+        policy,
+        bound,
+        hard,
+        &measurement_name(label),
+        elapsed,
+        budget,
+    );
     if let Some(path) = report_path() {
         append_report_line(path, judgement.line());
     }

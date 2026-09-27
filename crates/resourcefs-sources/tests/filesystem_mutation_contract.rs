@@ -610,12 +610,21 @@ async fn exact_limit_write_budget_and_one_over_rejection() {
     // failing only at 10x) and 1x enforcement moves to the dedicated benchmark
     // runner of rfs-63xx, not yet built. Five release runs on a workstation at
     // load average 26 measured 83-85 ms.
-    let budget = if cfg!(debug_assertions) {
-        Duration::from_secs(100)
+    // Report mode's hard ceiling is the bound CI enforced before rfs-cn1r --
+    // rfs-1e6h's 30 s raise in release, the unchanged 100 s in debug -- so CI
+    // is never looser on this row than it was. Worst recorded: 13.57 s on
+    // windows-latest (PR #20, run 34722270821).
+    let (budget, hard) = if cfg!(debug_assertions) {
+        (Duration::from_secs(100), Duration::from_secs(100))
     } else {
-        Duration::from_secs(5)
+        (Duration::from_secs(5), Duration::from_secs(30))
     };
-    wall_budget::check_wall_budget("64 MiB create", elapsed, budget);
+    wall_budget::check_wall_budget_capped(
+        "64 MiB create",
+        elapsed,
+        budget,
+        wall_budget::HardCeiling::At(hard),
+    );
 
     let error = WriteRequest::new(
         reference("over.txt"),
