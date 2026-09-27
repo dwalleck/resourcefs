@@ -41,16 +41,12 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
-use tokio_rustls::{
-    TlsAcceptor,
-    rustls::{
-        ServerConfig,
-        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-    },
-};
+use tokio_rustls::TlsAcceptor;
 
 #[path = "certificates.rs"]
 mod certificates;
+#[path = "http_wire.rs"]
+mod http_wire;
 
 use certificates::{TestIdentity, issue_test_certificates};
 
@@ -235,8 +231,8 @@ where
     const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024 + 64 * 1024;
     let mut received = Vec::new();
     let head_end = loop {
-        if let Some(position) = received.windows(4).position(|window| window == b"\r\n\r\n") {
-            break position + 4;
+        if let Some(end) = http_wire::head_end(&received) {
+            break end;
         }
         if received.len() >= MAX_REQUEST_BYTES {
             return Err(io::Error::new(
@@ -256,11 +252,8 @@ where
     };
     let head = String::from_utf8_lossy(&received[..head_end]).into_owned();
     let line = head.lines().next().unwrap_or("").to_owned();
-    let content_length = head
-        .lines()
-        .filter_map(|line| line.split_once(':'))
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-        .map(|(_, value)| value.trim().parse::<usize>())
+    let content_length = http_wire::header(&head, "content-length")
+        .map(str::parse::<usize>)
         .transpose()
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid Content-Length"))?
         .unwrap_or(0);
@@ -314,14 +307,7 @@ impl FixtureRequest {
 
     /// The `Host` header value, which every fixture request carries.
     pub fn host(&self) -> &str {
-        self.head
-            .lines()
-            .find_map(|line| {
-                line.split_once(':')
-                    .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-                    .map(|(_, value)| value.trim())
-            })
-            .expect("Host header")
+        http_wire::header(&self.head, "host").expect("Host header")
     }
 
     pub fn body(&self) -> &[u8] {
@@ -439,18 +425,12 @@ impl TlsListener {
     where
         R: Fn(&FixtureRequest) -> FixtureResponse + Send + Sync + 'static,
     {
-        let key: &[u8] = if cert == match_cert() {
-            &fixture_certificates().1[0].private_key
+        let identity = if cert == match_cert() {
+            &fixture_certificates().1[0]
         } else {
-            &fixture_certificates().1[1].private_key
+            &fixture_certificates().1[1]
         };
-        let config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![CertificateDer::from(cert)],
-                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
-            )
-            .expect("fixture certificate and key form a valid server config");
+        let config = identity.server_config();
         let acceptor = TlsAcceptor::from(Arc::new(config));
 
         let listener = TcpListener::bind(SocketAddr::new(ip, port))

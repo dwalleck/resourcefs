@@ -17,16 +17,12 @@ use tokio::{
     net::TcpListener,
     sync::oneshot,
 };
-use tokio_rustls::{
-    TlsAcceptor,
-    rustls::{
-        ServerConfig,
-        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-    },
-};
+use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 
 #[path = "../../../resourcefs-sources/tests/support/certificates.rs"]
 mod certificates;
+#[path = "../../../resourcefs-sources/tests/support/http_wire.rs"]
+mod http_wire;
 
 static CERTIFICATES: LazyLock<(Vec<u8>, [certificates::TestIdentity; 1])> =
     LazyLock::new(|| certificates::issue_test_certificates([&["localhost", "127.0.0.1", "::1"]]));
@@ -198,14 +194,7 @@ impl Drop for ProfileTlsServer {
 }
 
 fn server_config() -> ServerConfig {
-    let identity = &CERTIFICATES.1[0];
-    ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![CertificateDer::from(identity.certificate.clone())],
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.private_key.clone())),
-        )
-        .expect("profile TLS certificate and key")
+    CERTIFICATES.1[0].server_config()
 }
 
 async fn serve<S>(
@@ -253,7 +242,7 @@ where
             return Ok(());
         }
         head.extend_from_slice(&chunk[..read]);
-        if head.windows(4).any(|window| window == b"\r\n\r\n") {
+        if http_wire::head_end(&head).is_some() {
             break;
         }
         if head.len() > MAX_REQUEST_HEAD {
@@ -320,14 +309,7 @@ where
         Responses::Html(_) | Responses::BlockedNative { .. } => Vec::new(),
     };
     // Native identity operands name this actual listener, not a guessed API.
-    let host = request
-        .lines()
-        .find_map(|line| {
-            line.split_once(':')
-                .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-                .map(|(_, value)| value.trim())
-        })
-        .unwrap_or("");
+    let host = http_wire::header(request, "host").unwrap_or("");
     let body = body.replace("@API@", &format!("https://{host}/"));
     let mut response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n",
@@ -371,7 +353,10 @@ mod tests {
     use tokio::io::{DuplexStream, ReadBuf, duplex};
     use tokio_rustls::{
         TlsConnector,
-        rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
+        rustls::{
+            ClientConfig, RootCertStore,
+            pki_types::{CertificateDer, ServerName},
+        },
     };
 
     enum Fault {
