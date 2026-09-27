@@ -41,44 +41,48 @@ pub fn directory_uri(relative_path: &str) -> Url {
 /// Six contract targets across two crates each wrote their own copy of this
 /// fake, differing only in field names, error wording, and which one
 /// observation they exposed (rfs-exoi). This one exposes all four. A missing
-/// object is `not_found` and non-UTF-8 content is `source_unavailable`; no test
-/// asserts on either message. `path_session_contract.rs` keeps its own richer
-/// fake (call log, injected write failure) on purpose.
+/// object is `not_found` and stored bytes that are not UTF-8 are
+/// `source_unavailable`, so a missing object and a corrupt one stay distinct.
+/// `path_session_contract.rs` keeps its own richer fake (call log, injected
+/// write failure) on purpose.
 #[derive(Default)]
 pub struct MemoryStorage {
-    content: Mutex<HashMap<ArtifactId, Vec<u8>>>,
-    written: Mutex<Vec<ArtifactId>>,
+    state: Mutex<MemoryState>,
+}
+
+/// Content and write log behind one lock, so a write's log entry and its
+/// content become visible together.
+#[derive(Default)]
+struct MemoryState {
+    content: HashMap<ArtifactId, Vec<u8>>,
+    written: Vec<ArtifactId>,
 }
 
 impl MemoryStorage {
     /// How many `write_atomic` calls reached the store.
     pub async fn write_calls(&self) -> usize {
-        self.written.lock().await.len()
+        self.state.lock().await.written.len()
     }
 
     /// Every id the store was handed, in write order.
-    pub async fn written_ids(&self) -> Vec<u64> {
-        self.written
-            .lock()
-            .await
-            .iter()
-            .map(|id| id.get())
-            .collect()
+    pub async fn written_ids(&self) -> Vec<ArtifactId> {
+        self.state.lock().await.written.clone()
     }
 
     /// How many objects are stored now.
     pub async fn count(&self) -> usize {
-        self.content.lock().await.len()
+        self.state.lock().await.content.len()
     }
 
-    /// Every stored object keyed by its numeric id, read from the store itself
-    /// so it cannot agree with a session by construction.
-    pub async fn inventory(&self) -> BTreeMap<u64, Vec<u8>> {
-        self.content
+    /// Every stored object keyed by its id, read from the store itself so it
+    /// cannot agree with a session by construction.
+    pub async fn inventory(&self) -> BTreeMap<ArtifactId, Vec<u8>> {
+        self.state
             .lock()
             .await
+            .content
             .iter()
-            .map(|(id, bytes)| (id.get(), bytes.clone()))
+            .map(|(id, bytes)| (*id, bytes.clone()))
             .collect()
     }
 }
@@ -87,24 +91,30 @@ impl MemoryStorage {
 impl SessionStorage for MemoryStorage {
     async fn content_equals(&self, id: ArtifactId, content: &[u8]) -> Result<bool, ResourceError> {
         Ok(self
-            .content
+            .state
             .lock()
             .await
+            .content
             .get(&id)
             .is_some_and(|stored| stored.as_slice() == content))
     }
 
     async fn write_atomic(&self, id: ArtifactId, content: &[u8]) -> Result<(), ResourceError> {
-        self.written.lock().await.push(id);
-        self.content.lock().await.insert(id, content.to_vec());
+        let mut state = self.state.lock().await;
+        state.written.push(id);
+        state.content.insert(id, content.to_vec());
         Ok(())
     }
 
     async fn read(&self, id: ArtifactId) -> Result<String, ResourceError> {
-        let bytes =
-            self.content.lock().await.get(&id).cloned().ok_or_else(|| {
-                ResourceError::new(ErrorCategory::NotFound, "missing test artifact")
-            })?;
+        let bytes = self
+            .state
+            .lock()
+            .await
+            .content
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| ResourceError::new(ErrorCategory::NotFound, "missing test artifact"))?;
         String::from_utf8(bytes).map_err(|_| {
             ResourceError::new(
                 ErrorCategory::SourceUnavailable,
@@ -114,7 +124,7 @@ impl SessionStorage for MemoryStorage {
     }
 
     async fn remove(&self, id: ArtifactId) -> Result<(), ResourceError> {
-        self.content.lock().await.remove(&id);
+        self.state.lock().await.content.remove(&id);
         Ok(())
     }
 

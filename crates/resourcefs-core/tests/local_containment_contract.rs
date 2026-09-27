@@ -5,14 +5,14 @@
 //! name. The oracle is the allocation sequence the test computes for itself plus
 //! the raw ids the store was handed.
 
-use resourcefs_core::test_support::MemoryStorage as FakeStorage;
 use std::{collections::BTreeSet, sync::Arc};
 
 use resourcefs_core::{
-    LocalName, OperationGuard, PathSession, ServerLimits, SessionStorage, SessionToken,
+    ArtifactId, LocalName, OperationGuard, PathSession, ServerLimits, SessionStorage, SessionToken,
+    test_support::MemoryStorage,
 };
 
-fn new_session(value: u8, storage: Arc<FakeStorage>) -> PathSession {
+fn new_session(value: u8, storage: Arc<MemoryStorage>) -> PathSession {
     let trait_storage: Arc<dyn SessionStorage> = storage;
     PathSession::new(
         SessionToken::parse(format!("{value:032x}")).expect("fixture token"),
@@ -45,7 +45,7 @@ async fn names_cannot_escape() {
         );
     }
 
-    let storage = Arc::new(FakeStorage::default());
+    let storage = Arc::new(MemoryStorage::default());
     let session = new_session(9, Arc::clone(&storage));
     let guard = OperationGuard::new();
 
@@ -69,9 +69,13 @@ async fn names_cannot_escape() {
     }
 
     // Oracle: the ids handed to storage are exactly the sequence the session
-    // allocates, computed here without consulting the session.
+    // allocates, computed here without consulting the session. The write log is
+    // every id the store was handed, in order: the only channel through which a
+    // name could reach storage, so a name-derived key would show up here.
     let observed = storage.written_ids().await;
-    let expected = (1..=names.len() as u64).collect::<Vec<_>>();
+    let expected = (1..=names.len() as u64)
+        .map(|value| ArtifactId::new(value).expect("allocated artifact id"))
+        .collect::<Vec<_>>();
     assert_eq!(
         observed, expected,
         "scratch object ids must be the allocated sequence, never derived from the name"
@@ -125,9 +129,9 @@ async fn names_cannot_escape() {
 
 #[tokio::test]
 async fn scratch_names_are_sorted_and_session_scoped() {
-    let first_storage = Arc::new(FakeStorage::default());
+    let first_storage = Arc::new(MemoryStorage::default());
     let first = new_session(10, Arc::clone(&first_storage));
-    let second = new_session(11, Arc::new(FakeStorage::default()));
+    let second = new_session(11, Arc::new(MemoryStorage::default()));
     let guard = OperationGuard::new();
 
     for raw in ["zebra.md", "alpha.md", "middle.md"] {

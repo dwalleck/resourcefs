@@ -25,6 +25,7 @@ fn reference(path: &str) -> PathReference {
 /// A search at page zero with default options and limits, which is what most
 /// requests in this file ask for. The message stays per call site, so a
 /// construction failure still names the case that produced it (rfs-exoi).
+#[track_caller]
 fn default_search(target: SearchTarget, pattern: &str, context: &str) -> SearchRequest {
     SearchRequest::new(
         target,
@@ -37,6 +38,7 @@ fn default_search(target: SearchTarget, pattern: &str, context: &str) -> SearchR
 }
 
 /// A glob at page zero with default options and limits (rfs-exoi).
+#[track_caller]
 fn default_glob(target: GlobTarget) -> GlobRequest {
     GlobRequest::new(target, GlobOptions::default(), 0, GlobLimits::default())
 }

@@ -8,13 +8,13 @@ use std::{
 };
 
 use async_trait::async_trait;
-use resourcefs_core::test_support::MemoryStorage;
 use resourcefs_core::{
-    ArtifactAddress, ArtifactProjectionOrigin, DisplayedLineRange, ErrorCategory, LineSelector,
-    MAX_ARTIFACT_BYTES, OperationGuard, PathReference, PathSession, ProjectionSelector, ReadEngine,
-    ReadRequest, ResourceAddress, ResourceError, ServerLimits, ServerLimitsInput, SessionToken,
-    SourceAdapter, SourceResource, TextLimitInput, TextLimits, VersionTag, WorkspacePath,
-    WorkspaceRootId, select_utf8,
+    ArtifactAddress, ArtifactId, ArtifactProjectionOrigin, DisplayedLineRange, ErrorCategory,
+    LineSelector, MAX_ARTIFACT_BYTES, OperationGuard, PathReference, PathSession,
+    ProjectionSelector, ReadEngine, ReadRequest, ResourceAddress, ResourceError, ServerLimits,
+    ServerLimitsInput, SessionStorage, SessionToken, SourceAdapter, SourceResource, TextLimitInput,
+    TextLimits, VersionTag, WorkspacePath, WorkspaceRootId, select_utf8,
+    test_support::MemoryStorage,
 };
 
 #[derive(Clone)]
@@ -911,4 +911,25 @@ async fn inline_artifact_production_budget() {
         Duration::from_millis(25)
     };
     assert!(elapsed <= budget, "49 KiB artifact read took {elapsed:?}");
+}
+
+/// The shared fake reports stored bytes that are not UTF-8 as
+/// `source_unavailable`, distinct from a missing object's `not_found`: missing
+/// and corrupt are different failures. This read-engine copy used to answer
+/// `not_found` for both; the shared fake pins the distinction (rfs-exoi).
+#[tokio::test]
+async fn memory_storage_reports_corrupt_bytes_distinctly_from_missing() {
+    let storage = MemoryStorage::default();
+    let corrupt = ArtifactId::new(1).expect("artifact id");
+    storage
+        .write_atomic(corrupt, &[0xff, 0xfe])
+        .await
+        .expect("store invalid UTF-8");
+
+    let error = storage.read(corrupt).await.expect_err("invalid UTF-8");
+    assert_eq!(error.category(), ErrorCategory::SourceUnavailable);
+
+    let missing = ArtifactId::new(2).expect("artifact id");
+    let error = storage.read(missing).await.expect_err("missing object");
+    assert_eq!(error.category(), ErrorCategory::NotFound);
 }
