@@ -5,12 +5,16 @@
 # peak-heap ceiling, and a process-global counter is only trustworthy when one
 # test owns the process. Under `cargo test` those rows share a binary with
 # everything else in it, so a concurrent test's allocations land in this one's
-# measurement -- the misattribution recorded in rfs-1e6h, and the reason its
-# ceilings were raised (1 MiB to 4 MiB, 100 ms to 1000 ms) rather than fixed.
+# measurement -- the misattribution recorded in rfs-1e6h. With isolation in
+# place the C8 glob ceiling is back at its original 1 MiB, and the allocator
+# rows in artifact_adapter_contract.rs assert their ceiling only when
+# NEXTEST_EXECUTION_MODE says the process is theirs; a shared-process run
+# reports the measurement on stderr instead of asserting it. (The timing
+# ceilings rfs-1e6h also raised, 100 ms to 1000 ms, are a different problem:
+# rfs-cn1r moves wall-clock enforcement to a controlled host.)
 #
 # The `#[ignore]`d production budgets were never affected: scripts/ci-gates.py
-# already runs each of those individually with `--exact`. The rows this helps
-# are the non-ignored allocator assertions, in artifact_adapter_contract.rs.
+# already runs each of those individually with `--exact`.
 
 [profile.default]
 # The repository gate wants every failure in one run, not the first one.
