@@ -444,24 +444,17 @@ response_id() {
   fi
   printf '%s' "$value"
 }
-# Restores one free-text manifest field (name, title, marker) read through jq
-# @tsv and `read -r`, in place, with no subprocess (rfs-cbz9). @tsv escapes
-# exactly backslash, tab, newline and CR as \\ \t \n \r -- identical on jq 1.6,
-# 1.7.1 and 1.8.2 -- and `read -r` keeps them escaped, so each would reach the
-# upstream as a literal escape. Manifest `text` admits no other control
-# character, so \001 can hold an escaped backslash while the rest are restored.
-# The jq side prefixes the field with "=": tab is IFS whitespace, so without it
-# an empty field would collapse into its neighbour and shift the rest.
+# The one decoder for "=" + @tsv fields (rfs-cbz9). @tsv escapes exactly
+# backslash, tab, newline and CR as \\ \t \n \r -- identical on jq 1.6, 1.7.1
+# and 1.8.2 -- so after it every backslash begins one of those four, which are
+# the only escapes printf %b then meets: an exact inverse for any string. The
+# jq side prefixes "=" because tab is IFS whitespace: without it an empty field
+# would collapse into its neighbour and shift the rest. Manifest fields read
+# through `read -r` and list-page fields from page_scan both decode here.
 tsv_text() {
-  local tsv_target=$1 tsv_value=$2 tsv_bs='\' tsv_held=$'\001'
+  local tsv_target=$1 tsv_value=$2
   [[ "$tsv_value" == =* ]] || die "invalid_manifest"
-  tsv_value=${tsv_value#=}
-  tsv_value=${tsv_value//"$tsv_bs$tsv_bs"/"$tsv_held"}
-  tsv_value=${tsv_value//"${tsv_bs}t"/$'\t'}
-  tsv_value=${tsv_value//"${tsv_bs}n"/$'\n'}
-  tsv_value=${tsv_value//"${tsv_bs}r"/$'\r'}
-  tsv_value=${tsv_value//"$tsv_held"/"$tsv_bs"}
-  printf -v "$tsv_target" '%s' "$tsv_value"
+  printf -v "$tsv_target" '%b' "${tsv_value#=}"
 }
 
 decode_json_field() {
@@ -698,20 +691,24 @@ validate_cleanup_page_owner() {
     [[ -z "${seen[$path]-}" ]] || die "invalid_pagination product=confluence operation=page_owner_get"
     seen[$path]=1
     api_request provisioner GET "$path" '' 200 page_owner_get
-    jq -e --arg key "$PROPERTY_KEY" '
+    # One jq per page through page_scan (rfs-cbz9). This check keeps its own
+    # loop rather than paginate's: it rejects a revisited continuation, allows
+    # only key/cursor/limit in the query, and counts rows across pages.
+    page_scan "$RESPONSE_FILE" '
       type == "object" and (.results|type) == "array" and
       all(.results[]; type == "object" and .key == $key and (.value|type) == "string") and
       (._links|type) == "object" and
-      ((._links|has("next")|not) or (._links.next|type) == "string")
-    ' "$RESPONSE_FILE" >/dev/null 2>&1 || die "invalid_response operation=page_owner_get"
-    rows=$(jq '.results|length' "$RESPONSE_FILE")
+      ((._links|has("next")|not) or (._links.next|type) == "string")' \
+      .results '[(.value == $marker | tostring)]' 1 '._links.next // ""' \
+      -- --arg key "$PROPERTY_KEY" --argjson marker "$marker_json"
+    (( PAGE_OK && PAGE_CURSOR_BAD[0] == 0 )) || die "invalid_response operation=page_owner_get"
+    rows=$PAGE_ROW_COUNT
     count=$((count + rows))
     (( count <= 1 )) || die "ambiguous_object logical=page"
     if (( rows == 1 )); then
-      jq -e --argjson marker "$marker_json" '.results[0].value == $marker' \
-        "$RESPONSE_FILE" >/dev/null 2>&1 || die "foreign_collision logical=page"
+      [[ "${PAGE_FIELDS[0]}" == true ]] || die "foreign_collision logical=page"
     fi
-    next=$(jq -r '._links.next // ""' "$RESPONSE_FILE")
+    next=${PAGE_CURSOR[0]}
     if [[ -z "$next" ]]; then
       (( count == 1 )) || die "foreign_collision logical=page"
       return 0
@@ -826,250 +823,479 @@ append_row() {
 }
 
 
-find_jira_project() {
-  local key=$1 marker=$2 start=0 pages=0 is_last max values row row_key row_marker row_id
-  local status=${3:-live}
-  FOUND_ID=''
-  FOUND_KEY=''
+# ---------------------------------------------------------------------------
+# One list page, one jq (rfs-cbz9). Every paginated read below used to spend a
+# jq to validate the page's array, one to split it into rows, one to three per
+# row to pull fields out, and one or two for the cursor. page_scan does all of
+# that in a single program and prints one item per line, so no row can span
+# lines and none can collapse: each field is "=" + @tsv of that one string,
+# decoded by tsv_text. U+0000 is dropped inside jq before encoding, as the
+# `$(jq -r ...)` reads this replaced dropped it, and trailing newlines are
+# dropped after decoding for the same reason, so every comparison against a
+# field behaves as it did.
+#
+#   page_scan FILE GUARD ARRAY ROW FIELDS [CURSOR ...] [-- JQ_ARGS ...]
+#
+# GUARD is a jq boolean the whole page must satisfy ("true" when the array
+# check is enough), ARRAY the page's array path, ROW a jq expression yielding
+# an array of FIELDS values for one element, each CURSOR a jq expression read
+# after the rows. An element that is not an object, or whose ROW raises, is
+# tagged X so the caller can stop at the row where the old per-row jq failed.
+# Results: PAGE_OK (0 or 1), PAGE_ROW_COUNT, PAGE_ROW_TAGS[i] (R or X),
+# PAGE_FIELDS (row-major, FIELDS per row), PAGE_CURSOR[j] (decoded value) and
+# PAGE_CURSOR_BAD[j] (1 when that cursor expression raised).
+page_scan() {
+  local pg_file=$1 pg_guard=$2 pg_array=$3 pg_row=$4 pg_fields=$5
+  shift 5
+  local -a pg_cursors=() pg_args=() pg_lines=()
+  while (( $# )); do
+    if [[ "$1" == -- ]]; then
+      shift
+      pg_args=("$@")
+      break
+    fi
+    pg_cursors+=("$1")
+    shift
+  done
+  local pg_cursor_program='' pg_filter
+  for pg_filter in "${pg_cursors[@]}"; do
+    pg_cursor_program+=", cur(${pg_filter})"
+  done
+  local pg_program='
+    def emit: "=" + ([tostring | explode | map(select(. != 0)) | implode] | @tsv);
+    def one(f): [f] | if length > 0 then .[0] else "" end;
+    def cur(f): try ([f] | if length == 1 then ("C" + (.[0] | emit)) else "!" end) catch "!";
+    def is_last: if (.isLast|type) == "boolean" then .isLast else error end;
+    def start_max_total: [.startAt, .maxResults, .total] |
+      if all(type == "number") then map(tostring) | join(",") else error end;
+    def malformed: "X", (range(0; '"$pg_fields"') | "=");
+    if length != 1 then "bad" else .[0] |
+      if (try (('"$pg_guard"') and ('"$pg_array"' | type == "array")) catch false) == true then
+        "ok",
+        ('"$pg_array"' | length | tostring),
+        ('"$pg_array"'[] |
+          if type != "object" then malformed
+          else (try ('"$pg_row"') catch null) as $row |
+            if ($row | type) == "array" and ($row | length) == '"$pg_fields"'
+            then "R", ($row[] | emit) else malformed end
+          end)
+        '"$pg_cursor_program"'
+      else "bad" end
+    end'
+  mapfile -t pg_lines < <(jq -rs "${pg_args[@]}" "$pg_program" "$pg_file" 2>/dev/null)
+  PAGE_OK=0 PAGE_ROW_COUNT=0
+  PAGE_ROW_TAGS=() PAGE_FIELDS=() PAGE_CURSOR=() PAGE_CURSOR_BAD=()
+  [[ "${pg_lines[0]-}" == ok && "${pg_lines[1]-}" =~ ^[0-9]+$ ]] || return 0
+  local pg_count=${pg_lines[1]} pg_index=2 pg_row_index pg_field pg_out=0 pg_line
+  (( ${#pg_lines[@]} == 2 + pg_count * (pg_fields + 1) + ${#pg_cursors[@]} )) || return 0
+  for (( pg_row_index = 0; pg_row_index < pg_count; pg_row_index++ )); do
+    PAGE_ROW_TAGS[pg_row_index]=${pg_lines[pg_index]}
+    ((pg_index += 1))
+    for (( pg_field = 0; pg_field < pg_fields; pg_field++ )); do
+      pg_line=${pg_lines[pg_index]}
+      [[ "$pg_line" == =* ]] || return 0
+      page_text "PAGE_FIELDS[$pg_out]" "$pg_line"
+      ((pg_index += 1, pg_out += 1))
+    done
+  done
+  for (( pg_field = 0; pg_field < ${#pg_cursors[@]}; pg_field++ )); do
+    pg_line=${pg_lines[pg_index]}
+    if [[ "$pg_line" == C=* ]]; then
+      PAGE_CURSOR_BAD[pg_field]=0
+      page_text "PAGE_CURSOR[$pg_field]" "${pg_line#C}"
+    else
+      PAGE_CURSOR_BAD[pg_field]=1
+      PAGE_CURSOR[pg_field]=''
+    fi
+    ((pg_index += 1))
+  done
+  PAGE_ROW_COUNT=$pg_count
+  PAGE_OK=1
+}
+
+# Decodes one page_scan field into TARGET the way `$(jq -r ...)` delivered it:
+# tsv_text restores the bytes, then trailing newlines go.
+page_text() {
+  local pt_value
+  tsv_text pt_value "$2"
+  while [[ "$pt_value" == *$'\n' ]]; do pt_value=${pt_value%$'\n'}; done
+  printf -v "$1" '%s' "$pt_value"
+}
+
+# Writes VALUE to TARGET as a JSON string byte-identical to jq's own output
+# (rfs-cbz9): jq 1.6, 1.7.1 and 1.8.2 all escape exactly quote, backslash,
+# \b \t \n \f \r, every other code below U+0020 and U+007F as \u00XX in lower
+# case, and emit everything else raw. Only a value with a control character
+# takes the per-character path.
+json_string() {
+  local js_target=$1 js_value=$2 js_bs='\' js_out='' js_char js_code js_index
+  js_value=${js_value//"$js_bs"/"$js_bs$js_bs"}
+  js_value=${js_value//'"'/"$js_bs\""}
+  if [[ "$js_value" =~ [[:cntrl:]] ]]; then
+    for (( js_index = 0; js_index < ${#js_value}; js_index++ )); do
+      js_char=${js_value:js_index:1}
+      case "$js_char" in
+        $'\b') js_out+="${js_bs}b" ;;
+        $'\t') js_out+="${js_bs}t" ;;
+        $'\n') js_out+="${js_bs}n" ;;
+        $'\f') js_out+="${js_bs}f" ;;
+        $'\r') js_out+="${js_bs}r" ;;
+        *)
+          printf -v js_code '%d' "'$js_char"
+          if (( js_code < 32 || js_code == 127 )); then
+            printf -v js_char '%su%04x' "$js_bs" "$js_code"
+          fi
+          js_out+=$js_char
+          ;;
+      esac
+    done
+    js_value=$js_out
+  fi
+  printf -v "$js_target" '"%s"' "$js_value"
+}
+
+# Walks one paginated collection and calls CALLBACK ARG... FIELD... for each
+# element (rfs-cbz9). A callback receives everything it needs as arguments:
+# the ARGs given after the callback name, then that element's FIELDS values.
+# The four Atlassian cursor styles differ only in how the next page is named
+# and when the walk ends; the page limit, the fetch, the 404 return of a child
+# collection that disappeared, the array check and every die reason are shared.
+#
+#   paginate OPTIONS -- CALLBACK [ARG ...]
+#     --style offset|token|total|next    (required)
+#     --product NAME --operation NAME    (required)
+#     --array PATH --row EXPR --fields N (required)
+#     --actor NAME          requester, default provisioner
+#     --path-prefix P [--path-suffix S]  offset, total (required): P + startAt + S
+#     --path PATH --next-prefix P        next (both required)
+#     --jql JQL             token (required): the issue-search query
+#     --parent PATH         total, next: read through read_child_collection
+#     --arg NAME VALUE      extra jq --arg for the row expression
+paginate() {
+  local pg_style='' pg_actor=provisioner pg_product='' pg_operation='' pg_array=''
+  local pg_row='' pg_fields='' pg_path='' pg_next_prefix='' pg_path_prefix=''
+  local pg_path_suffix='' pg_jql='' pg_parent=''
+  local -a pg_args=() pg_callback=()
+  local -A pg_given=()
+  while (( $# )); do
+    case "$1" in
+      --style|--actor|--product|--operation|--array|--row|--fields|--path|--next-prefix|--path-prefix|--path-suffix|--jql|--parent)
+        (( $# >= 2 )) || die "internal_paginate_option"
+        [[ -z "${pg_given[$1]-}" ]] || die "internal_paginate_option"
+        pg_given[$1]=1
+        case "$1" in
+          --style) pg_style=$2 ;;
+          --actor) pg_actor=$2 ;;
+          --product) pg_product=$2 ;;
+          --operation) pg_operation=$2 ;;
+          --array) pg_array=$2 ;;
+          --row) pg_row=$2 ;;
+          --fields) pg_fields=$2 ;;
+          --path) pg_path=$2 ;;
+          --next-prefix) pg_next_prefix=$2 ;;
+          --path-prefix) pg_path_prefix=$2 ;;
+          --path-suffix) pg_path_suffix=$2 ;;
+          --jql) pg_jql=$2 ;;
+          --parent) pg_parent=$2 ;;
+        esac
+        shift 2
+        ;;
+      --arg)
+        (( $# >= 3 )) || die "internal_paginate_option"
+        pg_args+=(--arg "$2" "$3")
+        shift 3
+        ;;
+      --)
+        shift
+        pg_callback=("$@")
+        break
+        ;;
+      *) die "internal_paginate_option" ;;
+    esac
+  done
+  local pg_option
+  for pg_option in --style --product --operation --array --row --fields; do
+    [[ -n "${pg_given[$pg_option]-}" ]] || die "internal_paginate_option"
+  done
+  (( ${#pg_callback[@]} > 0 )) || die "internal_paginate_option"
+  [[ "$pg_fields" =~ ^[1-9][0-9]*$ ]] || die "internal_paginate_option"
+  # Options each style requires, then options it cannot use.
+  local -a pg_required=() pg_forbidden=()
+  case "$pg_style" in
+    offset) pg_required=(--path-prefix); pg_forbidden=(--path --next-prefix --jql --parent) ;;
+    total) pg_required=(--path-prefix); pg_forbidden=(--path --next-prefix --jql) ;;
+    token) pg_required=(--jql); pg_forbidden=(--path --next-prefix --path-prefix --path-suffix --parent) ;;
+    next) pg_required=(--path --next-prefix); pg_forbidden=(--path-prefix --path-suffix --jql) ;;
+    *) die "internal_paginate_option" ;;
+  esac
+  for pg_option in "${pg_required[@]}"; do
+    [[ -n "${pg_given[$pg_option]-}" ]] || die "internal_paginate_option"
+  done
+  for pg_option in "${pg_forbidden[@]}"; do
+    [[ -z "${pg_given[$pg_option]-}" ]] || die "internal_paginate_option"
+  done
+  # read_child_collection reads as the provisioner; no reader child listing
+  # exists, so a different actor there is a caller mistake, not a fallback.
+  [[ -z "$pg_parent" || "$pg_actor" == provisioner ]] || die "internal_paginate_option"
+  local -a pg_cursor=()
+  case "$pg_style" in
+    offset) pg_cursor=('is_last' 'if (.maxResults|type) == "number" then .maxResults else error end') ;;
+    token) pg_cursor=('is_last' 'if (.nextPageToken|type) == "string" then .nextPageToken else error end') ;;
+    total) pg_cursor=('start_max_total') ;;
+    next) pg_cursor=('if ._links.next == null then "" elif (._links.next|type) == "string" then ._links.next else error end') ;;
+  esac
+  local pg_pages=0 pg_start=0 pg_token='' pg_jql_json='' pg_token_json pg_body='' pg_request_path=''
+  local pg_next pg_max pg_total pg_response_start pg_is_last pg_new_token pg_count pg_i
+  local pg_bad_pagination="invalid_pagination product=${pg_product} operation=${pg_operation}"
+  [[ "$pg_style" != token ]] || json_string pg_jql_json "$pg_jql"
   while :; do
-    (( pages < MAX_PAGES )) || die "pagination_limit product=jira operation=project_search"
-    # Live project search omits `description` unless expanded, and the
-    # description carries the ownership marker used for adoption.
-    api_request provisioner GET "/rest/api/3/project/search?startAt=${start}&maxResults=1&expand=description&status=${status}" '' 200 project_search
-    values=$(jq -ec '.values | if type == "array" then . else error end' "$RESPONSE_FILE" 2>/dev/null) ||
-      die "invalid_response operation=project_search"
-    while IFS= read -r row; do
-      row_key=$(jq -r '.key // empty | strings' <<<"$row")
-      row_marker=$(jq -r '.description // empty | strings' <<<"$row")
-      if [[ "$row_key" == "$key" || "$row_marker" == "$marker" ]]; then
-        [[ "$row_key" == "$key" && "$row_marker" == "$marker" ]] ||
-          die "foreign_collision logical=project"
-        row_id=$(jq -r '.id // empty | strings' <<<"$row")
-        [[ "$row_id" =~ ^[0-9]+$ ]] || die "invalid_response operation=project_search"
-        [[ -z "$FOUND_ID" || "$FOUND_ID" == "$row_id" ]] ||
-          die "ambiguous_object logical=project"
-        FOUND_ID=$row_id
-        FOUND_KEY=$row_key
-      fi
-    done < <(jq -c '.[]' <<<"$values")
-    is_last=$(jq -r 'if (.isLast|type) == "boolean" then .isLast else error end' "$RESPONSE_FILE" 2>/dev/null) ||
-      die "invalid_pagination product=jira operation=project_search"
-    [[ "$is_last" == true ]] && return 0
-    max=$(jq -r 'if (.maxResults|type) == "number" then .maxResults else error end' "$RESPONSE_FILE" 2>/dev/null) ||
-      die "invalid_pagination product=jira operation=project_search"
-    [[ "$max" =~ ^[1-9][0-9]*$ ]] ||
-      die "invalid_pagination product=jira operation=project_search"
-    (( start + max > start )) ||
-      die "invalid_pagination product=jira operation=project_search"
-    start=$((start + max))
-    ((pages += 1))
+    (( pg_pages < MAX_PAGES )) ||
+      die "pagination_limit product=${pg_product} operation=${pg_operation}"
+    case "$pg_style" in
+      offset|total) pg_request_path="${pg_path_prefix}${pg_start}${pg_path_suffix}" ;;
+      next) pg_request_path=$pg_path ;;
+      token)
+        # Byte-identical to the jq -cn body it replaces; no jq per page.
+        pg_body="{\"jql\":${pg_jql_json},\"maxResults\":1"
+        if [[ -n "$pg_token" ]]; then
+          json_string pg_token_json "$pg_token"
+          pg_body+=",\"nextPageToken\":${pg_token_json}"
+        fi
+        pg_body+=',"fields":["summary","description","project","parent"]}'
+        ;;
+    esac
+    if [[ "$pg_style" == token ]]; then
+      api_request "$pg_actor" POST '/rest/api/3/search/jql' "$pg_body" 200 "$pg_operation"
+    elif [[ -n "$pg_parent" ]]; then
+      read_child_collection "$pg_request_path" "$pg_parent" "$pg_operation"
+      [[ "$RESPONSE_STATUS" != 404 ]] || return 0
+    else
+      api_request "$pg_actor" GET "$pg_request_path" '' 200 "$pg_operation"
+    fi
+    page_scan "$RESPONSE_FILE" true "$pg_array" "$pg_row" "$pg_fields" "${pg_cursor[@]}" -- "${pg_args[@]}"
+    (( PAGE_OK )) || die "invalid_response operation=${pg_operation}"
+    # This page's rows and cursor are copied out first: a callback may make
+    # requests of its own, and page_scan must not be re-entered under it.
+    local -a pg_tags=("${PAGE_ROW_TAGS[@]}") pg_values=("${PAGE_FIELDS[@]}")
+    local -a pg_page_cursor=("${PAGE_CURSOR[@]}") pg_cursor_bad=("${PAGE_CURSOR_BAD[@]}")
+    pg_count=$PAGE_ROW_COUNT
+    for (( pg_i = 0; pg_i < pg_count; pg_i++ )); do
+      # The per-row jq this replaces failed on such a row, and set -e ended
+      # the run there; name the failure instead of leaking jq's own message.
+      [[ "${pg_tags[pg_i]}" == R ]] || die "invalid_response operation=${pg_operation}"
+      "${pg_callback[@]}" "${pg_values[@]:pg_i * pg_fields:pg_fields}"
+    done
+    case "$pg_style" in
+      offset|token)
+        (( pg_cursor_bad[0] == 0 )) || die "$pg_bad_pagination"
+        pg_is_last=${pg_page_cursor[0]}
+        [[ "$pg_is_last" == true ]] && return 0
+        (( pg_cursor_bad[1] == 0 )) || die "$pg_bad_pagination"
+        ;;
+    esac
+    case "$pg_style" in
+      offset)
+        pg_max=${pg_page_cursor[1]}
+        [[ "$pg_max" =~ ^[1-9][0-9]*$ ]] || die "$pg_bad_pagination"
+        (( pg_start + pg_max > pg_start )) || die "$pg_bad_pagination"
+        pg_start=$((pg_start + pg_max))
+        ;;
+      token)
+        pg_new_token=${pg_page_cursor[1]}
+        [[ -n "$pg_new_token" && "$pg_new_token" != "$pg_token" ]] || die "$pg_bad_pagination"
+        pg_token=$pg_new_token
+        ;;
+      total)
+        (( pg_cursor_bad[0] == 0 )) || die "$pg_bad_pagination"
+        # start_max_total joined three validated numbers with commas.
+        pg_response_start=${pg_page_cursor[0]%%,*}
+        pg_total=${pg_page_cursor[0]#*,}
+        pg_max=${pg_total%%,*}
+        pg_total=${pg_total#*,}
+        [[ "$pg_response_start" =~ ^[0-9]+$ && "$pg_response_start" == "$pg_start" &&
+           "$pg_max" =~ ^[1-9][0-9]*$ && "$pg_total" =~ ^[0-9]+$ ]] || die "$pg_bad_pagination"
+        (( pg_start + pg_max < pg_total )) || return 0
+        pg_start=$((pg_start + pg_max))
+        ;;
+      next)
+        (( pg_cursor_bad[0] == 0 )) || die "$pg_bad_pagination"
+        pg_next=${pg_page_cursor[0]}
+        [[ -n "$pg_next" ]] || return 0
+        [[ "$pg_next" == "$pg_next_prefix"* && "$pg_next" != "$pg_path" ]] || die "$pg_bad_pagination"
+        pg_path=$pg_next
+        ;;
+    esac
+    ((pg_pages += 1))
   done
 }
-find_jira_issue() {
-  local project_key=$1 marker=$2 token='' pages=0 row row_marker row_id row_key is_last new_token body
+
+# Row expressions, exactly as each per-row jq used to read them.
+readonly ROW_ID='one(.id // empty | strings)'
+readonly ROW_KEY='one(.key // empty | strings)'
+readonly ROW_SPACE_DESCRIPTION='one(
+  if (.description|type) == "string" then .description
+  elif (.description|type) == "object" and (.description.value?|type) == "string" then .description.value
+  elif (.description|type) == "object" and (.description.plain?|type) == "object"
+    and (.description.plain.value?|type) == "string" then .description.plain.value
+  else empty
+  end)'
+
+find_jira_project() {
+  local key=$1 marker=$2 status=${3:-live}
   FOUND_ID=''
   FOUND_KEY=''
-  while :; do
-    (( pages < MAX_PAGES )) || die "pagination_limit product=jira operation=issue_search"
-    if [[ -n "$token" ]]; then
-      body=$(jq -cn --arg jql "project = \"$project_key\" ORDER BY key" --arg token "$token" \
-        '{jql:$jql,maxResults:1,nextPageToken:$token,fields:["summary","description","project","parent"]}')
-    else
-      body=$(jq -cn --arg jql "project = \"$project_key\" ORDER BY key" \
-        '{jql:$jql,maxResults:1,fields:["summary","description","project","parent"]}')
-    fi
-    api_request provisioner POST '/rest/api/3/search/jql' "$body" 200 issue_search
-    jq -e '.issues | type == "array"' "$RESPONSE_FILE" >/dev/null 2>&1 ||
-      die "invalid_response operation=issue_search"
-    while IFS= read -r row; do
-      row_marker=$(jq -r --arg marker "$marker" '
-        [.fields.description? | .. | objects | select(.type? == "text") | .text? | strings] | any(. == $marker)
-      ' <<<"$row")
-      if [[ "$row_marker" == true ]]; then
-        row_id=$(jq -r '.id // empty | strings' <<<"$row")
-        row_key=$(jq -r '.key // empty | strings' <<<"$row")
-        [[ "$row_id" =~ ^[0-9]+$ && "$row_key" =~ ^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$ ]] ||
-          die "invalid_response operation=issue_search"
-        [[ -z "$FOUND_ID" || "$FOUND_ID" == "$row_id" ]] ||
-          die "ambiguous_object logical=issue"
-        FOUND_ID=$row_id
-        FOUND_KEY=$row_key
-      fi
-    done < <(jq -c '.issues[]' "$RESPONSE_FILE")
-    is_last=$(jq -r 'if (.isLast|type) == "boolean" then .isLast else error end' "$RESPONSE_FILE" 2>/dev/null) ||
-      die "invalid_pagination product=jira operation=issue_search"
-    [[ "$is_last" == true ]] && return 0
-    new_token=$(jq -r 'if (.nextPageToken|type) == "string" then .nextPageToken else error end' "$RESPONSE_FILE" 2>/dev/null) ||
-      die "invalid_pagination product=jira operation=issue_search"
-    [[ -n "$new_token" && "$new_token" != "$token" ]] ||
-      die "invalid_pagination product=jira operation=issue_search"
-    token=$new_token
-    ((pages += 1))
-  done
+  # Live project search omits `description` unless expanded, and the
+  # description carries the ownership marker used for adoption.
+  paginate --style offset --product jira --operation project_search \
+    --path-prefix '/rest/api/3/project/search?startAt=' \
+    --path-suffix "&maxResults=1&expand=description&status=${status}" \
+    --array .values --fields 3 \
+    --row "[${ROW_KEY}, one(.description // empty | strings), ${ROW_ID}]" \
+    -- find_jira_project_row "$key" "$marker"
+}
+find_jira_project_row() {
+  local key=$1 marker=$2 row_key=$3 row_marker=$4 row_id=$5
+  if [[ "$row_key" == "$key" || "$row_marker" == "$marker" ]]; then
+    [[ "$row_key" == "$key" && "$row_marker" == "$marker" ]] ||
+      die "foreign_collision logical=project"
+    [[ "$row_id" =~ ^[0-9]+$ ]] || die "invalid_response operation=project_search"
+    [[ -z "$FOUND_ID" || "$FOUND_ID" == "$row_id" ]] ||
+      die "ambiguous_object logical=project"
+    FOUND_ID=$row_id
+    FOUND_KEY=$row_key
+  fi
+}
+
+find_jira_issue() {
+  local project_key=$1 marker=$2
+  FOUND_ID=''
+  FOUND_KEY=''
+  paginate --style token --product jira --operation issue_search \
+    --jql "project = \"$project_key\" ORDER BY key" \
+    --array .issues --fields 3 --arg marker "$marker" \
+    --row '([.fields.description? | .. | objects | select(.type? == "text") | .text? | strings] | any(. == $marker)) as $match |
+      [($match | tostring),
+       (if $match then '"${ROW_ID}"' else "" end),
+       (if $match then '"${ROW_KEY}"' else "" end)]' \
+    -- find_jira_issue_row
+}
+find_jira_issue_row() {
+  local row_marker=$1 row_id=$2 row_key=$3
+  [[ "$row_marker" == true ]] || return 0
+  [[ "$row_id" =~ ^[0-9]+$ && "$row_key" =~ ^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$ ]] ||
+    die "invalid_response operation=issue_search"
+  [[ -z "$FOUND_ID" || "$FOUND_ID" == "$row_id" ]] ||
+    die "ambiguous_object logical=issue"
+  FOUND_ID=$row_id
+  FOUND_KEY=$row_key
 }
 
 find_jira_comment() {
-  local issue_id=$1 marker=$2 start=0 pages=0 row row_body cid max total response_start
+  local issue_id=$1 marker=$2
   FOUND_ID=''
   FOUND_KEY=''
-  while :; do
-    (( pages < MAX_PAGES )) || die "pagination_limit product=jira operation=comment_list"
-    read_child_collection "/rest/api/3/issue/${issue_id}/comment?startAt=${start}&maxResults=1" "/rest/api/3/issue/${issue_id}?fields=summary,description,project,parent" comment_list
-    [[ "$RESPONSE_STATUS" != 404 ]] || return 0
-    jq -e '.comments | type == "array"' "$RESPONSE_FILE" >/dev/null 2>&1 ||
-      die "invalid_response operation=comment_list"
-    while IFS= read -r row; do
-      row_body=$(jq -r --arg marker "$marker" '
-        [.body? | .. | objects | select(.type? == "text") | .text? | strings] | any(. == $marker)
-      ' <<<"$row")
-      if [[ "$row_body" == true ]]; then
-        cid=$(jq -r '.id // empty | strings' <<<"$row")
-        [[ "$cid" =~ ^[0-9]+$ ]] || die "invalid_response operation=comment_list"
-        [[ -z "$FOUND_ID" || "$FOUND_ID" == "$cid" ]] ||
-          die "ambiguous_object logical=comment"
-        FOUND_ID=$cid
-      fi
-    done < <(jq -c '.comments[]' "$RESPONSE_FILE")
-    read -r response_start max total < <(
-      jq -r 'if ([.startAt,.maxResults,.total] | all(type == "number"))
-        then [.startAt,.maxResults,.total] | @tsv else error end' "$RESPONSE_FILE" 2>/dev/null
-    ) || die "invalid_pagination product=jira operation=comment_list"
-    [[ "$response_start" =~ ^[0-9]+$ && "$response_start" == "$start" &&
-       "$max" =~ ^[1-9][0-9]*$ && "$total" =~ ^[0-9]+$ ]] ||
-      die "invalid_pagination product=jira operation=comment_list"
-    (( start + max < total )) || return 0
-    start=$((start + max))
-    ((pages += 1))
-  done
+  paginate --style total --product jira --operation comment_list \
+    --path-prefix "/rest/api/3/issue/${issue_id}/comment?startAt=" --path-suffix '&maxResults=1' \
+    --parent "/rest/api/3/issue/${issue_id}?fields=summary,description,project,parent" \
+    --array .comments --fields 2 --arg marker "$marker" \
+    --row '([.body? | .. | objects | select(.type? == "text") | .text? | strings] | any(. == $marker)) as $match |
+      [($match | tostring), (if $match then '"${ROW_ID}"' else "" end)]' \
+    -- find_jira_comment_row
+}
+find_jira_comment_row() {
+  local row_body=$1 cid=$2
+  [[ "$row_body" == true ]] || return 0
+  [[ "$cid" =~ ^[0-9]+$ ]] || die "invalid_response operation=comment_list"
+  [[ -z "$FOUND_ID" || "$FOUND_ID" == "$cid" ]] ||
+    die "ambiguous_object logical=comment"
+  FOUND_ID=$cid
 }
 
 find_confluence_space() {
-  local key=$1 marker=$2 pages=0 row row_key row_marker sid next
-  local path='/wiki/api/v2/spaces?limit=1&description-format=plain'
+  local key=$1 marker=$2
   FOUND_ID=''
-  while :; do
-    (( pages < MAX_PAGES )) || die "pagination_limit product=confluence operation=space_list"
-    api_request provisioner GET "$path" '' 200 space_list
-    jq -e '.results | type == "array"' "$RESPONSE_FILE" >/dev/null 2>&1 ||
-      die "invalid_response operation=space_list"
-    while IFS= read -r row; do
-      row_key=$(jq -r '.key // empty | strings' <<<"$row")
-      row_marker=$(jq -r '
-        if (.description|type) == "string" then .description
-        elif (.description|type) == "object" and (.description.value?|type) == "string" then .description.value
-        elif (.description|type) == "object" and (.description.plain?|type) == "object"
-          and (.description.plain.value?|type) == "string" then .description.plain.value
-        else empty
-        end
-      ' <<<"$row")
-      if [[ "$row_key" == "$key" || "$row_marker" == "$marker" ]]; then
-        [[ "$row_key" == "$key" && "$row_marker" == "$marker" ]] ||
-          die "foreign_collision logical=space"
-        sid=$(jq -r '.id // empty | strings' <<<"$row")
-        [[ "$sid" =~ ^[0-9]+$ ]] || die "invalid_response operation=space_list"
-        [[ -z "$FOUND_ID" || "$FOUND_ID" == "$sid" ]] ||
-          die "ambiguous_object logical=space"
-        FOUND_ID=$sid
-        FOUND_KEY=$row_key
-      fi
-    done < <(jq -c '.results[]' "$RESPONSE_FILE")
-    next=$(jq -r 'if ._links.next == null then "" elif (._links.next|type) == "string" then ._links.next else error end' "$RESPONSE_FILE" 2>/dev/null) ||
-      die "invalid_pagination product=confluence operation=space_list"
-    [[ -n "$next" ]] || return 0
-    [[ "$next" == /wiki/api/v2/spaces\?* && "$next" != "$path" ]] ||
-      die "invalid_pagination product=confluence operation=space_list"
-    path=$next
-    ((pages += 1))
-  done
+  paginate --style next --product confluence --operation space_list \
+    --path '/wiki/api/v2/spaces?limit=1&description-format=plain' \
+    --next-prefix '/wiki/api/v2/spaces?' \
+    --array .results --fields 3 \
+    --row "[${ROW_KEY}, ${ROW_SPACE_DESCRIPTION}, ${ROW_ID}]" \
+    -- find_confluence_space_row "$key" "$marker"
+}
+find_confluence_space_row() {
+  local key=$1 marker=$2 row_key=$3 row_marker=$4 sid=$5
+  if [[ "$row_key" == "$key" || "$row_marker" == "$marker" ]]; then
+    [[ "$row_key" == "$key" && "$row_marker" == "$marker" ]] ||
+      die "foreign_collision logical=space"
+    [[ "$sid" =~ ^[0-9]+$ ]] || die "invalid_response operation=space_list"
+    [[ -z "$FOUND_ID" || "$FOUND_ID" == "$sid" ]] ||
+      die "ambiguous_object logical=space"
+    FOUND_ID=$sid
+    FOUND_KEY=$row_key
+  fi
 }
 
 find_confluence_page() {
-  local space_id=$1 title=$2 marker=$3 logical=$4 pages=0 row row_title pid next list_response
-  local path="/wiki/api/v2/spaces/${space_id}/pages?limit=1&body-format=storage"
+  local space_id=$1 title=$2 marker=$3 logical=$4
   FOUND_ID=''
-  while :; do
-    (( pages < MAX_PAGES )) || die "pagination_limit product=confluence operation=page_list"
-    read_child_collection "$path" "/wiki/api/v2/spaces/${space_id}?description-format=plain" page_list
-    [[ "$RESPONSE_STATUS" != 404 ]] || return 0
-    jq -e '.results | type == "array"' "$RESPONSE_FILE" >/dev/null 2>&1 ||
-      die "invalid_response operation=page_list"
-    list_response=$RESPONSE_FILE
-    while IFS= read -r row; do
-      row_title=$(jq -r '.title // empty | strings' <<<"$row")
-      if [[ "$row_title" == "$title" ]]; then
-        pid=$(jq -r '.id // empty | strings' <<<"$row")
-        [[ "$pid" =~ ^[0-9]+$ ]] || die "invalid_response operation=page_list"
-        if [[ "$MODE" == cleanup ]]; then
-          validate_cleanup_page_owner "$pid" "$logical"
-        else
-          read_owner_property provisioner "$pid"
-          [[ "$OWNER_PROPERTY_VALUE" == "$marker" ]] ||
-            die "foreign_collision logical=page"
-        fi
-        [[ -z "$FOUND_ID" || "$FOUND_ID" == "$pid" ]] ||
-          die "ambiguous_object logical=page"
-        FOUND_ID=$pid
-      fi
-    done < <(jq -c '.results[]' "$list_response")
-    next=$(jq -r 'if ._links.next == null then "" elif (._links.next|type) == "string" then ._links.next else error end' "$list_response" 2>/dev/null) ||
-      die "invalid_pagination product=confluence operation=page_list"
-    [[ -n "$next" ]] || return 0
-    [[ "$next" == "/wiki/api/v2/spaces/${space_id}/pages?"* && "$next" != "$path" ]] ||
-      die "invalid_pagination product=confluence operation=page_list"
-    path=$next
-    ((pages += 1))
-  done
+  paginate --style next --product confluence --operation page_list \
+    --path "/wiki/api/v2/spaces/${space_id}/pages?limit=1&body-format=storage" \
+    --next-prefix "/wiki/api/v2/spaces/${space_id}/pages?" \
+    --parent "/wiki/api/v2/spaces/${space_id}?description-format=plain" \
+    --array .results --fields 2 \
+    --row "[one(.title // empty | strings), ${ROW_ID}]" \
+    -- find_confluence_page_row "$title" "$marker" "$logical"
+}
+find_confluence_page_row() {
+  local title=$1 marker=$2 logical=$3 row_title=$4 pid=$5
+  [[ "$row_title" == "$title" ]] || return 0
+  [[ "$pid" =~ ^[0-9]+$ ]] || die "invalid_response operation=page_list"
+  if [[ "$MODE" == cleanup ]]; then
+    validate_cleanup_page_owner "$pid" "$logical"
+  else
+    read_owner_property provisioner "$pid"
+    [[ "$OWNER_PROPERTY_VALUE" == "$marker" ]] ||
+      die "foreign_collision logical=page"
+  fi
+  [[ -z "$FOUND_ID" || "$FOUND_ID" == "$pid" ]] ||
+    die "ambiguous_object logical=page"
+  FOUND_ID=$pid
 }
 
 find_confluence_comment() {
-  local page_id=$1 marker=$2 parent_comment_id=${3:-} pages=0 row cid next list_response
-  local row_page row_parent path parent_path
+  local page_id=$1 marker=$2 parent_comment_id=${3:-} path parent_path prefix
   if [[ -n "$parent_comment_id" ]]; then
     path="/wiki/api/v2/footer-comments/${parent_comment_id}/children?limit=1&body-format=storage"
     parent_path="/wiki/api/v2/footer-comments/${parent_comment_id}?body-format=storage"
+    prefix="/wiki/api/v2/footer-comments/${parent_comment_id}/children?"
   else
     path="/wiki/api/v2/pages/${page_id}/footer-comments?limit=1&body-format=storage"
     parent_path="/wiki/api/v2/pages/${page_id}?body-format=storage"
+    prefix="/wiki/api/v2/pages/${page_id}/footer-comments?"
   fi
   FOUND_ID=''
-  while :; do
-    (( pages < MAX_PAGES )) || die "pagination_limit product=confluence operation=comment_list"
-    read_child_collection "$path" "$parent_path" comment_list
-    [[ "$RESPONSE_STATUS" != 404 ]] || return 0
-    jq -e '.results | type == "array"' "$RESPONSE_FILE" >/dev/null 2>&1 ||
-      die "invalid_response operation=comment_list"
-    list_response=$RESPONSE_FILE
-    while IFS= read -r row; do
-      cid=$(jq -r '.id // empty | strings' <<<"$row")
-      [[ "$cid" =~ ^[0-9]+$ ]] || die "invalid_response operation=comment_list"
-      row_page=$(jq -r 'if (.pageId|type) == "number" then (.pageId|tostring) elif (.pageId|type) == "string" then .pageId else empty end' <<<"$row")
-      [[ "$row_page" == "$page_id" ]] || die "invalid_response operation=comment_list"
-      row_parent=$(jq -r 'if (.parentCommentId|type) == "number" then (.parentCommentId|tostring) elif (.parentCommentId|type) == "string" then .parentCommentId else "" end' <<<"$row")
-      if [[ -n "$parent_comment_id" ]]; then
-        [[ "$row_parent" == "$parent_comment_id" ]] || die "invalid_response operation=comment_list"
-      else
-        [[ -z "$row_parent" ]] || die "invalid_response operation=comment_list"
-      fi
-      read_owner_property provisioner "$cid"
-      if [[ "$OWNER_PROPERTY_VALUE" == "$marker" ]]; then
-        [[ -z "$FOUND_ID" || "$FOUND_ID" == "$cid" ]] ||
-          die "ambiguous_object logical=comment"
-        FOUND_ID=$cid
-      fi
-    done < <(jq -c '.results[]' "$list_response")
-    next=$(jq -r 'if ._links.next == null then "" elif (._links.next|type) == "string" then ._links.next else error end' "$list_response" 2>/dev/null) ||
-      die "invalid_pagination product=confluence operation=comment_list"
-    [[ -n "$next" ]] || return 0
-    if [[ -n "$parent_comment_id" ]]; then
-      [[ "$next" == "/wiki/api/v2/footer-comments/${parent_comment_id}/children?"* && "$next" != "$path" ]] ||
-        die "invalid_pagination product=confluence operation=comment_list"
-    else
-      [[ "$next" == "/wiki/api/v2/pages/${page_id}/footer-comments?"* && "$next" != "$path" ]] ||
-        die "invalid_pagination product=confluence operation=comment_list"
-    fi
-    path=$next
-    ((pages += 1))
-  done
+  paginate --style next --product confluence --operation comment_list \
+    --path "$path" --next-prefix "$prefix" --parent "$parent_path" \
+    --array .results --fields 3 \
+    --row "[${ROW_ID},
+      one(if (.pageId|type) == \"number\" then (.pageId|tostring) elif (.pageId|type) == \"string\" then .pageId else empty end),
+      one(if (.parentCommentId|type) == \"number\" then (.parentCommentId|tostring) elif (.parentCommentId|type) == \"string\" then .parentCommentId else \"\" end)]" \
+    -- find_confluence_comment_row "$page_id" "$parent_comment_id" "$marker"
+}
+find_confluence_comment_row() {
+  local page_id=$1 parent_comment_id=$2 marker=$3 cid=$4 row_page=$5 row_parent=$6
+  [[ "$cid" =~ ^[0-9]+$ ]] || die "invalid_response operation=comment_list"
+  [[ "$row_page" == "$page_id" ]] || die "invalid_response operation=comment_list"
+  if [[ -n "$parent_comment_id" ]]; then
+    [[ "$row_parent" == "$parent_comment_id" ]] || die "invalid_response operation=comment_list"
+  else
+    [[ -z "$row_parent" ]] || die "invalid_response operation=comment_list"
+  fi
+  read_owner_property provisioner "$cid"
+  if [[ "$OWNER_PROPERTY_VALUE" == "$marker" ]]; then
+    [[ -z "$FOUND_ID" || "$FOUND_ID" == "$cid" ]] ||
+      die "ambiguous_object logical=comment"
+    FOUND_ID=$cid
+  fi
 }
 
 load_jira_issue_types() {
@@ -1680,38 +1906,65 @@ verify_confluence_pagination() {
   done < <(jq -r '.confluence.comments[] | [.id,.page,("=" + .marker),(.parent // "null")] | @tsv' "$MANIFEST_PATH")
 }
 
-verify_reader_visibility() {
-  local id key name marker private path next pages=0 row row_key page_id space page
-  local comment_id issue_id issue body title parent expected parent_id project homepage
-  declare -A seen_public_spaces=()
-  path='/wiki/api/v2/spaces?limit=1&description-format=plain'
-  while :; do
-    (( pages < MAX_PAGES )) || die "pagination_limit product=confluence operation=reader_space_list"
-    api_request reader GET "$path" '' 200 reader_space_list
-    jq -e '.results | type == "array"' "$RESPONSE_FILE" >/dev/null 2>&1 ||
-      die "invalid_response operation=reader_space_list"
-    while IFS= read -r row; do
-      row_key=$(jq -r '.key // empty | strings' <<<"$row")
-      [[ -n "$row_key" ]] || die "invalid_response operation=reader_space_list"
-      if jq -e --arg key "$row_key" '.confluence.spaces[] | select(.key == $key and .private == true)' "$MANIFEST_PATH" >/dev/null 2>&1; then
-        die "reader_visibility logical=space"
-      fi
-      if jq -e --arg key "$row_key" '.confluence.spaces[] | select(.key == $key and .private == false)' "$MANIFEST_PATH" >/dev/null 2>&1; then
-        seen_public_spaces[$row_key]=1
-      fi
-    done < <(jq -c '.results[]' "$RESPONSE_FILE")
-    next=$(jq -r 'if ._links.next == null then "" elif (._links.next|type) == "string" then ._links.next else error end' "$RESPONSE_FILE" 2>/dev/null) ||
-      die "invalid_pagination product=confluence operation=reader_space_list"
-    [[ -n "$next" ]] || break
-    [[ "$next" == /wiki/api/v2/spaces\?* && "$next" != "$path" ]] ||
-      die "invalid_pagination product=confluence operation=reader_space_list"
-    path=$next
-    ((pages += 1))
-  done
+# One listed space, checked against the manifest's privacy map (rfs-cbz9).
+# The caller names both maps; namerefs make that dependency explicit. An
+# upstream key outside the manifest key grammar cannot name a manifest space,
+# and must not be used as an associative-array subscript.
+verify_reader_space_row() {
+  local -n rs_private=$1 rs_seen=$2
+  local row_key=$3
+  [[ -n "$row_key" ]] || die "invalid_response operation=reader_space_list"
+  [[ "$row_key" =~ ^[A-Z][A-Z0-9]{1,9}$ ]] || return 0
+  case "${rs_private[$row_key]-}" in
+    true) die "reader_visibility logical=space" ;;
+    false) rs_seen[$row_key]=1 ;;
+  esac
+}
 
-  while IFS=$'\t' read -r id key name marker private; do
-    tsv_text name "$name"
-    tsv_text marker "$marker"
+verify_reader_visibility() {
+  local id key name marker private page_id space page
+  local comment_id issue_id issue body title parent expected parent_id project homepage
+  # One manifest pass (rfs-cbz9): every space row, privacy by key for the
+  # listing, privacy by logical id and each page's space for the page and
+  # comment checks below, which used to run one or two jq per row for these.
+  # Keys and ids are validated identifiers, so only names and markers are text.
+  declare -A seen_public_spaces=() key_private=() space_private=() page_space=()
+  local -a space_ids=() space_keys=() space_names=() space_markers=() space_privacy=()
+  local kind field1 field2 field3 field4 field5 index
+  while IFS=$'\t' read -r kind field1 field2 field3 field4 field5; do
+    case "$kind" in
+      S)
+        space_ids+=("$field1")
+        space_keys+=("$field2")
+        tsv_text name "$field3"
+        tsv_text marker "$field4"
+        space_names+=("$name")
+        space_markers+=("$marker")
+        space_privacy+=("$field5")
+        space_private[$field1]=$field5
+        if [[ "$field5" == true ]]; then
+          key_private[$field2]=true
+        else
+          key_private[$field2]=${key_private[$field2]-false}
+        fi
+        ;;
+      P) page_space[$field1]=$field2 ;;
+    esac
+  done < <(jq -r '
+    (.confluence.spaces[] | ["S", .id, .key, ("=" + .name), ("=" + .marker), (.private|tostring)]),
+    (.confluence.pages[] | ["P", .id, .space]) | @tsv' "$MANIFEST_PATH")
+  paginate --style next --actor reader --product confluence --operation reader_space_list \
+    --path '/wiki/api/v2/spaces?limit=1&description-format=plain' \
+    --next-prefix '/wiki/api/v2/spaces?' \
+    --array .results --fields 1 --row "[${ROW_KEY}]" \
+    -- verify_reader_space_row key_private seen_public_spaces
+
+  for (( index = 0; index < ${#space_ids[@]}; index++ )); do
+    id=${space_ids[index]}
+    key=${space_keys[index]}
+    name=${space_names[index]}
+    marker=${space_markers[index]}
+    private=${space_privacy[index]}
     if [[ "$private" == true ]]; then
       api_request reader GET "/wiki/api/v2/spaces/${CONF_SPACE_IDS[$id]}?description-format=plain" '' 403,404 reader_private_space_get
     else
@@ -1732,13 +1985,13 @@ verify_reader_visibility() {
         else error end' "$RESPONSE_FILE" 2>/dev/null) || die "invalid_response operation=reader_space_get"
       CONF_SPACE_HOMEPAGE[$id]=$homepage
     fi
-  done < <(jq -r '.confluence.spaces[] | [.id,.key,("=" + .name),("=" + .marker),.private] | @tsv' "$MANIFEST_PATH")
+  done
 
   while IFS=$'\t' read -r id space title parent expected; do
     tsv_text title "$title"
     expected=$(decode_json_field "$expected")
     page_id=${CONF_PAGE_IDS[$id]-}
-    private=$(jq -r --arg id "$space" '.confluence.spaces[] | select(.id==$id) | .private' "$MANIFEST_PATH")
+    private=${space_private[$space]-}
     parent_id=''
     if [[ "$parent" != null && -n "$parent" ]]; then
       parent_id=${CONF_PAGE_IDS[$parent]-}
@@ -1764,8 +2017,8 @@ verify_reader_visibility() {
   while IFS=$'\t' read -r id page parent body; do
     body=$(decode_json_field "$body")
     comment_id=${CONF_COMMENT_IDS[$id]-}
-    space=$(jq -r --arg page "$page" '.confluence.pages[] | select(.id==$page) | .space' "$MANIFEST_PATH")
-    private=$(jq -r --arg id "$space" '.confluence.spaces[] | select(.id==$id) | .private' "$MANIFEST_PATH")
+    space=${page_space[$page]-}
+    private=${space_private[$space]-}
     parent_id=''
     if [[ "$parent" != null && -n "$parent" ]]; then
       parent_id=${CONF_COMMENT_IDS[$parent]-}

@@ -2374,3 +2374,88 @@ fn names_titles_and_markers_reach_upstream_byte_exact() {
         stored("pages", "title")
     );
 }
+
+/// rfs-cbz9: every paginated list is now read by one jq per page, which checks
+/// that each element is an object before reading its fields. An element that
+/// is not one used to reach a per-row jq that raised, ending the run with jq's
+/// status 5 and its raw message, or, for `null` and for Jira comments (whose
+/// match reads `.body?`), was skipped without a word. Every list now fails
+/// such a page with the same `invalid_response` a malformed page gets.
+#[rstest]
+#[case::jira_projects("bootstrap", "project_search", "values", json!(42))]
+#[case::jira_issues("bootstrap", "issue_search", "issues", json!(42))]
+#[case::jira_comments("bootstrap", "comment_list", "comments", json!(42))]
+#[case::confluence_spaces("bootstrap", "space_list", "results", json!(42))]
+#[case::confluence_spaces_null("bootstrap", "space_list", "results", Value::Null)]
+#[case::confluence_pages("bootstrap", "page_list", "results", json!(42))]
+#[case::confluence_comments("bootstrap", "comment_list", "results", json!(42))]
+#[case::reader_spaces("verify", "reader_space_list", "results", json!(42))]
+#[case::reader_spaces_null("verify", "reader_space_list", "results", Value::Null)]
+fn non_object_list_rows_fail_as_invalid_response(
+    default_bootstrap: &BootstrapSnapshot,
+    #[case] mode: &str,
+    #[case] operation: &str,
+    #[case] list: &str,
+    #[case] element: Value,
+) {
+    let harness = Harness::new();
+    let mut store = if mode == "verify" {
+        harness.materialize(default_bootstrap);
+        harness.read_store()
+    } else {
+        json!({})
+    };
+    store["scalar_row"] = json!({"operation": operation, "list": list, "value": element});
+    harness.write_store(&store);
+
+    let output = harness.command(mode);
+    assert!(
+        harness.read_store()["faults"]["scalar_row"] == true,
+        "the {operation} fault was never served"
+    );
+    assert_failure(&output, &format!("invalid_response operation={operation}"));
+    assert_eq!(output.status.code(), Some(1), "die exits 1, not jq's 5");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("jq: error"),
+        "jq's own message leaked: {stderr:?}"
+    );
+}
+
+/// rfs-cbz9: an upstream title carrying U+0000 used to be read through
+/// `$(jq -r ...)`, which drops the NUL and keeps the rest, so "Title\0x" read
+/// as "Titlex" and could not match the manifest's "Title". page_scan drops the
+/// NUL inside jq for the same result; letting it reach `mapfile` would cut the
+/// value at the NUL instead, and a look-alike page would be taken for the real
+/// one. Here that look-alike carries the real page's owner marker, so a false
+/// match would make verify see two owned pages and die `ambiguous_object`.
+#[rstest]
+fn a_title_with_an_embedded_nul_is_not_the_manifest_title(default_bootstrap: &BootstrapSnapshot) {
+    let harness = Harness::new();
+    harness.materialize(default_bootstrap);
+    let manifest = manifest();
+    let title = manifest["confluence"]["pages"][0]["title"]
+        .as_str()
+        .expect("manifest page title")
+        .to_owned();
+    let marker = manifest["confluence"]["pages"][0]["marker"].clone();
+    let mut store = harness.read_store();
+    let real = store["pages"]
+        .as_array()
+        .expect("fake store pages")
+        .iter()
+        .find(|page| page["title"] == title.as_str())
+        .cloned()
+        .expect("bootstrapped page with the manifest title");
+    let mut look_alike = real.clone();
+    look_alike["id"] = json!("9999999901");
+    look_alike["title"] = json!(format!("{title}\u{0}x"));
+    store["pages"]
+        .as_array_mut()
+        .expect("fake store pages")
+        .push(look_alike);
+    store["properties"]["9999999901"] = json!({"rfs-owner": marker});
+    harness.write_store(&store);
+
+    assert_success(&harness.command("verify"));
+}
