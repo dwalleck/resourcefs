@@ -42,6 +42,9 @@ url.workspace = true
 # library enables by default.
 resourcefs-mcp = { path = ".", features = ["test-support"] }
 cargo_metadata = "0.23.0"
+# Reads `deny.toml` for `supply_chain_contract.rs`. Already in the lockfile
+# through `trybuild`, so this is a dependency edge rather than a new package.
+toml = "1.1.4"
 rcgen.workspace = true
 tempfile.workspace = true
 tokio-rustls.workspace = true

@@ -4,9 +4,15 @@
 //! (signed 2026-08-23, Revision 1) rather than derived from `deny.toml`, so
 //! the config and its policy cannot drift together silently.
 //!
-//! `deny.toml` is parsed line-wise on purpose: no TOML crate is a workspace
-//! dependency and this change adds none, matching the token-scanning approach
-//! `architecture_contract.rs` already uses.
+//! `deny.toml` is read as TOML through the `toml` crate, a dev-dependency that
+//! was already in the lockfile through `trybuild`. The line-wise scanner it
+//! replaced returned an empty list for a key that was *absent* exactly as it
+//! did for one that was present and empty, so renaming `[advisories]` or
+//! misspelling `ignore` left the zero-ignores fence passing while it detected
+//! nothing (rfs-kjju). A parsed table keeps `None` and `Some([])` apart, and a
+//! `#` inside a quoted value is a character rather than a comment. Only the
+//! reading of `deny.toml` changed: `APPROVED_LICENSES` stays a literal
+//! transcribed from the signed spec.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -44,93 +50,76 @@ fn deny_config(root: &Path) -> String {
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }
 
-/// Strips `#` comments so prose mentioning a rejected value (for example the
-/// note explaining why the scope is not `"transitive"`) cannot be mistaken for
-/// configuration.
-fn without_comments(config: &str) -> String {
+/// Parses the committed policy so that absence and emptiness stay distinct.
+fn policy(config: &str) -> toml::Table {
     config
-        .lines()
-        .map(|line| line.split('#').next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .parse()
+        .unwrap_or_else(|error| panic!("deny.toml is not valid TOML: {error}"))
 }
 
-/// Returns the double-quoted strings inside `key = [ ... ]`, searched only
-/// within `section`.
-fn array_entries(config: &str, section: &str, key: &str) -> Vec<String> {
-    let body = without_comments(config);
-    let mut in_section = false;
-    let mut collecting = false;
-    let mut entries = Vec::new();
-
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') && !collecting {
-            in_section = trimmed == section;
-            continue;
-        }
-        if !in_section {
-            continue;
-        }
-        if !collecting {
-            let Some(rest) = trimmed.strip_prefix(key) else {
-                continue;
-            };
-            let Some(rest) = rest.trim_start().strip_prefix('=') else {
-                continue;
-            };
-            let Some(rest) = rest.trim_start().strip_prefix('[') else {
-                continue;
-            };
-            collecting = true;
-            entries.extend(quoted(rest));
-            if rest.contains(']') {
-                return entries;
-            }
-            continue;
-        }
-        entries.extend(quoted(trimmed));
-        if trimmed.contains(']') {
-            return entries;
-        }
-    }
-    entries
+/// Returns `name` as a table, or `None` when no such section exists.
+///
+/// A section present with another shape fails outright rather than reading
+/// as absent: "missing" and "malformed" are different findings.
+fn section<'a>(policy: &'a toml::Table, name: &str) -> Option<&'a toml::Table> {
+    let value = policy.get(name)?;
+    Some(
+        value
+            .as_table()
+            .unwrap_or_else(|| panic!("deny.toml `{name}` must be a table, found {value}")),
+    )
 }
 
-fn quoted(text: &str) -> Vec<String> {
-    let mut found = Vec::new();
-    let mut rest = text;
-    while let Some(open) = rest.find('"') {
-        let after = &rest[open + 1..];
-        let Some(close) = after.find('"') else { break };
-        found.push(after[..close].to_owned());
-        rest = &after[close + 1..];
-    }
-    found
+/// Returns the strings in `section.key`, or `None` when the section or the
+/// key is absent. Any other shape fails rather than reading as empty.
+fn string_array(policy: &toml::Table, section_name: &str, key: &str) -> Option<Vec<String>> {
+    let value = section(policy, section_name)?.get(key)?;
+    let entries = value.as_array().unwrap_or_else(|| {
+        panic!("deny.toml `{section_name}.{key}` must be an array, found {value}")
+    });
+    Some(
+        entries
+            .iter()
+            .map(|entry| {
+                entry.as_str().map(str::to_owned).unwrap_or_else(|| {
+                    panic!(
+                        "deny.toml `{section_name}.{key}` must contain only strings, found {entry}"
+                    )
+                })
+            })
+            .collect(),
+    )
 }
 
-/// Returns the value of `key = "value"` within `section`.
-fn scalar(config: &str, section: &str, key: &str) -> Option<String> {
-    let body = without_comments(config);
-    let mut in_section = false;
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            in_section = trimmed == section;
-            continue;
-        }
-        if !in_section {
-            continue;
-        }
-        let Some(rest) = trimmed.strip_prefix(key) else {
-            continue;
-        };
-        let Some(rest) = rest.trim_start().strip_prefix('=') else {
-            continue;
-        };
-        return quoted(rest).into_iter().next();
-    }
-    None
+/// Returns the string at `section.key`, or `None` when the section or the
+/// key is absent. Any other shape fails rather than reading as absent.
+fn string_scalar(policy: &toml::Table, section_name: &str, key: &str) -> Option<String> {
+    let value = section(policy, section_name)?.get(key)?;
+    Some(value.as_str().map(str::to_owned).unwrap_or_else(|| {
+        panic!("deny.toml `{section_name}.{key}` must be a string, found {value}")
+    }))
+}
+
+/// Returns the tables in the array of tables at `section.key` (the shape
+/// `[[licenses.exceptions]]` produces), or `None` when the section or the key
+/// is absent. Any other shape fails rather than reading as empty.
+fn table_array(policy: &toml::Table, section_name: &str, key: &str) -> Option<Vec<toml::Table>> {
+    let value = section(policy, section_name)?.get(key)?;
+    let entries = value.as_array().unwrap_or_else(|| {
+        panic!("deny.toml `{section_name}.{key}` must be an array of tables, found {value}")
+    });
+    Some(
+        entries
+            .iter()
+            .map(|entry| {
+                entry.as_table().cloned().unwrap_or_else(|| {
+                    panic!(
+                        "deny.toml `{section_name}.{key}` must contain only tables, found {entry}"
+                    )
+                })
+            })
+            .collect(),
+    )
 }
 
 /// C1 — the allow-list is exactly the approved set and the committed baseline
@@ -138,27 +127,40 @@ fn scalar(config: &str, section: &str, key: &str) -> Option<String> {
 /// rather than clean by assertion.
 #[test]
 fn deny_config_matches_signed_policy() {
-    let config = deny_config(&workspace_root());
+    let policy = policy(&deny_config(&workspace_root()));
 
-    let allowed = array_entries(&config, "[licenses]", "allow");
+    let approved: Vec<String> = APPROVED_LICENSES
+        .iter()
+        .map(|entry| (*entry).to_owned())
+        .collect();
     assert_eq!(
-        allowed,
-        APPROVED_LICENSES
-            .iter()
-            .map(|entry| (*entry).to_owned())
-            .collect::<Vec<_>>(),
+        string_array(&policy, "licenses", "allow"),
+        Some(approved),
         "deny.toml's license allow-list must match the identifiers signed in .rfs-q12y/spec.md"
     );
 
-    let exceptions = without_comments(&config)
-        .matches("[[licenses.exceptions]]")
-        .count();
+    // An array of tables has no present-and-empty spelling in `[[...]]` form,
+    // so absence is the only way to write zero exceptions and is accepted.
+    // That is unlike `ignore` below, where the empty list is spelled out on
+    // purpose.
+    let exceptions =
+        table_array(&policy, "licenses", "exceptions").map_or(0, |tables| tables.len());
     assert_eq!(
         exceptions, 0,
         "the signed policy is a blanket allow-list with zero per-package license exceptions"
     );
 
-    let ignored = array_entries(&config, "[advisories]", "ignore");
+    // `ignore = []` must be present as well as empty. The committed policy
+    // spells the empty list out so the first ignore entry is a diff against
+    // an existing line, and the previous scanner could not tell that spelling
+    // from a renamed section or a misspelled key (rfs-kjju).
+    let Some(ignored) = string_array(&policy, "advisories", "ignore") else {
+        panic!(
+            "deny.toml must spell out `ignore = []` under [advisories]; the key is absent, so \
+             the section was renamed or the escape hatch was removed, and this fence could no \
+             longer see its first use"
+        );
+    };
     assert!(
         ignored.is_empty(),
         "the committed advisory baseline must carry zero ignore entries so the first use of \
@@ -170,15 +172,15 @@ fn deny_config_matches_signed_policy() {
 /// to a value that would let an unmaintained dependency land silently.
 #[test]
 fn advisory_policy_matches_signed_policy() {
-    let config = deny_config(&workspace_root());
+    let policy = policy(&deny_config(&workspace_root()));
 
     assert_eq!(
-        scalar(&config, "[advisories]", "yanked").as_deref(),
+        string_scalar(&policy, "advisories", "yanked").as_deref(),
         Some("deny"),
         "yanked crates must deny per the signed policy"
     );
 
-    let unmaintained = scalar(&config, "[advisories]", "unmaintained");
+    let unmaintained = string_scalar(&policy, "advisories", "unmaintained");
     assert_eq!(
         unmaintained.as_deref(),
         Some("all"),
@@ -189,6 +191,95 @@ fn advisory_policy_matches_signed_policy() {
     // `ignore` entry, never by narrowing what is examined.
     assert_ne!(unmaintained.as_deref(), Some("transitive"));
     assert_ne!(unmaintained.as_deref(), Some("none"));
+}
+
+/// The reader keeps an absent key apart from an empty one. This is what makes
+/// the zero-ignores assertion falsifiable: the line-wise scanner it replaced
+/// returned an empty list for every case below (rfs-kjju).
+#[test]
+fn reader_reports_an_absent_key_as_none_not_empty() {
+    let renamed_section = policy("[advisory]\nignore = [\"RUSTSEC-0000-0000\"]\n");
+    assert_eq!(
+        string_array(&renamed_section, "advisories", "ignore"),
+        None,
+        "a renamed section must read as absent, not as an empty ignore list"
+    );
+
+    let misspelled_key = policy("[advisories]\nignored = [\"RUSTSEC-0000-0000\"]\n");
+    assert_eq!(
+        string_array(&misspelled_key, "advisories", "ignore"),
+        None,
+        "a misspelled key must read as absent, not as an empty ignore list"
+    );
+
+    let present_and_empty = policy("[advisories]\nignore = []\n");
+    assert_eq!(
+        string_array(&present_and_empty, "advisories", "ignore"),
+        Some(Vec::new()),
+        "the spelled-out empty list is the one shape the baseline accepts"
+    );
+}
+
+/// The reader returns the entries that would make the zero-ignores fence fail.
+#[test]
+fn reader_returns_ignore_entries() {
+    let policy = policy(
+        "[advisories]\n\
+         ignore = [\n\
+             \"RUSTSEC-0000-0000\", # rationale goes here\n\
+             \"RUSTSEC-0000-0001\",\n\
+         ]\n",
+    );
+    assert_eq!(
+        string_array(&policy, "advisories", "ignore"),
+        Some(vec![
+            "RUSTSEC-0000-0000".to_owned(),
+            "RUSTSEC-0000-0001".to_owned()
+        ])
+    );
+}
+
+/// A `#` inside a quoted value is part of the value. The replaced scanner cut
+/// every line at its first `#` and then found no closing quote.
+#[test]
+fn reader_keeps_a_hash_inside_a_quoted_value() {
+    let policy = policy("[advisories]\nunmaintained = \"all # not a comment\"\n");
+    assert_eq!(
+        string_scalar(&policy, "advisories", "unmaintained").as_deref(),
+        Some("all # not a comment")
+    );
+}
+
+/// Exceptions are counted as parsed tables, not as occurrences of the header
+/// text, and a section with no exceptions reads as absent.
+#[test]
+fn reader_counts_exception_tables() {
+    let with_exception = policy(
+        "[licenses]\n\
+         allow = [\"MIT\"]\n\
+         \n\
+         [[licenses.exceptions]]\n\
+         name = \"some-crate\"\n\
+         allow = [\"GPL-3.0\"]\n",
+    );
+    let exceptions = table_array(&with_exception, "licenses", "exceptions")
+        .expect("an array-of-tables header creates the key");
+    assert_eq!(exceptions.len(), 1);
+    assert_eq!(
+        exceptions[0].get("name").and_then(toml::Value::as_str),
+        Some("some-crate")
+    );
+
+    let without = policy("[licenses]\nallow = [\"MIT\"]\n");
+    assert_eq!(table_array(&without, "licenses", "exceptions"), None);
+}
+
+/// A key present with the wrong shape is a finding, never an empty list.
+#[test]
+#[should_panic(expected = "`advisories.ignore` must be an array")]
+fn reader_rejects_a_scalar_where_an_array_is_required() {
+    let policy = policy("[advisories]\nignore = \"RUSTSEC-0000-0000\"\n");
+    string_array(&policy, "advisories", "ignore");
 }
 
 /// C1 — the whole gate passes against the real workspace tree.
