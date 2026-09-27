@@ -21,7 +21,7 @@ use resourcefs_sources::{
 };
 use serde_json::{Value, json};
 use tls::{
-    FIXTURE_HOST, FixtureRequest, FixtureResponse, TlsListener, fixture_allowlist, match_cert,
+    FIXTURE_HOST, FixtureIdentity, FixtureRequest, FixtureResponse, TlsListener, fixture_allowlist,
     settle,
 };
 
@@ -326,10 +326,11 @@ async fn fixture_with_grants(
     let state = Arc::new(Mutex::new(GithubState::default()));
     let router_state = Arc::clone(&state);
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_request_router(loopback, 0, match_cert(), move |request| {
-        route(request, &router_state)
-    })
-    .await;
+    let listener =
+        TlsListener::serve_request_router(loopback, 0, FixtureIdentity::Match, move |request| {
+            route(request, &router_state)
+        })
+        .await;
     let port = listener.address.port();
     let session_fixture = session_support::scratch_fixture().await;
     let session = session_fixture.path_session().clone();

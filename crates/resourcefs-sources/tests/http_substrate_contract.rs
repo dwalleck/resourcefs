@@ -24,7 +24,7 @@ use resourcefs_core::{
 };
 use resourcefs_sources::{BoundedHttpResponse, HttpRequest, HttpSubstrate, OriginCredential};
 use tls::{
-    FIXTURE_HOST, FixtureResponse, TlsListener, fixture_allowlist, match_cert, settle,
+    FIXTURE_HOST, FixtureIdentity, FixtureResponse, TlsListener, fixture_allowlist, settle,
     tls_substrate, tls_substrate_with_credentials,
 };
 use url::Url;
@@ -83,7 +83,7 @@ async fn basic_credential_composition_is_exact_and_redacted() {
     const ENCODED: &str = "YWdlbnRAZXhhbXBsZS5jb206dG9rZW4tY2FuYXJ5";
 
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_router(loopback, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::Response {
             status: "200 OK",
             headers: Vec::new(),
@@ -163,7 +163,7 @@ fn basic_credential_maximum_stays_within_budget() {
 #[tokio::test]
 async fn userinfo_url_is_refused_before_egress() {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_router(loopback, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::Response {
             status: "200 OK",
             headers: Vec::new(),
@@ -204,7 +204,7 @@ async fn userinfo_url_is_refused_before_egress() {
 #[tokio::test]
 async fn source_headers_and_response_metadata_are_typed_and_bounded() {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_router(loopback, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::Response {
             status: "200 OK",
             headers: vec![
@@ -264,17 +264,18 @@ async fn source_headers_and_response_metadata_are_typed_and_bounded() {
 #[tokio::test]
 async fn mutation_request_is_bounded_and_non_redirecting() {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_router(loopback, 0, match_cert(), |path| match path {
-        "/mutate" => FixtureResponse::Redirect("/followed".to_owned()),
-        "/create" => FixtureResponse::Response {
-            status: "201 Created",
-            headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
-            body: br#"{"id":7}"#.to_vec(),
-        },
-        "/followed" => panic!("[C15] mutation redirect was followed"),
-        other => panic!("[C15] unexpected route {other}"),
-    })
-    .await;
+    let listener =
+        TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, |path| match path {
+            "/mutate" => FixtureResponse::Redirect("/followed".to_owned()),
+            "/create" => FixtureResponse::Response {
+                status: "201 Created",
+                headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
+                body: br#"{"id":7}"#.to_vec(),
+            },
+            "/followed" => panic!("[C15] mutation redirect was followed"),
+            other => panic!("[C15] unexpected route {other}"),
+        })
+        .await;
     let port = listener.address.port();
     let substrate = tls_substrate(fixture_allowlist(port, true), vec![loopback]);
     let url = |path: &str| {
@@ -339,7 +340,7 @@ async fn mutation_request_is_bounded_and_non_redirecting() {
 #[ignore = "checkpointed-build production-scale budget"]
 async fn http_mutation_request_budget() {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_router(loopback, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::Response {
             status: "201 Created",
             headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
@@ -375,7 +376,7 @@ async fn http_mutation_request_budget() {
 #[tokio::test]
 async fn oversized_etag_degrades_but_link_metadata_ceiling_is_hard() {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let etag_listener = TlsListener::serve_router(loopback, 0, match_cert(), |_path| {
+    let etag_listener = TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::Response {
             status: "200 OK",
             headers: vec![("ETag".to_owned(), "x".repeat(16 * 1024 + 1))],
@@ -394,7 +395,7 @@ async fn oversized_etag_degrades_but_link_metadata_ceiling_is_hard() {
         .expect("oversized optional validator degrades to absence");
     assert_eq!(response.etag(), None);
 
-    let link_listener = TlsListener::serve_router(loopback, 0, match_cert(), |_path| {
+    let link_listener = TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::Response {
             status: "200 OK",
             headers: vec![("Link".to_owned(), "x".repeat(16 * 1024 + 1))],
@@ -420,7 +421,7 @@ async fn oversized_etag_degrades_but_link_metadata_ceiling_is_hard() {
 #[tokio::test]
 async fn unreadable_metadata_headers_fail_only_the_callers_that_need_them() {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_router(loopback, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::Response {
             status: "200 OK",
             headers: vec![
@@ -521,22 +522,23 @@ async fn idempotent_reads_honor_delta_and_http_date_once() {
         let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let attempts = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&attempts);
-        let listener = TlsListener::serve_router(loopback, 0, match_cert(), move |_path| {
-            if counted.fetch_add(1, Ordering::AcqRel) == 0 {
-                FixtureResponse::Response {
-                    status,
-                    headers: vec![("Retry-After".to_owned(), guidance.to_owned())],
-                    body: Vec::new(),
+        let listener =
+            TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, move |_path| {
+                if counted.fetch_add(1, Ordering::AcqRel) == 0 {
+                    FixtureResponse::Response {
+                        status,
+                        headers: vec![("Retry-After".to_owned(), guidance.to_owned())],
+                        body: Vec::new(),
+                    }
+                } else {
+                    FixtureResponse::Response {
+                        status: "200 OK",
+                        headers: Vec::new(),
+                        body: b"retried".to_vec(),
+                    }
                 }
-            } else {
-                FixtureResponse::Response {
-                    status: "200 OK",
-                    headers: Vec::new(),
-                    body: b"retried".to_vec(),
-                }
-            }
-        })
-        .await;
+            })
+            .await;
         let port = listener.address.port();
         let substrate = tls_substrate(fixture_allowlist(port, true), vec![loopback])
             .with_retry_control_for_test(fixed_now, Duration::ZERO)
@@ -562,7 +564,7 @@ async fn idempotent_reads_honor_delta_and_http_date_once() {
 #[tokio::test]
 async fn retry_wait_is_promptly_cancelled() {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_router(loopback, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::Response {
             status: "429 Too Many Requests",
             headers: vec![("Retry-After".to_owned(), "10".to_owned())],
@@ -613,7 +615,7 @@ async fn retry_wait_is_promptly_cancelled() {
 #[tokio::test]
 async fn retry_is_limited_to_idempotent_429_and_503_reads() {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_router(loopback, 0, match_cert(), |_path| {
+    let listener = TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, |_path| {
         FixtureResponse::Response {
             status: "500 Internal Server Error",
             headers: vec![("Retry-After".to_owned(), "0".to_owned())],
@@ -639,14 +641,15 @@ async fn retry_is_limited_to_idempotent_429_and_503_reads() {
     settle().await;
     assert_eq!(listener.requests().len(), 1);
 
-    let mutation_listener = TlsListener::serve_router(loopback, 0, match_cert(), |_path| {
-        FixtureResponse::Response {
-            status: "503 Service Unavailable",
-            headers: vec![("Retry-After".to_owned(), "0".to_owned())],
-            body: Vec::new(),
-        }
-    })
-    .await;
+    let mutation_listener =
+        TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, |_path| {
+            FixtureResponse::Response {
+                status: "503 Service Unavailable",
+                headers: vec![("Retry-After".to_owned(), "0".to_owned())],
+                body: Vec::new(),
+            }
+        })
+        .await;
     let mutation_port = mutation_listener.address.port();
     let mutation_url = Url::parse(&format!("https://{FIXTURE_HOST}:{mutation_port}/mutation"))
         .expect("fixture URL");

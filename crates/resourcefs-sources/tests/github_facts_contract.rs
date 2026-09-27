@@ -205,7 +205,7 @@ where
     let listener = TlsListener::serve_request_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         0,
-        tls::match_cert(),
+        tls::FixtureIdentity::Match,
         move |request| {
             assert_eq!(request.method(), "GET", "facts cannot write");
             assert_eq!(
@@ -1762,7 +1762,7 @@ async fn immutable_commit_production_budget() -> Result<(), &'static str> {
         let listener = TlsListener::serve_request_router(
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             0,
-            tls::match_cert(),
+            tls::FixtureIdentity::Match,
             move |request| {
                 let host = request.host();
                 let content = match request.target() {
@@ -2042,7 +2042,7 @@ where
     let listener = TlsListener::serve_request_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         0,
-        tls::match_cert(),
+        tls::FixtureIdentity::Match,
         move |request| {
             assert_eq!(request.method(), "GET", "facts cannot write");
             let host = request.host();
@@ -2681,7 +2681,7 @@ where
     let listener = TlsListener::serve_request_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         0,
-        tls::match_cert(),
+        tls::FixtureIdentity::Match,
         move |request| {
             assert_eq!(request.method(), "GET", "facts cannot write");
             let host = request.host();
@@ -4197,7 +4197,7 @@ where
     let listener = TlsListener::serve_request_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         0,
-        tls::match_cert(),
+        tls::FixtureIdentity::Match,
         move |request| {
             assert_eq!(request.method(), "GET", "facts cannot write");
             let host = request.host();
@@ -5031,7 +5031,7 @@ async fn immutable_source_budget_fixture() -> (
     let listener = TlsListener::serve_request_router(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         0,
-        tls::match_cert(),
+        tls::FixtureIdentity::Match,
         move |request| {
             assert_eq!(request.method(), "GET", "immutable source is read-only");
             let target = request.target();

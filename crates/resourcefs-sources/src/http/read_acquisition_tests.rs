@@ -4,7 +4,8 @@ use super::*;
 async fn controlled_retry_uses_one_shared_physical_attempt_ledger() {
     for (allowed, expected) in [(1, 1), (2, 2), (10, 2)] {
         let listener =
-            TlsListener::serve_router(loopback(), 0, match_cert(), |_| unavailable("0")).await;
+            TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, |_| unavailable("0"))
+                .await;
         let substrate = substrate(&listener);
         let operation = OperationGuard::new();
         let limits = resourcefs_core::ReadAcquisitionLimits::new(
@@ -49,20 +50,21 @@ async fn verified_http_bodies_share_cumulative_admission_without_reset() {
         (8 * 1024 * 1024, 8 * 1024 * 1024, 16 * 1024 * 1024),
         (3, 7, 10),
     ] {
-        let listener = TlsListener::serve_router(loopback(), 0, match_cert(), move |path| {
-            let len = match path {
-                "/first" => first,
-                "/second" => second,
-                _ => 1,
-            };
-            FixtureResponse::Stream {
-                declared: Some(len),
-                len,
-                chunk: 64 * 1024,
-                delay: Duration::ZERO,
-            }
-        })
-        .await;
+        let listener =
+            TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, move |path| {
+                let len = match path {
+                    "/first" => first,
+                    "/second" => second,
+                    _ => 1,
+                };
+                FixtureResponse::Stream {
+                    declared: Some(len),
+                    len,
+                    chunk: 64 * 1024,
+                    delay: Duration::ZERO,
+                }
+            })
+            .await;
         let substrate = substrate(&listener);
         let operation = OperationGuard::new();
         let limits =
@@ -119,7 +121,7 @@ async fn verified_http_bodies_share_cumulative_admission_without_reset() {
 
 #[tokio::test]
 async fn effective_response_cap_bounds_stream_and_reused_body_admission() {
-    let listener = TlsListener::serve_router(loopback(), 0, match_cert(), |path| {
+    let listener = TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, |path| {
         let len = if path == "/exact" { 7 } else { 8 };
         FixtureResponse::Stream {
             declared: None,
@@ -177,24 +179,25 @@ fn legacy_ledger_does_not_acquire_a_cumulative_byte_policy() {
 
 #[tokio::test]
 async fn controlled_deadline_spans_body_retry_wait_and_final_acceptance() {
-    let listener = TlsListener::serve_router(loopback(), 0, match_cert(), |path| match path {
-        "/slow" => FixtureResponse::Stream {
-            declared: Some(2),
-            len: 2,
-            chunk: 1,
-            delay: Duration::from_secs(2),
-        },
-        "/wait" => FixtureResponse::Response {
-            status: "503 Service Unavailable",
-            headers: vec![
-                ("Retry-After".to_owned(), "1".to_owned()),
-                ("X-RateLimit-Reset".to_owned(), "1720000000".to_owned()),
-            ],
-            body: b"busy".to_vec(),
-        },
-        _ => FixtureResponse::Body("ok".to_owned()),
-    })
-    .await;
+    let listener =
+        TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, |path| match path {
+            "/slow" => FixtureResponse::Stream {
+                declared: Some(2),
+                len: 2,
+                chunk: 1,
+                delay: Duration::from_secs(2),
+            },
+            "/wait" => FixtureResponse::Response {
+                status: "503 Service Unavailable",
+                headers: vec![
+                    ("Retry-After".to_owned(), "1".to_owned()),
+                    ("X-RateLimit-Reset".to_owned(), "1720000000".to_owned()),
+                ],
+                body: b"busy".to_vec(),
+            },
+            _ => FixtureResponse::Body("ok".to_owned()),
+        })
+        .await;
     let substrate = substrate(&listener);
     let operation = OperationGuard::new();
     let limits = resourcefs_core::ReadAcquisitionLimits::new(
@@ -302,7 +305,7 @@ async fn controlled_deadline_spans_body_retry_wait_and_final_acceptance() {
 
 #[tokio::test]
 async fn substrate_ceilings_lower_effective_limits_and_send_uses_that_deadline() {
-    let listener = TlsListener::serve(loopback(), 0, match_cert(), "four").await;
+    let listener = TlsListener::serve(loopback(), 0, FixtureIdentity::Match, "four").await;
     let ceilings = HttpCeilings::new(resourcefs_core::HttpCeilingsInput {
         fetch_bytes: Some(3),
         timeout_millis: Some(200),
@@ -364,7 +367,7 @@ async fn substrate_ceilings_lower_effective_limits_and_send_uses_that_deadline()
 async fn controlled_deadline_interrupts_delayed_headers_with_reachable_control() {
     // The fixture yields before sending any headers, so the same runtime can
     // drive the client deadline. Its physical request log precedes the delay.
-    let listener = TlsListener::serve_router(loopback(), 0, match_cert(), |_| {
+    let listener = TlsListener::serve_router(loopback(), 0, FixtureIdentity::Match, |_| {
         FixtureResponse::DelayedBody {
             delay: Duration::from_millis(500),
             body: "eventual".to_owned(),

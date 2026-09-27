@@ -14,14 +14,17 @@ pub struct TestIdentity {
 
 impl TestIdentity {
     /// A rustls server configuration presenting this leaf, with no client auth.
-    pub fn server_config(&self) -> tokio_rustls::rustls::ServerConfig {
+    ///
+    /// Takes `&'static self` so the DER bytes are borrowed rather than copied;
+    /// both fixtures hold their identities in a `static`.
+    pub fn server_config(&'static self) -> tokio_rustls::rustls::ServerConfig {
         use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
         tokio_rustls::rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(
-                vec![CertificateDer::from(self.certificate.clone())],
-                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.private_key.clone())),
+                vec![CertificateDer::from(self.certificate.as_slice())],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.private_key.as_slice())),
             )
             .expect("test certificate and key form a valid server config")
     }

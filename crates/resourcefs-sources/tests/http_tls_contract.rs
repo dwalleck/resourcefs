@@ -25,8 +25,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use resourcefs_core::{ErrorCategory, OperationGuard};
 use resourcefs_sources::HttpRequest;
 use tls::{
-    FIXTURE_HOST, Handshake, TlsListener, fixture_allowlist, match_cert, settle, tls_substrate,
-    wrong_cert,
+    FIXTURE_HOST, FixtureIdentity, Handshake, TlsListener, fixture_allowlist, settle, tls_substrate,
 };
 use url::Url;
 
@@ -55,8 +54,13 @@ const LOOPBACK_ALT: IpAddr = IpAddr::V6(Ipv6Addr::LOCALHOST);
 async fn tls_address_policy_matches_plain() {
     // Row 1 — authorized: the request reaches the listener and TLS completes,
     // proving the fixture is genuinely serving and the trust anchor is real.
-    let granted =
-        TlsListener::serve(LOOPBACK, 0, match_cert(), "<html><body>ok</body></html>").await;
+    let granted = TlsListener::serve(
+        LOOPBACK,
+        0,
+        FixtureIdentity::Match,
+        "<html><body>ok</body></html>",
+    )
+    .await;
     let port = granted.address.port();
     let substrate = tls_substrate(fixture_allowlist(port, true), vec![LOOPBACK]);
     let response = substrate
@@ -77,8 +81,13 @@ async fn tls_address_policy_matches_plain() {
     // merely the category matters: origin scoping also refuses with
     // `permission_denied`, and a category-only assertion could not tell a
     // policy denial from a misconfigured allowlist.
-    let denied_listener =
-        TlsListener::serve(LOOPBACK, 0, match_cert(), "<html><body>ok</body></html>").await;
+    let denied_listener = TlsListener::serve(
+        LOOPBACK,
+        0,
+        FixtureIdentity::Match,
+        "<html><body>ok</body></html>",
+    )
+    .await;
     let denied_port = denied_listener.address.port();
     let denied = tls_substrate(fixture_allowlist(denied_port, false), vec![LOOPBACK]);
     let failure = denied
@@ -103,12 +112,18 @@ async fn tls_address_policy_matches_plain() {
 
     // Row 3 — rebinding: two listeners differing only by address. Each request
     // must land on the address its own resolution returned.
-    let first = TlsListener::serve(LOOPBACK, 0, match_cert(), "<html><body>a</body></html>").await;
+    let first = TlsListener::serve(
+        LOOPBACK,
+        0,
+        FixtureIdentity::Match,
+        "<html><body>a</body></html>",
+    )
+    .await;
     let shared_port = first.address.port();
     let second = TlsListener::serve(
         LOOPBACK_ALT,
         shared_port,
-        match_cert(),
+        FixtureIdentity::Match,
         "<html><body>b</body></html>",
     )
     .await;
@@ -160,8 +175,13 @@ async fn tls_address_policy_matches_plain() {
 async fn tls_certificate_binds_hostname() {
     // The matching certificate establishes the baseline: this host, this
     // address, and this trust anchor do produce a completed session.
-    let matching =
-        TlsListener::serve(LOOPBACK, 0, match_cert(), "<html><body>ok</body></html>").await;
+    let matching = TlsListener::serve(
+        LOOPBACK,
+        0,
+        FixtureIdentity::Match,
+        "<html><body>ok</body></html>",
+    )
+    .await;
     let matching_port = matching.address.port();
     let trusted = tls_substrate(fixture_allowlist(matching_port, true), vec![LOOPBACK]);
     let response = trusted
@@ -181,7 +201,7 @@ async fn tls_certificate_binds_hostname() {
     let mismatched = TlsListener::serve(
         LOOPBACK,
         0,
-        wrong_cert(),
+        FixtureIdentity::Wrong,
         "<html><body>secret</body></html>",
     )
     .await;

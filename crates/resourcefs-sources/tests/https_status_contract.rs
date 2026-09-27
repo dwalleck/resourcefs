@@ -21,7 +21,7 @@ use resourcefs_core::{
 };
 use resourcefs_sources::HttpsSource;
 use tls::{
-    FIXTURE_HOST, FixtureResponse, TlsListener, fixture_allowlist, match_cert, settle,
+    FIXTURE_HOST, FixtureIdentity, FixtureResponse, TlsListener, fixture_allowlist, settle,
     tls_substrate, tls_substrate_with_ceilings,
 };
 
@@ -30,7 +30,7 @@ const ERROR_PAGE: &[u8] =
 
 async fn source_serving(status: &'static str) -> (u16, HttpsSource) {
     let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let listener = TlsListener::serve_router(loopback, 0, match_cert(), move |_path| {
+    let listener = TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, move |_path| {
         FixtureResponse::Response {
             status,
             headers: vec![(
@@ -155,16 +155,17 @@ async fn unusable_retry_guidance_is_terminal_without_wait() {
         Some("60"),
     ] {
         let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let listener = TlsListener::serve_router(loopback, 0, match_cert(), move |_path| {
-            FixtureResponse::Response {
-                status: "429 Too Many Requests",
-                headers: guidance
-                    .map(|value| vec![("Retry-After".to_owned(), value.to_owned())])
-                    .unwrap_or_default(),
-                body: Vec::new(),
-            }
-        })
-        .await;
+        let listener =
+            TlsListener::serve_router(loopback, 0, FixtureIdentity::Match, move |_path| {
+                FixtureResponse::Response {
+                    status: "429 Too Many Requests",
+                    headers: guidance
+                        .map(|value| vec![("Retry-After".to_owned(), value.to_owned())])
+                        .unwrap_or_default(),
+                    body: Vec::new(),
+                }
+            })
+            .await;
         let port = listener.address.port();
         let substrate =
             tls_substrate_with_ceilings(fixture_allowlist(port, true), vec![loopback], ceilings)
