@@ -2149,3 +2149,313 @@ fn cleanup_refuses_unknown_page_status(
     assert_success(&harness.command("cleanup"));
     assert_graph_absent(&harness);
 }
+
+/// rfs-cbz9: every request's curl config is written by the script's
+/// `curl_config_line`, which escapes for curl's own `--config` grammar rather
+/// than JSON. A description carrying a backslash, a double quote, a newline and
+/// a tab must reach the upstream byte-exact and survive `verify`'s equality
+/// check; a request without a body must send no `data-binary` line at all.
+#[test]
+fn request_bodies_and_bodyless_gets_reach_upstream_byte_exact() {
+    let harness = Harness::new();
+    let mut custom = manifest();
+    let tricky = "backslash \\ quote \" newline \n tab \t end";
+    custom["jira"]["issues"][0]["description"]["content"][0]["content"][0]["text"] =
+        Value::String(tricky.to_owned());
+    let expected = custom["jira"]["issues"][0]["description"].clone();
+    let manifest_path = harness.write_manifest(&custom);
+
+    assert_success(&harness.command_with("bootstrap", SITE, Some(&manifest_path), None, "normal"));
+    assert_success(&harness.command_with("verify", SITE, Some(&manifest_path), None, "normal"));
+
+    let stored = harness.read_store()["issues"]
+        .as_array()
+        .expect("fake store issues")
+        .iter()
+        .find(|issue| issue["fields"]["description"] == expected)
+        .cloned();
+    assert!(
+        stored.is_some(),
+        "no stored issue carries the escaped description byte-exact"
+    );
+
+    let log = harness.read_log();
+    let creates = operation_rows(&log, "issue_create");
+    assert!(!creates.is_empty(), "bootstrap created no issue");
+    assert!(
+        creates
+            .iter()
+            .any(|row| row["body"]["fields"]["description"] == expected),
+        "the issue create body did not decode to the manifest description"
+    );
+    for row in &creates {
+        assert_eq!(row["data_binary_present"], true, "a POST lost its body");
+    }
+    let gets: Vec<_> = log.iter().filter(|row| row["method"] == "GET").collect();
+    assert!(!gets.is_empty(), "the flow issued no GET");
+    for row in gets {
+        assert_eq!(
+            row["data_binary_present"], false,
+            "a body-less GET sent data-binary: {row}"
+        );
+    }
+}
+
+/// rfs-cbz9: the fake above decodes config values the way curl documents, but
+/// a fake can drift from what it imitates. This row drives the script's own
+/// `curl_config_line` into the real curl binary and reads back what curl
+/// decoded, through the one config value whose effect is observable offline:
+/// the filename `output` writes. Every case must round-trip byte-exact,
+/// including the escapes JSON has and curl lacks (`A` must stay text).
+#[test]
+fn curl_config_line_round_trips_through_real_curl() {
+    let temp = TempDir::new().expect("temp dir");
+    let dir = temp.path().canonicalize().expect("canonical temp dir");
+    fs::write(dir.join("src"), b"fixture").expect("source file");
+    let cases = [
+        "a\\b",
+        "a\"b",
+        "a\nb",
+        "a\tb",
+        "a\rb",
+        "a\u{b}b",
+        "trailing\\",
+        "\\n stays text",
+        "\\\\ doubled",
+        "\\u0041 stays text",
+        "caf\u{e9} \u{2028} separator",
+        "# not a comment",
+        "k = v = w",
+        "%{http_code}",
+        "  padded  ",
+        "mix \\\"\n\tend",
+    ];
+    for case in cases {
+        let target = format!("out_{case}");
+        for entry in fs::read_dir(&dir).expect("list temp dir") {
+            let path = entry.expect("dir entry").path();
+            if path.file_name() != Some(std::ffi::OsStr::new("src")) {
+                fs::remove_file(path).expect("clear previous output");
+            }
+        }
+        let config = Command::new("bash")
+            .arg("-c")
+            .arg(
+                r#"source <(sed -n '/^curl_config_line() {/,/^}/p' "$1") || exit 1
+declare -F curl_config_line >/dev/null || exit 1
+printf 'silent\n'
+curl_config_line url "file://$2/src"
+curl_config_line output "$2/$3""#,
+            )
+            .arg("bash")
+            .arg(script_path())
+            .arg(&dir)
+            .arg(&target)
+            .output()
+            .expect("run curl_config_line under bash");
+        assert!(
+            config.status.success(),
+            "curl_config_line failed: {:?}",
+            String::from_utf8_lossy(&config.stderr)
+        );
+        let mut curl = Command::new("curl")
+            .args(["--config", "-"])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("real curl must be on PATH for this row");
+        curl.stdin
+            .take()
+            .expect("curl stdin")
+            .write_all(&config.stdout)
+            .expect("feed curl config");
+        let result = curl.wait_with_output().expect("curl exit");
+        assert!(
+            result.status.success(),
+            "curl rejected the config for {case:?}: {:?}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let written: Vec<OsString> = fs::read_dir(&dir)
+            .expect("list outputs")
+            .map(|entry| entry.expect("dir entry").file_name())
+            .filter(|name| name != "src")
+            .collect();
+        assert_eq!(
+            written,
+            vec![OsString::from(target.clone())],
+            "curl decoded {case:?} to a different value"
+        );
+    }
+}
+
+/// rfs-cbz9: a Jira summary is manifest `text`, which admits tab, newline and
+/// backslash. It used to reach bash through jq `@tsv` and `read -r`, which left
+/// those three escaped, so the upstream received `\t` where the manifest said
+/// tab. It now travels with the description in one base64 JSON object; the
+/// summary must reach the store byte-exact and survive both verify passes.
+#[test]
+fn issue_summary_with_tab_newline_and_backslash_reaches_upstream_byte_exact() {
+    let harness = Harness::new();
+    let mut custom = manifest();
+    let summary = "summary \\ backslash\ttab\nnewline end";
+    custom["jira"]["issues"][0]["summary"] = Value::String(summary.to_owned());
+    let manifest_path = harness.write_manifest(&custom);
+
+    assert_success(&harness.command_with("bootstrap", SITE, Some(&manifest_path), None, "normal"));
+    assert_success(&harness.command_with("verify", SITE, Some(&manifest_path), None, "normal"));
+
+    let summaries: Vec<String> = harness.read_store()["issues"]
+        .as_array()
+        .expect("fake store issues")
+        .iter()
+        .filter_map(|issue| issue["fields"]["summary"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        summaries.iter().any(|stored| stored == summary),
+        "no stored issue carries the summary byte-exact: {summaries:?}"
+    );
+}
+
+/// rfs-cbz9: names, titles and markers are manifest `text` too, and every
+/// place the script reads them went through jq `@tsv` and `read -r`, which left
+/// backslash, tab and newline escaped. They are now restored in place by
+/// `tsv_text`. A Jira project name and marker, a Confluence space name and a
+/// page title carrying all three must reach the store byte-exact and survive
+/// both verify passes, whose ownership checks compare the markers.
+#[test]
+fn names_titles_and_markers_reach_upstream_byte_exact() {
+    let harness = Harness::new();
+    let mut custom = manifest();
+    let project_name = "project \\ name\twith tab\nand newline";
+    let project_marker = "rfs-owner:rfs-cbz9:project \\ marker\ttab\nnewline";
+    let space_name = "space \\ name\twith tab\nand newline";
+    let page_title = "page \\ title\twith tab\nand newline";
+    custom["jira"]["projects"][0]["name"] = Value::String(project_name.to_owned());
+    custom["jira"]["projects"][0]["marker"] = Value::String(project_marker.to_owned());
+    custom["confluence"]["spaces"][0]["name"] = Value::String(space_name.to_owned());
+    custom["confluence"]["pages"][0]["title"] = Value::String(page_title.to_owned());
+    let manifest_path = harness.write_manifest(&custom);
+
+    assert_success(&harness.command_with("bootstrap", SITE, Some(&manifest_path), None, "normal"));
+    assert_success(&harness.command_with("verify", SITE, Some(&manifest_path), None, "normal"));
+
+    let store = harness.read_store();
+    let has = |collection: &str, field: &str, expected: &str| {
+        store[collection]
+            .as_array()
+            .unwrap_or_else(|| panic!("fake store {collection}"))
+            .iter()
+            .any(|row| row[field].as_str() == Some(expected))
+    };
+    let stored = |collection: &str, field: &str| -> Vec<Value> {
+        store[collection]
+            .as_array()
+            .map(|rows| rows.iter().map(|row| row[field].clone()).collect())
+            .unwrap_or_default()
+    };
+    assert!(
+        has("projects", "name", project_name),
+        "project name not byte-exact: {:?}",
+        stored("projects", "name")
+    );
+    assert!(
+        has("projects", "description", project_marker),
+        "project marker not byte-exact: {:?}",
+        stored("projects", "description")
+    );
+    assert!(
+        has("spaces", "name", space_name),
+        "space name not byte-exact: {:?}",
+        stored("spaces", "name")
+    );
+    assert!(
+        has("pages", "title", page_title),
+        "page title not byte-exact: {:?}",
+        stored("pages", "title")
+    );
+}
+
+/// rfs-cbz9: every paginated list is now read by one jq per page, which checks
+/// that each element is an object before reading its fields. An element that
+/// is not one used to reach a per-row jq that raised, ending the run with jq's
+/// status 5 and its raw message, or, for `null` and for Jira comments (whose
+/// match reads `.body?`), was skipped without a word. Every list now fails
+/// such a page with the same `invalid_response` a malformed page gets.
+#[rstest]
+#[case::jira_projects("bootstrap", "project_search", "values", json!(42))]
+#[case::jira_issues("bootstrap", "issue_search", "issues", json!(42))]
+#[case::jira_comments("bootstrap", "comment_list", "comments", json!(42))]
+#[case::confluence_spaces("bootstrap", "space_list", "results", json!(42))]
+#[case::confluence_spaces_null("bootstrap", "space_list", "results", Value::Null)]
+#[case::confluence_pages("bootstrap", "page_list", "results", json!(42))]
+#[case::confluence_comments("bootstrap", "comment_list", "results", json!(42))]
+#[case::reader_spaces("verify", "reader_space_list", "results", json!(42))]
+#[case::reader_spaces_null("verify", "reader_space_list", "results", Value::Null)]
+fn non_object_list_rows_fail_as_invalid_response(
+    default_bootstrap: &BootstrapSnapshot,
+    #[case] mode: &str,
+    #[case] operation: &str,
+    #[case] list: &str,
+    #[case] element: Value,
+) {
+    let harness = Harness::new();
+    let mut store = if mode == "verify" {
+        harness.materialize(default_bootstrap);
+        harness.read_store()
+    } else {
+        json!({})
+    };
+    store["scalar_row"] = json!({"operation": operation, "list": list, "value": element});
+    harness.write_store(&store);
+
+    let output = harness.command(mode);
+    assert!(
+        harness.read_store()["faults"]["scalar_row"] == true,
+        "the {operation} fault was never served"
+    );
+    assert_failure(&output, &format!("invalid_response operation={operation}"));
+    assert_eq!(output.status.code(), Some(1), "die exits 1, not jq's 5");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("jq: error"),
+        "jq's own message leaked: {stderr:?}"
+    );
+}
+
+/// rfs-cbz9: an upstream title carrying U+0000 used to be read through
+/// `$(jq -r ...)`, which drops the NUL and keeps the rest, so "Title\0x" read
+/// as "Titlex" and could not match the manifest's "Title". page_scan drops the
+/// NUL inside jq for the same result; letting it reach `mapfile` would cut the
+/// value at the NUL instead, and a look-alike page would be taken for the real
+/// one. Here that look-alike carries the real page's owner marker, so a false
+/// match would make verify see two owned pages and die `ambiguous_object`.
+#[rstest]
+fn a_title_with_an_embedded_nul_is_not_the_manifest_title(default_bootstrap: &BootstrapSnapshot) {
+    let harness = Harness::new();
+    harness.materialize(default_bootstrap);
+    let manifest = manifest();
+    let title = manifest["confluence"]["pages"][0]["title"]
+        .as_str()
+        .expect("manifest page title")
+        .to_owned();
+    let marker = manifest["confluence"]["pages"][0]["marker"].clone();
+    let mut store = harness.read_store();
+    let real = store["pages"]
+        .as_array()
+        .expect("fake store pages")
+        .iter()
+        .find(|page| page["title"] == title.as_str())
+        .cloned()
+        .expect("bootstrapped page with the manifest title");
+    let mut look_alike = real.clone();
+    look_alike["id"] = json!("9999999901");
+    look_alike["title"] = json!(format!("{title}\u{0}x"));
+    store["pages"]
+        .as_array_mut()
+        .expect("fake store pages")
+        .push(look_alike);
+    store["properties"]["9999999901"] = json!({"rfs-owner": marker});
+    harness.write_store(&store);
+
+    assert_success(&harness.command("verify"));
+}

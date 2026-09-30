@@ -125,20 +125,39 @@ def temp_contains_canary():
             return True
     return False
 
+# curl(1) --config: inside double quotes exactly these escapes are decoded,
+# and a backslash before any other character is dropped (so "\\u0041" reads as
+# "u0041"). This mirrors real curl rather than JSON, so an encoder that emits
+# JSON-only escapes fails here the way it would upstream (rfs-cbz9).
+CURL_CONFIG_ESCAPES = {"\\": "\\", '"': '"', "t": "\t", "n": "\n", "r": "\r", "v": "\v"}
+
+
 def cfg_value(raw):
     raw = raw.strip()
-    if raw.startswith('"'):
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return raw[1:-1]
-    return raw
+    if not raw.startswith('"'):
+        return raw
+    decoded = []
+    index = 1
+    while index < len(raw):
+        char = raw[index]
+        if char == '"':
+            return "".join(decoded)
+        if char == "\\" and index + 1 < len(raw):
+            following = raw[index + 1]
+            decoded.append(CURL_CONFIG_ESCAPES.get(following, following))
+            index += 2
+            continue
+        decoded.append(char)
+        index += 1
+    raise SystemExit("unterminated_config_quote")
 
 
 def parse_config():
     config = {}
     raw_config = sys.stdin.read()
-    for line in raw_config.splitlines():
+    # curl splits its config on newline only; str.splitlines() would also break
+    # on \v, \f, U+0085 and U+2028, which may legitimately sit inside a value.
+    for line in raw_config.split("\n"):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -871,6 +890,19 @@ def main():
         status, payload, operation = 404, {}, "collection_fault"
     else:
         status, payload, operation = handle(config, store, actor, method, path, query, body)
+    # Test-selected: prepend one element that is not an object (42 unless the
+    # fault names another value) to a list page, once, so the operator's
+    # handling of a malformed row is observable (rfs-cbz9).
+    scalar_row = store.get("scalar_row", {})
+    scalar_list = scalar_row.get("list")
+    if (
+        scalar_row.get("operation") == operation
+        and isinstance(payload, dict)
+        and isinstance(payload.get(scalar_list), list)
+        and not store["faults"].get("scalar_row")
+    ):
+        payload = {**payload, scalar_list: [scalar_row.get("value", 42), *payload[scalar_list]]}
+        store["faults"]["scalar_row"] = True
     task_fault = store.get("task_fault")
     if operation == "space_delete_poll" and task_fault is not None:
         # A task may finish independently while its response is lost or invalid.
@@ -936,6 +968,7 @@ def main():
         "path": path,
         "query": query,
         "body": body,
+        "data_binary_present": "data-binary" in config,
         "operation": operation,
         "status": status if status is not None else "transport",
         "scenario": SCENARIO,
