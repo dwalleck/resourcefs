@@ -1,3 +1,6 @@
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
+
 use std::time::{Duration, Instant};
 
 use resourcefs_core::{ErrorCategory, MAX_HTTP_FETCH_BYTES};
@@ -310,8 +313,5 @@ fn canonical_json_maximum_fixture() {
     } else {
         Duration::from_secs(2)
     };
-    assert!(
-        started.elapsed() <= budget,
-        "maximum canonical JSON must stay within the plan budget"
-    );
+    wall_budget::check_wall_budget("maximum canonical JSON", started.elapsed(), budget);
 }

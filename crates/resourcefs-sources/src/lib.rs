@@ -9,6 +9,12 @@
 // because the native check cannot see it.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+// Wall-clock budget policy for this crate's unit tests (rfs-cn1r), loaded once
+// here because several test modules use it.
+#[cfg(test)]
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
+
 mod artifact;
 mod atlassian;
 mod catalog;

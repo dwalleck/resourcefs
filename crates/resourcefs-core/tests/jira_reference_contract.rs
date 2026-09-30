@@ -1,3 +1,6 @@
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     io::Cursor,
     time::{Duration, Instant},
@@ -220,9 +223,10 @@ fn maximum_jira_reference_parse_stays_within_budget() {
     for _ in 0..1_000 {
         PathReference::parse(&reference).expect("maximum Jira reference");
     }
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "1,000 maximum Jira references must average below the 2 ms budget"
+    wall_budget::check_wall_budget_below(
+        "1,000 maximum Jira references",
+        started.elapsed(),
+        Duration::from_secs(2),
     );
 }
 

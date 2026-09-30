@@ -2,6 +2,8 @@
 mod session_support;
 #[path = "support/tls.rs"]
 mod tls;
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
 
 use resourcefs_core::{
     DiscoveryAdapter, DiscoveryEngine, ErrorCategory, ErrorReason, MutationAccess, MutationAdapter,
@@ -1695,7 +1697,11 @@ async fn github_pagination_cache_budget() {
         .await
         .expect("1,000-object listing");
     assert_eq!(listed.content().matches("- issue://").count(), 1_000);
-    assert!(started.elapsed() <= Duration::from_secs(30));
+    wall_budget::check_wall_budget(
+        "1,000 issues across 10 pages",
+        started.elapsed(),
+        Duration::from_secs(30),
+    );
     settle().await;
     assert_eq!(listener.requests().len(), 10);
 }
@@ -1739,9 +1745,10 @@ async fn github_search_budget() {
         .await
         .expect("search");
     assert_eq!(result.total_records(), 1);
-    assert!(
-        started.elapsed() <= Duration::from_secs(1),
-        "maximum GitHub search exceeded one second"
+    wall_budget::check_wall_budget(
+        "maximum GitHub search",
+        started.elapsed(),
+        Duration::from_secs(1),
     );
 }
 #[test]
@@ -1757,8 +1764,9 @@ fn github_single_resource_render_budget() {
     let elapsed = started.elapsed();
     assert!(rendered.len() >= body.len());
     assert!(rendered.starts_with("# Issue #1: large"));
-    assert!(
-        elapsed <= Duration::from_millis(250),
-        "maximum issue decode/render took {elapsed:?}"
+    wall_budget::check_wall_budget(
+        "maximum issue decode/render",
+        elapsed,
+        Duration::from_millis(250),
     );
 }

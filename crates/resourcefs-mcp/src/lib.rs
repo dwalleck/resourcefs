@@ -1,5 +1,11 @@
 //! ResourceFS MCP and CLI adapter.
 
+// Wall-clock budget policy for this crate's unit tests (rfs-cn1r), loaded once
+// here because several test modules use it.
+#[cfg(test)]
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
+
 use std::error::Error;
 
 mod acquisition;

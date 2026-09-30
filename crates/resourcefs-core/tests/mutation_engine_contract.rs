@@ -1,3 +1,6 @@
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     sync::{
         Arc,
@@ -569,9 +572,10 @@ async fn operation_journal_budget() {
         )));
     }
     let count_elapsed = started.elapsed();
-    assert!(
-        count_elapsed <= Duration::from_millis(count_budget),
-        "[C4] 10,000 journal transitions took {count_elapsed:?}"
+    wall_budget::check_wall_budget(
+        "[C4] 10,000 journal transitions",
+        count_elapsed,
+        Duration::from_millis(count_budget),
     );
 
     let cache_limits = ServerLimits::new(ServerLimitsInput {
@@ -612,9 +616,10 @@ async fn operation_journal_budget() {
         MutationOperationStart::Owner(_)
     ));
     let yield_elapsed = started.elapsed();
-    assert!(
-        yield_elapsed <= Duration::from_millis(yield_budget),
-        "[C4] worst-case cache yield took {yield_elapsed:?}"
+    wall_budget::check_wall_budget(
+        "[C4] worst-case cache yield",
+        yield_elapsed,
+        Duration::from_millis(yield_budget),
     );
     let mut evicted = 0;
     for key in &cache_keys {
@@ -653,9 +658,10 @@ async fn operation_journal_budget() {
         MutationOperationStart::Owner(_)
     ));
     let compare_elapsed = started.elapsed();
-    assert!(
-        compare_elapsed <= Duration::from_millis(compare_budget),
-        "[C4] 64 MiB fingerprint and exact comparison took {compare_elapsed:?}"
+    wall_budget::check_wall_budget(
+        "[C4] 64 MiB fingerprint and exact comparison",
+        compare_elapsed,
+        Duration::from_millis(compare_budget),
     );
 }
 
@@ -898,9 +904,10 @@ async fn target_mode_outcome_matrix() {
         );
     }
     let mismatch_average = mismatch_started.elapsed() / 6;
-    assert!(
-        mismatch_average <= Duration::from_millis(1),
-        "[C7] target/outcome dispatch averaged {mismatch_average:?}"
+    wall_budget::check_wall_budget(
+        "[C7] target/outcome dispatch average",
+        mismatch_average,
+        Duration::from_millis(1),
     );
 }
 
@@ -1223,7 +1230,7 @@ async fn exact_limit_edit_budget() {
     } else {
         Duration::from_secs(5)
     };
-    assert!(elapsed <= budget, "64 MiB edit took {elapsed:?}");
+    wall_budget::check_wall_budget("64 MiB edit", elapsed, budget);
 }
 
 #[tokio::test]

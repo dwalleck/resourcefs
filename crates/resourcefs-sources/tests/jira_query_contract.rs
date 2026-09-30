@@ -4,6 +4,8 @@ mod jira;
 mod session_support;
 #[path = "support/tls.rs"]
 mod tls;
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jira::{fixture_with_request_session, protocol_response, read, response};
@@ -717,8 +719,11 @@ async fn query_production_scale_thousand_rows_preserves_order_and_wall_bound() {
     assert_eq!(result.content().matches(&summary).count(), 1000);
     assert_eq!(listener.requests().len(), 10);
     let bound = Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 2 });
-    eprintln!("C6/C9 1000 rows x 4KiB: {elapsed:?}; bound {bound:?} (includes loopback TLS)");
-    assert!(elapsed <= bound, "C6/C9 production wall bound");
+    wall_budget::check_wall_budget(
+        "C6/C9 1,000 rows x 4 KiB, includes loopback TLS",
+        elapsed,
+        bound,
+    );
     let next = result.continuation().expect("C6 exact budget continuation");
     let terminal = read(&source, next)
         .await

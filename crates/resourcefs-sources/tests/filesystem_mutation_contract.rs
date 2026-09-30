@@ -1,3 +1,6 @@
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     fs,
     sync::{
@@ -600,17 +603,28 @@ async fn exact_limit_write_budget_and_one_over_rejection() {
     // 34722270821), on a branch whose only change was 24 lines of JSON, so
     // the miss was the hardware and not the code.
     //
-    // Serialising it is not the lever: the release leg already ran this
-    // target alone under `--test-threads=1` when it missed. 30 s is roughly
-    // twice the worst observed, matching the headroom the heartbeat budget
-    // was given, and still fails long before a regression that made a 64 MiB
-    // write take minutes. See rfs-1e6h.
-    let budget = if cfg!(debug_assertions) {
-        Duration::from_secs(100)
+    // Serialising it was not the lever: the release leg already ran this
+    // target alone under `--test-threads=1` when it missed. The lever is
+    // where it is enforced. rfs-1e6h raised it to 30 s; rfs-cn1r restores
+    // 5 s because contended hosts now only report it (`RFS_BUDGETS=report`,
+    // failing only at 10x) and 1x enforcement moves to the dedicated benchmark
+    // runner of rfs-63xx, not yet built. Five release runs on a workstation at
+    // load average 26 measured 83-85 ms.
+    // Report mode's hard ceiling is the bound CI enforced before rfs-cn1r --
+    // rfs-1e6h's 30 s raise in release, the unchanged 100 s in debug -- so CI
+    // is never looser on this row than it was. Worst recorded: 13.57 s on
+    // windows-latest (PR #20, run 34722270821).
+    let (budget, hard) = if cfg!(debug_assertions) {
+        (Duration::from_secs(100), Duration::from_secs(100))
     } else {
-        Duration::from_secs(30)
+        (Duration::from_secs(5), Duration::from_secs(30))
     };
-    assert!(elapsed <= budget, "64 MiB create took {elapsed:?}");
+    wall_budget::check_wall_budget_capped(
+        "64 MiB create",
+        elapsed,
+        budget,
+        wall_budget::HardCeiling::At(hard),
+    );
 
     let error = WriteRequest::new(
         reference("over.txt"),
@@ -684,9 +698,10 @@ async fn replacement_has_no_missing_window() {
 
     assert_eq!(invalid.load(Ordering::Acquire), 0);
     assert_eq!(read_errors.load(Ordering::Acquire), 0);
-    assert!(
-        maximum_replacement <= Duration::from_secs(5),
-        "slowest one-MiB replacement took {maximum_replacement:?}"
+    wall_budget::check_wall_budget(
+        "slowest one-MiB replacement",
+        maximum_replacement,
+        Duration::from_secs(5),
     );
 }
 

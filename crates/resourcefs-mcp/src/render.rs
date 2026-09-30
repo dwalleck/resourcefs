@@ -636,6 +636,8 @@ pub(crate) fn glob_failure(
 
 #[cfg(test)]
 mod tests {
+    use crate::wall_budget;
+
     use std::{
         fs,
         sync::Arc,
@@ -721,7 +723,7 @@ mod tests {
         } else {
             Duration::from_millis(25)
         };
-        assert!(elapsed <= budget, "maximum-page render took {elapsed:?}");
+        wall_budget::check_wall_budget("maximum-page render", elapsed, budget);
     }
 
     struct Fixture {
@@ -1269,7 +1271,7 @@ mod tests {
         } else {
             Duration::from_millis(25)
         };
-        assert!(elapsed <= budget, "maximum-page render took {elapsed:?}");
+        wall_budget::check_wall_budget("maximum-page render", elapsed, budget);
     }
 
     #[tokio::test]
@@ -1308,7 +1310,7 @@ mod tests {
         } else {
             Duration::from_millis(25)
         };
-        assert!(elapsed <= budget, "maximum-page render took {elapsed:?}");
+        wall_budget::check_wall_budget("maximum-page render", elapsed, budget);
     }
 
     /// A source whose projection names a further upstream page.
@@ -1507,9 +1509,10 @@ mod tests {
             std::hint::black_box(mutation_success(creation.clone()).expect("[C16] budget render"));
         }
         let average = started.elapsed() / iterations;
-        assert!(
-            average <= Duration::from_millis(10),
-            "[C16] ordinary mutation rendering took {average:?}"
+        wall_budget::check_wall_budget(
+            "[C16] ordinary mutation rendering average",
+            average,
+            Duration::from_millis(10),
         );
         let rendered = mutation_success(creation).expect("[C16] render");
         let value = serde_json::to_value(rendered).expect("[C16] result JSON");

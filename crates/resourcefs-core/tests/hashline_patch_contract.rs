@@ -1,3 +1,6 @@
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::time::{Duration, Instant};
 
 use resourcefs_core::{
@@ -151,10 +154,7 @@ fn exact_limit_parser_budget() {
     let elapsed = started.elapsed();
 
     assert_eq!(patch.operations().len(), 1);
-    assert!(
-        elapsed <= Duration::from_secs(5),
-        "64 MiB patch parse took {elapsed:?}"
-    );
+    wall_budget::check_wall_budget("64 MiB patch parse", elapsed, Duration::from_secs(5));
 }
 #[test]
 fn version_prefixes_are_canonical_and_at_least_twelve_hex_characters() {

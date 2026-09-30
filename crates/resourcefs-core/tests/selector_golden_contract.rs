@@ -1,3 +1,6 @@
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     io::{self, Cursor, Read, Seek, SeekFrom},
     time::{Duration, Instant},
@@ -210,7 +213,7 @@ fn stress_selection_budget() {
     } else {
         Duration::from_secs(10)
     };
-    assert!(elapsed <= budget, "selection took {elapsed:?}");
+    wall_budget::check_wall_budget("selection", elapsed, budget);
 }
 
 #[derive(Debug)]

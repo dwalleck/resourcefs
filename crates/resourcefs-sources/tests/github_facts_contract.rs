@@ -2,6 +2,8 @@
 mod session_support;
 #[path = "support/tls.rs"]
 mod tls;
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use resourcefs_core::{
@@ -1667,13 +1669,14 @@ async fn github_facts_production_budget() -> Result<(), &'static str> {
             // decode/validate/project/serialize work, not a decode-only timer.
             // Includes TLS/network/cache and allocator instrumentation; no
             // synthetic server delay or fixture construction is timed/subtracted.
+            // The helper's line carries the time; this keeps the sizes.
             println!(
-                "facts_budget phase=wall native_bytes={NATIVE_BYTES} output_bytes={output_bytes} cold_loopback_upper_bound_ns={} local_processing_limit_ns=1000000000",
-                elapsed.as_nanos()
+                "facts_budget phase=wall native_bytes={NATIVE_BYTES} output_bytes={output_bytes}"
             );
-            assert!(
-                elapsed <= Duration::from_secs(1),
-                "local processing upper bound {elapsed:?}"
+            wall_budget::check_wall_budget(
+                "local processing upper bound",
+                elapsed,
+                Duration::from_secs(1),
             );
         }
     }
@@ -1864,13 +1867,14 @@ async fn immutable_commit_production_budget() -> Result<(), &'static str> {
                 "incremental heap {incremental_heap}"
             );
         } else {
+            // The helper's line carries the time; this keeps the sizes.
             println!(
-                "immutable_commit_budget phase=wall body_bytes={COMMIT_BODY_BYTES} output_bytes={output_bytes} elapsed_ns={}",
-                elapsed.as_nanos()
+                "immutable_commit_budget phase=wall body_bytes={COMMIT_BODY_BYTES} output_bytes={output_bytes}"
             );
-            assert!(
-                elapsed <= Duration::from_secs(2),
-                "local processing upper bound {elapsed:?}"
+            wall_budget::check_wall_budget(
+                "local processing upper bound",
+                elapsed,
+                Duration::from_secs(2),
             );
         }
     }
@@ -1949,17 +1953,18 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
     // Release measurement at this revision: 225_837ns average for a 65_536-byte
     // reference with 1_024 segments. The sibling `reference_parse_budget`
     // allows 1ms for a 183-byte input; 5ms is ~70x tighter per byte.
-    assert!(
-        average <= Duration::from_millis(5),
-        "average parser wall time {average:?}"
+    wall_budget::check_wall_budget(
+        "average parser wall time",
+        average,
+        Duration::from_millis(5),
     );
     assert!(
         incremental_heap <= 16 * EXACT_BYTES + 1_048_576,
         "incremental parser heap {incremental_heap}"
     );
+    // The helper's line carries the time; this keeps the shape and heap.
     println!(
-        "immutable_reference_budget phase=parse exact_bytes={EXACT_BYTES} segments={SEGMENT_COUNT} iterations={ITERATIONS} average_wall_ns={} incremental_heap_bytes={incremental_heap}",
-        average.as_nanos()
+        "immutable_reference_budget phase=parse exact_bytes={EXACT_BYTES} segments={SEGMENT_COUNT} iterations={ITERATIONS} incremental_heap_bytes={incremental_heap}"
     );
 
     let adversarial_segments = adversarial_segment_count(EXACT_BYTES);
@@ -1972,17 +1977,17 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
     // cheap shape's ~6x headroom; the heap bound allows 2x the measured
     // structural cost, so a per-segment regression cannot hide under a bound
     // calibrated on one long segment.
-    assert!(
-        worst_average <= Duration::from_millis(30),
-        "adversarial parser wall time {worst_average:?}"
+    wall_budget::check_wall_budget(
+        "adversarial parser wall time",
+        worst_average,
+        Duration::from_millis(30),
     );
     assert!(
         worst_heap <= 64 * EXACT_BYTES,
         "adversarial parser heap {worst_heap}"
     );
     println!(
-        "immutable_reference_budget phase=parse exact_bytes={EXACT_BYTES} segments={adversarial_segments} iterations={ITERATIONS} average_wall_ns={} incremental_heap_bytes={worst_heap}",
-        worst_average.as_nanos()
+        "immutable_reference_budget phase=parse exact_bytes={EXACT_BYTES} segments={adversarial_segments} iterations={ITERATIONS} incremental_heap_bytes={worst_heap}"
     );
 
     let over = immutable_reference_with_size(EXACT_BYTES + 1, SEGMENT_COUNT);
@@ -2016,14 +2021,13 @@ fn immutable_reference_parse_budget() -> Result<(), &'static str> {
     // Release measurement at this revision: 14ns average. One microsecond is
     // ~70x headroom and still catches an accidental per-intersection
     // allocation, which is what this phase exists to bound.
-    assert!(
-        average <= Duration::from_micros(1),
-        "average control construction/intersection time {average:?}"
+    wall_budget::check_wall_budget(
+        "average control construction/intersection",
+        average,
+        Duration::from_micros(1),
     );
-    println!(
-        "immutable_reference_budget phase=controls iterations={CONTROL_ITERATIONS} average_wall_ns={}",
-        average.as_nanos()
-    );
+    // The helper's line carries the time; this keeps the iteration count.
+    println!("immutable_reference_budget phase=controls iterations={CONTROL_ITERATIONS}");
     Ok(())
 }
 
@@ -3641,14 +3645,9 @@ async fn github_collection_production_budget() {
         output_bytes > 6_000_000,
         "production-size output: {output_bytes}"
     );
-    assert!(
-        elapsed < Duration::from_secs(1),
-        "local processing took {elapsed:?}"
-    );
-    eprintln!(
-        "collection_budget phase=wall records=900 output_bytes={output_bytes} local_processing_ns={} limit_ns=1000000000",
-        elapsed.as_nanos()
-    );
+    wall_budget::check_wall_budget_below("local processing", elapsed, Duration::from_secs(1));
+    // The helper's line carries the time; this keeps the sizes.
+    eprintln!("collection_budget phase=wall records=900 output_bytes={output_bytes}");
 }
 
 /// Minimal base64url (no padding) codec so the fence can tamper with an
@@ -5140,12 +5139,11 @@ async fn immutable_source_production_budget() -> Result<(), &'static str> {
                 "incremental heap {incremental_heap}"
             );
         } else {
+            // The helper's line carries the time; this keeps the sizes.
             println!(
-                "immutable_source_budget phase=wall native_response_bytes={native_response_bytes} output_bytes={output_bytes} elapsed_ns={} wall_limit_ns={}",
-                elapsed.as_nanos(),
-                WALL_LIMIT.as_nanos()
+                "immutable_source_budget phase=wall native_response_bytes={native_response_bytes} output_bytes={output_bytes}"
             );
-            assert!(elapsed <= WALL_LIMIT, "source read wall time {elapsed:?}");
+            wall_budget::check_wall_budget("source read wall time", elapsed, WALL_LIMIT);
         }
     }
 
@@ -5218,12 +5216,11 @@ async fn immutable_source_production_budget() -> Result<(), &'static str> {
                 "incremental heap {incremental_heap}"
             );
         } else {
+            // The helper's line carries the time; this keeps the sizes.
             println!(
-                "immutable_source_budget corner=wide_tree phase=wall native_response_bytes={native_response_bytes} output_bytes={output_bytes} elapsed_ns={} wall_limit_ns={}",
-                elapsed.as_nanos(),
-                WALL_LIMIT.as_nanos()
+                "immutable_source_budget corner=wide_tree phase=wall native_response_bytes={native_response_bytes} output_bytes={output_bytes}"
             );
-            assert!(elapsed <= WALL_LIMIT, "source read wall time {elapsed:?}");
+            wall_budget::check_wall_budget("source read wall time, wide tree", elapsed, WALL_LIMIT);
         }
     }
 

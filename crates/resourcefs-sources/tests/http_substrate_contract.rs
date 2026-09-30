@@ -7,6 +7,8 @@
 //! is the assertion.
 #[path = "support/tls.rs"]
 mod tls;
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
 
 use std::{
     io,
@@ -154,9 +156,10 @@ fn basic_credential_maximum_stays_within_budget() {
         OriginCredential::basic(origin.clone(), &username, &token)
             .expect("maximum bounded Basic credential");
     }
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "1,000 maximum Basic credentials must average below the 5 ms budget"
+    wall_budget::check_wall_budget_below(
+        "1,000 maximum Basic credentials",
+        started.elapsed(),
+        Duration::from_secs(5),
     );
 }
 
@@ -361,10 +364,11 @@ async fn http_mutation_request_budget() {
         .expect("[C15] maximum request response");
     assert_eq!(response.status(), 201);
     let elapsed = started.elapsed();
-    assert!(
-        // Fresh TLS plus full-body capture; investigate native cost in rfs-q5l8.
-        elapsed <= Duration::from_millis(500),
-        "[C15] 64 MiB loopback mutation request took {elapsed:?}"
+    // Fresh TLS plus full-body capture; investigate native cost in rfs-q5l8.
+    wall_budget::check_wall_budget(
+        "[C15] 64 MiB loopback mutation request",
+        elapsed,
+        Duration::from_millis(500),
     );
     assert_eq!(
         listener.bodies().first().map(Vec::len),
@@ -692,8 +696,9 @@ fn http_metadata_budget() {
         std::hint::black_box(request);
     }
     let average = started.elapsed() / iterations;
-    assert!(
-        average <= Duration::from_millis(1),
-        "maximum HTTP metadata construction took {average:?}"
+    wall_budget::check_wall_budget(
+        "maximum HTTP metadata construction",
+        average,
+        Duration::from_millis(1),
     );
 }

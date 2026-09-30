@@ -213,6 +213,8 @@ fn catalog_document_too_large() -> ResourceError {
 
 #[cfg(test)]
 mod tests {
+    use crate::wall_budget;
+
     use std::{
         fs,
         time::{Duration, Instant},
@@ -551,13 +553,15 @@ mod tests {
         );
 
         let scale = if cfg!(debug_assertions) { 20 } else { 1 };
-        assert!(
-            source_elapsed <= Duration::from_millis(250) * scale,
-            "maximum source catalog took {source_elapsed:?}"
+        wall_budget::check_wall_budget(
+            "maximum source catalog",
+            source_elapsed,
+            Duration::from_millis(250) * scale,
         );
-        assert!(
-            workspace_elapsed <= Duration::from_millis(25) * scale,
-            "maximum workspace catalog took {workspace_elapsed:?}"
+        wall_budget::check_wall_budget(
+            "maximum workspace catalog",
+            workspace_elapsed,
+            Duration::from_millis(25) * scale,
         );
     }
 }

@@ -1,3 +1,6 @@
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     fs,
     io::{Seek, SeekFrom, Write},
@@ -681,7 +684,7 @@ async fn reads_maximum_sized_file_within_budget() {
     } else {
         Duration::from_millis(100)
     };
-    assert!(elapsed <= budget, "maximum-sized read took {elapsed:?}");
+    wall_budget::check_wall_budget("maximum-sized read", elapsed, budget);
 }
 
 #[tokio::test]
@@ -728,7 +731,7 @@ async fn filesystem_streams_narrow_large_range() {
     } else {
         Duration::from_secs(10)
     };
-    assert!(elapsed <= budget, "256 MiB selection took {elapsed:?}");
+    wall_budget::check_wall_budget("256 MiB selection", elapsed, budget);
 }
 
 #[cfg(feature = "test-support")]
@@ -2394,10 +2397,10 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
             )
             .await
             .expect("C6 scale search");
-        assert!(
-            started.elapsed() <= Duration::from_secs(10),
-            "C6 scale search run {run} exceeded ten seconds: {:?}",
-            started.elapsed()
+        wall_budget::check_wall_budget(
+            &format!("C6 scale search run {run}"),
+            started.elapsed(),
+            Duration::from_secs(10),
         );
         assert_eq!(result.total_records(), 1_000, "C6 scale match count");
         if let Some(expected) = stable_text.as_ref() {
@@ -2415,10 +2418,10 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
         )
         .await
         .expect("C7 scale glob");
-    assert!(
-        glob_started.elapsed() <= Duration::from_secs(10),
-        "C7 scale glob exceeded ten seconds: {:?}",
-        glob_started.elapsed()
+    wall_budget::check_wall_budget(
+        "C7 scale glob",
+        glob_started.elapsed(),
+        Duration::from_secs(10),
     );
     assert_eq!(glob.total_records(), 10_000, "C7 scale glob count");
 
@@ -2467,9 +2470,9 @@ async fn workspace_discovery_scale_is_bounded_and_deterministic() {
         0,
         "C6 maximum no-match count"
     );
-    assert!(
-        maximum_started.elapsed() <= Duration::from_secs(2),
-        "C6 maximum exact search exceeded two seconds: {:?}",
-        maximum_started.elapsed()
+    wall_budget::check_wall_budget(
+        "C6 maximum exact search",
+        maximum_started.elapsed(),
+        Duration::from_secs(2),
     );
 }

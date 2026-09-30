@@ -1,3 +1,6 @@
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -277,10 +280,7 @@ fn parses_production_shaped_reference_within_budget() {
         address_observation(reference.workspace_address().expect("workspace address")),
         ("relative", file_name, None)
     );
-    assert!(
-        elapsed <= Duration::from_millis(5),
-        "4 KiB reference parsing took {elapsed:?}"
-    );
+    wall_budget::check_wall_budget("4 KiB reference parse", elapsed, Duration::from_millis(5));
 }
 
 /// Expected outcome for one row of the hand-authored `local://` grammar oracle.
@@ -579,10 +579,7 @@ fn maximum_reference_parses_within_boundary_budget() {
     PathReference::parse(input).expect("maximum reference must parse");
     let elapsed = started.elapsed();
 
-    assert!(
-        elapsed <= Duration::from_millis(50),
-        "64 KiB reference parsing took {elapsed:?}"
-    );
+    wall_budget::check_wall_budget("64 KiB reference parse", elapsed, Duration::from_millis(50));
 }
 
 /// C19 — the encoded-separator guard covers exactly the forms that reach

@@ -1,3 +1,6 @@
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::time::{Duration, Instant};
 
 use resourcefs_core::{
@@ -347,9 +350,10 @@ fn reference_parse_budget() {
         assert_eq!(parsed.requested(), input);
     }
     let average = started.elapsed() / iterations;
-    assert!(
-        average <= Duration::from_millis(1),
-        "average maximum GitHub reference parse took {average:?}"
+    wall_budget::check_wall_budget(
+        "average maximum GitHub reference parse",
+        average,
+        Duration::from_millis(1),
     );
 }
 

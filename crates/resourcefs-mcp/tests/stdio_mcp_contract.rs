@@ -1,3 +1,6 @@
+#[path = "../../resourcefs-core/tests/support/wall_budget.rs"]
+mod wall_budget;
+
 use std::{
     fs,
     io::{self, BufReader, Read, Write},
@@ -1759,9 +1762,10 @@ fn renders_complete_success_and_errors() {
             maximum_text(),
             "maximum-sized content changed"
         );
-        assert!(
-            elapsed <= Duration::from_millis(250),
-            "maximum-sized MCP read took {elapsed:?}"
+        wall_budget::check_wall_budget(
+            "maximum-sized MCP read",
+            elapsed,
+            Duration::from_millis(250),
         );
 
         for (path, category) in [

@@ -4,6 +4,9 @@
 //! The oracle is a ledger the test maintains itself plus a raw inventory of the
 //! backing store; neither consults the session's own accounting.
 
+#[path = "support/wall_budget.rs"]
+mod wall_budget;
+
 use std::sync::Arc;
 
 use resourcefs_core::{
@@ -208,14 +211,14 @@ async fn scratch_name_enumeration_fits_its_budget() {
         names.windows(2).all(|pair| pair[0] < pair[1]),
         "enumeration must be sorted"
     );
-    eprintln!("scratch_names at {MAX_SESSION_ARTIFACTS} names: {elapsed:?}");
     let budget = if cfg!(debug_assertions) {
         std::time::Duration::from_millis(20)
     } else {
         std::time::Duration::from_millis(1)
     };
-    assert!(
-        elapsed < budget,
-        "scratch name enumeration exceeded its 1 ms budget at the production ceiling: {elapsed:?}"
+    wall_budget::check_wall_budget_below(
+        "scratch names at the production ceiling",
+        elapsed,
+        budget,
     );
 }

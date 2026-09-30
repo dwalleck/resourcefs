@@ -13,6 +13,7 @@ parallel are named, with their clearing inspection, in PARALLEL_RELEASE_TARGETS.
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -127,10 +128,10 @@ def exclusion_reason(name):
     return None
 
 
-def run(command, *, capture=False):
+def run(command, *, capture=False, env=None):
     print("+ " + " ".join(map(str, command)), flush=True)
     return subprocess.run(
-        command, cwd=ROOT, env=ENV, check=False,
+        command, cwd=ROOT, env=ENV if env is None else env, check=False,
         stdout=subprocess.PIPE if capture else None, text=True, encoding="utf-8",
     )
 
@@ -308,7 +309,7 @@ def ignored_budgets():
                 "cargo", "test", *RELEASE, "-p", package_id,
                 "--all-features", *selector, "--", "--ignored", "--exact", name,
                 "--test-threads=1",
-            ])
+            ], env={**ENV, "RFS_BUDGETS": IGNORED_BUDGET_POLICY})
             passed = result.returncode == 0 and passed
     missing = BUDGETS - seen
     if missing:
@@ -332,6 +333,125 @@ def ignored_budgets():
 # never running in CI.
 PHASES = ("debug", "release")
 
+# Wall-clock budgets (rfs-cn1r). The policy is defined once, in Rust: the
+# policy names, the unset default, and report mode's hard-ceiling factor are
+# read from these declarations rather than restated here, so the banner and
+# the validation below cannot drift from what the tests do.
+BUDGET_POLICY_SOURCE = ROOT / "crates/resourcefs-core/src/test_support.rs"
+# Each measurement is appended to the file this names. nextest discards a
+# passing test's output and the release leg runs libtest captured, so without
+# the file a report-mode number never reaches the log.
+BUDGET_REPORT_VARIABLE = "RFS_BUDGET_REPORT"
+
+
+def budget_policy_facts():
+    """(report, enforce, factor) as declared in the Rust policy module."""
+    source = BUDGET_POLICY_SOURCE.read_text(encoding="utf-8")
+
+    def declared(pattern, what):
+        found = re.search(pattern, source)
+        if found is None:
+            raise ValueError(f"{BUDGET_POLICY_SOURCE.relative_to(ROOT)} no longer declares {what}")
+        return found.group(1)
+
+    report = declared(r'pub const REPORT_POLICY: &str = "([a-z]+)";', "REPORT_POLICY")
+    enforce = declared(r'pub const ENFORCE_POLICY: &str = "([a-z]+)";', "ENFORCE_POLICY")
+    factor = int(declared(
+        r"pub const REPORT_HARD_CEILING_FACTOR: u32 = ([0-9_]+);",
+        "REPORT_HARD_CEILING_FACTOR as an integer literal",
+    ).replace("_", ""))
+    return report, enforce, factor
+
+
+# The policy the ignored production budgets run under, set by main(). That leg
+# runs each budget alone with --exact and --test-threads=1, the most
+# controlled measurement the repository has, so when RFS_BUDGETS is unset it
+# enforces even though the parallel legs only report (rfs-cn1r). An explicit
+# RFS_BUDGETS, which ci.yml always sets, applies to every leg.
+IGNORED_BUDGET_POLICY = None
+
+
+def budget_policies():
+    """The effective policies, or an error message, from RFS_BUDGETS.
+
+    Returns (message, leg_policy, ignored_policy): the banner to print, the
+    policy for the functional and release legs, and the policy for the
+    serial ignored-budget leg. Both policies are None when the value is
+    rejected, and the message then says why. The test helper would panic on
+    an unknown value too, but only inside the first test that measures a
+    budget, so it is checked here before a minute of compilation is spent on
+    a typo.
+    """
+    report, enforce, factor = budget_policy_facts()
+    value = os.environ.get("RFS_BUDGETS")
+    ceiling = f"its hard ceiling, {factor}x its budget unless the row sets its own"
+    if value is None:
+        return (
+            f"Wall-clock budgets (RFS_BUDGETS unset): {report} on the functional and "
+            f"release legs, where an over-budget row passes unless it reaches {ceiling}; "
+            f"{enforce} on the serial ignored production budgets, where any over-budget "
+            f"row fails. Set RFS_BUDGETS to use one policy on every leg.",
+            report,
+            enforce,
+        )
+    if value == report:
+        return (
+            f"Wall-clock budgets (RFS_BUDGETS={report}): {report} on every leg. An "
+            f"over-budget row passes unless it reaches {ceiling}.",
+            report,
+            report,
+        )
+    if value == enforce:
+        return (
+            f"Wall-clock budgets (RFS_BUDGETS={enforce}): {enforce} on every leg. Any "
+            f"over-budget row fails.",
+            enforce,
+            enforce,
+        )
+    return (
+        f"RFS_BUDGETS must be {report}, {enforce}, or unset, not {value!r}",
+        None,
+        None,
+    )
+
+
+def budget_report_dir(phases):
+    """The target directory's budget-report folder, emptied for `phases` only.
+
+    A `--phase` run clears only its own phase's file, so the other phase's
+    report from an earlier run in the same target directory survives.
+    """
+    result = run(["cargo", "metadata", "--format-version", "1", "--no-deps"], capture=True)
+    if result.returncode:
+        raise ValueError("cargo metadata failed; cannot place the budget report")
+    folder = Path(json.loads(result.stdout)["target_directory"]) / "budget-report"
+    folder.mkdir(parents=True, exist_ok=True)
+    for phase in phases:
+        (folder / f"{phase}.log").unlink(missing_ok=True)
+    return folder
+
+
+def print_budget_report(phase, path, policy):
+    """Prints one phase's collected measurements, over-budget lines first.
+
+    Flushed before returning: the gate summary that follows goes to stderr,
+    and a cancelled job must not lose buffered lines.
+    """
+    print(f"\n=== Wall-clock budgets, {phase} phase ===")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        lines = []
+    if not lines:
+        print("No wall-clock budget was measured in this phase.", flush=True)
+        return
+    over = [line for line in lines if "(OVER" in line]
+    within = [line for line in lines if "(OVER" not in line]
+    print(f"{len(lines)} measured, {len(over)} over budget, policy {policy}.")
+    for line in over + within:
+        print(line)
+    sys.stdout.flush()
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run the repository gates.")
@@ -340,6 +460,21 @@ def main():
         help="run only this phase; omit to run every gate, as a local run does",
     )
     arguments = parser.parse_args()
+    global IGNORED_BUDGET_POLICY
+    try:
+        banner, policy, IGNORED_BUDGET_POLICY = budget_policies()
+    except (OSError, ValueError) as error:
+        print(f"Budget policy: {error}", file=sys.stderr)
+        return 1
+    if policy is None:
+        print(banner, file=sys.stderr)
+        return 2
+    print(banner, flush=True)
+    phase_policy = {
+        phase: policy if phase != "release" or policy == IGNORED_BUDGET_POLICY
+        else f"{policy}, ignored budgets {IGNORED_BUDGET_POLICY}"
+        for phase in PHASES
+    }
     gates = [
         ("debug", "Formatting", ["cargo", "fmt", "--all", "--", "--check"]),
         ("debug", "Lints", ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]),
@@ -383,7 +518,15 @@ def main():
             print(f"No gates in phase {arguments.phase}", file=sys.stderr)
             return 1
     failed = []
-    for _phase, name, command in gates:
+    try:
+        report_dir = budget_report_dir({phase for phase, _, _ in gates})
+    except (OSError, ValueError, KeyError) as error:
+        print(f"Budget report: {error}", file=sys.stderr)
+        return 1
+    last_gate_of_phase = {phase: index for index, (phase, _, _) in enumerate(gates)}
+    for index, (phase, name, command) in enumerate(gates):
+        report = report_dir / f"{phase}.log"
+        ENV[BUDGET_REPORT_VARIABLE] = str(report)
         print(f"\n=== {name} ===", flush=True)
         try:
             passed = command() if callable(command) else run(command).returncode == 0
@@ -392,6 +535,8 @@ def main():
             passed = False
         if not passed:
             failed.append(name)
+        if last_gate_of_phase[phase] == index:
+            print_budget_report(phase, report, phase_policy[phase])
     if failed:
         print(f"Failed gates: {', '.join(failed)}", file=sys.stderr)
         return 1

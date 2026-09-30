@@ -1,7 +1,7 @@
 //! Owning-module contracts use the existing TLS server, not a replay mock.
 #[path = "../../tests/support/tls.rs"]
 mod tls;
-
+use crate::wall_budget;
 use std::{
     net::{IpAddr, Ipv4Addr},
     sync::{
@@ -501,11 +501,7 @@ fn read_only_replay_shares_384kib_payload_across_10000_copies() {
     }
     let elapsed = started.elapsed();
     let ceiling = Duration::from_secs(if cfg!(debug_assertions) { 5 } else { 1 });
-    eprintln!("C7 384 KiB / 10,000 replay copies: {elapsed:?}");
-    assert!(
-        elapsed <= ceiling,
-        "C7 replay construction exceeded {ceiling:?}: {elapsed:?}"
-    );
+    wall_budget::check_wall_budget("C7 384 KiB / 10,000 replay copies", elapsed, ceiling);
 }
 
 #[tokio::test]
